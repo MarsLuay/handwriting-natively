@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.17",
-    "esbuild": "^0.25.5",
+    "esbuild": "^0.28.1",
     "jsdom": "^26.1.0",
     "obsidian": "latest",
     "typescript": "^5.8.3",
