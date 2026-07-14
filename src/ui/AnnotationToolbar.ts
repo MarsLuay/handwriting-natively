@@ -61,7 +61,7 @@ export class AnnotationToolbar {
   private autosave: boolean;
 
   constructor(options: AnnotationToolbarOptions) {
-    this.document = options.document ?? window.document;
+    this.document = options.document ?? activeDocument;
     this.callbacks = options.callbacks;
     this.preferences = options.preferences;
     this.autosave = options.autosave;
@@ -167,10 +167,18 @@ export class AnnotationToolbar {
 
   private iconFor(id: string): ToolbarIcon {
     if (id === "drawing") return this.lastDrawingTool;
-    if (id === "eraser" || id === "lasso" || id === "undo" || id === "redo" || id === "zoom" || id === "more" || id === "save") {
-      return id as ToolbarIcon;
+    switch (id) {
+      case "eraser":
+      case "lasso":
+      case "undo":
+      case "redo":
+      case "zoom":
+      case "more":
+      case "save":
+        return id;
+      default:
+        return "more";
     }
-    return "more";
   }
 
   private menuButton(id: string, label: string, options: DropdownOption[]): HTMLButtonElement {

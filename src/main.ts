@@ -59,7 +59,7 @@ class UnsavedChangesModal extends Modal {
 }
 
 export default class NativePdfInkPlugin extends Plugin {
-  settings: PluginSettings = mergeSettings(undefined);
+  settings: PluginSettings = mergeSettings(undefined, "config");
   private readonly sessions = new Map<WorkspaceLeaf, ViewerInkSession>();
   private readonly attachingLeaves = new Set<WorkspaceLeaf>();
   private readonly embedChrome = new Map<HTMLElement, EmbedAnnotateChrome>();
@@ -74,7 +74,10 @@ export default class NativePdfInkPlugin extends Plugin {
   );
 
   async onload(): Promise<void> {
-    this.settings = mergeSettings(await this.loadData() as Partial<PluginSettings> | null);
+    this.settings = mergeSettings(
+      await this.loadData() as Partial<PluginSettings> | null,
+      this.app.vault.configDir
+    );
     this.addSettingTab(new NativePdfInkSettingTab(this.app, this));
 
     this.addCommand({
@@ -90,9 +93,9 @@ export default class NativePdfInkPlugin extends Plugin {
     this.registerSelectionCommands();
 
     this.registerEvent(this.app.workspace.on("layout-change", () => this.scheduleDebouncedScan()));
-    this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
-      for (const [leaf, session] of this.sessions) {
-        if (leaf !== this.app.workspace.activeLeaf) void session.flush();
+    this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => {
+      for (const [sessionLeaf, session] of this.sessions) {
+        if (sessionLeaf !== leaf) void session.flush();
       }
       this.scheduleDebouncedScan();
     }));
@@ -376,8 +379,15 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private activeSession(): ViewerInkSession | undefined {
-    const leaf = this.app.workspace.activeLeaf;
-    return leaf ? this.sessions.get(leaf) : undefined;
+    const mostRecent = this.app.workspace.getMostRecentLeaf();
+    if (mostRecent && this.sessions.has(mostRecent)) return this.sessions.get(mostRecent);
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) return undefined;
+    for (const [leaf, session] of this.sessions) {
+      const view = leaf.view;
+      if (view instanceof FileView && view.file?.path === activeFile.path) return session;
+    }
+    return undefined;
   }
 
   private registerSelectionCommands(): void {

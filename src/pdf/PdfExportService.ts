@@ -56,12 +56,12 @@ export class PdfExportService {
     await input.flush?.();
     const strokes = input.getStrokes?.() ?? input.strokes ?? [];
     const sourceSnapshot = input.sourceBytes.slice();
-    const document = await PDFDocument.load(sourceSnapshot);
+    const pdfDoc = await PDFDocument.load(sourceSnapshot);
     const metricsByPage = new Map(
       (input.pageMetrics ?? []).map((page) => [page.page, page] as const)
     );
     for (const stroke of strokes) {
-      const page = document.getPages()[stroke.page - 1];
+      const page = pdfDoc.getPages()[stroke.page - 1];
       if (!page) throw new RangeError(`Stroke ${stroke.id} references missing page ${stroke.page}`);
       const color = parseColor(stroke.color);
       const pdfSize = page.getSize();
@@ -148,7 +148,7 @@ export class PdfExportService {
         });
       }
     }
-    const exported = await document.save();
+    const exported = await pdfDoc.save();
     await PDFDocument.load(exported);
     if (!input.sourceBytes.every((byte, index) => byte === sourceSnapshot[index])) throw new Error("Source PDF bytes changed during export");
     return exported;

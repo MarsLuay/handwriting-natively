@@ -1,3 +1,5 @@
+.native-pdf-handwriting-relative { position: relative; }
+
 .native-pdf-handwriting-toolbar {
   --ink-control-size: 32px;
   align-items: center;
@@ -117,7 +119,6 @@
   overflow-x: auto;
   overscroll-behavior-x: contain;
   padding: 2px;
-  scrollbar-width: thin;
   touch-action: pan-x;
 }
 
@@ -309,18 +310,24 @@
 }
 .native-pdf-handwriting-canvas { display: block; height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; z-index: 1; }
 .native-pdf-handwriting-zoom-compositing .native-pdf-handwriting-canvas {
-  height: 100% !important;
+  height: 100%;
   image-rendering: auto;
   transform: none;
-  width: 100% !important;
+  width: 100%;
 }
 .native-pdf-handwriting-hide-native-cursor,
-.native-pdf-handwriting-hide-native-cursor *,
+.native-pdf-handwriting-hide-native-cursor .pdfViewer,
+.native-pdf-handwriting-hide-native-cursor .page,
+.native-pdf-handwriting-hide-native-cursor canvas,
 .native-pdf-handwriting-has-eraser-cursor,
-.native-pdf-handwriting-has-eraser-cursor *,
+.native-pdf-handwriting-has-eraser-cursor .pdfViewer,
+.native-pdf-handwriting-has-eraser-cursor .page,
+.native-pdf-handwriting-has-eraser-cursor canvas,
 .native-pdf-handwriting-has-draw-cursor,
-.native-pdf-handwriting-has-draw-cursor * {
-  cursor: none !important;
+.native-pdf-handwriting-has-draw-cursor .pdfViewer,
+.native-pdf-handwriting-has-draw-cursor .page,
+.native-pdf-handwriting-has-draw-cursor canvas {
+  cursor: none;
 }
 .native-pdf-handwriting-panning { cursor: grabbing; }
 .native-pdf-handwriting-panning * { cursor: grabbing; }

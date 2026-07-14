@@ -14,7 +14,7 @@ interface Entry<T> {
   snapshot: T;
   version: number;
   savedVersion: number;
-  timer: ReturnType<typeof setTimeout> | undefined;
+  timer: number | undefined;
   running: Promise<void> | undefined;
   status: SaveStatus;
 }
@@ -37,8 +37,8 @@ export class AutosaveQueue<T> {
     entry.snapshot = snapshot;
     entry.version += 1;
     this.setStatus(documentId, entry, "dirty");
-    if (entry.timer) clearTimeout(entry.timer);
-    entry.timer = setTimeout(() => { entry.timer = undefined; void this.drain(documentId, entry).catch(() => undefined); }, this.delayMs);
+    if (entry.timer) window.clearTimeout(entry.timer);
+    entry.timer = window.setTimeout(() => { entry.timer = undefined; void this.drain(documentId, entry).catch(() => undefined); }, this.delayMs);
     this.entries.set(documentId, entry);
   }
 
@@ -53,7 +53,7 @@ export class AutosaveQueue<T> {
     const entry = this.entries.get(documentId);
     if (!entry) return;
     if (entry.timer) {
-      clearTimeout(entry.timer);
+      window.clearTimeout(entry.timer);
       entry.timer = undefined;
     }
     entry.savedVersion = entry.version;
@@ -68,7 +68,7 @@ export class AutosaveQueue<T> {
     this.closed = true;
     for (const [documentId, entry] of this.entries) {
       if (entry.timer) {
-        clearTimeout(entry.timer);
+        window.clearTimeout(entry.timer);
         entry.timer = undefined;
       }
       entry.savedVersion = entry.version;
@@ -88,7 +88,7 @@ export class AutosaveQueue<T> {
     if (documentId !== undefined) {
       const entry = this.entries.get(documentId);
       if (!entry) return;
-      if (entry.timer) { clearTimeout(entry.timer); entry.timer = undefined; }
+      if (entry.timer) { window.clearTimeout(entry.timer); entry.timer = undefined; }
       await this.drain(documentId, entry);
       return;
     }
@@ -117,7 +117,7 @@ export class AutosaveQueue<T> {
       if (this.closed) return;
       this.setStatus(documentId, entry, "failed", error);
       if (this.options.retryFailed) {
-        entry.timer = setTimeout(() => { entry.timer = undefined; void this.drain(documentId, entry).catch(() => undefined); }, this.options.retryDelayMs ?? this.delayMs);
+        entry.timer = window.setTimeout(() => { entry.timer = undefined; void this.drain(documentId, entry).catch(() => undefined); }, this.options.retryDelayMs ?? this.delayMs);
       }
       throw error;
     }).finally(() => { entry.running = undefined; });

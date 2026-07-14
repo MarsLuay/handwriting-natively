@@ -16,9 +16,10 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Native PDF Handwriting" });
+
+    new Setting(containerEl).setName("Native PDF Handwriting").setHeading();
     containerEl.createEl("p", {
-      text: "Locally handwrite on PDFs with a stylus or mouse inside Obsidian."
+      text: "Locally handwrite on PDFs with a stylus or mouse."
     });
 
     new Setting(containerEl)
@@ -59,7 +60,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         })
       );
 
-    containerEl.createEl("h3", { text: "PDF navigation" });
+    new Setting(containerEl).setName("PDF navigation").setHeading();
     new Setting(containerEl)
       .setName("Drag to scroll when Draw is off")
       .setDesc("Vertical mouse drag on empty PDF areas scrolls the document. Text selection and links still work normally.")
@@ -85,7 +86,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createEl("h3", { text: "Drawing" });
+    new Setting(containerEl).setName("Drawing").setHeading();
     new Setting(containerEl)
       .setName("Simplify strokes on release")
       .setDesc("Snap finished ink to cleaner straight segments. Off keeps the exact path you drew.")
@@ -104,7 +105,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         })
       );
 
-    containerEl.createEl("h3", { text: "Developer" });
+    new Setting(containerEl).setName("Developer").setHeading();
     new Setting(containerEl)
       .setName("Vault debug log")
       .setDesc("Append every Native PDF Handwriting event to a vault NDJSON log file so agents can read it directly. Off by default.")

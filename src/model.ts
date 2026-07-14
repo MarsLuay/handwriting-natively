@@ -62,18 +62,23 @@ export interface PluginSettings {
   toolPreferences: ToolPreferences;
 }
 
-export const DEFAULT_SETTINGS: PluginSettings = {
+export const PLUGIN_ID = "native-pdf-handwriting";
+
+/** Build path defaults from Vault#configDir. */
+export function createDefaultSettings(configDir: string): PluginSettings {
+  const root = configDir.replace(/\\/g, "/").replace(/\/+$/, "");
+  return {
   autosave: true,
   autosaveDelayMs: 750,
   saveWhenClosing: true,
   showSaveStatus: true,
   retryFailedAutosaves: true,
-  sidecarFolder: ".obsidian/plugins/native-pdf-handwriting/annotations",
+  sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
   mouseDragScroll: true,
   simplifyStrokes: true,
   toolbarPlacement: "main",
   vaultDebugLog: false,
-  vaultDebugLogPath: ".obsidian/plugins/native-pdf-handwriting/debug.log",
+  vaultDebugLogPath: `${root}/plugins/${PLUGIN_ID}/debug.log`,
   toolPreferences: {
     activeTool: "pen",
     pen: {
@@ -102,7 +107,11 @@ export const DEFAULT_SETTINGS: PluginSettings = {
     lasso: { type: "freeform" },
     recentColors: ["#111827", "#2563eb", "#dc2626", "#059669", "#f59e0b"]
   }
-};
+  };
+}
+
+/** Test/helper defaults; runtime uses createDefaultSettings(app.vault.configDir). */
+export const DEFAULT_SETTINGS: PluginSettings = createDefaultSettings("config");
 
 const LEGACY_SETTING_KEYS = [
   "yoloMode",
@@ -117,11 +126,15 @@ export function serializePluginSettings(settings: PluginSettings): string {
   return JSON.stringify(settings, null, 2);
 }
 
-export function mergeSettings(saved: Partial<PluginSettings> | null | undefined): PluginSettings {
+export function mergeSettings(
+  saved: Partial<PluginSettings> | null | undefined,
+  configDir = "config"
+): PluginSettings {
+  const defaults = createDefaultSettings(configDir);
   const raw = { ...(saved ?? {}) } as Record<string, unknown>;
   for (const key of LEGACY_SETTING_KEYS) delete raw[key];
   const cleaned = raw as Partial<PluginSettings>;
-  const lassoRaw = { ...DEFAULT_SETTINGS.toolPreferences.lasso, ...cleaned.toolPreferences?.lasso } as {
+  const lassoRaw = { ...defaults.toolPreferences.lasso, ...cleaned.toolPreferences?.lasso } as {
     type: LassoType;
     includeLocked?: unknown;
     selectionMode?: unknown;
@@ -130,19 +143,34 @@ export function mergeSettings(saved: Partial<PluginSettings> | null | undefined)
     type: lassoRaw.type === "freeform" || lassoRaw.type === "rectangle" ? lassoRaw.type : "freeform" as const
   };
   const toolbarPlacement = cleaned.toolbarPlacement;
-  return {
-    ...DEFAULT_SETTINGS,
+  const merged = {
+    ...defaults,
     ...cleaned,
     toolbarPlacement: toolbarPlacement === "left" || toolbarPlacement === "right" || toolbarPlacement === "main"
       ? toolbarPlacement
-      : DEFAULT_SETTINGS.toolbarPlacement,
+      : defaults.toolbarPlacement,
     toolPreferences: {
-      ...DEFAULT_SETTINGS.toolPreferences,
+      ...defaults.toolPreferences,
       ...cleaned.toolPreferences,
-      pen: { ...DEFAULT_SETTINGS.toolPreferences.pen, ...cleaned.toolPreferences?.pen },
-      pencil: { ...DEFAULT_SETTINGS.toolPreferences.pencil, ...cleaned.toolPreferences?.pencil },
-      eraser: { size: cleaned.toolPreferences?.eraser?.size ?? DEFAULT_SETTINGS.toolPreferences.eraser.size },
+      pen: { ...defaults.toolPreferences.pen, ...cleaned.toolPreferences?.pen },
+      pencil: { ...defaults.toolPreferences.pencil, ...cleaned.toolPreferences?.pencil },
+      eraser: { size: cleaned.toolPreferences?.eraser?.size ?? defaults.toolPreferences.eraser.size },
       lasso
     }
   };
+  merged.sidecarFolder = remapPluginDataPath(cleaned.sidecarFolder, defaults.sidecarFolder, configDir);
+  merged.vaultDebugLogPath = remapPluginDataPath(cleaned.vaultDebugLogPath, defaults.vaultDebugLogPath, configDir);
+  return merged;
+}
+
+function remapPluginDataPath(saved: string | undefined, fallback: string, configDir: string): string {
+  if (!saved || !saved.trim()) return fallback;
+  const marker = `/plugins/${PLUGIN_ID}`;
+  const normalized = saved.replace(/\\/g, "/");
+  const index = normalized.indexOf(marker);
+  if (index >= 0) {
+    const root = configDir.replace(/\\/g, "/").replace(/\/+$/, "");
+    return `${root}${normalized.slice(index)}`;
+  }
+  return saved;
 }

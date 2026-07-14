@@ -1,3 +1,4 @@
+import { setElementCssProps } from "../dom/typeGuards";
 export interface SelectionToolbarCallbacks {
   onDelete(): void;
   onDuplicate(): void;
@@ -25,28 +26,28 @@ export class SelectionToolbar {
   private userPositioned = false;
   private drag: { pointerId: number; offsetX: number; offsetY: number } | null = null;
 
-  constructor(callbacks: SelectionToolbarCallbacks, document: Document = window.document) {
-    this.element = document.createElement("div");
+  constructor(callbacks: SelectionToolbarCallbacks, doc: Document = activeDocument) {
+    this.element = doc.createElement("div");
     this.element.className = "native-pdf-handwriting-selection-toolbar";
     this.element.dataset.focusOverlayInternal = "true";
     this.element.setAttribute("role", "toolbar");
     this.element.setAttribute("aria-label", "Selected strokes");
-    this.dragHandle = document.createElement("span");
+    this.dragHandle = doc.createElement("span");
     this.dragHandle.className = "native-pdf-handwriting-selection-toolbar-drag";
     this.dragHandle.setAttribute("aria-label", "Drag selection toolbar");
-    this.count = document.createElement("span");
+    this.count = doc.createElement("span");
     this.count.className = "native-pdf-handwriting-selection-toolbar-count";
     this.dragHandle.append(this.count);
     this.element.append(
       this.dragHandle,
-      this.button(document, "Delete", callbacks.onDelete),
-      this.button(document, "Duplicate", callbacks.onDuplicate)
+      this.button(doc, "Delete", callbacks.onDelete),
+      this.button(doc, "Duplicate", callbacks.onDuplicate)
     );
-    const color = document.createElement("input");
+    const color = doc.createElement("input");
     color.type = "color";
     color.setAttribute("aria-label", "Recolor selected strokes");
     color.addEventListener("input", () => callbacks.onRecolor(color.value), { signal: this.abort.signal });
-    this.element.append(color, this.button(document, "Done", callbacks.onClear));
+    this.element.append(color, this.button(doc, "Done", callbacks.onClear));
     for (const type of ["pointerup", "click"] as const) {
       this.element.addEventListener(type, (event) => event.stopPropagation(), { signal: this.abort.signal });
     }
@@ -120,8 +121,10 @@ export class SelectionToolbar {
     const x = clamp(anchor.x, 8, Math.max(8, rootRect.width - width - 8));
     const y = clamp(anchor.y, 8, Math.max(8, rootRect.height - height - 8));
     this.anchor = { x, y };
-    this.element.style.left = `${rootRect.left + x}px`;
-    this.element.style.top = `${rootRect.top + y}px`;
+    setElementCssProps(this.element, {
+      left: `${rootRect.left + x}px`,
+      top: `${rootRect.top + y}px`
+    });
   }
 
   private readonly onDragStart = (event: PointerEvent): void => {
@@ -160,8 +163,8 @@ export class SelectionToolbar {
     }
   };
 
-  private button(document: Document, label: string, action: () => void): HTMLButtonElement {
-    const button = document.createElement("button");
+  private button(doc: Document, label: string, action: () => void): HTMLButtonElement {
+    const button = doc.createElement("button");
     button.type = "button";
     button.textContent = label;
     button.addEventListener("click", action, { signal: this.abort.signal });

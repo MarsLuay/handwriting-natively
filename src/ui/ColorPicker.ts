@@ -1,3 +1,4 @@
+import { setElementCssProps } from "../dom/typeGuards";
 import type { DrawingTool, ToolPreferences } from "../model";
 import type { DropdownOption } from "./DropdownController";
 
@@ -10,7 +11,7 @@ export function colorOptions(preferences: ToolPreferences, select: (color: strin
     render: (button) => {
       const swatch = button.ownerDocument.createElement("span");
       swatch.className = "native-pdf-handwriting-color-swatch";
-      swatch.style.backgroundColor = color;
+      setElementCssProps(swatch, { "background-color": color });
       button.prepend(swatch);
     },
     onSelect: () => select(color)

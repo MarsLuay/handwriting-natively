@@ -1,3 +1,4 @@
+import { isHTMLElement } from "../dom/typeGuards";
 import type { PdfJsViewerLike } from "./PdfViewerCompatibility";
 
 const OBSIDIAN_SCROLL_SELECTORS = [
@@ -41,7 +42,7 @@ export function resolvePdfScrollRoot(
   const effective = findEffectiveScrollElement(viewerRoot, viewerHost);
   if (effective) return effective;
 
-  if (privateViewer?.container instanceof HTMLElement && canEffectivelyScroll(privateViewer.container)) {
+  if (isHTMLElement(privateViewer?.container) && canEffectivelyScroll(privateViewer.container)) {
     return privateViewer.container;
   }
 

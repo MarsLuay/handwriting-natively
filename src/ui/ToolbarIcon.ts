@@ -1,3 +1,4 @@
+import { setElementCssProps } from "../dom/typeGuards";
 export type ToolbarIcon = "pen" | "pencil" | "eraser" | "palette" | "lasso" | "undo" | "redo" | "zoom" | "more" | "save" | "chevron";
 
 const PATHS: Record<ToolbarIcon, readonly string[]> = {
@@ -17,7 +18,7 @@ const PATHS: Record<ToolbarIcon, readonly string[]> = {
 export function setToolbarColorSwatch(element: HTMLElement, color: string): void {
   const swatch = element.ownerDocument.createElement("span");
   swatch.className = "native-pdf-handwriting-color-icon";
-  swatch.style.backgroundColor = color;
+  setElementCssProps(swatch, { "background-color": color });
   swatch.setAttribute("aria-hidden", "true");
   element.replaceChildren(swatch);
 }
