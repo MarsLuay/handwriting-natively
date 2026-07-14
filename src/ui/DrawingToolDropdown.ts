@@ -34,16 +34,16 @@ export function drawingOptions(
 }
 
 export function drawingAdvanced(
-  document: Document,
+  ownerDocument: Document,
   preferences: ToolPreferences,
   onChange: () => void,
   signal: AbortSignal
 ): HTMLElement {
   const tool = preferences.activeTool === "pencil" ? "pencil" : "pen";
   const drawing = preferences[tool];
-  const details = activeDocument.createElement("details");
+  const details = ownerDocument.createElement("details");
   details.className = "native-pdf-handwriting-advanced";
-  const summary = activeDocument.createElement("summary");
+  const summary = ownerDocument.createElement("summary");
   summary.textContent = "Advanced settings";
   details.append(summary);
   const fields: Array<[string, keyof typeof drawing, number, number, number]> = [
@@ -52,9 +52,9 @@ export function drawingAdvanced(
     ["Texture", "textureStrength", 0, 1, 0.05]
   ];
   for (const [label, key, min, max, step] of fields) {
-    const wrapper = activeDocument.createElement("label");
+    const wrapper = ownerDocument.createElement("label");
     wrapper.textContent = label;
-    const input = activeDocument.createElement("input");
+    const input = ownerDocument.createElement("input");
     input.type = "range";
     input.min = String(min);
     input.max = String(max);
@@ -72,8 +72,8 @@ export function drawingAdvanced(
     ["Tilt sensitivity", "tiltSensitivity"],
     ["Simulate mouse pressure", "simulateMousePressure"]
   ] as const) {
-    const wrapper = activeDocument.createElement("label");
-    const input = activeDocument.createElement("input");
+    const wrapper = ownerDocument.createElement("label");
+    const input = ownerDocument.createElement("input");
     input.type = "checkbox";
     input.checked = drawing[key];
     input.addEventListener("change", () => {
@@ -83,10 +83,10 @@ export function drawingAdvanced(
     wrapper.append(input, label);
     details.append(wrapper);
   }
-  const stabilization = activeDocument.createElement("select");
+  const stabilization = ownerDocument.createElement("select");
   stabilization.setAttribute("aria-label", "Stabilization");
   for (const value of ["off", "low", "medium", "high"] as const) {
-    const option = activeDocument.createElement("option");
+    const option = ownerDocument.createElement("option");
     option.value = value;
     option.textContent = value[0]?.toUpperCase() + value.slice(1);
     option.selected = drawing.stabilization === value;
@@ -97,7 +97,7 @@ export function drawingAdvanced(
     onChange();
   }, { signal });
   details.append(stabilization);
-  const restore = activeDocument.createElement("button");
+  const restore = ownerDocument.createElement("button");
   restore.type = "button";
   restore.textContent = "Restore tool defaults";
   restore.addEventListener("click", () => {

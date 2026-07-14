@@ -11,12 +11,12 @@ export class SaveStatusIndicator {
   readonly element: HTMLElement;
   private readonly dot: HTMLElement;
 
-  constructor(document: Document = window.document) {
-    this.element = activeDocument.createElement("span");
+  constructor(ownerDocument: Document = activeDocument) {
+    this.element = ownerDocument.createElement("span");
     this.element.className = "native-pdf-handwriting-save-status";
     this.element.setAttribute("role", "status");
     this.element.setAttribute("aria-live", "polite");
-    this.dot = activeDocument.createElement("span");
+    this.dot = ownerDocument.createElement("span");
     this.dot.className = "native-pdf-handwriting-save-status-dot";
     this.dot.setAttribute("aria-hidden", "true");
     this.element.append(this.dot);
@@ -25,11 +25,8 @@ export class SaveStatusIndicator {
 
   update(status: SaveStatus, lastSavedAt?: Date): void {
     this.element.dataset.status = status;
-    const label = status === "saved" && lastSavedAt
-      ? `Last saved ${lastSavedAt.toLocaleTimeString()}`
-      : LABELS[status];
-    this.element.setAttribute("aria-label", label);
-    // Prefer aria-label only — native title stacks a second browser tooltip on hover.
-    this.element.removeAttribute("title");
+    const when = lastSavedAt ? ` · ${lastSavedAt.toLocaleTimeString()}` : "";
+    this.element.setAttribute("aria-label", `${LABELS[status]}${when}`);
+    this.element.title = `${LABELS[status]}${when}`;
   }
 }
