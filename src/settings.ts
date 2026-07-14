@@ -16,7 +16,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Native PDF Ink" });
+    containerEl.createEl("h2", { text: "Native PDF Handwriting" });
     containerEl.createEl("p", {
       text: "Locally handwrite on PDFs with a stylus or mouse inside Obsidian."
     });
@@ -34,7 +34,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
       .setName("Autosave delay")
       .setDesc("Wait 100–60,000 milliseconds after an edit before saving the sidecar.");
     this.addDelayInput(autosaveDelaySetting, {
-      descriptionId: "native-pdf-ink-autosave-delay-description",
+      descriptionId: "native-pdf-handwriting-autosave-delay-description",
       value: this.host.settings.autosaveDelayMs,
       min: 100,
       max: 60_000,
@@ -107,7 +107,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Developer" });
     new Setting(containerEl)
       .setName("Vault debug log")
-      .setDesc("Append every Native PDF Ink event to a vault NDJSON log file so agents can read it directly. Off by default.")
+      .setDesc("Append every Native PDF Handwriting event to a vault NDJSON log file so agents can read it directly. Off by default.")
       .addToggle((toggle) =>
         toggle.setValue(this.host.settings.vaultDebugLog).onChange(async (value) => {
           await this.persistPatch({ vaultDebugLog: value });
@@ -125,31 +125,31 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Copy all settings")
-      .setDesc("Copy every Native PDF Ink setting as readable JSON.")
+      .setDesc("Copy every Native PDF Handwriting setting as readable JSON.")
       .addButton((button) =>
         button.setButtonText("Copy all").onClick(async () => {
           try {
             await navigator.clipboard.writeText(serializePluginSettings(this.host.settings));
-            new Notice("All Native PDF Ink settings copied.");
+            new Notice("All Native PDF Handwriting settings copied.");
           } catch (error) {
-            console.error("Native PDF Ink could not copy settings", error);
+            console.error("Native PDF Handwriting could not copy settings", error);
             new Notice("Could not copy settings. Check clipboard permission and try again.");
           }
         })
       );
 
-    const supportLinks = containerEl.createDiv({ cls: "native-pdf-ink-support-links" });
+    const supportLinks = containerEl.createDiv({ cls: "native-pdf-handwriting-support-links" });
     supportLinks.createEl("a", {
-      cls: "native-pdf-ink-support-link",
+      cls: "native-pdf-handwriting-support-link",
       text: "Report bug",
       attr: {
-        href: "https://github.com/MarsLuay/obsidian-native-pdf-ink/issues",
+        href: "https://github.com/MarsLuay/native-pdf-handwriting/issues",
         rel: "noopener noreferrer",
         target: "_blank"
       }
     });
     supportLinks.createEl("a", {
-      cls: "native-pdf-ink-support-link",
+      cls: "native-pdf-handwriting-support-link",
       text: "Buy Me a Coffee",
       attr: {
         href: "https://buymeacoffee.com/marwanluaye",

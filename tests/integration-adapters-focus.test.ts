@@ -62,12 +62,12 @@ describe("PDF adapters", () => {
     const host = compatibleHost();
     const adapter = NativePdfViewAdapter.attach(host);
     const stale = document.createElement("div");
-    stale.className = "native-pdf-ink-toolbar";
+    stale.className = "native-pdf-handwriting-toolbar";
     const fresh = document.createElement("div");
-    fresh.className = "native-pdf-ink-toolbar";
+    fresh.className = "native-pdf-handwriting-toolbar";
     adapter.mountToolbar(stale);
     adapter.mountToolbar(fresh);
-    const toolbars = host.querySelectorAll(".native-pdf-ink-toolbar");
+    const toolbars = host.querySelectorAll(".native-pdf-handwriting-toolbar");
     expect(toolbars).toHaveLength(1);
     expect(toolbars[0]).toBe(fresh);
     adapter.destroy();
@@ -79,7 +79,7 @@ describe("PDF adapters", () => {
     const adapter = NativePdfViewAdapter.attach(host, { onPagesChanged: pageChanges });
     const overlay = adapter.mountOverlay(1);
     const toolbar = document.createElement("div");
-    toolbar.className = "native-pdf-ink-selection-toolbar";
+    toolbar.className = "native-pdf-handwriting-selection-toolbar";
     toolbar.dataset.focusOverlayInternal = "true";
     overlay.append(toolbar);
     expect(pageChanges).not.toHaveBeenCalled();
@@ -143,7 +143,7 @@ describe("PDF adapters", () => {
     toolbarHost.append(palette);
     const adapter = NativePdfViewAdapter.attach(host);
     const toolbar = document.createElement("div");
-    toolbar.className = "native-pdf-ink-toolbar";
+    toolbar.className = "native-pdf-handwriting-toolbar";
     adapter.mountToolbar(toolbar);
     expect(palette.nextSibling).toBe(toolbar);
     adapter.destroy();
@@ -164,11 +164,11 @@ describe("PDF adapters", () => {
 
     const adapter = NativePdfViewAdapter.attach(host);
     const toolbar = document.createElement("div");
-    toolbar.className = "native-pdf-ink-toolbar";
+    toolbar.className = "native-pdf-handwriting-toolbar";
     adapter.mountToolbar(toolbar, "left");
 
-    const chrome = host.querySelector(".native-pdf-ink-chrome");
-    const rail = host.querySelector(".native-pdf-ink-rail");
+    const chrome = host.querySelector(".native-pdf-handwriting-chrome");
+    const rail = host.querySelector(".native-pdf-handwriting-rail");
     expect(chrome).not.toBeNull();
     expect(chrome?.classList.contains("is-toolbar-left")).toBe(true);
     expect(rail?.parentElement).toBe(chrome);
@@ -193,12 +193,12 @@ describe("PDF adapters", () => {
 
     const adapter = NativePdfViewAdapter.attach(host);
     const toolbar = document.createElement("div");
-    toolbar.className = "native-pdf-ink-toolbar";
+    toolbar.className = "native-pdf-handwriting-toolbar";
     adapter.mountToolbar(toolbar, "left");
     adapter.mountToolbar(toolbar, "right");
 
-    const chrome = host.querySelector(".native-pdf-ink-chrome");
-    const rail = host.querySelector(".native-pdf-ink-rail");
+    const chrome = host.querySelector(".native-pdf-handwriting-chrome");
+    const rail = host.querySelector(".native-pdf-handwriting-rail");
     expect(chrome?.classList.contains("is-toolbar-right")).toBe(true);
     expect(chrome?.classList.contains("is-toolbar-left")).toBe(false);
     expect(rail?.classList.contains("is-right")).toBe(true);

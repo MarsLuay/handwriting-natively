@@ -13,11 +13,11 @@ export class SaveStatusIndicator {
 
   constructor(document: Document = window.document) {
     this.element = document.createElement("span");
-    this.element.className = "native-pdf-ink-save-status";
+    this.element.className = "native-pdf-handwriting-save-status";
     this.element.setAttribute("role", "status");
     this.element.setAttribute("aria-live", "polite");
     this.dot = document.createElement("span");
-    this.dot.className = "native-pdf-ink-save-status-dot";
+    this.dot.className = "native-pdf-handwriting-save-status-dot";
     this.dot.setAttribute("aria-hidden", "true");
     this.element.append(this.dot);
     this.update("saved");

@@ -1,4 +1,4 @@
-# Native PDF Ink agent rules
+# Native PDF Handwriting agent rules
 
 - Keep undocumented Obsidian PDF access inside `src/integration/`.
 - Sidecar JSON is the canonical editable annotation store. Original PDFs are never modified.

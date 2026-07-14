@@ -2,7 +2,7 @@ export type SelectionShortcutAction = "copy" | "cut" | "paste" | "delete" | "sel
 export type HistoryShortcutAction = "undo" | "redo";
 
 const PLUGIN_CHROME =
-  ".native-pdf-ink-toolbar, .native-pdf-ink-selection-toolbar, .native-pdf-ink-dropdown, .native-pdf-ink-eraser-menu, .native-pdf-ink-advanced";
+  ".native-pdf-handwriting-toolbar, .native-pdf-handwriting-selection-toolbar, .native-pdf-handwriting-dropdown, .native-pdf-handwriting-eraser-menu, .native-pdf-handwriting-advanced";
 
 export function shouldIgnoreSelectionShortcut(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;

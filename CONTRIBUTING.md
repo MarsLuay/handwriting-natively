@@ -1,4 +1,4 @@
-# Contributing to Native PDF Ink
+# Contributing to Native PDF Handwriting
 
 Thanks for your interest in contributing.
 

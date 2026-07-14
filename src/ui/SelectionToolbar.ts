@@ -27,15 +27,15 @@ export class SelectionToolbar {
 
   constructor(callbacks: SelectionToolbarCallbacks, document: Document = window.document) {
     this.element = document.createElement("div");
-    this.element.className = "native-pdf-ink-selection-toolbar";
+    this.element.className = "native-pdf-handwriting-selection-toolbar";
     this.element.dataset.focusOverlayInternal = "true";
     this.element.setAttribute("role", "toolbar");
     this.element.setAttribute("aria-label", "Selected strokes");
     this.dragHandle = document.createElement("span");
-    this.dragHandle.className = "native-pdf-ink-selection-toolbar-drag";
+    this.dragHandle.className = "native-pdf-handwriting-selection-toolbar-drag";
     this.dragHandle.setAttribute("aria-label", "Drag selection toolbar");
     this.count = document.createElement("span");
-    this.count.className = "native-pdf-ink-selection-toolbar-count";
+    this.count.className = "native-pdf-handwriting-selection-toolbar-count";
     this.dragHandle.append(this.count);
     this.element.append(
       this.dragHandle,

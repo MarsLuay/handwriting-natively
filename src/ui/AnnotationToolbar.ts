@@ -69,12 +69,12 @@ export class AnnotationToolbar {
     this.dropdown = new DropdownController(this.document);
     this.saveStatus = new SaveStatusIndicator(this.document);
     this.element = this.document.createElement("div");
-    this.element.className = "native-pdf-ink-toolbar";
+    this.element.className = "native-pdf-handwriting-toolbar";
     this.element.dataset.focusOverlayInternal = "true";
     this.element.setAttribute("role", "toolbar");
     this.element.setAttribute("aria-label", "PDF annotation tools");
     this.controls = this.document.createElement("div");
-    this.controls.className = "native-pdf-ink-toolbar-controls";
+    this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
     this.controls.append(this.drawToggle(options.drawEnabled ?? false));
     this.controls.append(this.groupedTool("drawing", () => this.drawingMenu()));
@@ -128,7 +128,7 @@ export class AnnotationToolbar {
   private actionButton(id: string, label: string, action: () => void, disabled = false): HTMLButtonElement {
     const button = this.document.createElement("button");
     button.type = "button";
-    button.className = "native-pdf-ink-toolbar-button clickable-icon";
+    button.className = "native-pdf-handwriting-toolbar-button clickable-icon";
     button.dataset.control = id;
     this.presentButton(button, label, this.iconFor(id));
     button.disabled = disabled;
@@ -139,7 +139,7 @@ export class AnnotationToolbar {
 
   private drawToggle(enabled: boolean): HTMLLabelElement {
     const label = this.document.createElement("label");
-    label.className = "native-pdf-ink-draw-toggle";
+    label.className = "native-pdf-handwriting-draw-toggle";
     label.setAttribute("aria-label", "Turn on to draw, erase, or select annotations. Leave off for normal PDF controls.");
     label.removeAttribute("title");
     const input = this.document.createElement("input");
@@ -152,7 +152,7 @@ export class AnnotationToolbar {
     }, { signal: this.abort.signal });
     label.dataset.enabled = String(enabled);
     const text = this.document.createElement("span");
-    text.className = "native-pdf-ink-draw-toggle-label";
+    text.className = "native-pdf-handwriting-draw-toggle-label";
     text.textContent = "Draw";
     label.append(input, text);
     return label;
@@ -224,7 +224,7 @@ export class AnnotationToolbar {
   private colorButton(): HTMLButtonElement {
     const button = this.document.createElement("button");
     button.type = "button";
-    button.className = "native-pdf-ink-toolbar-button clickable-icon";
+    button.className = "native-pdf-handwriting-toolbar-button clickable-icon";
     button.dataset.control = "color";
     button.setAttribute("aria-haspopup", "menu");
     button.setAttribute("aria-expanded", "false");
@@ -303,7 +303,7 @@ export class AnnotationToolbar {
   private inlineOption(option: DropdownOption): HTMLButtonElement {
     const button = this.document.createElement("button");
     button.type = "button";
-    button.className = "native-pdf-ink-dropdown-option";
+    button.className = "native-pdf-handwriting-dropdown-option";
     button.dataset.optionId = option.id;
     button.setAttribute("role", "menuitemradio");
     button.setAttribute("aria-checked", String(option.active ?? false));

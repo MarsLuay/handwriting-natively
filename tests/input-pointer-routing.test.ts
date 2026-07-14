@@ -122,14 +122,14 @@ describe("PointerRouter", () => {
 
     const hover = pointer("mouse", 8, { eventType: "pointermove", clientX: 130, clientY: 90, buttons: 0 });
     element.dispatchEvent(hover);
-    const cursor = document.body.querySelector<HTMLElement>(".native-pdf-ink-eraser-cursor");
+    const cursor = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-eraser-cursor");
     expect(hover.defaultPrevented).toBe(false);
     expect(cursor).toMatchObject({ hidden: false });
     expect(cursor?.style.width).toBe("36px");
     expect(cursor?.style.height).toBe("36px");
     expect(cursor?.style.left).toBe("130px");
     expect(cursor?.style.top).toBe("90px");
-    expect(element.classList.contains("native-pdf-ink-has-eraser-cursor")).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-has-eraser-cursor")).toBe(true);
 
     element.dispatchEvent(pointer("touch", 9, { eventType: "pointermove" }));
     expect(cursor?.hidden).toBe(true);
@@ -152,7 +152,7 @@ describe("PointerRouter", () => {
 
     const hover = pointer("mouse", 8, { eventType: "pointermove", clientX: 130, clientY: 90, buttons: 0 });
     element.dispatchEvent(hover);
-    const cursor = document.body.querySelector<HTMLElement>(".native-pdf-ink-draw-cursor");
+    const cursor = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-draw-cursor");
     expect(hover.defaultPrevented).toBe(false);
     expect(cursor).toMatchObject({ hidden: false });
     expect(cursor?.style.width).toBe("6px");
@@ -160,7 +160,7 @@ describe("PointerRouter", () => {
     expect(cursor?.style.backgroundColor).toBe("rgb(255, 0, 0)");
     expect(cursor?.style.left).toBe("130px");
     expect(cursor?.style.top).toBe("90px");
-    expect(element.classList.contains("native-pdf-ink-has-draw-cursor")).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-has-draw-cursor")).toBe(true);
 
     element.dispatchEvent(pointer("touch", 9, { eventType: "pointermove" }));
     expect(cursor?.hidden).toBe(true);
@@ -185,7 +185,7 @@ describe("PointerRouter", () => {
     });
 
     element.dispatchEvent(pointer("mouse", 8, { eventType: "pointermove", clientX: 130, clientY: 90, buttons: 0 }));
-    const cursor = document.body.querySelector<HTMLElement>(".native-pdf-ink-eraser-cursor");
+    const cursor = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-eraser-cursor");
     expect(cursor?.style.left).toBe("130px");
     expect(cursor?.style.top).toBe("90px");
 
@@ -203,7 +203,7 @@ describe("PointerRouter", () => {
   it("ignores pointer gestures that start on the selection toolbar", () => {
     const element = document.createElement("div");
     const toolbar = document.createElement("div");
-    toolbar.className = "native-pdf-ink-selection-toolbar";
+    toolbar.className = "native-pdf-handwriting-selection-toolbar";
     const done = document.createElement("button");
     toolbar.append(done);
     element.append(toolbar);

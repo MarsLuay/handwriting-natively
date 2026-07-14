@@ -114,7 +114,7 @@ describe("viewer runtime tracer", () => {
     expect(draw).toMatchObject({ checked: false });
     draw?.click();
     expect(draw).toMatchObject({ checked: true });
-    expect(adapter.root.classList.contains("native-pdf-ink-hide-native-cursor")).toBe(true);
+    expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
 
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150));
@@ -329,7 +329,7 @@ describe("viewer runtime tracer", () => {
     await session.manualSave();
     expect(strokeCount()).toBe(1);
 
-    document.querySelector<HTMLButtonElement>(".native-pdf-ink-selection-toolbar button:last-of-type")?.click();
+    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-selection-toolbar button:last-of-type")?.click();
     expect(session.handleKeyDown(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true }))).toBe(false);
     adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     expect(session.handleKeyDown(paste)).toBe(false);

@@ -32,7 +32,7 @@ describe("vault fs sidecar I/O", () => {
   });
 
   it("sync writer and fs adapter share disk bytes (no stale adapter cache)", async () => {
-    const root = mkdtempSync(join(tmpdir(), "native-pdf-ink-vault-"));
+    const root = mkdtempSync(join(tmpdir(), "native-pdf-handwriting-vault-"));
     temps.push(root);
     mkdirSync(join(root, "annotations"), { recursive: true });
 

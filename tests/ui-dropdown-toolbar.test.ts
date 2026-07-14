@@ -34,7 +34,7 @@ describe("DropdownController", () => {
     document.body.append(trigger);
     const dropdown = new DropdownController(document);
     dropdown.open("x", trigger, { label: "X", options: [{ id: "x", label: "X", onSelect: vi.fn() }] });
-    expect(document.querySelector<HTMLElement>(".native-pdf-ink-dropdown")?.dataset.placement).toBe("top");
+    expect(document.querySelector<HTMLElement>(".native-pdf-handwriting-dropdown")?.dataset.placement).toBe("top");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(dropdown.isOpen()).toBe(false);
     dropdown.open("x", trigger, { label: "X", options: [{ id: "x", label: "X", onSelect: vi.fn() }] });
@@ -56,8 +56,8 @@ describe("AnnotationToolbar", () => {
     document.body.append(toolbar.element);
     const draw = toolbar.element.querySelector<HTMLInputElement>("[data-control='draw']");
     expect(draw).toMatchObject({ checked: false, type: "checkbox" });
-    expect(draw?.labels?.[0]?.querySelector(".native-pdf-ink-draw-toggle-label")?.textContent).toBe("Draw");
-    expect(toolbar.element.querySelector(".native-pdf-ink-toolbar-controls")?.firstElementChild).toBe(draw?.labels?.[0]);
+    expect(draw?.labels?.[0]?.querySelector(".native-pdf-handwriting-draw-toggle-label")?.textContent).toBe("Draw");
+    expect(toolbar.element.querySelector(".native-pdf-handwriting-toolbar-controls")?.firstElementChild).toBe(draw?.labels?.[0]);
     draw?.click();
     expect(draw).toMatchObject({ checked: true });
     expect(drawChanged).toHaveBeenCalledWith(true);
@@ -72,7 +72,7 @@ describe("AnnotationToolbar", () => {
       document
     });
     document.body.append(toolbar.element);
-    expect(toolbar.element.querySelector(".native-pdf-ink-draw-toggle-label")?.textContent).toBe("Draw");
+    expect(toolbar.element.querySelector(".native-pdf-handwriting-draw-toggle-label")?.textContent).toBe("Draw");
     toolbar.element.classList.add("is-sidebar-left");
     expect(toolbar.element.classList.contains("is-sidebar-left")).toBe(true);
     toolbar.destroy();
@@ -100,9 +100,9 @@ describe("AnnotationToolbar", () => {
     expect(toolbar.saveStatus.element.textContent).toBe("");
     expect(toolbar.saveStatus.element.getAttribute("aria-label")).toBe("Save failed");
     expect(toolbar.saveStatus.element.dataset.status).toBe("failed");
-    expect(toolbar.saveStatus.element.querySelector(".native-pdf-ink-save-status-dot")).not.toBeNull();
+    expect(toolbar.saveStatus.element.querySelector(".native-pdf-handwriting-save-status-dot")).not.toBeNull();
     expect(toolbar.saveStatus.element.parentElement).toBe(toolbar.element);
-    expect(toolbar.saveStatus.element.previousElementSibling?.classList.contains("native-pdf-ink-toolbar-controls")).toBe(true);
+    expect(toolbar.saveStatus.element.previousElementSibling?.classList.contains("native-pdf-handwriting-toolbar-controls")).toBe(true);
     toolbar.destroy();
   });
 
@@ -117,7 +117,7 @@ describe("AnnotationToolbar", () => {
     });
     document.body.append(toolbar.element);
     const color = toolbar.element.querySelector<HTMLButtonElement>("[data-control='color']");
-    const swatch = color?.querySelector<HTMLElement>(".native-pdf-ink-color-icon");
+    const swatch = color?.querySelector<HTMLElement>(".native-pdf-handwriting-color-icon");
     expect(swatch?.style.backgroundColor).toBe("rgb(220, 38, 38)");
     expect(color?.querySelector("svg")).toBeNull();
     toolbar.destroy();
@@ -140,9 +140,9 @@ describe("AnnotationToolbar", () => {
     const eraser = toolbar.element.querySelector<HTMLButtonElement>("[data-control='eraser']");
     eraser?.click(); // select
     eraser?.click(); // open options when already selected
-    const slider = document.querySelector<HTMLInputElement>(".native-pdf-ink-eraser-menu input[type='range']");
-    const preview = document.querySelector<HTMLElement>(".native-pdf-ink-eraser-menu .native-pdf-ink-eraser-preview");
-    const frame = document.querySelector<HTMLElement>(".native-pdf-ink-eraser-preview-frame");
+    const slider = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-eraser-menu input[type='range']");
+    const preview = document.querySelector<HTMLElement>(".native-pdf-handwriting-eraser-menu .native-pdf-handwriting-eraser-preview");
+    const frame = document.querySelector<HTMLElement>(".native-pdf-handwriting-eraser-preview-frame");
     expect(slider).toMatchObject({ min: "4", max: "100", step: "1", value: "12" });
     expect(frame?.style.getPropertyValue("--ink-eraser-preview-frame-size")).toBe("100px");
     expect(preview?.style.getPropertyValue("--ink-eraser-preview-size")).toBe("12px");

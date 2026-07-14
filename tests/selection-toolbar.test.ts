@@ -31,7 +31,7 @@ describe("selection toolbar viewport", () => {
     expect(toolbar.element.style.left).toBe("140px");
     expect(toolbar.element.style.top).toBe("216px");
 
-    const handle = toolbar.element.querySelector(".native-pdf-ink-selection-toolbar-drag")!;
+    const handle = toolbar.element.querySelector(".native-pdf-handwriting-selection-toolbar-drag")!;
     handle.dispatchEvent(pointer("pointerdown", handle, 180, 240));
     handle.dispatchEvent(pointer("pointermove", handle, 260, 320));
 

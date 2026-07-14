@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest release of Native PDF Ink.
+Security fixes are provided for the latest release of Native PDF Handwriting.
 
 ## Reporting a vulnerability
 

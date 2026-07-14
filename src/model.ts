@@ -68,12 +68,12 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   saveWhenClosing: true,
   showSaveStatus: true,
   retryFailedAutosaves: true,
-  sidecarFolder: ".obsidian/plugins/native-pdf-ink/annotations",
+  sidecarFolder: ".obsidian/plugins/native-pdf-handwriting/annotations",
   mouseDragScroll: true,
   simplifyStrokes: true,
   toolbarPlacement: "main",
   vaultDebugLog: false,
-  vaultDebugLogPath: ".obsidian/plugins/native-pdf-ink/debug.log",
+  vaultDebugLogPath: ".obsidian/plugins/native-pdf-handwriting/debug.log",
   toolPreferences: {
     activeTool: "pen",
     pen: {

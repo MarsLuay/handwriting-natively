@@ -80,7 +80,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     const page = this.locator.page(pageNumber);
     if (!page) throw new Error(`Cannot mount annotation overlay: PDF page ${pageNumber} is unavailable`);
     const overlay = page.element.ownerDocument.createElement("div");
-    overlay.className = "native-pdf-ink-page-overlay";
+    overlay.className = "native-pdf-handwriting-page-overlay";
     overlay.dataset.pageNumber = String(pageNumber);
     overlay.dataset.focusOverlayInternal = "true";
     this.ensureRelative(page.element);
@@ -117,7 +117,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     chrome.classList.remove("is-toolbar-left", "is-toolbar-right");
     chrome.classList.add(placement === "left" ? "is-toolbar-left" : "is-toolbar-right");
     const rail = toolbar.ownerDocument.createElement("div");
-    rail.className = `native-pdf-ink-rail is-${placement}`;
+    rail.className = `native-pdf-handwriting-rail is-${placement}`;
     toolbar.classList.add(placement === "left" ? "is-sidebar-left" : "is-sidebar-right");
     rail.append(toolbar);
     // DOM order is a fallback; CSS grid columns on chrome pin left vs right.
@@ -128,7 +128,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   }
 
   private clearToolbarMounts(toolbar: HTMLElement): void {
-    for (const existing of this.host.querySelectorAll(".native-pdf-ink-toolbar, .native-pdf-ink-rail")) {
+    for (const existing of this.host.querySelectorAll(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-rail")) {
       if (existing === toolbar) continue;
       existing.remove();
       this.mounted.delete(existing as HTMLElement);
@@ -138,7 +138,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   }
 
   private unwrapSidebarChrome(): void {
-    const chrome = this.host.querySelector(".native-pdf-ink-chrome");
+    const chrome = this.host.querySelector(".native-pdf-handwriting-chrome");
     if (!(chrome instanceof HTMLElement) || !chrome.contains(this.root)) return;
     const parentNode = chrome.parentElement;
     if (!parentNode) return;
@@ -152,12 +152,12 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
    * of the scroller and stays on-screen while pages scroll.
    */
   private ensureSidebarChrome(): HTMLElement {
-    const existing = this.host.querySelector(".native-pdf-ink-chrome");
+    const existing = this.host.querySelector(".native-pdf-handwriting-chrome");
     if (existing instanceof HTMLElement) return existing;
     const wrapTarget = this.sidebarWrapTarget();
     const parent = wrapTarget.parentElement ?? this.host;
     const chrome = wrapTarget.ownerDocument.createElement("div");
-    chrome.className = "native-pdf-ink-chrome";
+    chrome.className = "native-pdf-handwriting-chrome";
     parent.insertBefore(chrome, wrapTarget);
     chrome.append(wrapTarget);
     this.mounted.add(chrome);
@@ -270,15 +270,15 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private isInternalElement(element: HTMLElement): boolean {
     if (element.dataset.focusOverlayInternal === "true") return true;
     if (this.isPdfPlusElement(element)) return true;
-    if (element.classList.contains("native-pdf-ink-page-overlay")) return true;
-    if (element.classList.contains("native-pdf-ink-canvas")) return true;
-    if (element.classList.contains("native-pdf-ink-selection-toolbar")) return true;
-    if (element.classList.contains("native-pdf-ink-eraser-cursor")) return true;
-    if (element.classList.contains("native-pdf-ink-draw-cursor")) return true;
-    if (element.classList.contains("native-pdf-ink-toolbar")) return true;
-    if (element.classList.contains("native-pdf-ink-rail")) return true;
-    if (element.classList.contains("native-pdf-ink-chrome")) return true;
-    return Boolean(element.closest(".native-pdf-ink-page-overlay, .native-pdf-ink-toolbar, .native-pdf-ink-selection-toolbar, .native-pdf-ink-rail, .native-pdf-ink-chrome"));
+    if (element.classList.contains("native-pdf-handwriting-page-overlay")) return true;
+    if (element.classList.contains("native-pdf-handwriting-canvas")) return true;
+    if (element.classList.contains("native-pdf-handwriting-selection-toolbar")) return true;
+    if (element.classList.contains("native-pdf-handwriting-eraser-cursor")) return true;
+    if (element.classList.contains("native-pdf-handwriting-draw-cursor")) return true;
+    if (element.classList.contains("native-pdf-handwriting-toolbar")) return true;
+    if (element.classList.contains("native-pdf-handwriting-rail")) return true;
+    if (element.classList.contains("native-pdf-handwriting-chrome")) return true;
+    return Boolean(element.closest(".native-pdf-handwriting-page-overlay, .native-pdf-handwriting-toolbar, .native-pdf-handwriting-selection-toolbar, .native-pdf-handwriting-rail, .native-pdf-handwriting-chrome"));
   }
 
   /** PDF++ injects backlink layers / palette — do not treat as page rebuilds. */
