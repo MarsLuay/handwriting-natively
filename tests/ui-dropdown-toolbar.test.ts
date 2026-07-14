@@ -51,7 +51,7 @@ describe("AnnotationToolbar", () => {
       autosave: true,
       drawEnabled: false,
       callbacks: { onPreferencesChange: vi.fn(), onDrawModeChange: drawChanged },
-      document
+      ownerDocument: document
     });
     document.body.append(toolbar.element);
     const draw = toolbar.element.querySelector<HTMLInputElement>("[data-control='draw']");
@@ -69,7 +69,7 @@ describe("AnnotationToolbar", () => {
       preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
       autosave: true,
       callbacks: { onPreferencesChange: vi.fn() },
-      document
+      ownerDocument: document
     });
     document.body.append(toolbar.element);
     expect(toolbar.element.querySelector(".native-pdf-handwriting-draw-toggle-label")?.textContent).toBe("Draw");
@@ -82,7 +82,7 @@ describe("AnnotationToolbar", () => {
     const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
     const changed = vi.fn();
     const save = vi.fn();
-    const toolbar = new AnnotationToolbar({ preferences, autosave: false, callbacks: { onPreferencesChange: changed, onSave: save }, document });
+    const toolbar = new AnnotationToolbar({ preferences, autosave: false, callbacks: { onPreferencesChange: changed, onSave: save }, ownerDocument: document });
     document.body.append(toolbar.element);
     expect(toolbar.element.querySelector("[data-control='save']")).not.toBeNull();
     // Active drawing tool again → open options (no chevron arrow).
@@ -113,7 +113,7 @@ describe("AnnotationToolbar", () => {
       preferences,
       autosave: true,
       callbacks: { onPreferencesChange: vi.fn() },
-      document
+      ownerDocument: document
     });
     document.body.append(toolbar.element);
     const color = toolbar.element.querySelector<HTMLButtonElement>("[data-control='color']");
@@ -134,7 +134,7 @@ describe("AnnotationToolbar", () => {
         onPreferencesChange: changed,
         onEraserSizePreview: previewed
       },
-      document
+      ownerDocument: document
     });
     document.body.append(toolbar.element);
     const eraser = toolbar.element.querySelector<HTMLButtonElement>("[data-control='eraser']");

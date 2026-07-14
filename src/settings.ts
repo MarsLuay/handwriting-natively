@@ -17,7 +17,6 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName("Native PDF Handwriting").setHeading();
     containerEl.createEl("p", {
       text: "Locally handwrite on PDFs with a stylus or mouse."
     });

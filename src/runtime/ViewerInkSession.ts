@@ -36,7 +36,7 @@ import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
 import { describeScrollElement } from "../integration/PdfScrollRoot";
 
 export interface SessionDiagnostics {
-  document: string;
+  pdfPath: string;
   compatibility: { errors: string[]; warnings: string[] };
   debug: DebugState;
 }
@@ -871,7 +871,7 @@ export class ViewerInkSession {
 
   getDiagnostics(): SessionDiagnostics {
     return {
-      document: this.options.pdfPath,
+      pdfPath: this.options.pdfPath,
       compatibility: this.options.adapter.compatibilityReport(),
       debug: this.debugState
     };

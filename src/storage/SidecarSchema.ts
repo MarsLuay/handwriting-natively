@@ -19,7 +19,7 @@ export interface SidecarPage {
 
 export interface SidecarSchemaV1 {
   schemaVersion: 1;
-  document: SidecarDocumentIdentity;
+  "document": SidecarDocumentIdentity;
   pages: SidecarPage[];
   createdAt: string;
   updatedAt: string;

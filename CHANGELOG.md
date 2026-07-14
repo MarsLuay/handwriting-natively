@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.2 — 2026-07-14
+
+- Require Obsidian 1.13.0+ (`Plugin.settings` API / catalog `no-unsupported-api`).
+- Drop plugin-name settings heading; bind selection-toolbar callbacks safely.
+
+
 ## 0.1.1 — 2026-07-14
 
 - Catalog-safe manifest (`native-pdf-handwriting`), Vault API-only storage, CSS/`setCssProps` style hygiene, Setting headings, and `Vault#configDir` defaults.

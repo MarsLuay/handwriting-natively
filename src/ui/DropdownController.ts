@@ -20,7 +20,7 @@ export class DropdownController {
   private abort: AbortController | null = null;
   private currentId: string | null = null;
 
-  constructor(private readonly document: Document = window.document) {}
+  constructor(private readonly ownerDocument: Document = activeDocument) {}
 
   get activeId(): string | null {
     return this.currentId;
@@ -40,7 +40,7 @@ export class DropdownController {
     this.currentId = id;
     this.trigger = trigger;
     this.abort = new AbortController();
-    const popup = this.document.createElement("div");
+    const popup = this.ownerDocument.createElement("div");
     popup.className = "native-pdf-handwriting-dropdown";
     popup.dataset.focusOverlayInternal = "true";
     popup.setAttribute("role", "menu");
@@ -51,15 +51,15 @@ export class DropdownController {
       for (const option of options.options) popup.append(this.optionButton(option));
     }
     if (options.content) popup.append(options.content);
-    this.document.body.append(popup);
+    this.ownerDocument.body.append(popup);
     this.popup = popup;
     trigger.setAttribute("aria-expanded", "true");
     this.reposition();
 
-    this.document.addEventListener("pointerdown", this.onOutsidePointer, { capture: true, signal: this.abort.signal });
-    this.document.addEventListener("keydown", this.onKeyDown, { signal: this.abort.signal });
-    this.document.defaultView?.addEventListener("resize", this.reposition, { signal: this.abort.signal });
-    this.document.defaultView?.addEventListener("scroll", this.reposition, { capture: true, signal: this.abort.signal });
+    this.ownerDocument.addEventListener("pointerdown", this.onOutsidePointer, { capture: true, signal: this.abort.signal });
+    this.ownerDocument.addEventListener("keydown", this.onKeyDown, { signal: this.abort.signal });
+    this.ownerDocument.defaultView?.addEventListener("resize", this.reposition, { signal: this.abort.signal });
+    this.ownerDocument.defaultView?.addEventListener("scroll", this.reposition, { capture: true, signal: this.abort.signal });
     this.enabledItems()[0]?.focus();
   }
 
@@ -80,7 +80,7 @@ export class DropdownController {
   }
 
   private optionButton(option: DropdownOption): HTMLButtonElement {
-    const button = this.document.createElement("button");
+    const button = this.ownerDocument.createElement("button");
     button.type = "button";
     button.className = "native-pdf-handwriting-dropdown-option";
     button.dataset.optionId = option.id;
@@ -112,7 +112,7 @@ export class DropdownController {
     }
     const items = this.enabledItems();
     if (items.length === 0) return;
-    const current = items.indexOf(this.document.activeElement as HTMLButtonElement);
+    const current = items.indexOf(this.ownerDocument.activeElement as HTMLButtonElement);
     let next = current;
     if (event.key === "ArrowDown") next = (current + 1 + items.length) % items.length;
     else if (event.key === "ArrowUp") next = (current - 1 + items.length) % items.length;
@@ -131,9 +131,9 @@ export class DropdownController {
     if (!this.popup || !this.trigger) return;
     const anchor = this.trigger.getBoundingClientRect();
     const popup = this.popup.getBoundingClientRect();
-    const view = this.document.defaultView;
-    const width = view?.innerWidth ?? this.document.documentElement.clientWidth;
-    const height = view?.innerHeight ?? this.document.documentElement.clientHeight;
+    const view = this.ownerDocument.defaultView;
+    const width = view?.innerWidth ?? this.ownerDocument.documentElement.clientWidth;
+    const height = view?.innerHeight ?? this.ownerDocument.documentElement.clientHeight;
     const gap = 6;
     const popupWidth = popup.width || Math.min(320, width - 16);
     const popupHeight = popup.height || 240;

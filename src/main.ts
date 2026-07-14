@@ -189,7 +189,7 @@ export default class NativePdfInkPlugin extends Plugin {
     if (!writeSync) {
       this.vaultDebugLog.write("warn", "sync persist unavailable", {
         reason,
-        document: session.getDiagnostics().document
+        document: session.getDiagnostics().pdfPath
       });
       return;
     }
