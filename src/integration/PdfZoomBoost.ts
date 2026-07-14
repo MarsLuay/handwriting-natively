@@ -45,7 +45,7 @@ export function clampPdfScale(scale: number, maxScale = BOOSTED_MAX_SCALE): numb
 }
 
 function pdfjsGlobals(): PdfjsViewerGlobals | undefined {
-  const root = globalThis as typeof globalThis & { pdfjsViewer?: PdfjsViewerGlobals };
+  const root = window as typeof window & { pdfjsViewer?: PdfjsViewerGlobals };
   return root.pdfjsViewer;
 }
 

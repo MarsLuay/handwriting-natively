@@ -1,3 +1,4 @@
+import { isHTMLCanvasElement } from "../dom/typeGuards";
 import type { PdfPageInfo } from "../integration/PdfPageLocator";
 import type { PageRotation } from "./PdfCoordinateMapper";
 
@@ -25,7 +26,7 @@ export function pdfRenderCanvas(pageElement: HTMLElement): HTMLCanvasElement | n
   if (preferred && !preferred.classList.contains("native-pdf-handwriting-canvas")) return preferred;
 
   const canvases = [...pageElement.querySelectorAll("canvas")].filter(
-    (node): node is HTMLCanvasElement => node instanceof HTMLCanvasElement && !node.classList.contains("native-pdf-handwriting-canvas")
+    (node): node is HTMLCanvasElement => isHTMLCanvasElement(node) && !node.classList.contains("native-pdf-handwriting-canvas")
   );
   if (!canvases.length) return null;
 

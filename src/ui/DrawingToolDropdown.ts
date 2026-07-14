@@ -1,3 +1,4 @@
+import { setElementCssProps } from "../dom/typeGuards";
 import { DEFAULT_SETTINGS, type DrawingTool, type ToolPreferences } from "../model";
 import type { DropdownOption } from "./DropdownController";
 
@@ -24,8 +25,7 @@ export function drawingOptions(
     render: (button) => {
       const preview = button.ownerDocument.createElement("span");
       preview.className = "native-pdf-handwriting-width-preview";
-      preview.style.setProperty("--ink-preview-width", `${width}px`);
-      preview.style.setProperty("--ink-preview-color", drawing.color);
+      setElementCssProps(preview, { "--ink-preview-width": `${width}px`, "--ink-preview-color": drawing.color });
       button.prepend(preview);
     },
     onSelect: () => selectWidth(width)
@@ -41,9 +41,9 @@ export function drawingAdvanced(
 ): HTMLElement {
   const tool = preferences.activeTool === "pencil" ? "pencil" : "pen";
   const drawing = preferences[tool];
-  const details = document.createElement("details");
+  const details = activeDocument.createElement("details");
   details.className = "native-pdf-handwriting-advanced";
-  const summary = document.createElement("summary");
+  const summary = activeDocument.createElement("summary");
   summary.textContent = "Advanced settings";
   details.append(summary);
   const fields: Array<[string, keyof typeof drawing, number, number, number]> = [
@@ -52,9 +52,9 @@ export function drawingAdvanced(
     ["Texture", "textureStrength", 0, 1, 0.05]
   ];
   for (const [label, key, min, max, step] of fields) {
-    const wrapper = document.createElement("label");
+    const wrapper = activeDocument.createElement("label");
     wrapper.textContent = label;
-    const input = document.createElement("input");
+    const input = activeDocument.createElement("input");
     input.type = "range";
     input.min = String(min);
     input.max = String(max);
@@ -72,8 +72,8 @@ export function drawingAdvanced(
     ["Tilt sensitivity", "tiltSensitivity"],
     ["Simulate mouse pressure", "simulateMousePressure"]
   ] as const) {
-    const wrapper = document.createElement("label");
-    const input = document.createElement("input");
+    const wrapper = activeDocument.createElement("label");
+    const input = activeDocument.createElement("input");
     input.type = "checkbox";
     input.checked = drawing[key];
     input.addEventListener("change", () => {
@@ -83,10 +83,10 @@ export function drawingAdvanced(
     wrapper.append(input, label);
     details.append(wrapper);
   }
-  const stabilization = document.createElement("select");
+  const stabilization = activeDocument.createElement("select");
   stabilization.setAttribute("aria-label", "Stabilization");
   for (const value of ["off", "low", "medium", "high"] as const) {
-    const option = document.createElement("option");
+    const option = activeDocument.createElement("option");
     option.value = value;
     option.textContent = value[0]?.toUpperCase() + value.slice(1);
     option.selected = drawing.stabilization === value;
@@ -97,7 +97,7 @@ export function drawingAdvanced(
     onChange();
   }, { signal });
   details.append(stabilization);
-  const restore = document.createElement("button");
+  const restore = activeDocument.createElement("button");
   restore.type = "button";
   restore.textContent = "Restore tool defaults";
   restore.addEventListener("click", () => {

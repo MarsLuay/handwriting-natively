@@ -1,3 +1,4 @@
+import { setElementCssProps } from "../dom/typeGuards";
 import type { ToolId } from "../model";
 import { scrollPdfBy } from "../integration/PdfScrollRoot";
 import { PalmRejectionPolicy } from "./PalmRejectionPolicy";
@@ -273,12 +274,13 @@ export class PointerRouter {
     const size = PointerRouter.DRAW_CURSOR_SIZE_PX;
     const color = this.callbacks.drawCursorColor?.();
     const point = this.cursorClientPoint(clientX, clientY);
-    this.drawCursor.style.width = `${size}px`;
-    this.drawCursor.style.height = `${size}px`;
-    if (color) this.drawCursor.style.backgroundColor = color;
-    else this.drawCursor.style.removeProperty("background-color");
-    this.drawCursor.style.left = `${point.x}px`;
-    this.drawCursor.style.top = `${point.y}px`;
+    setElementCssProps(this.drawCursor, {
+      width: `${size}px`,
+      height: `${size}px`,
+      left: `${point.x}px`,
+      top: `${point.y}px`,
+      "background-color": color ?? ""
+    });
     this.drawCursor.hidden = false;
     this.element.classList.add("native-pdf-handwriting-has-draw-cursor");
   }
@@ -300,10 +302,12 @@ export class PointerRouter {
     }
     const diameter = Math.max(1, this.callbacks.eraserCursorDiameter?.() ?? 12);
     const point = this.cursorClientPoint(clientX, clientY);
-    this.eraserCursor.style.width = `${diameter}px`;
-    this.eraserCursor.style.height = `${diameter}px`;
-    this.eraserCursor.style.left = `${point.x}px`;
-    this.eraserCursor.style.top = `${point.y}px`;
+    setElementCssProps(this.eraserCursor, {
+      width: `${diameter}px`,
+      height: `${diameter}px`,
+      left: `${point.x}px`,
+      top: `${point.y}px`
+    });
     this.eraserCursor.hidden = false;
     this.element.classList.add("native-pdf-handwriting-has-eraser-cursor");
   }

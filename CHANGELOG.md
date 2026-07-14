@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.1 — 2026-07-14
+
+- Catalog-safe manifest (`native-pdf-handwriting`), Vault API-only storage, CSS/`setCssProps` style hygiene, Setting headings, and `Vault#configDir` defaults.
+- Raise `minAppVersion` to 1.8.9 for current settings APIs.
+
+
 ## 0.1.0 — 2026-07-13
 
 - Local-first handwriting on Obsidian PDF views (pen, graphite pencil, eraser, lasso).

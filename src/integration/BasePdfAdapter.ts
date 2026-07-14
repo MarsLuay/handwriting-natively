@@ -1,3 +1,4 @@
+import { isHTMLElement } from "../dom/typeGuards";
 import type { ViewStateSource } from "../logging/SessionLogger";
 import type { ToolbarPlacement } from "../model";
 import type { ObsidianPdfAdapter, PdfAdapterCallbacks, PdfViewState } from "./ObsidianPdfAdapter";
@@ -91,7 +92,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
 
   private ensureRelative(element: HTMLElement): void {
     if (element.ownerDocument.defaultView?.getComputedStyle(element).position === "static") {
-      element.style.position = "relative";
+      element.classList.add("native-pdf-handwriting-relative");
     }
   }
 
@@ -139,7 +140,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
 
   private unwrapSidebarChrome(): void {
     const chrome = this.host.querySelector(".native-pdf-handwriting-chrome");
-    if (!(chrome instanceof HTMLElement) || !chrome.contains(this.root)) return;
+    if (!isHTMLElement(chrome) || !chrome.contains(this.root)) return;
     const parentNode = chrome.parentElement;
     if (!parentNode) return;
     while (chrome.firstChild) parentNode.insertBefore(chrome.firstChild, chrome);
@@ -153,7 +154,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
    */
   private ensureSidebarChrome(): HTMLElement {
     const existing = this.host.querySelector(".native-pdf-handwriting-chrome");
-    if (existing instanceof HTMLElement) return existing;
+    if (isHTMLElement(existing)) return existing;
     const wrapTarget = this.sidebarWrapTarget();
     const parent = wrapTarget.parentElement ?? this.host;
     const chrome = wrapTarget.ownerDocument.createElement("div");
@@ -253,7 +254,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private isExternalMutation(record: MutationRecord): boolean {
     if (record.type === "attributes") {
       const target = record.target;
-      return !(target instanceof HTMLElement) || !this.isInternalElement(target);
+      return !(isHTMLElement(target)) || !this.isInternalElement(target);
     }
     if (record.type !== "childList") return false;
     return [...record.addedNodes, ...record.removedNodes].some((node) => !this.isInternalNode(node));
@@ -264,7 +265,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       const parent = node.parentElement;
       return parent ? this.isInternalElement(parent) : false;
     }
-    return node instanceof HTMLElement && this.isInternalElement(node);
+    return isHTMLElement(node) && this.isInternalElement(node);
   }
 
   private isInternalElement(element: HTMLElement): boolean {

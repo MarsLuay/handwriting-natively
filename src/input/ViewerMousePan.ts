@@ -1,3 +1,4 @@
+import { isHTMLElement } from "../dom/typeGuards";
 import { scrollPdfByDetailed, describeScrollElement } from "../integration/PdfScrollRoot";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
 import { isAnnotationChromeTarget, isDragPanPointer } from "./PointerRouter";
@@ -76,7 +77,7 @@ export class ViewerMousePan {
     for (const [pointerId, pan] of [...this.panning.entries()]) {
       if (pan.pointerType !== "touch") continue;
       this.callbacks.onPan?.("abort", event, { reason, pointerId });
-      if (pan.captureTarget instanceof HTMLElement && pan.captureTarget.hasPointerCapture?.(pointerId)) {
+      if (isHTMLElement(pan.captureTarget) && pan.captureTarget.hasPointerCapture?.(pointerId)) {
         pan.captureTarget.releasePointerCapture?.(pointerId);
       }
       this.panning.delete(pointerId);
@@ -202,7 +203,7 @@ export class ViewerMousePan {
       });
     }
     this.panning.delete(event.pointerId);
-    if (captureTarget instanceof HTMLElement && captureTarget.hasPointerCapture?.(event.pointerId)) {
+    if (isHTMLElement(captureTarget) && captureTarget.hasPointerCapture?.(event.pointerId)) {
       captureTarget.releasePointerCapture?.(event.pointerId);
     }
     if (!this.panning.size) this.captureHost().classList.remove("native-pdf-handwriting-panning");
@@ -225,7 +226,7 @@ export class ViewerMousePan {
       if (pan.pointerType !== "touch" && Math.abs(dx) > Math.max(12, Math.abs(dy) * 2)) {
         this.callbacks.onPan?.("abort", event, { reason: "horizontal-dominant", dx, dy });
         this.panning.delete(event.pointerId);
-        if (pan.captureTarget instanceof HTMLElement && pan.captureTarget.hasPointerCapture?.(event.pointerId)) {
+        if (isHTMLElement(pan.captureTarget) && pan.captureTarget.hasPointerCapture?.(event.pointerId)) {
           pan.captureTarget.releasePointerCapture?.(event.pointerId);
         }
         return;

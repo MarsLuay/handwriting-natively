@@ -1,3 +1,4 @@
+import { setElementCssProps } from "../dom/typeGuards";
 import type { ToolPreferences } from "../model";
 
 export const ERASER_SIZE_MIN = 4;
@@ -15,31 +16,31 @@ export function eraserMenu(
   callbacks: EraserMenuCallbacks,
   signal: AbortSignal
 ): HTMLElement {
-  const content = document.createElement("div");
+  const content = activeDocument.createElement("div");
   content.className = "native-pdf-handwriting-eraser-menu";
 
-  const previewFrame = document.createElement("div");
+  const previewFrame = activeDocument.createElement("div");
   previewFrame.className = "native-pdf-handwriting-eraser-preview-frame";
-  previewFrame.style.setProperty("--ink-eraser-preview-frame-size", `${ERASER_SIZE_MAX}px`);
+  setElementCssProps(previewFrame, { "--ink-eraser-preview-frame-size": `${ERASER_SIZE_MAX}px` });
 
-  const preview = document.createElement("span");
+  const preview = activeDocument.createElement("span");
   preview.className = "native-pdf-handwriting-eraser-preview";
   preview.setAttribute("aria-hidden", "true");
   previewFrame.append(preview);
 
-  const value = document.createElement("span");
+  const value = activeDocument.createElement("span");
   value.className = "native-pdf-handwriting-eraser-size-value";
 
   const updatePreview = (size: number): void => {
-    preview.style.setProperty("--ink-eraser-preview-size", `${size}px`);
+    setElementCssProps(preview, { "--ink-eraser-preview-size": `${size}px` });
     value.textContent = `${size}px`;
   };
 
-  const label = document.createElement("label");
+  const label = activeDocument.createElement("label");
   label.className = "native-pdf-handwriting-eraser-size-label";
   label.textContent = "Eraser size";
 
-  const slider = document.createElement("input");
+  const slider = activeDocument.createElement("input");
   slider.type = "range";
   slider.min = String(ERASER_SIZE_MIN);
   slider.max = String(ERASER_SIZE_MAX);

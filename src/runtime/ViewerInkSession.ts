@@ -10,7 +10,8 @@ import { StrokeBuilder } from "../ink/StrokeBuilder";
 import { StrokeClipboard } from "../ink/StrokeClipboard";
 import { simplifyPoints } from "../ink/StrokeStabilizer";
 import { PdfCoordinateMapper, type PageRotation } from "../pdf/PdfCoordinateMapper";
-import { normalizeRotation, overlayOffsetInParent, pdfRenderCanvas, resolvePageCoordinateLayout, type PageCoordinateLayout } from "../pdf/PageCoordinateLayout";
+import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type PageCoordinateLayout } from "../pdf/PageCoordinateLayout";
+import { setElementCssProps } from "../dom/typeGuards";
 import { PdfExportService, annotatedFilename } from "../pdf/PdfExportService";
 import { AddStrokeCommand, AddStrokesCommand, DeleteStrokesCommand, ReplacePageStrokesCommand, ReplaceStrokesCommand, translateStrokes } from "../history/AnnotationCommands";
 import { CommandHistory, type Command } from "../history/CommandHistory";
@@ -236,8 +237,7 @@ export class ViewerInkSession {
       const classes = [...target.classList].slice(0, 3).join(".");
       return classes ? `${tag}.${classes}` : tag;
     };
-    doc.addEventListener("pointerdown", (event) => {
-      const e = event as PointerEvent;
+    doc.addEventListener("pointerdown", (e: PointerEvent) => {
       this.logger.pointerSeen({
         source: "pointerdown",
         pointerType: e.pointerType || "(empty)",
@@ -256,8 +256,7 @@ export class ViewerInkSession {
         target: targetLabel(e.target)
       });
     }, options);
-    doc.addEventListener("touchstart", (event) => {
-      const e = event as TouchEvent;
+    doc.addEventListener("touchstart", (e: TouchEvent) => {
       const touches = [...e.changedTouches].map((touch) => ({
         identifier: touch.identifier,
         clientX: Math.round(touch.clientX),
@@ -277,8 +276,7 @@ export class ViewerInkSession {
       });
     }, { ...options, passive: true });
     // Mac trackpad pinch = wheel+ctrl in Chromium/Electron — not pointerType "touch".
-    doc.addEventListener("wheel", (event) => {
-      const e = event as WheelEvent;
+    doc.addEventListener("wheel", (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
       const now = performance.now();
       wheelPinchCount += 1;
@@ -419,8 +417,6 @@ export class ViewerInkSession {
     for (const surface of this.surfaces.values()) {
       this.captureInkLayerFromCanvas(surface);
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
-      surface.canvas.style.width = "100%";
-      surface.canvas.style.height = "100%";
     }
   }
 
@@ -440,8 +436,6 @@ export class ViewerInkSession {
       if (!current) continue;
       if (!this.reattachSurface(surface, current)) continue;
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
-      surface.canvas.style.width = "100%";
-      surface.canvas.style.height = "100%";
       this.syncOverlayLayout(surface);
     }
   }
@@ -1525,19 +1519,20 @@ export class ViewerInkSession {
 
   private drainInkLayerUpgrades(): void {
     if (this.destroyed || this.zoomCompositing) return;
-    const next = this.inkUpgradePages.values().next().value as number | undefined;
-    if (next === undefined) return;
-    this.inkUpgradePages.delete(next);
-    const surface = this.surfaces.get(next);
+    const next = this.inkUpgradePages.values().next();
+    if (next.done) return;
+    const pageNumber = next.value;
+    this.inkUpgradePages.delete(pageNumber);
+    const surface = this.surfaces.get(pageNumber);
     if (!surface || surface.builder || surface.editPath.length > 0) {
       if (surface && (surface.builder || surface.editPath.length > 0)) {
-        this.inkUpgradePages.add(next);
+        this.inkUpgradePages.add(pageNumber);
       }
       if (this.inkUpgradePages.size > 0) this.queueInkLayerUpgrade([...this.inkUpgradePages][0]!);
       return;
     }
     surface.inkLayerValid = false;
-    this.renderPage(next, undefined, "ink-upgrade");
+    this.renderPage(pageNumber, undefined, "ink-upgrade");
     if (this.inkUpgradePages.size > 0) {
       // One page per turn — keep UI responsive while upgrading remainder.
       this.inkUpgradeTimer = window.setTimeout(() => {
@@ -1625,8 +1620,6 @@ export class ViewerInkSession {
       surface.inkLayerValid = false;
       if (stats) stats.canvasesResized += 1;
     }
-    surface.canvas.style.width = "100%";
-    surface.canvas.style.height = "100%";
     surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
 
     // Immediate scaled ink so zoom settle never flashes empty while HQ rebuilds.
@@ -1904,7 +1897,6 @@ export class ViewerInkSession {
     const viewport = { x: sample.clientX - overlayRect.left, y: sample.clientY - overlayRect.top };
     const mapper = this.mapper(surface);
     const pdf = mapper.toPdf(viewport);
-    const projected = mapper.toViewport(pdf);
     const inkScreen = this.projectInkScreenPoint(surface, sample.clientX, sample.clientY);
     this.logger.positionAlign({
       phase,
@@ -1950,7 +1942,7 @@ export class ViewerInkSession {
 
   private ensurePagePositioning(pageElement: HTMLElement): void {
     if (pageElement.ownerDocument.defaultView?.getComputedStyle(pageElement).position === "static") {
-      pageElement.style.position = "relative";
+      pageElement.classList.add("native-pdf-handwriting-relative");
     }
   }
 
@@ -1962,10 +1954,12 @@ export class ViewerInkSession {
       this.ensurePagePositioning(surface.page.element);
       surface.page.element.append(overlay);
     }
-    overlay.style.left = `${layout.offsetX}px`;
-    overlay.style.top = `${layout.offsetY}px`;
-    overlay.style.width = `${layout.contentWidth}px`;
-    overlay.style.height = `${layout.contentHeight}px`;
+    setElementCssProps(overlay, {
+      left: `${layout.offsetX}px`,
+      top: `${layout.offsetY}px`,
+      width: `${layout.contentWidth}px`,
+      height: `${layout.contentHeight}px`
+    });
   }
 
   private mapper(surface: PageSurface): PdfCoordinateMapper {
@@ -2244,7 +2238,8 @@ export class ViewerInkSession {
   }
 
   private id(): string {
-    return globalThis.crypto?.randomUUID?.() ?? `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const cryptoObj = window.crypto;
+    return cryptoObj?.randomUUID?.() ?? `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
   private errorMessage(error: unknown): string {

@@ -1,3 +1,4 @@
+import { isHTMLElement } from "../dom/typeGuards";
 export interface EmbedAnnotateChromeOptions {
   onAnnotate: () => void;
   label?: string;
@@ -13,7 +14,7 @@ function findEmbedToolbar(host: HTMLElement): HTMLElement | null {
 function findMoreOptionsControl(scope: HTMLElement): HTMLElement | null {
   const icon = scope.querySelector(".lucide-more-vertical, .lucide-ellipsis-vertical, .lucide-ellipsis");
   if (!(icon instanceof Element)) return null;
-  return icon.closest<HTMLElement>(".clickable-icon") ?? (icon.parentElement instanceof HTMLElement ? icon.parentElement : null);
+  return icon.closest<HTMLElement>(".clickable-icon") ?? (isHTMLElement(icon.parentElement) ? icon.parentElement : null);
 }
 
 function resolveToolbarMount(host: HTMLElement): { parent: HTMLElement; before: Node | null } | null {
@@ -113,7 +114,7 @@ export class EmbedAnnotateChrome {
     this.removeDuplicateChromeNodes();
     this.element.classList.add("is-floating");
     if (getComputedStyle(this.host).position === "static") {
-      this.host.style.position = "relative";
+      this.host.classList.add("native-pdf-handwriting-relative");
     }
     if (this.element.parentElement !== this.host) {
       this.host.append(this.element);
