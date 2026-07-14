@@ -1,6 +1,6 @@
 {
   "name": "native-pdf-handwriting",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Locally handwrite on PDFs with a stylus or mouse.",
   "main": "main.js",
   "type": "module",

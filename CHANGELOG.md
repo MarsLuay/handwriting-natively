@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.3 — 2026-07-13
+
+- Refresh README intro copy for Community listing.
+- Republish after catalog review pass (settings heading, bound callbacks, minAppVersion 1.13.0).
+
+
 ## 0.1.2 — 2026-07-14
 
 - Require Obsidian 1.13.0+ (`Plugin.settings` API / catalog `no-unsupported-api`).

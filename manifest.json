@@ -1,7 +1,7 @@
 {
   "id": "native-pdf-handwriting",
   "name": "Native PDF Handwriting",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "minAppVersion": "1.13.0",
   "description": "Locally handwrite on PDFs with a stylus or mouse.",
   "author": "Mars",

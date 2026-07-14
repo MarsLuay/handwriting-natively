@@ -2,7 +2,10 @@
 
 ## What Native PDF Handwriting Does
 
-Locally handwrite on PDFs with a stylus or mouse. Annotations live in vault sidecars — original PDFs stay untouched. Export a separate annotated PDF when you need a portable copy.
+Handwrite on PDFs with a stylus or mouse natively in obsidian! Annotations live in vault metadata with the original PDFs untouched. Export the copy for the PDF with the added notes.
+
+I made this plugin after realizing I use Obsidian a lot more than another nameless note taking app.. I hope you find it as useful as I do!
+
 
 - Pen, graphite pencil, circular eraser, and lasso tools with a compact Draw toolbar
 - Draw mode opt-in so normal PDF mouse/trackpad behavior stays intact until you annotate
