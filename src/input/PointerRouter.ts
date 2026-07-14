@@ -7,7 +7,7 @@ import { isSelectablePdfTarget } from "./PdfSelectableTarget";
 export type PointerRoute = "draw" | "edit" | "touch-pan" | "touch-zoom-pan" | "mouse-pan" | "native" | "ignored";
 
 export function isAnnotationChromeTarget(target: EventTarget | null): boolean {
-  return target instanceof Element && Boolean(target.closest(".native-pdf-ink-selection-toolbar"));
+  return target instanceof Element && Boolean(target.closest(".native-pdf-handwriting-selection-toolbar"));
 }
 
 /** Primary tip drag: mouse LMB or stylus tip (not barrel / eraser buttons). */
@@ -58,11 +58,11 @@ export class PointerRouter {
   ) {
     this.palmPolicy = palmPolicy;
     this.eraserCursor = element.ownerDocument.createElement("span");
-    this.eraserCursor.className = "native-pdf-ink-eraser-cursor";
+    this.eraserCursor.className = "native-pdf-handwriting-eraser-cursor";
     this.eraserCursor.setAttribute("aria-hidden", "true");
     this.eraserCursor.hidden = true;
     this.drawCursor = element.ownerDocument.createElement("span");
-    this.drawCursor.className = "native-pdf-ink-draw-cursor";
+    this.drawCursor.className = "native-pdf-handwriting-draw-cursor";
     this.drawCursor.setAttribute("aria-hidden", "true");
     this.drawCursor.hidden = true;
     element.ownerDocument.body.append(this.eraserCursor, this.drawCursor);
@@ -193,7 +193,7 @@ export class PointerRouter {
     this.touches.clear();
     this.palmPolicy.reset();
     this.abort.abort();
-    this.element.classList.remove("native-pdf-ink-has-eraser-cursor", "native-pdf-ink-has-draw-cursor", "native-pdf-ink-panning");
+    this.element.classList.remove("native-pdf-handwriting-has-eraser-cursor", "native-pdf-handwriting-has-draw-cursor", "native-pdf-handwriting-panning");
     this.eraserCursor.remove();
     this.drawCursor.remove();
   }
@@ -215,7 +215,7 @@ export class PointerRouter {
         return;
       }
       pan.active = true;
-      this.element.classList.add("native-pdf-ink-panning");
+      this.element.classList.add("native-pdf-handwriting-panning");
       this.callbacks.onMousePan?.("activate", event, {
         scrollRoot: scrollRootLabel(root),
         scrollTop: root.scrollTop
@@ -245,7 +245,7 @@ export class PointerRouter {
     }
     this.panning.delete(event.pointerId);
     if (this.element.hasPointerCapture?.(event.pointerId)) this.element.releasePointerCapture?.(event.pointerId);
-    if (!this.panning.size) this.element.classList.remove("native-pdf-ink-panning");
+    if (!this.panning.size) this.element.classList.remove("native-pdf-handwriting-panning");
   }
 
   private updateCustomCursors(event: PointerEvent): void {
@@ -280,7 +280,7 @@ export class PointerRouter {
     this.drawCursor.style.left = `${point.x}px`;
     this.drawCursor.style.top = `${point.y}px`;
     this.drawCursor.hidden = false;
-    this.element.classList.add("native-pdf-ink-has-draw-cursor");
+    this.element.classList.add("native-pdf-handwriting-has-draw-cursor");
   }
 
   private updateEraserCursor(event: PointerEvent): void {
@@ -305,12 +305,12 @@ export class PointerRouter {
     this.eraserCursor.style.left = `${point.x}px`;
     this.eraserCursor.style.top = `${point.y}px`;
     this.eraserCursor.hidden = false;
-    this.element.classList.add("native-pdf-ink-has-eraser-cursor");
+    this.element.classList.add("native-pdf-handwriting-has-eraser-cursor");
   }
 
   private readonly hideDrawCursor = (): void => {
     this.drawCursor.hidden = true;
-    this.element.classList.remove("native-pdf-ink-has-draw-cursor");
+    this.element.classList.remove("native-pdf-handwriting-has-draw-cursor");
   };
 
   private readonly hideCustomCursors = (): void => {
@@ -320,7 +320,7 @@ export class PointerRouter {
 
   private readonly hideEraserCursor = (): void => {
     this.eraserCursor.hidden = true;
-    this.element.classList.remove("native-pdf-ink-has-eraser-cursor");
+    this.element.classList.remove("native-pdf-handwriting-has-eraser-cursor");
   };
 }
 

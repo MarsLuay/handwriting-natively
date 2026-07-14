@@ -45,15 +45,15 @@ export class EmbedAnnotateChrome {
     readonly host: HTMLElement,
     private readonly options: EmbedAnnotateChromeOptions
   ) {
-    host.classList.add("native-pdf-ink-embed-host");
+    host.classList.add("native-pdf-handwriting-embed-host");
 
     this.element = host.ownerDocument.createElement("div");
-    this.element.className = "native-pdf-ink-embed-chrome";
-    this.element.dataset.nativePdfInkEmbedChrome = "true";
+    this.element.className = "native-pdf-handwriting-embed-chrome";
+    this.element.dataset.nativePdfHandwritingEmbedChrome = "true";
 
     this.button = host.ownerDocument.createElement("button");
     this.button.type = "button";
-    this.button.className = "native-pdf-ink-embed-annotate clickable-icon";
+    this.button.className = "native-pdf-handwriting-embed-annotate clickable-icon";
     this.button.textContent = options.label ?? "Annotate";
     this.button.setAttribute("aria-label", "Annotate PDF");
     this.button.addEventListener("click", (event) => {
@@ -73,7 +73,7 @@ export class EmbedAnnotateChrome {
     this.observer?.disconnect();
     this.observer = null;
     this.element.remove();
-    this.host.classList.remove("native-pdf-ink-embed-host");
+    this.host.classList.remove("native-pdf-handwriting-embed-host");
   }
 
   private mountIntoToolbarOrWatch(): void {
@@ -122,14 +122,14 @@ export class EmbedAnnotateChrome {
 
   /** Idempotent: MutationObserver + host re-renders must not leave duplicate Annotate chips. */
   private removeDuplicateChromeNodes(): void {
-    for (const node of this.host.querySelectorAll("[data-native-pdf-ink-embed-chrome='true']")) {
+    for (const node of this.host.querySelectorAll("[data-native-pdf-handwriting-embed-chrome='true']")) {
       if (node !== this.element) node.remove();
     }
   }
 }
 
 export function findExistingEmbedChrome(host: HTMLElement): HTMLElement | null {
-  return host.querySelector<HTMLElement>("[data-native-pdf-ink-embed-chrome='true']");
+  return host.querySelector<HTMLElement>("[data-native-pdf-handwriting-embed-chrome='true']");
 }
 
 export { findEmbedToolbar, findMoreOptionsControl };

@@ -9,7 +9,7 @@ export function colorOptions(preferences: ToolPreferences, select: (color: strin
     active: preferences[tool].color.toLowerCase() === color.toLowerCase(),
     render: (button) => {
       const swatch = button.ownerDocument.createElement("span");
-      swatch.className = "native-pdf-ink-color-swatch";
+      swatch.className = "native-pdf-handwriting-color-swatch";
       swatch.style.backgroundColor = color;
       button.prepend(swatch);
     },

@@ -46,9 +46,9 @@ describe("embed annotate chrome", () => {
     expect(chrome.element.parentElement).toBe(right);
     expect(chrome.element.nextSibling).toBe(more);
     expect(chrome.element.classList.contains("is-floating")).toBe(false);
-    expect(host.querySelectorAll(".native-pdf-ink-embed-annotate")).toHaveLength(1);
+    expect(host.querySelectorAll(".native-pdf-handwriting-embed-annotate")).toHaveLength(1);
 
-    host.querySelector<HTMLButtonElement>(".native-pdf-ink-embed-annotate")?.click();
+    host.querySelector<HTMLButtonElement>(".native-pdf-handwriting-embed-annotate")?.click();
     expect(onAnnotate).toHaveBeenCalledOnce();
 
     chrome.destroy();
@@ -62,15 +62,15 @@ describe("embed annotate chrome", () => {
     document.body.append(host);
     const chrome = new EmbedAnnotateChrome(host, { onAnnotate: () => undefined });
     const orphan = document.createElement("div");
-    orphan.className = "native-pdf-ink-embed-chrome";
-    orphan.dataset.nativePdfInkEmbedChrome = "true";
+    orphan.className = "native-pdf-handwriting-embed-chrome";
+    orphan.dataset.nativePdfHandwritingEmbedChrome = "true";
     orphan.textContent = "orphan";
     host.querySelector(".pdf-toolbar-right")!.append(orphan);
 
-    expect(host.querySelectorAll("[data-native-pdf-ink-embed-chrome='true']")).toHaveLength(2);
+    expect(host.querySelectorAll("[data-native-pdf-handwriting-embed-chrome='true']")).toHaveLength(2);
     // Force remount path used by MutationObserver.
     (chrome as unknown as { tryMountIntoToolbar: () => boolean }).tryMountIntoToolbar();
-    expect(host.querySelectorAll("[data-native-pdf-ink-embed-chrome='true']")).toHaveLength(1);
+    expect(host.querySelectorAll("[data-native-pdf-handwriting-embed-chrome='true']")).toHaveLength(1);
     expect(findExistingEmbedChrome(host)).toBe(chrome.element);
 
     chrome.destroy();

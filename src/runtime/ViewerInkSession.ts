@@ -212,7 +212,7 @@ export class ViewerInkSession {
       scrollRoot: () => adapter.scrollElement(),
       withinTarget: (target) => {
         if (!(target instanceof Element)) return false;
-        if (target.closest(".native-pdf-ink-toolbar, .native-pdf-ink-dropdown, .native-pdf-ink-selection-toolbar")) return false;
+        if (target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown, .native-pdf-handwriting-selection-toolbar")) return false;
         return adapter.host.contains(target) || adapter.root.contains(target);
       },
       captureElement: () => adapter.root,
@@ -418,7 +418,7 @@ export class ViewerInkSession {
     this.zoomCompositing = true;
     for (const surface of this.surfaces.values()) {
       this.captureInkLayerFromCanvas(surface);
-      surface.overlay.classList.add("native-pdf-ink-zoom-compositing");
+      surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
       surface.canvas.style.width = "100%";
       surface.canvas.style.height = "100%";
     }
@@ -427,7 +427,7 @@ export class ViewerInkSession {
   private endZoomCompositing(): void {
     this.zoomCompositing = false;
     for (const surface of this.surfaces.values()) {
-      surface.overlay.classList.remove("native-pdf-ink-zoom-compositing");
+      surface.overlay.classList.remove("native-pdf-handwriting-zoom-compositing");
     }
   }
 
@@ -439,7 +439,7 @@ export class ViewerInkSession {
       const current = byNumber.get(pageNumber);
       if (!current) continue;
       if (!this.reattachSurface(surface, current)) continue;
-      surface.overlay.classList.add("native-pdf-ink-zoom-compositing");
+      surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
       surface.canvas.style.width = "100%";
       surface.canvas.style.height = "100%";
       this.syncOverlayLayout(surface);
@@ -1002,7 +1002,7 @@ export class ViewerInkSession {
     const tool = this.options.settings.toolPreferences.activeTool;
     const hideNativeCursor = enabled
       && (tool === "pen" || tool === "pencil" || tool === "eraser");
-    this.options.adapter.root.classList.toggle("native-pdf-ink-hide-native-cursor", hideNativeCursor);
+    this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
   }
 
   private refreshSurfaceCursors(): void {
@@ -1043,7 +1043,7 @@ export class ViewerInkSession {
     this.rememberPageMetrics(page);
     const overlay = this.options.adapter.mountOverlay(page.pageNumber);
     const canvas = overlay.ownerDocument.createElement("canvas");
-    canvas.className = "native-pdf-ink-canvas";
+    canvas.className = "native-pdf-handwriting-canvas";
     canvas.setAttribute("aria-label", `Annotations for PDF page ${page.pageNumber}`);
     overlay.append(canvas);
     const context = canvas.getContext("2d");

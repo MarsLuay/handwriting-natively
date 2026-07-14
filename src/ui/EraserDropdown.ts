@@ -16,19 +16,19 @@ export function eraserMenu(
   signal: AbortSignal
 ): HTMLElement {
   const content = document.createElement("div");
-  content.className = "native-pdf-ink-eraser-menu";
+  content.className = "native-pdf-handwriting-eraser-menu";
 
   const previewFrame = document.createElement("div");
-  previewFrame.className = "native-pdf-ink-eraser-preview-frame";
+  previewFrame.className = "native-pdf-handwriting-eraser-preview-frame";
   previewFrame.style.setProperty("--ink-eraser-preview-frame-size", `${ERASER_SIZE_MAX}px`);
 
   const preview = document.createElement("span");
-  preview.className = "native-pdf-ink-eraser-preview";
+  preview.className = "native-pdf-handwriting-eraser-preview";
   preview.setAttribute("aria-hidden", "true");
   previewFrame.append(preview);
 
   const value = document.createElement("span");
-  value.className = "native-pdf-ink-eraser-size-value";
+  value.className = "native-pdf-handwriting-eraser-size-value";
 
   const updatePreview = (size: number): void => {
     preview.style.setProperty("--ink-eraser-preview-size", `${size}px`);
@@ -36,7 +36,7 @@ export function eraserMenu(
   };
 
   const label = document.createElement("label");
-  label.className = "native-pdf-ink-eraser-size-label";
+  label.className = "native-pdf-handwriting-eraser-size-label";
   label.textContent = "Eraser size";
 
   const slider = document.createElement("input");

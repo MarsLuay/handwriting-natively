@@ -16,7 +16,7 @@ const PATHS: Record<ToolbarIcon, readonly string[]> = {
 
 export function setToolbarColorSwatch(element: HTMLElement, color: string): void {
   const swatch = element.ownerDocument.createElement("span");
-  swatch.className = "native-pdf-ink-color-icon";
+  swatch.className = "native-pdf-handwriting-color-icon";
   swatch.style.backgroundColor = color;
   swatch.setAttribute("aria-hidden", "true");
   element.replaceChildren(swatch);
@@ -24,7 +24,7 @@ export function setToolbarColorSwatch(element: HTMLElement, color: string): void
 
 export function setToolbarIcon(element: HTMLElement, icon: ToolbarIcon): void {
   const svg = element.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.classList.add("native-pdf-ink-toolbar-icon");
+  svg.classList.add("native-pdf-handwriting-toolbar-icon");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("fill", "none");

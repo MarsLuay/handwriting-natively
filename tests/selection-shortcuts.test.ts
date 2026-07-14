@@ -33,7 +33,7 @@ describe("selection shortcuts", () => {
 
   it("ignores form fields outside plugin chrome", () => {
     const toolbar = document.createElement("div");
-    toolbar.className = "native-pdf-ink-toolbar";
+    toolbar.className = "native-pdf-handwriting-toolbar";
     const input = document.createElement("input");
     toolbar.append(input);
     document.body.append(toolbar);

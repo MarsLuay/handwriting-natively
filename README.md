@@ -1,6 +1,6 @@
-# Welcome to Native PDF Ink!
+# Welcome to Native PDF Handwriting!
 
-## What Native PDF Ink Does
+## What Native PDF Handwriting Does
 
 Locally handwrite on PDFs with a stylus or mouse inside Obsidian. Annotations live in vault sidecars — original PDFs stay untouched. Export a separate annotated PDF when you need a portable copy.
 
@@ -13,16 +13,16 @@ Locally handwrite on PDFs with a stylus or mouse inside Obsidian. Annotations li
 
 ### Quick Start
 
-1. Download the latest [GitHub release](https://github.com/MarsLuay/obsidian-native-pdf-ink/releases) assets (`main.js`, `manifest.json`, `styles.css`).
-2. Copy them into `<Vault>/.obsidian/plugins/native-pdf-ink/`.
-3. Reload Obsidian and enable **Native PDF Ink** under **Settings → Community plugins**.
+1. Download the latest [GitHub release](https://github.com/MarsLuay/native-pdf-handwriting/releases) assets (`main.js`, `manifest.json`, `styles.css`).
+2. Copy them into `<Vault>/.obsidian/plugins/native-pdf-handwriting/`.
+3. Reload Obsidian and enable **Native PDF Handwriting** under **Settings → Community plugins**.
 4. Open a PDF, turn on **Draw**, and annotate.
 
 ### Manual Setup
 
 ```bash
-git clone https://github.com/MarsLuay/obsidian-native-pdf-ink.git
-cd obsidian-native-pdf-ink
+git clone https://github.com/MarsLuay/native-pdf-handwriting.git
+cd native-pdf-handwriting
 npm install
 npm test
 npm run build

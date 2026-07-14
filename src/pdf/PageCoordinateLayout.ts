@@ -22,10 +22,10 @@ export function normalizeRotation(value: number): PageRotation {
 
 export function pdfRenderCanvas(pageElement: HTMLElement): HTMLCanvasElement | null {
   const preferred = pageElement.querySelector<HTMLCanvasElement>(".canvasWrapper canvas");
-  if (preferred && !preferred.classList.contains("native-pdf-ink-canvas")) return preferred;
+  if (preferred && !preferred.classList.contains("native-pdf-handwriting-canvas")) return preferred;
 
   const canvases = [...pageElement.querySelectorAll("canvas")].filter(
-    (node): node is HTMLCanvasElement => node instanceof HTMLCanvasElement && !node.classList.contains("native-pdf-ink-canvas")
+    (node): node is HTMLCanvasElement => node instanceof HTMLCanvasElement && !node.classList.contains("native-pdf-handwriting-canvas")
   );
   if (!canvases.length) return null;
 

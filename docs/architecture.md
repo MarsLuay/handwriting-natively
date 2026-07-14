@@ -1,6 +1,6 @@
 # Architecture
 
-Native PDF Ink adds one annotation system to Obsidian's direct and embedded PDF experiences. Both routes share input policy, tools, toolbar, history, sidecar storage, autosave, export, and recovery.
+Native PDF Handwriting adds one annotation system to Obsidian's direct and embedded PDF experiences. Both routes share input policy, tools, toolbar, history, sidecar storage, autosave, export, and recovery.
 
 ## Boundaries
 

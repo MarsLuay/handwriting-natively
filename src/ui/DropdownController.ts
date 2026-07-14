@@ -41,7 +41,7 @@ export class DropdownController {
     this.trigger = trigger;
     this.abort = new AbortController();
     const popup = this.document.createElement("div");
-    popup.className = "native-pdf-ink-dropdown";
+    popup.className = "native-pdf-handwriting-dropdown";
     popup.dataset.focusOverlayInternal = "true";
     popup.setAttribute("role", "menu");
     popup.setAttribute("aria-label", options.label);
@@ -82,7 +82,7 @@ export class DropdownController {
   private optionButton(option: DropdownOption): HTMLButtonElement {
     const button = this.document.createElement("button");
     button.type = "button";
-    button.className = "native-pdf-ink-dropdown-option";
+    button.className = "native-pdf-handwriting-dropdown-option";
     button.dataset.optionId = option.id;
     button.setAttribute("role", "menuitemradio");
     button.setAttribute("aria-checked", String(option.active ?? false));

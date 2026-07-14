@@ -23,7 +23,7 @@ export function drawingOptions(
     active: drawing.width === width,
     render: (button) => {
       const preview = button.ownerDocument.createElement("span");
-      preview.className = "native-pdf-ink-width-preview";
+      preview.className = "native-pdf-handwriting-width-preview";
       preview.style.setProperty("--ink-preview-width", `${width}px`);
       preview.style.setProperty("--ink-preview-color", drawing.color);
       button.prepend(preview);
@@ -42,7 +42,7 @@ export function drawingAdvanced(
   const tool = preferences.activeTool === "pencil" ? "pencil" : "pen";
   const drawing = preferences[tool];
   const details = document.createElement("details");
-  details.className = "native-pdf-ink-advanced";
+  details.className = "native-pdf-handwriting-advanced";
   const summary = document.createElement("summary");
   summary.textContent = "Advanced settings";
   details.append(summary);

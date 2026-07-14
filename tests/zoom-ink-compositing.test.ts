@@ -138,7 +138,7 @@ class ZoomAdapter implements ObsidianPdfAdapter {
   mountOverlay(pageNumber: number): HTMLElement {
     const overlay = document.createElement("div");
     overlay.dataset.pageNumber = String(pageNumber);
-    overlay.className = "native-pdf-ink-overlay";
+    overlay.className = "native-pdf-handwriting-overlay";
     this.pageElement.append(overlay);
     return overlay;
   }
@@ -207,7 +207,7 @@ function probeSurface(session: ViewerInkSession): SurfaceProbe {
 }
 
 function overlayOf(adapter: ZoomAdapter): HTMLElement {
-  const overlay = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-ink-overlay");
+  const overlay = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-overlay");
   if (!overlay) throw new Error("overlay missing");
   return overlay;
 }
@@ -288,7 +288,7 @@ describe("zoom ink compositing", () => {
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
     session.onViewStateChange({ ...adapter.getViewState(), scale: 1.55 }, "scalechanging");
 
-    expect(overlay.classList.contains("native-pdf-ink-zoom-compositing")).toBe(true);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
     expect(paintStampCalls(context)).toBe(stampsBeforeBurst);
 
     const zoomTicks = infoCalls("ink zoom tick");
@@ -298,7 +298,7 @@ describe("zoom ink compositing", () => {
 
     await vi.advanceTimersByTimeAsync(120);
 
-    expect(overlay.classList.contains("native-pdf-ink-zoom-compositing")).toBe(false);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
     // Settle blits scaled ink — no graphite stamp rebuild on the settle tick.
     expect(paintStampCalls(context)).toBe(stampsBeforeBurst);
     expect(context.drawImage).toHaveBeenCalled();
@@ -334,7 +334,7 @@ describe("zoom ink compositing", () => {
     adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
 
-    expect(overlay.classList.contains("native-pdf-ink-zoom-compositing")).toBe(true);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
     // FINAL design: scheduleZoomRepaint/beginZoomCompositing must syncOverlayLayout
     // while stamp redraw stays deferred (zoomCompositing → renderPage early-return).
     expect(overlay.style.left).toBe("40px");
@@ -450,11 +450,11 @@ describe("zoom ink compositing", () => {
     adapter.zoomTo(1.25, { left: 0, top: 0, width: 750, height: 1000 });
     session.onViewStateChange(adapter.getViewState(), "data-scale");
 
-    expect(overlay.classList.contains("native-pdf-ink-zoom-compositing")).toBe(true);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
     expect(infoCalls("ink zoom tick").length).toBeGreaterThanOrEqual(1);
 
     await vi.advanceTimersByTimeAsync(120);
-    expect(overlay.classList.contains("native-pdf-ink-zoom-compositing")).toBe(false);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
     expect(overlay.style.width).toBe("750px");
     expect(overlay.style.height).toBe("1000px");
     await session.destroy();

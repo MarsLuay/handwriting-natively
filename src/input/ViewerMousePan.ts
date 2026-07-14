@@ -56,7 +56,7 @@ export class ViewerMousePan {
     this.panning.clear();
     this.activeTouches.clear();
     this.abort.abort();
-    this.captureHost().classList.remove("native-pdf-ink-panning");
+    this.captureHost().classList.remove("native-pdf-handwriting-panning");
   }
 
   private captureHost(): HTMLElement {
@@ -81,7 +81,7 @@ export class ViewerMousePan {
       }
       this.panning.delete(pointerId);
     }
-    if (!this.panning.size) this.captureHost().classList.remove("native-pdf-ink-panning");
+    if (!this.panning.size) this.captureHost().classList.remove("native-pdf-handwriting-panning");
   }
 
   private readonly onDown = (event: PointerEvent): void => {
@@ -131,7 +131,7 @@ export class ViewerMousePan {
       this.callbacks.onPan?.("skip", event, { reason: "annotation-chrome", target: targetLabel(event.target) });
       return;
     }
-    if (event.target instanceof Element && event.target.closest(".native-pdf-ink-toolbar, .native-pdf-ink-dropdown")) {
+    if (event.target instanceof Element && event.target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown")) {
       this.callbacks.onPan?.("skip", event, { reason: "toolbar", target: targetLabel(event.target) });
       return;
     }
@@ -205,7 +205,7 @@ export class ViewerMousePan {
     if (captureTarget instanceof HTMLElement && captureTarget.hasPointerCapture?.(event.pointerId)) {
       captureTarget.releasePointerCapture?.(event.pointerId);
     }
-    if (!this.panning.size) this.captureHost().classList.remove("native-pdf-ink-panning");
+    if (!this.panning.size) this.captureHost().classList.remove("native-pdf-handwriting-panning");
   };
 
   private updatePan(event: PointerEvent, pan: PanGesture): void {
@@ -231,7 +231,7 @@ export class ViewerMousePan {
         return;
       }
       pan.active = true;
-      this.captureHost().classList.add("native-pdf-ink-panning");
+      this.captureHost().classList.add("native-pdf-handwriting-panning");
       this.callbacks.onPan?.("activate", event, {
         scrollRoot: describeScrollElement(root),
         scrollTop: root.scrollTop,
