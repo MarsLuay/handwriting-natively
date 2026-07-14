@@ -143,7 +143,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
       cls: "native-pdf-handwriting-support-link",
       text: "Report bug",
       attr: {
-        href: "https://github.com/MarsLuay/native-pdf-handwriting/issues",
+        href: "https://github.com/MarsLuay/handwriting-natively/issues",
         rel: "noopener noreferrer",
         target: "_blank"
       }
