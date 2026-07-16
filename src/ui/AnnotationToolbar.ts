@@ -1,5 +1,4 @@
-import type { DrawingTool, SaveStatus, ToolId, ToolPreferences } from "../model";
-import { isDrawingTool, resolveDrawingTool } from "../model";
+import { isDrawingTool, resolveDrawingTool, type DrawingTool, type SaveStatus, type TextStyle, type ToolId, type ToolPreferences } from "../model";
 import { colorOptions } from "./ColorPicker";
 import { DropdownController, type DropdownOpenOptions, type DropdownOption } from "./DropdownController";
 import { drawingAdvanced, drawingOptions } from "./DrawingToolDropdown";
@@ -9,25 +8,43 @@ import { lassoOptions } from "./LassoDropdown";
 import { SaveStatusIndicator } from "./SaveStatusIndicator";
 import { setToolbarColorSwatch, setToolbarIcon, type ToolbarIcon } from "./ToolbarIcon";
 
-const DRAWING_LABELS: Record<DrawingTool, string> = {
-  pen: "Pen",
-  pencil: "Pencil",
-  highlighter: "Highlighter"
-};
-
+export type ZoomAction =
+  | "out"
+  | "in"
+  | "fit-width"
+  | "fit-page"
+  | "actual"
+  | "reset"
+  | "200"
+  | "400"
+  | "800"
+  | "1000"
+  | "1500"
+  | "2000";
 export type MoreAction =
-  | "export"
+  | "export-flattened"
+  | "export-editable"
   | "toolbar-main"
   | "toolbar-left"
   | "toolbar-right";
 
 export interface AnnotationToolbarCallbacks {
   onPreferencesChange(preferences: ToolPreferences): void;
+  onTextStyleChange?(patch: Partial<TextStyle>): boolean;
+  onTextMarkdownFormat?(format: "bold" | "italic"): boolean;
+  selectedTextColor?(): string | undefined;
+  onSelectionColorChange?(color: string): boolean;
+  onSelectionWidthChange?(width: number): boolean;
+  hasActiveTextInput?(): boolean;
+  hasSelectedText?(): boolean;
+  onTextMenuOpen?(): void;
+  onTextEditorInteractionStart?(): void;
   onEraserSizePreview?(size: number): void;
   onDrawModeChange?(enabled: boolean): void;
   onUndo?(): void;
   onRedo?(): void;
   onSave?(): void | Promise<void>;
+  onZoom?(action: ZoomAction): void;
   onMore?(action: MoreAction): void;
   toolbarPlacement?(): "main" | "left" | "right";
 }
@@ -36,6 +53,7 @@ export interface AnnotationToolbarOptions {
   preferences: ToolPreferences;
   autosave: boolean;
   drawEnabled?: boolean;
+  showZoomMenu?: boolean;
   callbacks: AnnotationToolbarCallbacks;
   supportedMoreActions?: MoreAction[];
   ownerDocument?: Document;
@@ -53,12 +71,14 @@ export class AnnotationToolbar {
   private readonly controls: HTMLElement;
   private lastDrawingTool: DrawingTool;
   private autosave: boolean;
+  private drawEnabled: boolean;
 
   constructor(options: AnnotationToolbarOptions) {
     this.ownerDocument = options.ownerDocument ?? activeDocument;
     this.callbacks = options.callbacks;
     this.preferences = options.preferences;
     this.autosave = options.autosave;
+    this.drawEnabled = options.drawEnabled ?? true;
     this.lastDrawingTool = resolveDrawingTool(options.preferences.activeTool);
     this.dropdown = new DropdownController(this.ownerDocument);
     this.saveStatus = new SaveStatusIndicator(this.ownerDocument);
@@ -70,16 +90,18 @@ export class AnnotationToolbar {
     this.controls = this.ownerDocument.createElement("div");
     this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
-    this.controls.append(this.drawToggle(options.drawEnabled ?? false));
-    this.controls.append(this.colorButton());
+    this.controls.append(this.actionButton("pan", "Pan", () => this.setDrawEnabled(false)));
+    this.controls.append(this.groupedTool("text", () => this.textMenu()));
     this.controls.append(this.groupedTool("drawing", () => this.drawingMenu()));
     this.controls.append(this.groupedTool("eraser", () => this.eraserMenuOptions()));
     this.controls.append(this.groupedTool("laser", () => this.laserMenuOptions()));
+    this.controls.append(this.colorButton());
     this.controls.append(this.groupedTool("lasso", () => ({ label: "Lasso options", options: this.lassoMenu() })));
     this.controls.append(this.actionButton("undo", "Undo", () => this.callbacks.onUndo?.(), !this.callbacks.onUndo));
     this.controls.append(this.actionButton("redo", "Redo", () => this.callbacks.onRedo?.(), !this.callbacks.onRedo));
+    if (options.showZoomMenu && this.callbacks.onZoom) this.controls.append(this.menuButton("zoom", "Zoom", this.zoomMenu()));
     const supportedMore = options.supportedMoreActions ?? [];
-    if (this.callbacks.onMore && supportedMore.length > 0) this.controls.append(this.menuButton("more", "More", this.moreMenu(supportedMore)));
+    if (this.callbacks.onMore && supportedMore.length > 0) this.controls.append(this.menuButton("more", "More", () => this.moreMenu(supportedMore)));
     if (!this.autosave && this.callbacks.onSave) this.controls.append(this.actionButton("save", "Save", () => void this.callbacks.onSave?.()));
     this.element.append(this.controls, this.saveStatus.element);
     this.updateButtons();
@@ -96,8 +118,37 @@ export class AnnotationToolbar {
     }
   }
 
+  setShowZoomMenu(enabled: boolean): void {
+    const existing = this.buttons.get("zoom");
+    if (!enabled) {
+      existing?.remove();
+      this.buttons.delete("zoom");
+      return;
+    }
+    if (existing || !this.callbacks.onZoom) return;
+    const zoom = this.menuButton("zoom", "Zoom", this.zoomMenu());
+    const reference = this.buttons.get("more") ?? this.buttons.get("save");
+    this.controls.insertBefore(zoom, reference ?? null);
+  }
+
+  selectEraser(): void {
+    this.preferences.activeTool = "eraser";
+    this.setDrawEnabled(true);
+    this.updateButtons();
+  }
+
+  restoreLastDrawingTool(): void {
+    this.preferences.activeTool = this.lastDrawingTool;
+    this.setDrawEnabled(true);
+    this.updateButtons();
+  }
+
   setSaveStatus(status: SaveStatus, lastSavedAt?: Date): void {
     this.saveStatus.update(status, lastSavedAt);
+  }
+
+  refresh(): void {
+    this.updateButtons();
   }
 
   destroy(): void {
@@ -106,12 +157,27 @@ export class AnnotationToolbar {
     this.element.remove();
   }
 
-  private groupedTool(id: "drawing" | "eraser" | "lasso" | "laser", menu: () => DropdownOpenOptions): HTMLButtonElement {
+  private groupedTool(id: "drawing" | "text" | "eraser" | "laser" | "lasso", menu: () => DropdownOpenOptions): HTMLButtonElement {
     const main = this.actionButton(id, id, () => {
+      if (id === "text" && this.callbacks.hasActiveTextInput?.()) {
+        this.dropdown.toggle(id, main, menu());
+        return;
+      }
+      if (id === "text" && this.callbacks.hasSelectedText?.()) {
+        this.dropdown.toggle(id, main, menu());
+        return;
+      }
+      if (!this.drawEnabled) {
+        this.activate(id === "drawing" ? this.lastDrawingTool : id);
+        return;
+      }
       const active = id === "drawing"
         ? isDrawingTool(this.preferences.activeTool)
         : this.preferences.activeTool === id;
-      if (active) this.dropdown.toggle(id, main, menu());
+      if (active) {
+        if (id === "text" && !this.callbacks.hasActiveTextInput?.()) this.callbacks.onTextMenuOpen?.();
+        this.dropdown.toggle(id, main, menu());
+      }
       else this.activate(id === "drawing" ? this.lastDrawingTool : id);
     });
     main.setAttribute("aria-haspopup", "menu");
@@ -126,30 +192,10 @@ export class AnnotationToolbar {
     button.dataset.control = id;
     this.presentButton(button, label, this.iconFor(id));
     button.disabled = disabled;
+    if (id === "text") this.preserveTextEditorSelection(button);
     button.addEventListener("click", action, { signal: this.abort.signal });
     this.buttons.set(id, button);
     return button;
-  }
-
-  private drawToggle(enabled: boolean): HTMLLabelElement {
-    const label = this.ownerDocument.createElement("label");
-    label.className = "native-pdf-handwriting-draw-toggle";
-    label.setAttribute("aria-label", "Turn on to draw, erase, or select annotations. Leave off for normal PDF controls.");
-    label.removeAttribute("title");
-    const input = this.ownerDocument.createElement("input");
-    input.type = "checkbox";
-    input.checked = enabled;
-    input.dataset.control = "draw";
-    input.addEventListener("change", () => {
-      label.dataset.enabled = String(input.checked);
-      this.callbacks.onDrawModeChange?.(input.checked);
-    }, { signal: this.abort.signal });
-    label.dataset.enabled = String(enabled);
-    const text = this.ownerDocument.createElement("span");
-    text.className = "native-pdf-handwriting-draw-toggle-label";
-    text.textContent = "Draw";
-    label.append(input, text);
-    return label;
   }
 
   private presentButton(button: HTMLButtonElement, label: string, icon: ToolbarIcon): void {
@@ -159,14 +205,25 @@ export class AnnotationToolbar {
     setToolbarIcon(button, icon);
   }
 
+  private preserveTextEditorSelection(element: HTMLElement): void {
+    element.addEventListener("pointerdown", (event) => {
+      if (!this.callbacks.hasActiveTextInput?.()) return;
+      this.callbacks.onTextEditorInteractionStart?.();
+      if (event.target instanceof HTMLButtonElement) event.preventDefault();
+    }, { capture: true, signal: this.abort.signal });
+  }
+
   private iconFor(id: string): ToolbarIcon {
     if (id === "drawing") return this.lastDrawingTool;
     switch (id) {
+      case "pan":
       case "eraser":
+      case "text":
       case "lasso":
       case "laser":
       case "undo":
       case "redo":
+      case "zoom":
       case "more":
       case "save":
         return id;
@@ -175,8 +232,11 @@ export class AnnotationToolbar {
     }
   }
 
-  private menuButton(id: string, label: string, options: DropdownOption[]): HTMLButtonElement {
-    const button = this.actionButton(id, label, () => this.dropdown.toggle(id, button, { label: `${label} options`, options }));
+  private menuButton(id: string, label: string, options: DropdownOption[] | (() => DropdownOption[])): HTMLButtonElement {
+    const button = this.actionButton(id, label, () => this.dropdown.toggle(id, button, {
+      label: `${label} options`,
+      options: typeof options === "function" ? options() : options
+    }));
     button.setAttribute("aria-haspopup", "menu");
     button.setAttribute("aria-expanded", "false");
     return button;
@@ -187,14 +247,139 @@ export class AnnotationToolbar {
     for (const option of drawingOptions(this.preferences, (tool) => {
       this.preferences.activeTool = tool;
       this.lastDrawingTool = tool;
+      this.setDrawEnabled(true);
       this.changed();
     }, (width) => {
+      if (this.callbacks.onSelectionWidthChange?.(width)) {
+        this.updateButtons();
+        return;
+      }
       this.preferences[this.lastDrawingTool].width = width;
       this.preferences.activeTool = this.lastDrawingTool;
+      this.setDrawEnabled(true);
       this.changed();
-    })) content.append(this.inlineOption(option));
+    })) {
+      const button = this.inlineOption(option);
+      if (option.id.startsWith("width-")) button.classList.add("native-pdf-handwriting-drawing-width-option");
+      content.append(button);
+      if (option.id === "highlighter") {
+        const separator = this.ownerDocument.createElement("div");
+        separator.className = "native-pdf-handwriting-drawing-menu-separator";
+        separator.setAttribute("role", "separator");
+        content.append(separator);
+      }
+    }
     content.append(drawingAdvanced(this.ownerDocument, this.preferences, () => this.changed(), this.abort.signal));
     return { label: "Drawing options", content };
+  }
+
+  private textMenu(): DropdownOpenOptions {
+    const content = this.ownerDocument.createElement("div");
+    content.className = "native-pdf-handwriting-text-menu";
+    this.preserveTextEditorSelection(content);
+    const fontLabel = this.ownerDocument.createElement("label");
+    fontLabel.textContent = "Font";
+    const font = this.ownerDocument.createElement("select");
+    for (const family of ["sans-serif", "serif", "monospace"]) {
+      const option = this.ownerDocument.createElement("option");
+      option.value = family;
+      option.textContent = family === "sans-serif" ? "Sans serif" : family[0]!.toUpperCase() + family.slice(1);
+      option.selected = this.preferences.text.fontFamily === family;
+      font.append(option);
+    }
+    font.addEventListener("change", () => {
+      this.applyTextStyle({ fontFamily: font.value });
+    }, { signal: this.abort.signal });
+    fontLabel.append(font);
+
+    const controls = this.ownerDocument.createElement("div");
+    controls.className = "native-pdf-handwriting-text-menu-controls";
+    const size = this.ownerDocument.createElement("span");
+    size.className = "native-pdf-handwriting-text-menu-size";
+    size.textContent = `${this.preferences.text.fontSize}px`;
+    const setFontSize = (fontSize: number): void => {
+      this.applyTextStyle({ fontSize });
+      size.textContent = `${fontSize}px`;
+    };
+    const button = (id: string, label: string, action: () => void, pressed: boolean): HTMLButtonElement => {
+      const element = this.ownerDocument.createElement("button");
+      element.type = "button";
+      element.className = "native-pdf-handwriting-text-menu-button";
+      element.dataset.optionId = id;
+      element.textContent = label;
+      element.setAttribute("aria-label", label);
+      element.setAttribute("aria-pressed", String(pressed));
+      element.addEventListener("click", action, { signal: this.abort.signal });
+      return element;
+    };
+    controls.append(
+      button("text-size-decrease", "-", () => {
+        setFontSize(Math.max(8, this.preferences.text.fontSize - 1));
+      }, false),
+      button("text-size-increase", "+", () => {
+        setFontSize(Math.min(96, this.preferences.text.fontSize + 1));
+      }, false),
+      button("text-bold", "B", () => {
+        if (this.callbacks.onTextMarkdownFormat?.("bold")) {
+          return;
+        }
+        this.applyTextStyle({ bold: !this.preferences.text.bold });
+      }, this.preferences.text.bold),
+      button("text-italic", "I", () => {
+        if (this.callbacks.onTextMarkdownFormat?.("italic")) {
+          return;
+        }
+        this.applyTextStyle({ italic: !this.preferences.text.italic });
+      }, this.preferences.text.italic)
+    );
+    const togglePressed = (id: "text-bold" | "text-italic"): void => {
+      const format = content.querySelector<HTMLButtonElement>(`[data-option-id='${id}']`);
+      if (format) format.setAttribute("aria-pressed", String(format.getAttribute("aria-pressed") !== "true"));
+    };
+    controls.querySelector<HTMLButtonElement>("[data-option-id='text-bold']")?.addEventListener("click", () => {
+      togglePressed("text-bold");
+    }, { signal: this.abort.signal });
+    controls.querySelector<HTMLButtonElement>("[data-option-id='text-italic']")?.addEventListener("click", () => {
+      togglePressed("text-italic");
+    }, { signal: this.abort.signal });
+    content.append(fontLabel, controls, size);
+    return { label: "Text options", content, focusFirst: !this.callbacks.hasActiveTextInput?.() };
+  }
+
+  private applyTextStyle(patch: Partial<TextStyle>): void {
+    Object.assign(this.preferences.text, patch);
+    this.callbacks.onTextStyleChange?.(patch);
+    this.changed();
+  }
+
+  private eraserMenuOptions(): DropdownOpenOptions {
+    return {
+      label: "Eraser options",
+      content: eraserMenu(this.ownerDocument, this.preferences, {
+        onPreview: (size) => {
+          this.preferences.activeTool = "eraser";
+          this.setDrawEnabled(true);
+          this.preferences.eraser.size = size;
+          this.callbacks.onEraserSizePreview?.(size);
+        },
+        onCommit: (size) => {
+          this.preferences.activeTool = "eraser";
+          this.setDrawEnabled(true);
+          this.preferences.eraser.size = size;
+          this.changed();
+        },
+        onWholeStrokeChange: (enabled) => {
+          this.preferences.activeTool = "eraser";
+          this.setDrawEnabled(true);
+          this.preferences.eraser.eraseWholeStrokes = enabled;
+          this.changed();
+        },
+        onRightMouseButtonChange: (enabled) => {
+          this.preferences.eraser.eraseWithRightMouseButton = enabled;
+          this.changed();
+        }
+      }, this.abort.signal)
+    };
   }
 
   private laserMenuOptions(): DropdownOpenOptions {
@@ -204,27 +389,10 @@ export class AnnotationToolbar {
     };
   }
 
-  private eraserMenuOptions(): DropdownOpenOptions {
-    return {
-      label: "Eraser options",
-      content: eraserMenu(this.ownerDocument, this.preferences, {
-        onPreview: (size) => {
-          this.preferences.activeTool = "eraser";
-          this.preferences.eraser.size = size;
-          this.callbacks.onEraserSizePreview?.(size);
-        },
-        onCommit: (size) => {
-          this.preferences.activeTool = "eraser";
-          this.preferences.eraser.size = size;
-          this.changed();
-        }
-      }, this.abort.signal)
-    };
-  }
-
   private lassoMenu(): DropdownOption[] {
     return lassoOptions(this.preferences, (type) => {
       this.preferences.activeTool = "lasso";
+      this.setDrawEnabled(true);
       this.preferences.lasso.type = type;
       this.changed();
     });
@@ -237,51 +405,95 @@ export class AnnotationToolbar {
     button.dataset.control = "color";
     button.setAttribute("aria-haspopup", "menu");
     button.setAttribute("aria-expanded", "false");
-    button.addEventListener("click", () => this.dropdown.toggle("color", button, { label: "Color options", content: this.colorMenu() }), { signal: this.abort.signal });
+    this.preserveTextEditorSelection(button);
+    button.addEventListener("click", () => {
+      const keepTextFocus = this.callbacks.hasActiveTextInput?.() ?? false;
+      if (!keepTextFocus) this.setDrawEnabled(true);
+      if (this.preferences.activeTool !== "eraser") {
+        this.dropdown.toggle("color", button, {
+          label: "Color options",
+          content: this.colorMenu(),
+          focusFirst: !keepTextFocus
+        });
+      }
+    }, { signal: this.abort.signal });
     this.buttons.set("color", button);
     return button;
   }
 
   private colorMenu(): HTMLElement {
     const content = this.ownerDocument.createElement("div");
-    const laserActive = this.preferences.activeTool === "laser";
-    const drawingTool = resolveDrawingTool(this.preferences.activeTool);
-    const applyColor = (color: string): void => {
-      if (laserActive) this.preferences.laser.color = color;
-      else this.preferences[drawingTool].color = color;
+    this.preserveTextEditorSelection(content);
+    const drawingTool: DrawingTool | "text" | "laser" = this.callbacks.hasActiveTextInput?.()
+      ? "text"
+      : this.preferences.activeTool === "text" ? "text" : this.preferences.activeTool === "laser" ? "laser" : resolveDrawingTool(this.preferences.activeTool);
+    for (const option of colorOptions(this.preferences, (color) => {
+      if (!this.callbacks.hasActiveTextInput?.() && this.callbacks.onSelectionColorChange?.(color)) {
+        this.updateButtons();
+        return;
+      }
+      this.preferences[drawingTool].color = color;
+      this.callbacks.onTextStyleChange?.({ color });
       this.changed();
-    };
-    for (const option of colorOptions(this.preferences, applyColor)) content.append(this.inlineOption(option));
+    })) content.append(this.inlineOption(option));
     const colorLabel = this.ownerDocument.createElement("label");
     colorLabel.textContent = "Custom color";
     const colorInput = this.ownerDocument.createElement("input");
     colorInput.type = "color";
-    colorInput.value = laserActive ? this.preferences.laser.color : this.preferences[drawingTool].color;
-    colorInput.addEventListener("input", () => applyColor(colorInput.value), { signal: this.abort.signal });
+    colorInput.value = this.preferences[drawingTool].color;
+    colorInput.addEventListener("input", () => {
+      if (!this.callbacks.hasActiveTextInput?.() && this.callbacks.onSelectionColorChange?.(colorInput.value)) {
+        this.updateButtons();
+        return;
+      }
+      this.preferences[drawingTool].color = colorInput.value;
+      this.callbacks.onTextStyleChange?.({ color: colorInput.value });
+      this.changed();
+    }, { signal: this.abort.signal });
     colorLabel.append(colorInput);
-    content.append(colorLabel);
-    if (!laserActive) {
-      const opacityLabel = this.ownerDocument.createElement("label");
-      opacityLabel.textContent = "Opacity";
-      const opacity = this.ownerDocument.createElement("input");
-      opacity.type = "range";
-      opacity.min = "0.1";
-      opacity.max = "1";
-      opacity.step = "0.05";
-      opacity.value = String(this.preferences[drawingTool].opacity);
-      opacity.addEventListener("input", () => {
-        this.preferences[drawingTool].opacity = Number(opacity.value);
-        this.changed();
-      }, { signal: this.abort.signal });
-      opacityLabel.append(opacity);
-      content.append(opacityLabel);
+    if (drawingTool === "text" || drawingTool === "laser") {
+      content.append(colorLabel);
+      return content;
     }
+    const opacityLabel = this.ownerDocument.createElement("label");
+    opacityLabel.textContent = "Opacity";
+    const opacity = this.ownerDocument.createElement("input");
+    opacity.type = "range";
+    opacity.min = "0.1";
+    opacity.max = "1";
+    opacity.step = "0.05";
+    opacity.value = String(this.preferences[drawingTool].opacity);
+    opacity.addEventListener("input", () => {
+      this.preferences[drawingTool].opacity = Number(opacity.value);
+      this.changed();
+    }, { signal: this.abort.signal });
+    opacityLabel.append(opacity);
+    content.append(colorLabel, opacityLabel);
     return content;
+  }
+
+  private zoomMenu(): DropdownOption[] {
+    const labels: Array<[ZoomAction, string]> = [
+      ["out", "Zoom out"],
+      ["in", "Zoom in"],
+      ["fit-width", "Fit width"],
+      ["fit-page", "Fit page"],
+      ["actual", "Actual size (100%)"],
+      ["200", "200%"],
+      ["400", "400%"],
+      ["800", "800%"],
+      ["1000", "1000%"],
+      ["1500", "1500%"],
+      ["2000", "2000%"],
+      ["reset", "Reset zoom"]
+    ];
+    return labels.map(([id, label]) => ({ id, label, onSelect: () => this.callbacks.onZoom?.(id) }));
   }
 
   private moreMenu(supported: MoreAction[]): DropdownOption[] {
     const labels: Record<MoreAction, string> = {
-      export: "Export PDF",
+      "export-flattened": "Export PDF (flattened)",
+      "export-editable": "Export PDF (editable annotations)",
       "toolbar-main": "Toolbar: PDF bar",
       "toolbar-left": "Toolbar: Left sidebar",
       "toolbar-right": "Toolbar: Right sidebar"
@@ -306,7 +518,7 @@ export class AnnotationToolbar {
     option.render?.(button);
     button.addEventListener("click", () => {
       option.onSelect();
-      this.dropdown.close(true);
+      this.dropdown.close(!this.callbacks.hasActiveTextInput?.());
     }, { signal: this.abort.signal });
     return button;
   }
@@ -314,7 +526,15 @@ export class AnnotationToolbar {
   private activate(tool: ToolId): void {
     this.preferences.activeTool = tool;
     if (isDrawingTool(tool)) this.lastDrawingTool = tool;
+    if (tool !== "pan") this.setDrawEnabled(true);
     this.changed();
+  }
+
+  private setDrawEnabled(enabled: boolean): void {
+    if (this.drawEnabled === enabled) return;
+    this.drawEnabled = enabled;
+    this.callbacks.onDrawModeChange?.(enabled);
+    this.updateButtons();
   }
 
   private changed(): void {
@@ -324,26 +544,34 @@ export class AnnotationToolbar {
 
   private updateButtons(): void {
     const active = this.preferences.activeTool;
-    this.presentButton(
-      this.buttons.get("drawing")!,
-      DRAWING_LABELS[this.lastDrawingTool],
-      this.lastDrawingTool
-    );
+    const drawingLabel = this.lastDrawingTool === "pen" ? "Pen" : this.lastDrawingTool === "pencil" ? "Pencil" : "Highlight";
+    this.presentButton(this.buttons.get("pan")!, "Pan", "pan");
+    this.presentButton(this.buttons.get("drawing")!, drawingLabel, this.lastDrawingTool);
+    this.presentButton(this.buttons.get("text")!, "Text", "text");
     this.presentButton(this.buttons.get("eraser")!, "Eraser", "eraser");
     this.presentButton(this.buttons.get("laser")!, "Laser pointer", "laser");
     this.presentButton(this.buttons.get("lasso")!, this.preferences.lasso.type === "freeform" ? "Lasso" : "Rectangle", "lasso");
-    this.buttons.get("drawing")!.setAttribute("aria-pressed", String(isDrawingTool(active)));
-    this.buttons.get("eraser")!.setAttribute("aria-pressed", String(active === "eraser"));
-    this.buttons.get("laser")!.setAttribute("aria-pressed", String(active === "laser"));
-    this.buttons.get("lasso")!.setAttribute("aria-pressed", String(active === "lasso"));
-    const colorValue = active === "laser"
-      ? this.preferences.laser.color
-      : this.preferences[resolveDrawingTool(active)].color;
+    const editing = this.drawEnabled;
+    this.buttons.get("drawing")!.setAttribute("aria-pressed", String(editing && isDrawingTool(active)));
+    this.buttons.get("text")!.setAttribute("aria-pressed", String(editing && active === "text"));
+    this.buttons.get("pan")!.setAttribute("aria-pressed", String(!this.drawEnabled));
+    this.buttons.get("eraser")!.setAttribute("aria-pressed", String(editing && active === "eraser"));
+    this.buttons.get("laser")!.setAttribute("aria-pressed", String(editing && active === "laser"));
+    this.buttons.get("lasso")!.setAttribute("aria-pressed", String(editing && active === "lasso"));
+    const drawing = active === "text"
+      ? this.preferences.text
+      : active === "laser"
+        ? this.preferences.laser
+        : this.preferences[resolveDrawingTool(active)];
+    const selectedTextColor = this.callbacks.selectedTextColor?.();
     const color = this.buttons.get("color");
     if (color) {
-      color.setAttribute("aria-label", `Color ${colorValue}`);
+      const erasing = active === "eraser";
+      const colorValue = selectedTextColor ?? drawing.color;
+      color.setAttribute("aria-label", erasing ? "Transparent eraser" : `Color ${colorValue}`);
       color.removeAttribute("title");
-      setToolbarColorSwatch(color, colorValue);
+      color.setAttribute("aria-disabled", String(erasing));
+      setToolbarColorSwatch(color, colorValue, erasing);
     }
   }
 }

@@ -1,6 +1,5 @@
-import { LineCapStyle, PDFDocument, rgb } from "pdf-lib";
+import { LineCapStyle, PDFDocument, PDFHexString, rgb } from "pdf-lib";
 import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint } from "../model";
-import { highlighterSampleWidth, highlighterSegmentWidths } from "../tools/HighlighterTool";
 import { graphiteStampCircles, seedFromId } from "../tools/PencilTool";
 import { penSampleWidth, penSegmentWidths } from "../tools/PenTool";
 
@@ -12,11 +11,19 @@ export interface PdfExportPageMetrics {
 
 export interface PdfExportInput {
   sourceBytes: Uint8Array;
+  mode?: PdfExportMode;
   strokes?: readonly InkStroke[];
   getStrokes?: () => readonly InkStroke[];
   /** Sidecar / session page sizes — may differ from MediaBox PDF points (e.g. CSS px @96dpi). */
   pageMetrics?: readonly PdfExportPageMetrics[];
   flush?: () => Promise<void>;
+}
+
+export type PdfExportMode = "flattened" | "editable";
+
+interface MappedInkStroke {
+  points: Array<{ x: number; y: number }>;
+  width: number;
 }
 
 function parseColor(value: string): ReturnType<typeof rgb> {
@@ -29,6 +36,11 @@ function parseColor(value: string): ReturnType<typeof rgb> {
 export function annotatedFilename(sourceName: string): string {
   const base = sourceName.replace(/\.pdf$/i, "");
   return `${base || "document"}_export.pdf`;
+}
+
+export function editableAnnotatedFilename(sourceName: string): string {
+  const base = sourceName.replace(/\.pdf$/i, "");
+  return `${base || "document"}_editable.pdf`;
 }
 
 /** Map ink page-space → actual PDF MediaBox points when those spaces differ. */
@@ -74,6 +86,15 @@ export class PdfExportService {
       const mapPoint = (point: Pick<PdfPoint, "x" | "y">) => mapInkPointToPdfPage(point, sourceSize, pdfSize);
       const strokeWidth = mapInkWidthToPdfPage(stroke.width, sourceSize, pdfSize);
 
+      if (input.mode === "editable") {
+        if (stroke.points.length === 0) continue;
+        this.addInkAnnotation(pdfDoc, page, stroke, {
+          points: stroke.points.map(mapPoint),
+          width: this.editableStrokeWidth(stroke, strokeWidth)
+        });
+        continue;
+      }
+
       if (stroke.tool === "pencil") {
         const pencil = DEFAULT_SETTINGS.toolPreferences.pencil;
         const stamps = graphiteStampCircles(
@@ -110,49 +131,9 @@ export class PdfExportService {
         continue;
       }
 
-      if (stroke.tool === "highlighter") {
-        const highlighter = DEFAULT_SETTINGS.toolPreferences.highlighter;
-        const prefs = {
-          ...highlighter,
-          width: strokeWidth,
-          opacity: stroke.opacity,
-          color: stroke.color
-        };
-        if (stroke.points.length === 1) {
-          const point = mapPoint(stroke.points[0]!);
-          page.drawCircle({
-            x: point.x,
-            y: point.y,
-            size: highlighterSampleWidth(prefs, stroke.points[0]!) / 2,
-            color,
-            opacity: stroke.opacity
-          });
-          continue;
-        }
-        const mappedPoints = stroke.points.map((point) => {
-          const mapped = mapPoint(point);
-          return { x: mapped.x, y: mapped.y, pressure: point.pressure };
-        });
-        for (const segment of highlighterSegmentWidths(mappedPoints, {
-          color: stroke.color,
-          width: strokeWidth,
-          opacity: stroke.opacity,
-          pressureSensitivity: highlighter.pressureSensitivity,
-          thinning: highlighter.thinning
-        })) {
-          page.drawLine({
-            start: { x: segment.start.x, y: segment.start.y },
-            end: { x: segment.end.x, y: segment.end.y },
-            thickness: segment.thickness,
-            color,
-            opacity: stroke.opacity,
-            lineCap: LineCapStyle.Round
-          });
-        }
-        continue;
-      }
-
-      const pen = DEFAULT_SETTINGS.toolPreferences.pen;
+      const pen = stroke.tool === "highlighter"
+        ? DEFAULT_SETTINGS.toolPreferences.highlighter
+        : DEFAULT_SETTINGS.toolPreferences.pen;
       const penPrefs = {
         ...pen,
         width: strokeWidth,
@@ -198,4 +179,87 @@ export class PdfExportService {
   }
 
   async validate(bytes: Uint8Array): Promise<void> { await PDFDocument.load(bytes); }
+
+  private editableStrokeWidth(stroke: InkStroke, width: number): number {
+    if (stroke.tool === "pencil") return Math.max(0.5, width * 0.75);
+    return Math.max(0.5, width);
+  }
+
+  private addInkAnnotation(
+    pdfDoc: PDFDocument,
+    page: ReturnType<PDFDocument["getPages"]>[number],
+    stroke: InkStroke,
+    mapped: MappedInkStroke
+  ): void {
+    const points = mapped.points.length === 1
+      ? [mapped.points[0]!, { x: mapped.points[0]!.x + 0.01, y: mapped.points[0]!.y + 0.01 }]
+      : mapped.points;
+    const padding = Math.max(1, mapped.width / 2 + 1);
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const minX = Math.min(...xs) - padding;
+    const minY = Math.min(...ys) - padding;
+    const maxX = Math.max(...xs) + padding;
+    const maxY = Math.max(...ys) + padding;
+    const [red, green, blue] = colorComponents(stroke.color);
+    const context = pdfDoc.context;
+    const opacity = context.register(context.obj({ Type: "ExtGState", CA: stroke.opacity, ca: stroke.opacity }));
+    const appearance = context.register(context.flateStream(
+      inkAppearanceStream(points, mapped.width, red, green, blue),
+      {
+        Type: "XObject",
+        Subtype: "Form",
+        BBox: [minX, minY, maxX, maxY],
+        Resources: { ExtGState: { GS0: opacity } }
+      }
+    ));
+    const annotation = context.register(context.obj({
+      Type: "Annot",
+      Subtype: "Ink",
+      Rect: [minX, minY, maxX, maxY],
+      InkList: [points.flatMap((point) => [point.x, point.y])],
+      C: [red, green, blue],
+      CA: stroke.opacity,
+      BS: { Type: "Border", W: mapped.width, S: "S" },
+      Border: [0, 0, mapped.width],
+      F: 4,
+      NM: PDFHexString.fromText(`handwriting-natively-${stroke.id}`),
+      AP: { N: appearance }
+    }));
+    page.node.addAnnot(annotation);
+  }
+}
+
+function colorComponents(value: string): [number, number, number] {
+  const match = /^#([0-9a-f]{6})$/i.exec(value);
+  if (!match) return [0, 0, 0];
+  const hex = match[1]!;
+  return [
+    Number.parseInt(hex.slice(0, 2), 16) / 255,
+    Number.parseInt(hex.slice(2, 4), 16) / 255,
+    Number.parseInt(hex.slice(4, 6), 16) / 255
+  ];
+}
+
+function inkAppearanceStream(
+  points: readonly { x: number; y: number }[],
+  width: number,
+  red: number,
+  green: number,
+  blue: number
+): string {
+  const format = (value: number) => Number(value.toFixed(4)).toString();
+  const [first, ...rest] = points;
+  return [
+    "q",
+    `${format(red)} ${format(green)} ${format(blue)} RG`,
+    "/GS0 gs",
+    `${format(width)} w`,
+    "1 J",
+    "1 j",
+    `${format(first!.x)} ${format(first!.y)} m`,
+    ...rest.map((point) => `${format(point.x)} ${format(point.y)} l`),
+    "S",
+    "Q"
+  ].join("\n");
 }

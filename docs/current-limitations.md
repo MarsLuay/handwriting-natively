@@ -4,7 +4,7 @@ First pass proves architecture and direct-view annotation path. Runtime compatib
 
 - Undocumented PDF viewer selectors may change; adapter fails closed and reports compatibility details.
 - Circular erasing preserves untouched stroke segments; very dense pages still need device profiling.
-- Native editable PDF `/Ink` annotations are not emitted; export draws vector page content.
+- `Export PDF (editable annotations)` emits standard `/Ink` annotations with appearance streams. Pressure variation, pencil texture, and highlighter blending are approximated because `/Ink` has one width and opacity per stroke.
 - Pencil uses graphite grit with broken ribbon + fine elliptical tooth (Texture slider). Screen-capped stamp size so thick tips stay porous, not mega-blobs. Not a physical deposition sim.
 - Highlighter is a wide translucent flat marker (alpha overlay). Not multiply-blend or text-region fill.
 - Lasso resize and clipboard behavior are initial implementations and need large-document profiling.

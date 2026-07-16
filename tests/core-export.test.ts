@@ -1,8 +1,9 @@
-import { PDFDocument } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFName } from "pdf-lib";
 import { describe, expect, it, vi } from "vitest";
 import type { InkStroke } from "../src/model";
 import {
   annotatedFilename,
+  editableAnnotatedFilename,
   mapInkPointToPdfPage,
   mapInkWidthToPdfPage,
   PdfExportService
@@ -20,6 +21,7 @@ describe("PDF export", () => {
   it("generates _export filenames beside the source name", () => {
     expect(annotatedFilename("paper.pdf")).toBe("paper_export.pdf");
     expect(annotatedFilename("PAPER.PDF")).toBe("PAPER_export.pdf");
+    expect(editableAnnotatedFilename("paper.pdf")).toBe("paper_editable.pdf");
   });
 
   it("scales ink page-space into PDF MediaBox points (CSS 96dpi vs PDF 72dpi)", () => {
@@ -64,5 +66,32 @@ describe("PDF export", () => {
     const first = await exporter.export({ sourceBytes: source, strokes: [stroke] });
     const second = await exporter.export({ sourceBytes: source, strokes: [stroke] });
     expect(first.byteLength).toBe(second.byteLength);
+  });
+
+  it("exports editable Ink annotations with appearance streams", async () => {
+    const source = await sourcePdf();
+    const sourceDocument = await PDFDocument.load(source);
+    const existing = sourceDocument.context.register(sourceDocument.context.obj({
+      Type: "Annot",
+      Subtype: "Text",
+      Rect: [1, 1, 10, 10]
+    }));
+    sourceDocument.getPages()[0]!.node.addAnnot(existing);
+    const output = await new PdfExportService().export({
+      sourceBytes: await sourceDocument.save(),
+      strokes: [
+        stroke,
+        { ...stroke, id: "highlight", tool: "highlighter", color: "#ffff00", opacity: 0.3 },
+        { ...stroke, id: "pencil", tool: "pencil", color: "#555555", opacity: 0.55 }
+      ],
+      mode: "editable"
+    });
+    const exported = await PDFDocument.load(output);
+    const annots = exported.getPages()[0]!.node.lookup(PDFName.Annots, PDFArray);
+    expect(annots.size()).toBe(4);
+    const annotation = annots.lookup(1, PDFDict);
+    expect(annotation.lookup(PDFName.of("Subtype"), PDFName).decodeText()).toBe("Ink");
+    expect(annotation.lookup(PDFName.of("InkList"), PDFArray).size()).toBe(1);
+    expect(annotation.lookup(PDFName.of("AP"), PDFDict).lookup(PDFName.of("N"))).toBeDefined();
   });
 });

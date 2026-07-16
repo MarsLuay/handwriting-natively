@@ -1,4 +1,4 @@
-import { Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFolder } from "obsidian";
 import { DEFAULT_SETTINGS, mergeSettings, serializePluginSettings, type PluginSettings } from "./model";
 
 export { mergeSettings, DEFAULT_SETTINGS };
@@ -6,6 +6,29 @@ export { mergeSettings, DEFAULT_SETTINGS };
 export interface SettingsHost {
   settings: PluginSettings;
   saveSettings(settings: PluginSettings): Promise<void>;
+}
+
+class FolderPicker extends FuzzySuggestModal<string> {
+  constructor(
+    app: ConstructorParameters<typeof PluginSettingTab>[0],
+    private readonly folders: string[],
+    private readonly onChoose: (path: string) => void
+  ) {
+    super(app);
+    this.setPlaceholder("Choose a vault folder");
+  }
+
+  getItems(): string[] {
+    return this.folders;
+  }
+
+  getItemText(path: string): string {
+    return path || "Vault root";
+  }
+
+  onChooseItem(path: string): void {
+    this.onChoose(path);
+  }
 }
 
 export class NativePdfInkSettingTab extends PluginSettingTab {
@@ -18,7 +41,8 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     containerEl.createEl("p", {
-      text: "PDF handwriting for a stylus or mouse. Write directly in the document view while keeping the original file untouched."
+      // eslint-disable-next-line obsidianmd/ui/sentence-case -- Preserve the PDF acronym and Apple Pencil brand name.
+      text: "PDF handwriting. Use your Apple Pencil/stylus to write in PDFs natively as the higher powers intended."
     });
 
     new Setting(containerEl)
@@ -50,6 +74,27 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         })
       );
 
+    const textEscapeBehavior = this.host.settings.skipTextCancelConfirmation
+      ? this.host.settings.textEscapeAction ?? "discard"
+      : "ask";
+    new Setting(containerEl)
+      .setName("Text editor Escape key")
+      .setDesc("Choose whether Escape asks, saves the current text, or discards it.")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("ask", "Always ask")
+          .addOption("save", "Save text")
+          .addOption("discard", "Discard text")
+          .setValue(textEscapeBehavior)
+          .onChange(async (value) => {
+            if (value === "save" || value === "discard") {
+              await this.persistPatch({ skipTextCancelConfirmation: true, textEscapeAction: value });
+            } else if (value === "ask") {
+              await this.persistPatch({ skipTextCancelConfirmation: false, textEscapeAction: null });
+            }
+          })
+      );
+
     new Setting(containerEl)
       .setName("Show save-status indicator")
       .setDesc("Show whether the current PDF is saved, saving, or needs attention.")
@@ -61,11 +106,36 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName("PDF navigation").setHeading();
     new Setting(containerEl)
-      .setName("Drag to scroll when draw mode is off")
-      .setDesc("Vertical mouse drag on empty PDF areas scrolls the document. Text selection and links still work normally.")
+      .setName("Treat single touch as")
+      .setDesc("Choose whether one-finger input is blocked, scrolls the PDF, or acts like the selected annotation tool.")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("none", "None")
+          .addOption("touch", "Touch")
+          .addOption("stylus", "Stylus")
+          .setValue(this.host.settings.singleTouchMode)
+          .onChange(async (value) => {
+            if (value === "none" || value === "touch" || value === "stylus") {
+              await this.persistPatch({ singleTouchMode: value });
+            }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Allow two-finger pinch zoom")
+      .setDesc("Use two fingers to zoom the PDF in and out. Enabled by default.")
       .addToggle((toggle) =>
-        toggle.setValue(this.host.settings.mouseDragScroll).onChange(async (value) => {
-          await this.persistPatch({ mouseDragScroll: value });
+        toggle.setValue(this.host.settings.twoFingerPinchZoom).onChange(async (value) => {
+          await this.persistPatch({ twoFingerPinchZoom: value });
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Allow two-finger swipe scroll")
+      .setDesc("Use a parallel two-finger swipe to scroll the PDF horizontally or vertically. Enabled by default.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.settings.twoFingerSwipeScroll).onChange(async (value) => {
+          await this.persistPatch({ twoFingerSwipeScroll: value });
         })
       );
 
@@ -96,6 +166,33 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Hold to straighten strokes")
+      .setDesc("Hold the last point for one second before releasing to turn the current stroke into a straight line.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.settings.holdToStraighten).onChange(async (value) => {
+          await this.persistPatch({ holdToStraighten: value });
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Hide stylus annotation label")
+      .setDesc("Hide the annotation page label shown when a stylus hovers over PDF ink.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.settings.hideStylusAnnotationLabel).onChange(async (value) => {
+          await this.persistPatch({ hideStylusAnnotationLabel: value });
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show zoom menu")
+      .setDesc("Show the plugin zoom menu. Leave off to use the PDF viewer's built-in zoom controls.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.settings.showZoomMenu).onChange(async (value) => {
+          await this.persistPatch({ showZoomMenu: value });
+        })
+      );
+
+    new Setting(containerEl)
       .setName("Retry failed autosaves")
       .setDesc("Try saving again after an automatic save fails.")
       .addToggle((toggle) =>
@@ -104,10 +201,20 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl)
+      .setName("Annotation sidecar folder")
+      .setDesc("Vault-relative folder for annotation JSON files. The default hidden .obsidian folder keeps annotations out of File Explorer, but may make file synchronization harder. New PDF views use this location after saving the setting.")
+      .then((setting) => this.addFolderPathInput(setting, {
+        value: this.host.settings.sidecarFolder,
+        persist: async (sidecarFolder) => this.persistPatch({ sidecarFolder }),
+        selectedPath: (folder) => folder
+      }));
+
     new Setting(containerEl).setName("Developer").setHeading();
     new Setting(containerEl)
       .setName("Vault debug log")
-      .setDesc("Append every plugin event to a line-delimited log file in the vault so agents can read it directly. Off by default. Includes left-toolbar PDF sidebar offset diagnostics (reason, rects, jumps).")
+      // eslint-disable-next-line obsidianmd/ui/sentence-case -- Preserve the plugin name and NDJSON acronym.
+      .setDesc("Append every Handwriting Natively event to a vault NDJSON log file so agents can read it directly. Off by default.")
       .addToggle((toggle) =>
         toggle.setValue(this.host.settings.vaultDebugLog).onChange(async (value) => {
           await this.persistPatch({ vaultDebugLog: value });
@@ -117,20 +224,22 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Vault debug log path")
       .setDesc("Relative vault path for the log file. One JSON object per line.")
-      .addText((text) =>
-        text.setValue(this.host.settings.vaultDebugLogPath).onChange(async (value) => {
-          if (value.trim()) await this.persistPatch({ vaultDebugLogPath: value.trim() });
-        })
-      );
+      .then((setting) => this.addFolderPathInput(setting, {
+        value: this.host.settings.vaultDebugLogPath,
+        persist: async (vaultDebugLogPath) => this.persistPatch({ vaultDebugLogPath }),
+        selectedPath: (folder) => folder ? `${folder}/debug.log` : "debug.log"
+      }));
 
     new Setting(containerEl)
       .setName("Copy all settings")
-      .setDesc("Copy every plugin setting in a structured, readable format.")
+      // eslint-disable-next-line obsidianmd/ui/sentence-case -- Preserve the Handwriting Natively plugin name.
+      .setDesc("Copy every Handwriting Natively setting as readable JSON.")
       .addButton((button) =>
         button.setButtonText("Copy all").onClick(async () => {
           try {
             await navigator.clipboard.writeText(serializePluginSettings(this.host.settings));
-            new Notice("All plugin settings copied.");
+            // eslint-disable-next-line obsidianmd/ui/sentence-case -- Preserve the Handwriting Natively plugin name.
+            new Notice("All Handwriting Natively settings copied.");
           } catch (error) {
             console.error("Handwriting Natively could not copy settings", error);
             new Notice("Could not copy settings. Check clipboard permission and try again.");
@@ -150,7 +259,8 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
     });
     supportLinks.createEl("a", {
       cls: "native-pdf-handwriting-support-link",
-      text: "Buy me a coffee",
+      // eslint-disable-next-line obsidianmd/ui/sentence-case -- Buy Me a Coffee is a brand name.
+      text: "Buy Me a Coffee",
       attr: {
         href: "https://buymeacoffee.com/marwanluaye",
         rel: "noopener noreferrer",
@@ -186,6 +296,42 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         if (delay !== null) await options.persist(delay);
       });
     });
+  }
+
+  private addFolderPathInput(
+    setting: Setting,
+    options: { value: string; persist: (value: string) => Promise<void>; selectedPath: (folder: string) => string }
+  ): void {
+    let input: HTMLInputElement | null = null;
+    setting.addText((text) => {
+      input = text.inputEl;
+      text.setValue(options.value).onChange(async (value) => {
+        await options.persist(value.trim());
+      });
+    });
+    setting.addExtraButton((button) =>
+      button.setIcon("x").setTooltip("Clear path").onClick(async () => {
+        if (!input) return;
+        input.value = "";
+        await options.persist("");
+      })
+    );
+    setting.addExtraButton((button) =>
+      button.setIcon("search").setTooltip("Choose vault folder").onClick(() => {
+        new FolderPicker(this.app, this.vaultFolders(), (folder) => {
+          const selected = options.selectedPath(folder);
+          if (input) input.value = selected;
+          void options.persist(selected);
+        }).open();
+      })
+    );
+  }
+
+  private vaultFolders(): string[] {
+    const folders = this.app.vault.getAllLoadedFiles()
+      .filter((file): file is TFolder => file instanceof TFolder)
+      .map((folder) => folder.path);
+    return ["", ...folders].sort((left, right) => left.localeCompare(right));
   }
 
   private async persistPatch(patch: Partial<PluginSettings>): Promise<void> {
