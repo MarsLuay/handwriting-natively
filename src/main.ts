@@ -212,16 +212,12 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousPlacement = this.settings.toolbarPlacement;
     const previousStylusAnnotationLabel = this.settings.hideStylusAnnotationLabel;
     const previousHoldToStraighten = this.settings.holdToStraighten;
-    const previousShowZoomMenu = this.settings.showZoomMenu;
     const previousSkipTextCancelConfirmation = this.settings.skipTextCancelConfirmation;
     const previousTextEscapeAction = this.settings.textEscapeAction;
     this.settings = settings;
     await this.saveData(settings);
     if (previousPlacement !== settings.toolbarPlacement) {
       for (const session of this.allSessions()) session.remountToolbar();
-    }
-    if (previousShowZoomMenu !== settings.showZoomMenu) {
-      for (const session of this.allSessions()) session.setShowZoomMenu(settings.showZoomMenu);
     }
     if (previousStylusAnnotationLabel !== settings.hideStylusAnnotationLabel) {
       for (const session of this.allSessions()) session.setStylusAnnotationLabelHidden(settings.hideStylusAnnotationLabel);

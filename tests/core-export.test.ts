@@ -1,6 +1,6 @@
-import { PDFArray, PDFDict, PDFDocument, PDFName } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName } from "pdf-lib";
 import { describe, expect, it, vi } from "vitest";
-import type { InkStroke } from "../src/model";
+import type { InkStroke, PdfTextAnnotation } from "../src/model";
 import {
   annotatedFilename,
   editableAnnotatedFilename,
@@ -92,6 +92,39 @@ describe("PDF export", () => {
     const annotation = annots.lookup(1, PDFDict);
     expect(annotation.lookup(PDFName.of("Subtype"), PDFName).decodeText()).toBe("Ink");
     expect(annotation.lookup(PDFName.of("InkList"), PDFArray).size()).toBe(1);
+    expect(annotation.lookup(PDFName.of("AP"), PDFDict).lookup(PDFName.of("N"))).toBeDefined();
+  });
+
+  it("exports rich text as editable FreeText annotations with rendered contents", async () => {
+    const text: PdfTextAnnotation = {
+      id: "text-1",
+      page: 1,
+      text: "Bold note\nsecond line",
+      x: 10,
+      y: 70,
+      color: "#2563eb",
+      fontSize: 12,
+      fontFamily: "sans-serif",
+      bold: false,
+      italic: false,
+      runs: [
+        { text: "Bold", color: "#dc2626", fontSize: 14, fontFamily: "sans-serif", bold: true, italic: false, strikethrough: false, highlight: false },
+        { text: " note\nsecond line", color: "#2563eb", fontSize: 12, fontFamily: "serif", bold: false, italic: true, strikethrough: false, highlight: false }
+      ],
+      createdAt: "now",
+      updatedAt: "now"
+    };
+    const output = await new PdfExportService().export({
+      sourceBytes: await sourcePdf(),
+      texts: [text],
+      mode: "editable"
+    });
+    const exported = await PDFDocument.load(output);
+    const annots = exported.getPages()[0]!.node.lookup(PDFName.Annots, PDFArray);
+    expect(annots.size()).toBe(1);
+    const annotation = annots.lookup(0, PDFDict);
+    expect(annotation.lookup(PDFName.of("Subtype"), PDFName).decodeText()).toBe("FreeText");
+    expect((annotation.lookup(PDFName.of("Contents")) as PDFHexString).decodeText()).toBe("Bold note\nsecond line");
     expect(annotation.lookup(PDFName.of("AP"), PDFDict).lookup(PDFName.of("N"))).toBeDefined();
   });
 });

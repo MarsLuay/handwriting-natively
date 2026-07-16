@@ -67,13 +67,13 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
-  it("clears editing selections in Pan mode and hides the zoom menu unless enabled", () => {
+  it("clears editing selections in Pan mode without a plugin zoom menu", () => {
     const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
     const toolbar = new AnnotationToolbar({
       preferences,
       autosave: true,
       drawEnabled: true,
-      callbacks: { onPreferencesChange: vi.fn(), onZoom: vi.fn() },
+      callbacks: { onPreferencesChange: vi.fn() },
       ownerDocument: document
     });
     document.body.append(toolbar.element);
@@ -85,17 +85,6 @@ describe("AnnotationToolbar", () => {
     expect(toolbar.element.querySelector("[data-control='eraser']")?.getAttribute("aria-pressed")).toBe("false");
     expect(toolbar.element.querySelector("[data-control='lasso']")?.getAttribute("aria-pressed")).toBe("false");
     toolbar.destroy();
-
-    const zoomToolbar = new AnnotationToolbar({
-      preferences,
-      autosave: true,
-      showZoomMenu: true,
-      callbacks: { onPreferencesChange: vi.fn(), onZoom: vi.fn() },
-      ownerDocument: document
-    });
-    document.body.append(zoomToolbar.element);
-    expect(zoomToolbar.element.querySelector("[data-control='zoom']")).not.toBeNull();
-    zoomToolbar.destroy();
   });
 
   it("shows the current sidebar placement when reopening More", () => {
@@ -221,7 +210,7 @@ describe("AnnotationToolbar", () => {
     document.body.append(toolbar.element);
     const controls = toolbar.element.querySelector(".native-pdf-handwriting-toolbar-controls");
     const buttons = [...(controls?.querySelectorAll<HTMLButtonElement>("button") ?? [])].map((button) => button.dataset.control);
-    expect(buttons.slice(0, 4)).toEqual(["pan", "text", "drawing", "eraser"]);
+    expect(buttons.slice(0, 4)).toEqual(["pan", "text", "color", "drawing"]);
     expect(toolbar.element.querySelector("[data-control='highlighter']")).toBeNull();
 
     toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();

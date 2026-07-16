@@ -127,7 +127,6 @@ export interface PluginSettings extends TouchNavigationSettings {
   simplifyStrokes: boolean;
   holdToStraighten: boolean;
   hideStylusAnnotationLabel: boolean;
-  showZoomMenu: boolean;
   toolbarPlacement: ToolbarPlacement;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
@@ -154,7 +153,6 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   simplifyStrokes: true,
   holdToStraighten: false,
   hideStylusAnnotationLabel: false,
-  showZoomMenu: false,
   toolbarPlacement: "main",
   vaultDebugLog: false,
   vaultDebugLogPath: `${root}/plugins/${PLUGIN_ID}/debug.log`,
@@ -212,7 +210,8 @@ const LEGACY_SETTING_KEYS = [
   "createBackupBeforeDirectModification",
   "backupLocation",
   "retainSidecarAfterDirectModification",
-  "mouseDragScroll"
+  "mouseDragScroll",
+  "showZoomMenu"
 ] as const;
 
 export function serializePluginSettings(settings: PluginSettings): string {

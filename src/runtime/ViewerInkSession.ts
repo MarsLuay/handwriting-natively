@@ -27,7 +27,7 @@ import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultSyncWriter";
-import { AnnotationToolbar, type MoreAction, type ZoomAction } from "../ui/AnnotationToolbar";
+import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
 import { inkBackingSize } from "./inkBackingSize";
 import type { DebugState } from "../ui/DebugPanel";
 import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
@@ -197,7 +197,6 @@ export class ViewerInkSession {
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
       drawEnabled: this.drawEnabled,
-      showZoomMenu: options.settings.showZoomMenu,
       supportedMoreActions: ["export-flattened", "export-editable", "toolbar-main", "toolbar-left", "toolbar-right"],
       callbacks: {
         onPreferencesChange: (preferences) => {
@@ -224,7 +223,6 @@ export class ViewerInkSession {
         onUndo: () => this.history.undo(),
         onRedo: () => this.history.redo(),
         onSave: () => this.manualSave(),
-        onZoom: (action) => this.handleZoom(action),
         onMore: (action) => void this.handleMore(action),
         toolbarPlacement: () => this.options.toolbarPlacement?.() ?? this.options.settings.toolbarPlacement
       }
@@ -1033,6 +1031,7 @@ export class ViewerInkSession {
     const bytes = await this.exporter.export({
       sourceBytes: await this.options.readSourcePdf(),
       getStrokes: () => this.ink.all(),
+      getTexts: () => [...this.textAnnotations.values()].flat(),
       pageMetrics: this.exportPageMetrics(),
       mode
     });
@@ -3471,11 +3470,6 @@ export class ViewerInkSession {
     this.options.adapter.mountToolbar(this.toolbar.element, this.currentToolbarPlacement());
   }
 
-  setShowZoomMenu(enabled: boolean): void {
-    this.options.settings.showZoomMenu = enabled;
-    this.toolbar.setShowZoomMenu(enabled);
-  }
-
   setStylusAnnotationLabelHidden(hidden: boolean): void {
     for (const surface of this.surfaces.values()) {
       this.setCanvasAccessibilityLabel(surface.canvas, surface.page.pageNumber, hidden);
@@ -3502,39 +3496,6 @@ export class ViewerInkSession {
 
   private currentToolbarPlacement(): ToolbarPlacement {
     return this.options.toolbarPlacement?.() ?? this.options.settings.toolbarPlacement ?? "main";
-  }
-
-  private handleZoom(action: ZoomAction): void {
-    const adapter = this.options.adapter;
-    if (action === "in") {
-      adapter.zoomBySteps?.(1);
-      return;
-    }
-    if (action === "out") {
-      adapter.zoomBySteps?.(-1);
-      return;
-    }
-    const named: Partial<Record<ZoomAction, string>> = {
-      "fit-width": "page-width",
-      "fit-page": "page-fit",
-      reset: "page-width"
-    };
-    const scales: Partial<Record<ZoomAction, number>> = {
-      actual: 1,
-      "200": 2,
-      "400": 4,
-      "800": 8,
-      "1000": 10,
-      "1500": 15,
-      "2000": 20
-    };
-    const namedValue = named[action];
-    if (namedValue) {
-      adapter.setScaleValue?.(namedValue);
-      return;
-    }
-    const scale = scales[action];
-    if (scale != null) adapter.setScale?.(scale);
   }
 
   private zoomAroundPinch(factor: number, clientX: number, clientY: number): void {

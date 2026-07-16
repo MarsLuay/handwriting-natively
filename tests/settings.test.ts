@@ -83,11 +83,6 @@ describe("safe defaults", () => {
     expect(mergeSettings({ hideStylusAnnotationLabel: true }).hideStylusAnnotationLabel).toBe(true);
   });
 
-  it("hides the duplicate zoom menu by default", () => {
-    expect(DEFAULT_SETTINGS.showZoomMenu).toBe(false);
-    expect(mergeSettings({ showZoomMenu: true }).showZoomMenu).toBe(true);
-  });
-
   it("keeps vault debug log off by default", () => {
     expect(DEFAULT_SETTINGS.vaultDebugLog).toBe(false);
     expect(DEFAULT_SETTINGS.vaultDebugLogPath).toBe(
@@ -109,6 +104,7 @@ describe("safe defaults", () => {
     const merged = mergeSettings({
       autosave: false,
       mouseDragScroll: false,
+      showZoomMenu: true,
       yoloMode: true,
       yoloConfirmed: true,
       yoloAutosaveDelayMs: 9999,
@@ -124,6 +120,7 @@ describe("safe defaults", () => {
     expect(merged).not.toHaveProperty("yoloConfirmed");
     expect(merged).not.toHaveProperty("backupLocation");
     expect(merged).not.toHaveProperty("mouseDragScroll");
+    expect(merged).not.toHaveProperty("showZoomMenu");
     expect(merged.toolPreferences.lasso).toEqual({ type: "rectangle" });
   });
 

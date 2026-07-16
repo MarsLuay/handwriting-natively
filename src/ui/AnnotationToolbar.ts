@@ -8,19 +8,6 @@ import { lassoOptions } from "./LassoDropdown";
 import { SaveStatusIndicator } from "./SaveStatusIndicator";
 import { setToolbarColorSwatch, setToolbarIcon, type ToolbarIcon } from "./ToolbarIcon";
 
-export type ZoomAction =
-  | "out"
-  | "in"
-  | "fit-width"
-  | "fit-page"
-  | "actual"
-  | "reset"
-  | "200"
-  | "400"
-  | "800"
-  | "1000"
-  | "1500"
-  | "2000";
 export type MoreAction =
   | "export-flattened"
   | "export-editable"
@@ -44,7 +31,6 @@ export interface AnnotationToolbarCallbacks {
   onUndo?(): void;
   onRedo?(): void;
   onSave?(): void | Promise<void>;
-  onZoom?(action: ZoomAction): void;
   onMore?(action: MoreAction): void;
   toolbarPlacement?(): "main" | "left" | "right";
 }
@@ -53,7 +39,6 @@ export interface AnnotationToolbarOptions {
   preferences: ToolPreferences;
   autosave: boolean;
   drawEnabled?: boolean;
-  showZoomMenu?: boolean;
   callbacks: AnnotationToolbarCallbacks;
   supportedMoreActions?: MoreAction[];
   ownerDocument?: Document;
@@ -92,14 +77,13 @@ export class AnnotationToolbar {
 
     this.controls.append(this.actionButton("pan", "Pan", () => this.setDrawEnabled(false)));
     this.controls.append(this.groupedTool("text", () => this.textMenu()));
+    this.controls.append(this.colorButton());
     this.controls.append(this.groupedTool("drawing", () => this.drawingMenu()));
     this.controls.append(this.groupedTool("eraser", () => this.eraserMenuOptions()));
     this.controls.append(this.groupedTool("laser", () => this.laserMenuOptions()));
-    this.controls.append(this.colorButton());
     this.controls.append(this.groupedTool("lasso", () => ({ label: "Lasso options", options: this.lassoMenu() })));
     this.controls.append(this.actionButton("undo", "Undo", () => this.callbacks.onUndo?.(), !this.callbacks.onUndo));
     this.controls.append(this.actionButton("redo", "Redo", () => this.callbacks.onRedo?.(), !this.callbacks.onRedo));
-    if (options.showZoomMenu && this.callbacks.onZoom) this.controls.append(this.menuButton("zoom", "Zoom", this.zoomMenu()));
     const supportedMore = options.supportedMoreActions ?? [];
     if (this.callbacks.onMore && supportedMore.length > 0) this.controls.append(this.menuButton("more", "More", () => this.moreMenu(supportedMore)));
     if (!this.autosave && this.callbacks.onSave) this.controls.append(this.actionButton("save", "Save", () => void this.callbacks.onSave?.()));
@@ -116,19 +100,6 @@ export class AnnotationToolbar {
     } else if (!existing && this.callbacks.onSave) {
       this.controls.append(this.actionButton("save", "Save", () => void this.callbacks.onSave?.()));
     }
-  }
-
-  setShowZoomMenu(enabled: boolean): void {
-    const existing = this.buttons.get("zoom");
-    if (!enabled) {
-      existing?.remove();
-      this.buttons.delete("zoom");
-      return;
-    }
-    if (existing || !this.callbacks.onZoom) return;
-    const zoom = this.menuButton("zoom", "Zoom", this.zoomMenu());
-    const reference = this.buttons.get("more") ?? this.buttons.get("save");
-    this.controls.insertBefore(zoom, reference ?? null);
   }
 
   selectEraser(): void {
@@ -223,7 +194,6 @@ export class AnnotationToolbar {
       case "laser":
       case "undo":
       case "redo":
-      case "zoom":
       case "more":
       case "save":
         return id;
@@ -470,24 +440,6 @@ export class AnnotationToolbar {
     opacityLabel.append(opacity);
     content.append(colorLabel, opacityLabel);
     return content;
-  }
-
-  private zoomMenu(): DropdownOption[] {
-    const labels: Array<[ZoomAction, string]> = [
-      ["out", "Zoom out"],
-      ["in", "Zoom in"],
-      ["fit-width", "Fit width"],
-      ["fit-page", "Fit page"],
-      ["actual", "Actual size (100%)"],
-      ["200", "200%"],
-      ["400", "400%"],
-      ["800", "800%"],
-      ["1000", "1000%"],
-      ["1500", "1500%"],
-      ["2000", "2000%"],
-      ["reset", "Reset zoom"]
-    ];
-    return labels.map(([id, label]) => ({ id, label, onSelect: () => this.callbacks.onZoom?.(id) }));
   }
 
   private moreMenu(supported: MoreAction[]): DropdownOption[] {

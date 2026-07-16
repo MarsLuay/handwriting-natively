@@ -184,15 +184,6 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Show zoom menu")
-      .setDesc("Show the plugin zoom menu. Leave off to use the PDF viewer's built-in zoom controls.")
-      .addToggle((toggle) =>
-        toggle.setValue(this.host.settings.showZoomMenu).onChange(async (value) => {
-          await this.persistPatch({ showZoomMenu: value });
-        })
-      );
-
-    new Setting(containerEl)
       .setName("Retry failed autosaves")
       .setDesc("Try saving again after an automatic save fails.")
       .addToggle((toggle) =>
