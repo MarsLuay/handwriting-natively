@@ -32,6 +32,12 @@ export function isElement(value: unknown): value is Element {
   return typeof Element !== "undefined" && isDomInstance(value, Element);
 }
 
+/** Popout-safe Element check using the node's owner document constructor. */
+export function isElementInDocument(value: unknown, ownerDocument: Document): value is Element {
+  const elementConstructor = ownerDocument.defaultView?.Element;
+  return elementConstructor !== undefined && isDomInstance(value, elementConstructor);
+}
+
 export function isHTMLCanvasElement(value: unknown): value is HTMLCanvasElement {
   return typeof HTMLCanvasElement !== "undefined" && isDomInstance(value, HTMLCanvasElement);
 }
@@ -40,17 +46,15 @@ type CssPropsHost = HTMLElement & {
   setCssProps?: (props: Record<string, string>) => void;
 };
 
-/** Prefer Obsidian `setCssProps`; attribute fallback for jsdom/tests (no `.style.*` writes). */
+/** Prefer Obsidian `setCssProps`; setProperty fallback for jsdom/tests (no `.style.* =` writes). */
 export function setElementCssProps(el: HTMLElement, props: Record<string, string>): void {
   const host = el as CssPropsHost;
   if (typeof host.setCssProps === "function") {
     host.setCssProps(props);
     return;
   }
-  const parts = Object.entries(props).map(([key, value]) => {
-    const cssKey = key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
-    return `${cssKey}: ${value}`;
-  });
-  const previous = el.getAttribute("style") ?? "";
-  el.setAttribute("style", previous ? `${previous};${parts.join(";")}` : parts.join(";"));
+  for (const [key, value] of Object.entries(props)) {
+    const cssKey = key.startsWith("--") ? key : key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+    el.style.setProperty(cssKey, value);
+  }
 }

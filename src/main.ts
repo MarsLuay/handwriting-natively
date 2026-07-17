@@ -210,11 +210,23 @@ export default class NativePdfInkPlugin extends Plugin {
 
   async saveSettings(settings: PluginSettings): Promise<void> {
     const previousPlacement = this.settings.toolbarPlacement;
+    const previousBoostedZoom = this.settings.boostedPdfZoom;
     this.settings = settings;
     await this.saveData(settings);
     if (previousPlacement !== settings.toolbarPlacement) {
       for (const session of this.allSessions()) session.remountToolbar();
     }
+    if (previousBoostedZoom !== settings.boostedPdfZoom) {
+      for (const session of this.allSessions()) session.setBoostedPdfZoom(settings.boostedPdfZoom);
+    }
+  }
+
+  async readAllLogs(): Promise<string | null> {
+    await this.vaultDebugLog.flush();
+    const path = normalizePath(this.settings.vaultDebugLogPath);
+    if (!path || !await this.app.vault.adapter.exists(path)) return null;
+    const logs = await this.app.vault.adapter.read(path);
+    return logs.trim() ? logs : null;
   }
 
   private scheduleDebouncedScan(delayMs = 100): void {
@@ -323,6 +335,7 @@ export default class NativePdfInkPlugin extends Plugin {
     return {
       onPagesChanged: (reason) => getSession()?.onPagesChanged(reason),
       onViewStateChange: (state, source) => getSession()?.onViewStateChange(state, source),
+      onPageContentMutation: (recordCount) => getSession()?.onPdfPageContentMutation(recordCount),
       onCompatibilityWarning: (message) => {
         console.warn(`[Handwriting Natively] ${message}`);
         this.vaultDebugLog.write("warn", "compatibility", { message });

@@ -1,5 +1,6 @@
 export type DrawingTool = "pen" | "pencil" | "highlighter";
-export type ToolId = DrawingTool | "eraser" | "lasso" | "laser" | "pan";
+/** There is no Pan tool: Draw off restores native PDF navigation. */
+export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser";
 export type LassoType = "freeform" | "rectangle";
 export type ToolbarPlacement = "main" | "left" | "right";
 export type SaveStatus = "saved" | "saving" | "dirty" | "failed";
@@ -13,6 +14,10 @@ export function isDrawingTool(tool: string): tool is DrawingTool {
 /** Freehand ink routed as draw (persisted tools + ephemeral laser). */
 export function isInkDrawTool(tool: string): tool is DrawingTool | "laser" {
   return isDrawingTool(tool) || tool === "laser";
+}
+
+export function isToolId(tool: unknown): tool is ToolId {
+  return typeof tool === "string" && (isDrawingTool(tool) || tool === "text" || tool === "eraser" || tool === "lasso" || tool === "laser");
 }
 
 /** Active drawing tool, or pen when a non-drawing tool is selected. */
@@ -42,6 +47,37 @@ export interface InkStroke {
   updatedAt: string;
 }
 
+/** Editable text placed by the Text tool; source PDF content is never changed. */
+export interface PdfTextAnnotation {
+  id: string;
+  page: number;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  fontSize: number;
+  fontFamily: string;
+  bold: boolean;
+  italic: boolean;
+  strikethrough: boolean;
+  runs: PdfTextRun[];
+  sourceRuns: PdfTextRun[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PdfTextRun {
+  text: string;
+  color: string;
+  fontSize: number;
+  fontFamily: string;
+  bold: boolean;
+  italic: boolean;
+  strikethrough: boolean;
+}
+
 export interface DrawingToolPreferences {
   color: string;
   width: number;
@@ -65,12 +101,34 @@ export interface LaserPreferences {
   fadeMs: number;
 }
 
+export interface TextStyle {
+  color: string;
+  fontSize: number;
+  fontFamily: string;
+  bold: boolean;
+  italic: boolean;
+  strikethrough: boolean;
+}
+
+export interface EraserPreferences {
+  size: number;
+  eraseWholeStrokes: boolean;
+  eraseWithRightMouseButton: boolean;
+}
+
+export interface ShapePreferences {
+  /** A half-second stationary hold after drawing asks the recogniser to replace confident shapes. */
+  holdToRecognize: boolean;
+}
+
 export interface ToolPreferences {
   activeTool: ToolId;
   pen: DrawingToolPreferences;
   pencil: DrawingToolPreferences;
   highlighter: DrawingToolPreferences;
-  eraser: { size: number };
+  shape: ShapePreferences;
+  text: TextStyle;
+  eraser: EraserPreferences;
   lasso: { type: LassoType };
   laser: LaserPreferences;
   recentColors: string[];
@@ -82,9 +140,15 @@ export interface PluginSettings {
   saveWhenClosing: boolean;
   showSaveStatus: boolean;
   retryFailedAutosaves: boolean;
+  /** Escape commits an active text annotation, per the selected workflow. */
+  textEscapeAction: "save";
   sidecarFolder: string;
   mouseDragScroll: boolean;
   simplifyStrokes: boolean;
+  /** Advanced opt-in: raise Obsidian PDF viewer zoom from 10× to 25×. */
+  boostedPdfZoom: boolean;
+  /** Advanced accessibility opt-out; the page label remains visible by default. */
+  hideStylusAnnotationLabel: boolean;
   toolbarPlacement: ToolbarPlacement;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
@@ -102,9 +166,12 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   saveWhenClosing: true,
   showSaveStatus: true,
   retryFailedAutosaves: true,
+  textEscapeAction: "save",
   sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
   mouseDragScroll: true,
   simplifyStrokes: true,
+  boostedPdfZoom: false,
+  hideStylusAnnotationLabel: false,
   toolbarPlacement: "main",
   vaultDebugLog: false,
   vaultDebugLogPath: `${root}/plugins/${PLUGIN_ID}/debug.log`,
@@ -141,9 +208,18 @@ export function createDefaultSettings(configDir: string): PluginSettings {
       thinning: 0.05,
       textureStrength: 0,
       tiltSensitivity: false,
-      simulateMousePressure: false
+      simulateMousePressure: true
     },
-    eraser: { size: 12 },
+    shape: { holdToRecognize: true },
+    text: {
+      color: "#111827",
+      fontSize: 16,
+      fontFamily: "sans-serif",
+      bold: false,
+      italic: false,
+      strikethrough: false
+    },
+    eraser: { size: 12, eraseWholeStrokes: false, eraseWithRightMouseButton: false },
     lasso: { type: "freeform" },
     laser: {
       color: "#ff0000",
@@ -166,12 +242,9 @@ const LEGACY_SETTING_KEYS = [
   "yoloAutosaveDelayMs",
   "createBackupBeforeDirectModification",
   "backupLocation",
-  "retainSidecarAfterDirectModification"
+  "retainSidecarAfterDirectModification",
+  "showZoomMenu"
 ] as const;
-
-export function serializePluginSettings(settings: PluginSettings): string {
-  return JSON.stringify(settings, null, 2);
-}
 
 export function mergeSettings(
   saved: Partial<PluginSettings> | null | undefined,
@@ -190,22 +263,51 @@ export function mergeSettings(
     type: lassoRaw.type === "freeform" || lassoRaw.type === "rectangle" ? lassoRaw.type : "freeform" as const
   };
   const toolbarPlacement = cleaned.toolbarPlacement;
+  const savedToolPreferences = { ...(cleaned.toolPreferences ?? {}) } as Record<string, unknown>;
+  delete savedToolPreferences.pan;
+  // Shape recognition used to be a separate active tool. It is now an enabled-by-default
+  // option in every drawing tool's Advanced settings, so safely return existing users to pen.
+  const savedActiveTool = (cleaned.toolPreferences as { activeTool?: unknown } | undefined)?.activeTool;
+  const activeTool = savedActiveTool === "shape"
+    ? "pen"
+    : isToolId(savedActiveTool)
+      ? savedActiveTool
+      : defaults.toolPreferences.activeTool;
   const merged = {
     ...defaults,
     ...cleaned,
     toolbarPlacement: toolbarPlacement === "left" || toolbarPlacement === "right" || toolbarPlacement === "main"
       ? toolbarPlacement
       : defaults.toolbarPlacement,
+    textEscapeAction: "save" as const,
+    boostedPdfZoom: cleaned.boostedPdfZoom === true,
+    hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,
     toolPreferences: {
       ...defaults.toolPreferences,
-      ...cleaned.toolPreferences,
+      ...savedToolPreferences,
+      activeTool,
       pen: { ...defaults.toolPreferences.pen, ...cleaned.toolPreferences?.pen },
       pencil: { ...defaults.toolPreferences.pencil, ...cleaned.toolPreferences?.pencil },
-      highlighter: {
-        ...defaults.toolPreferences.highlighter,
-        ...cleaned.toolPreferences?.highlighter
+        highlighter: {
+          ...defaults.toolPreferences.highlighter,
+          ...cleaned.toolPreferences?.highlighter
+        },
+        shape: {
+          holdToRecognize: cleaned.toolPreferences?.shape?.holdToRecognize !== false
+        },
+      text: {
+        color: cleaned.toolPreferences?.text?.color ?? defaults.toolPreferences.text.color,
+        fontSize: cleaned.toolPreferences?.text?.fontSize ?? defaults.toolPreferences.text.fontSize,
+        fontFamily: cleaned.toolPreferences?.text?.fontFamily ?? defaults.toolPreferences.text.fontFamily,
+        bold: cleaned.toolPreferences?.text?.bold === true,
+        italic: cleaned.toolPreferences?.text?.italic === true,
+        strikethrough: cleaned.toolPreferences?.text?.strikethrough === true
       },
-      eraser: { size: cleaned.toolPreferences?.eraser?.size ?? defaults.toolPreferences.eraser.size },
+      eraser: {
+        size: cleaned.toolPreferences?.eraser?.size ?? defaults.toolPreferences.eraser.size,
+        eraseWholeStrokes: cleaned.toolPreferences?.eraser?.eraseWholeStrokes === true,
+        eraseWithRightMouseButton: cleaned.toolPreferences?.eraser?.eraseWithRightMouseButton === true
+      },
       lasso,
       laser: {
         ...defaults.toolPreferences.laser,

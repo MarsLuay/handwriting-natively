@@ -95,6 +95,53 @@ describe("PDF adapters", () => {
     adapter.destroy();
   });
 
+  it("reports a removed annotation overlay as page-content recovery, not a page remount", async () => {
+    const host = compatibleHost();
+    const pageChanges = vi.fn();
+    const pageContentMutations = vi.fn();
+    const adapter = NativePdfViewAdapter.attach(host, {
+      onPagesChanged: pageChanges,
+      onPageContentMutation: pageContentMutations
+    });
+    const overlay = adapter.mountOverlay(1);
+
+    overlay.remove();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    expect(pageChanges).not.toHaveBeenCalled();
+    expect(pageContentMutations).toHaveBeenCalledOnce();
+    adapter.destroy();
+  });
+
+  it("ignores PDF.js page-content redraws but reacts when a page node changes", async () => {
+    const host = compatibleHost();
+    const pageChanges = vi.fn();
+    const pageContentMutations = vi.fn();
+    const adapter = NativePdfViewAdapter.attach(host, {
+      onPagesChanged: pageChanges,
+      onPageContentMutation: pageContentMutations
+    });
+    const page = host.querySelector(".page") as HTMLElement;
+
+    // PDF.js replaces these children repeatedly while scaling; the annotation
+    // overlay is still on the same .page and must not remount or blink.
+    page.querySelector("canvas")?.remove();
+    page.append(document.createElement("canvas"));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(pageChanges).not.toHaveBeenCalled();
+    expect(pageContentMutations).toHaveBeenCalledOnce();
+    expect(pageContentMutations).toHaveBeenLastCalledWith(2);
+
+    const replacement = document.createElement("div");
+    replacement.className = "page";
+    replacement.dataset.pageNumber = "2";
+    host.querySelector(".pdf-viewer")?.append(replacement);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(pageChanges).toHaveBeenCalledOnce();
+    expect(pageChanges).toHaveBeenLastCalledWith("pages-dom");
+    adapter.destroy();
+  });
+
   it("routes data-scale attribute changes to view state instead of page remounts", async () => {
     const host = compatibleHost();
     const pageChanges = vi.fn();
@@ -204,6 +251,27 @@ describe("PDF adapters", () => {
     expect(rail?.classList.contains("is-right")).toBe(true);
     expect(toolbar.classList.contains("is-sidebar-right")).toBe(true);
     expect(rail?.parentElement?.lastElementChild).toBe(rail);
+    adapter.destroy();
+  });
+
+  it("does not start sidebar tracking for PDF/text style churn when the rail is right", async () => {
+    const host = compatibleHost();
+    const adapter = NativePdfViewAdapter.attach(host);
+    const toolbar = document.createElement("div");
+    toolbar.className = "native-pdf-handwriting-toolbar";
+    adapter.mountToolbar(toolbar, "left");
+    adapter.mountToolbar(toolbar, "right");
+
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const page = host.querySelector(".page") as HTMLElement;
+    const textLayer = document.createElement("div");
+    page.append(textLayer);
+    textLayer.style.width = "120px";
+    await Promise.resolve();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    expect(debug.mock.calls.some((call) => call[1] === "pdf sidebar rail follow start")).toBe(false);
+    debug.mockRestore();
     adapter.destroy();
   });
 });

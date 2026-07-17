@@ -1,11 +1,36 @@
-import { Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { DEFAULT_SETTINGS, mergeSettings, serializePluginSettings, type PluginSettings } from "./model";
+import { FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFolder } from "obsidian";
+import { DEFAULT_SETTINGS, mergeSettings, type PluginSettings } from "./model";
 
 export { mergeSettings, DEFAULT_SETTINGS };
 
 export interface SettingsHost {
   settings: PluginSettings;
   saveSettings(settings: PluginSettings): Promise<void>;
+  readAllLogs(): Promise<string | null>;
+}
+
+/** Vault-only picker used for paths that must never escape the current vault. */
+class FolderPicker extends FuzzySuggestModal<string> {
+  constructor(
+    app: ConstructorParameters<typeof PluginSettingTab>[0],
+    private readonly folders: readonly string[],
+    private readonly onChoose: (path: string) => void
+  ) {
+    super(app);
+    this.setPlaceholder("Choose a vault folder");
+  }
+
+  getItems(): string[] {
+    return [...this.folders];
+  }
+
+  getItemText(path: string): string {
+    return path || "Vault root";
+  }
+
+  onChooseItem(path: string): void {
+    this.onChoose(path);
+  }
 }
 
 export class NativePdfInkSettingTab extends PluginSettingTab {
@@ -104,8 +129,40 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl).setName("Developer").setHeading();
-    new Setting(containerEl)
+    new Setting(containerEl).setName("Storage").setHeading();
+    this.addFolderPathInput(
+      new Setting(containerEl)
+        .setName("Annotation sidecar folder")
+        .setDesc("Vault-relative folder for editable annotation JSON. The original PDF is never changed; export creates a separate copy."),
+      {
+        value: this.host.settings.sidecarFolder,
+        persist: async (sidecarFolder) => this.persistPatch({ sidecarFolder })
+      }
+    );
+
+    const advanced = containerEl.createEl("details", { cls: "native-pdf-handwriting-advanced-settings" });
+    advanced.createEl("summary", { text: "Advanced settings" });
+    const advancedContent = advanced.createDiv({ cls: "native-pdf-handwriting-advanced-settings-content" });
+
+    new Setting(advancedContent)
+      .setName("Allow 25× PDF zoom")
+      .setDesc("Increase the PDF viewer zoom limit beyond Obsidian's normal 10× cap. This can use substantially more memory on large pdfs.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.settings.boostedPdfZoom).onChange(async (value) => {
+          await this.persistPatch({ boostedPdfZoom: value });
+        })
+      );
+
+    new Setting(advancedContent)
+      .setName("Hide stylus annotation label")
+      .setDesc("Remove the invisible page label announced to screen readers when the annotation canvas is focused.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.settings.hideStylusAnnotationLabel).onChange(async (value) => {
+          await this.persistPatch({ hideStylusAnnotationLabel: value });
+        })
+      );
+
+    new Setting(advancedContent)
       .setName("Vault debug log")
       .setDesc("Append every plugin event to a line-delimited log file in the vault so agents can read it directly. Off by default. Includes left-toolbar PDF sidebar offset diagnostics (reason, rects, jumps).")
       .addToggle((toggle) =>
@@ -114,26 +171,33 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl)
-      .setName("Vault debug log path")
-      .setDesc("Relative vault path for the log file. One JSON object per line.")
-      .addText((text) =>
-        text.setValue(this.host.settings.vaultDebugLogPath).onChange(async (value) => {
-          if (value.trim()) await this.persistPatch({ vaultDebugLogPath: value.trim() });
-        })
-      );
+    this.addFolderPathInput(
+      new Setting(advancedContent)
+        .setName("Vault debug log path")
+        .setDesc("Vault-relative location for the optional debug log. One JSON object per line."),
+      {
+        value: this.host.settings.vaultDebugLogPath,
+        persist: async (vaultDebugLogPath) => this.persistPatch({ vaultDebugLogPath }),
+        fileName: "debug.log"
+      }
+    );
 
-    new Setting(containerEl)
-      .setName("Copy all settings")
-      .setDesc("Copy every plugin setting in a structured, readable format.")
+    new Setting(advancedContent)
+      .setName("Copy all logs")
+      .setDesc("Copy the complete vault debug log. Enable vault debug log and reproduce an issue first to capture new events.")
       .addButton((button) =>
-        button.setButtonText("Copy all").onClick(async () => {
+        button.setButtonText("Copy logs").onClick(async () => {
           try {
-            await navigator.clipboard.writeText(serializePluginSettings(this.host.settings));
-            new Notice("All plugin settings copied.");
+            const logs = await this.host.readAllLogs();
+            if (!logs) {
+              new Notice("No vault debug logs are available. Enable vault debug log and reproduce the issue first.");
+              return;
+            }
+            await navigator.clipboard.writeText(logs);
+            new Notice("All debug logs copied.");
           } catch (error) {
-            console.error("Handwriting Natively could not copy settings", error);
-            new Notice("Could not copy settings. Check clipboard permission and try again.");
+            console.error("Handwriting Natively could not copy logs", error);
+            new Notice("Could not copy logs. Check clipboard permission and try again.");
           }
         })
       );
@@ -186,6 +250,41 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         if (delay !== null) await options.persist(delay);
       });
     });
+  }
+
+  private addFolderPathInput(
+    setting: Setting,
+    options: {
+      value: string;
+      persist: (value: string) => Promise<void>;
+      fileName?: string;
+    }
+  ): void {
+    let input: HTMLInputElement | null = null;
+    setting.addText((text) => {
+      input = text.inputEl;
+      text.setValue(options.value).onChange(async (value) => {
+        await options.persist(value.trim());
+      });
+    });
+    setting.addExtraButton((button) =>
+      button.setIcon("search").setTooltip("Choose vault folder").onClick(() => {
+        new FolderPicker(this.app, this.vaultFolders(), (folder) => {
+          const selected = options.fileName
+            ? folder ? `${folder}/${options.fileName}` : options.fileName
+            : folder;
+          if (input) input.value = selected;
+          void options.persist(selected);
+        }).open();
+      })
+    );
+  }
+
+  private vaultFolders(): string[] {
+    const folders = this.app.vault.getAllLoadedFiles()
+      .filter((file): file is TFolder => file instanceof TFolder)
+      .map((folder) => folder.path);
+    return ["", ...folders].sort((left, right) => left.localeCompare(right));
   }
 
   private async persistPatch(patch: Partial<PluginSettings>): Promise<void> {

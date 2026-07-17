@@ -55,4 +55,20 @@ describe("page coordinate layout", () => {
     expect(layout.offsetY).toBe(0);
     expect(layout.contentWidth).toBe(250);
   });
+
+  it("keeps the reported PDF scale while the viewer briefly reports zero dimensions", () => {
+    const host = document.createElement("div");
+    host.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0,
+      width: 0, height: 0, toJSON: () => ({})
+    });
+
+    const layout = resolvePageCoordinateLayout({ ...page(host), scale: 1.75 });
+
+    expect(layout.contentWidth).toBe(0);
+    expect(layout.contentHeight).toBe(0);
+    expect(layout.scale).toBe(1.75);
+    expect(layout.scaleX).toBe(1.75);
+    expect(layout.scaleY).toBe(1.75);
+  });
 });

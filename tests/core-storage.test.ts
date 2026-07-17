@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { InkStroke } from "../src/model";
+import type { InkStroke, PdfTextAnnotation } from "../src/model";
 import { createDocumentIdentity } from "../src/storage/DocumentIdentity";
 import { MigrationManager } from "../src/storage/MigrationManager";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
@@ -7,6 +7,13 @@ import { parseSidecar, pickNewerSidecar, serializeSidecar, type SidecarSchemaV1 
 
 const stroke: InkStroke = { id: "s1", page: 1, tool: "pen", color: "#000000", width: 2, opacity: 1, inputType: "pen", points: [{ x: 1, y: 2, pressure: 0.5, time: 3 }], createdAt: "2026-01-01", updatedAt: "2026-01-01" };
 const sidecar = (): SidecarSchemaV1 => ({ schemaVersion: 1, document: { id: "doc", vaultPath: "a.pdf" }, pages: [{ page: 1, width: 100, height: 200, rotation: 0, strokes: [stroke] }], createdAt: "2026-01-01", updatedAt: "2026-01-01" });
+const text: PdfTextAnnotation = {
+  id: "t1", page: 1, text: "Note", x: 10, y: 50, width: 40, height: 20,
+  color: "#000000", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+  runs: [{ text: "Note", color: "#000000", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+  sourceRuns: [{ text: "Note", color: "#000000", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+  createdAt: "2026-01-01", updatedAt: "2026-01-01"
+};
 
 class MemoryFiles implements TextFileAdapter {
   data = new Map<string, string>();
@@ -46,6 +53,27 @@ describe("sidecar storage", () => {
     const doc = sidecar();
     doc.pages[0]!.strokes = [highlight];
     expect(parseSidecar(serializeSidecar(doc)).pages[0]?.strokes[0]?.tool).toBe("highlighter");
+  });
+
+  it("round-trips editable text annotations and normalizes PR-era text geometry", () => {
+    const document = sidecar();
+    document.pages[0]!.texts = [text];
+    expect(parseSidecar(serializeSidecar(document)).pages[0]?.texts).toEqual([text]);
+    const prEra = structuredClone(document) as unknown as { pages: Array<{ texts: Array<Record<string, unknown>> }> };
+    const annotation = prEra.pages[0]!.texts[0]!;
+    delete annotation.width;
+    delete annotation.height;
+    delete annotation.fontFamily;
+    delete annotation.strikethrough;
+    delete annotation.sourceRuns;
+    for (const run of annotation.runs as Array<Record<string, unknown>>) delete run.strikethrough;
+    const normalized = parseSidecar(JSON.stringify(prEra)).pages[0]!.texts![0]!;
+    expect(normalized).toMatchObject({ width: expect.any(Number), height: expect.any(Number), fontFamily: "sans-serif", strikethrough: false });
+    expect(normalized.runs[0]).toMatchObject({ strikethrough: false });
+    expect(normalized.sourceRuns).toEqual(normalized.runs);
+
+    delete annotation.fontSize;
+    expect(() => parseSidecar(JSON.stringify(prEra))).toThrow("invalid sidecar");
   });
 
   it("migrates v0 pages to schema v1 with default rotation", () => {
@@ -105,4 +133,3 @@ describe("sidecar storage", () => {
     expect(files.data.has("annotations/doc.json.tmp")).toBe(false);
   });
 });
-

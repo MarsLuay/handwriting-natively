@@ -183,5 +183,16 @@ export function eraseStrokeSegments(strokes: readonly InkStroke[], path: readonl
   return { kept, erased, fragments };
 }
 
+/** Whole-stroke eraser: any contact removes the complete original stroke. */
+export function eraseWholeStrokes(strokes: readonly InkStroke[], path: readonly Point[], size: number, options: SegmentEraserOptions = {}): SegmentEraseResult {
+  const segmented = eraseStrokeSegments(strokes, path, size, options);
+  const erasedIds = new Set(segmented.erased.map((stroke) => stroke.id));
+  return {
+    kept: strokes.filter((stroke) => !erasedIds.has(stroke.id)),
+    erased: segmented.erased,
+    fragments: []
+  };
+}
+
 /** Default eraser entry point. */
 export const eraseStrokes = eraseStrokeSegments;

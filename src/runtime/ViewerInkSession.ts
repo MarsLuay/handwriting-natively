@@ -1,5 +1,5 @@
-import type { DrawingTool, InkStroke, PdfPoint, PluginSettings, ToolbarPlacement, ToolPreferences } from "../model";
-import { isInkDrawTool, resolveDrawingTool } from "../model";
+import type { DrawingTool, InkStroke, PdfPoint, PdfTextAnnotation, PdfTextRun, PluginSettings, TextStyle, ToolbarPlacement, ToolPreferences } from "../model";
+import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
 import type { ObsidianPdfAdapter } from "../integration/ObsidianPdfAdapter";
 import type { PdfPageInfo } from "../integration/PdfPageLocator";
 import { PointerRouter } from "../input/PointerRouter";
@@ -12,12 +12,13 @@ import { StrokeClipboard } from "../ink/StrokeClipboard";
 import { simplifyPoints } from "../ink/StrokeStabilizer";
 import { PdfCoordinateMapper, type PageRotation } from "../pdf/PdfCoordinateMapper";
 import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type PageCoordinateLayout } from "../pdf/PageCoordinateLayout";
-import { setElementCssProps } from "../dom/typeGuards";
-import { PdfExportService, annotatedFilename } from "../pdf/PdfExportService";
-import { AddStrokeCommand, AddStrokesCommand, DeleteStrokesCommand, ReplacePageStrokesCommand, ReplaceStrokesCommand, translateStrokes } from "../history/AnnotationCommands";
+import { isElementInDocument, setElementCssProps } from "../dom/typeGuards";
+import { PdfExportService, annotatedFilename, editableAnnotatedFilename } from "../pdf/PdfExportService";
+import { AddStrokeCommand, ReplaceAnnotationSelectionCommand, ReplacePageStrokesCommand, translateStrokes } from "../history/AnnotationCommands";
 import { CommandHistory, type Command } from "../history/CommandHistory";
-import { eraseStrokes } from "../tools/EraserTool";
-import { boundingShapeFromStrokes, filterSelectableStrokes, selectStrokes, selectionShapeArea, shapeBounds, shapeContainsPoint, translateShape, type SelectionShape } from "../tools/LassoTool";
+import { eraseStrokes, eraseWholeStrokes } from "../tools/EraserTool";
+import { recognizeHeldShape, resizeShapePoints, shapeResizeAnchor, shapeResizeHandle, SHAPE_RECOGNITION_HOLD_MS, type ShapeRecognition } from "../tools/ShapeRecognizer";
+import { boundingShapeFromSelection, filterSelectableStrokes, selectStrokes, selectionShapeArea, shapeBounds, shapeContainsPoint, translateShape, type SelectionShape } from "../tools/LassoTool";
 import { drawHighlighterStroke } from "../tools/HighlighterTool";
 import {
   drawLaserStroke,
@@ -31,7 +32,7 @@ import { createDocumentIdentity } from "../storage/DocumentIdentity";
 import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
-import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, type SidecarSchemaV1 } from "../storage/SidecarSchema";
+import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultSyncWriter";
 import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
 import { inkBackingSize } from "./inkBackingSize";
@@ -41,6 +42,25 @@ import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../lo
 import type { VaultLogSink } from "../logging/VaultLogSink";
 import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
 import { describeScrollElement } from "../integration/PdfScrollRoot";
+import { TextAnnotationSession } from "../text/TextAnnotationSession";
+import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../text/TextAnnotationCommands";
+import type { TextStyleChange } from "../ui/TextDropdown";
+import { insertStyledText, readTextRuns, renderTextRuns, rescaleTextRuns, restoreSelection, selectionOffsets, type TextSelectionOffsets } from "../text/RichTextDom";
+import { normalizeTextRuns, patchTextRunRange, plainTextFromRuns, plainTextToRuns, styleAtTextOffset } from "../text/RichTextRuns";
+
+const INPUT_OWNER_REGISTRY_KEY = "__nativePdfHandwritingInputOwners";
+const detachedInputOwners = new WeakMap<HTMLElement, ViewerInkSession>();
+
+function inputOwners(pageElement: HTMLElement): WeakMap<HTMLElement, ViewerInkSession> {
+  // Page elements belong to a specific Obsidian window. Keep ownership there
+  // so a pop-out PDF gets the same duplicate-router protection as the main UI.
+  const root = pageElement.ownerDocument.defaultView as (Window & {
+    [INPUT_OWNER_REGISTRY_KEY]?: WeakMap<HTMLElement, ViewerInkSession>;
+  }) | null;
+  if (!root) return detachedInputOwners;
+  if (!root[INPUT_OWNER_REGISTRY_KEY]) root[INPUT_OWNER_REGISTRY_KEY] = new WeakMap<HTMLElement, ViewerInkSession>();
+  return root[INPUT_OWNER_REGISTRY_KEY];
+}
 
 export interface SessionDiagnostics {
   pdfPath: string;
@@ -88,6 +108,7 @@ interface PageSurface {
   page: PdfPageInfo;
   overlay: HTMLElement;
   canvas: HTMLCanvasElement;
+  textLayer: HTMLElement;
   context: CanvasRenderingContext2D;
   /** Committed-stroke cache — blit for live draw + zoom settle before HQ rebuild. */
   inkLayer: HTMLCanvasElement | null;
@@ -97,15 +118,75 @@ interface PageSurface {
   builder: StrokeBuilder | undefined;
   /** True while the live StrokeBuilder is a non-persisted laser draft. */
   laserDraft: boolean;
+  /** Samples dropped from the current ephemeral laser draft. */
+  laserDiscardedPoints: number;
+  shapeHoldTimer: number | null;
+  shapePreview: PdfPoint[] | null;
+  shapeResize: ShapeResize | null;
   editPath: PdfPoint[];
   editTool: "eraser" | "lasso" | undefined;
   eraserSize: number | undefined;
+  eraserWholeStrokes: boolean | undefined;
+  textIntent: { start: PdfPoint; hit: PdfTextAnnotation | null; pointerType: string } | null;
+}
+
+interface ActiveTextEditor {
+  surface: PageSurface;
+  existing: PdfTextAnnotation | null;
+  draft: PdfTextAnnotation;
+  style: TextStyle;
+  /** Canonical text formatting; DOM is synchronized after input but not re-rendered. */
+  runs: PdfTextRun[];
+  /** Last root-relative selection, retained while a toolbar takes focus. */
+  selection: TextSelectionOffsets | null;
+  /** Formatting used for the next insertion after a collapsed style change. */
+  insertionStyle: TextStyle;
+  pendingInsertionStyle: boolean;
+  /** Formatting requested during IME composition; applied after compositionend. */
+  deferredStyleChange: TextStyleChange | null;
+  element: HTMLElement;
+  resizeObserver: ResizeObserver | null;
+  abort: AbortController;
+  /** IME candidate text is not committed annotation content yet. */
+  composing: boolean;
+}
+
+interface TextMoveDrag {
+  page: number;
+  start: PdfPoint;
+  before: PdfTextAnnotation;
+  preview: PdfTextAnnotation;
+}
+
+type TextBoxHandle = "n" | "e" | "s" | "w" | "nw" | "ne" | "sw" | "se";
+
+/** A selection-frame drag; the committed text DOM does not reflow until release. */
+interface TextBoxTransformDrag {
+  surface: PageSurface;
+  pointerId: number;
+  start: Pick<PdfPoint, "x" | "y">;
+  before: PdfTextAnnotation;
+  preview: PdfTextAnnotation;
+  mode: "move" | "resize";
+  handle: TextBoxHandle;
+  /** Static box translated live for Move; resize keeps its text stationary. */
+  box: HTMLElement;
+  outline: HTMLElement;
+  abort: AbortController;
+}
+
+interface ShapeResize {
+  recognition: ShapeRecognition;
+  anchor: PdfPoint;
+  handle: PdfPoint;
 }
 
 export class ViewerInkSession {
   private readonly ink = new InkSession();
+  private readonly texts = new TextAnnotationSession();
   private readonly identity;
   private readonly surfaces = new Map<number, PageSurface>();
+  private readonly ownedInputPages = new Set<HTMLElement>();
   private readonly exporter = new PdfExportService();
   private readonly createdAt = new Date().toISOString();
   private readonly toolbar: AnnotationToolbar;
@@ -114,11 +195,18 @@ export class ViewerInkSession {
   private readonly autosave: AutosaveQueue<SidecarSchemaV1>;
   private readonly saveCoordinator: SaveCoordinator;
   private selected: InkStroke[] = [];
+  private selectedTexts: PdfTextAnnotation[] = [];
   private selectionShape: SelectionShape | null = null;
   private selectionPage: number | null = null;
-  private moveDrag: { page: number; start: PdfPoint; before: InkStroke[]; beforeShape: SelectionShape } | null = null;
+  private moveDrag: { page: number; start: PdfPoint; before: InkStroke[]; beforeTexts: PdfTextAnnotation[]; beforeShape: SelectionShape } | null = null;
   private movePreview: InkStroke[] | null = null;
+  private moveTextPreview: PdfTextAnnotation[] | null = null;
   private moveShapePreview: SelectionShape | null = null;
+  private activeTextEditor: ActiveTextEditor | null = null;
+  private textMoveDrag: TextMoveDrag | null = null;
+  private textBoxTransformDrag: TextBoxTransformDrag | null = null;
+  private textToolActive = false;
+  private temporaryStylusEraserPointers = 0;
   private drawEnabled = false;
   private debugState: DebugState = {};
   private destroyed = false;
@@ -136,15 +224,29 @@ export class ViewerInkSession {
   private zoomBurstScaleStart: number | null = null;
   private zoomBurstScaleEnd: number | null = null;
   private zoomBurstReason = "view-scalechanging";
+  /** Delayed release avoids exposing an ink redraw before PDF.js finishes its own render. */
+  private zoomCompositeReleaseFrame: number | null = null;
+  private zoomCompositeReleaseTimer: number | null = null;
+  private zoomCompositeSettledAt = 0;
+  private zoomNativeContentMutations = 0;
+  private lastZoomNativeContentAt = 0;
+  /** One durable coordinate breadcrumb per page for each text-bearing zoom burst. */
+  private readonly zoomTextLayoutLoggedPages = new Set<number>();
   private laserTrails: LaserTrail[] = [];
   private laserFadeFrame: number | null = null;
   private lastLaserPaintAt = 0;
   /** Laser fade loop caps ~30fps — full page repaint every frame is too heavy. */
   private static readonly LASER_FADE_MIN_MS = 32;
+  /** Bound CPU, allocations, and canvas commands for high-rate stylus input. */
+  private static readonly MAX_LASER_DRAFT_POINTS = 1024;
   private lastZoomSignalAt = 0;
   private zoomCompositing = false;
   private static readonly ZOOM_SETTLE_MS = 120;
   private static readonly ZOOM_ACTIVE_MS = 500;
+  /** PDF.js usually swaps canvas/text layers hundreds of ms after scalechanging. */
+  private static readonly ZOOM_NATIVE_RENDER_GRACE_MS = 500;
+  /** Do not release during the tail of a native page-content replacement burst. */
+  private static readonly ZOOM_NATIVE_RENDER_QUIET_MS = 120;
   private inkUpgradeTimer: number | null = null;
   private readonly inkUpgradePages = new Set<number>();
   /** Wait after zoom settle before HQ graphite rebuild — avoids hitching mid-pinch. */
@@ -161,27 +263,70 @@ export class ViewerInkSession {
   private constructor(private readonly options: ViewerInkSessionOptions) {
     this.identity = createDocumentIdentity({ vaultPath: options.pdfPath });
     this.logger = new SessionLogger(options.pdfPath, options.vaultLog);
+    this.textToolActive = options.settings.toolPreferences.activeTool === "text";
+    this.logger.textTool("tool-initial", {
+      active: this.textToolActive,
+      drawEnabled: this.drawEnabled,
+      fontSize: options.settings.toolPreferences.text.fontSize,
+      fontFamily: options.settings.toolPreferences.text.fontFamily
+    });
     this.toolbar = new AnnotationToolbar({
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
       drawEnabled: this.drawEnabled,
-      supportedMoreActions: ["export", "toolbar-main", "toolbar-left", "toolbar-right"],
+      supportedMoreActions: ["export", "export-editable", "toolbar-main", "toolbar-left", "toolbar-right"],
       callbacks: {
-        onPreferencesChange: (preferences) => {
-          void options.saveSettings(preferences);
-          this.refresh("preferences");
+        onPreferencesChange: (preferences, reason = "general") => {
+          const wasTextToolActive = this.textToolActive;
+          this.textToolActive = preferences.activeTool === "text";
+          if (wasTextToolActive !== this.textToolActive) {
+            this.logger.textTool(this.textToolActive ? "tool-activate" : "tool-deactivate", {
+              activeTool: preferences.activeTool,
+              drawEnabled: this.drawEnabled
+            });
+            // A deactivated Text tool must not leave its contenteditable over
+            // the page: it blocks normal static-text rendering until another
+            // click happens to commit or discard it.
+            if (!this.textToolActive) this.commitActiveTextEditor("tool-deactivate");
+          }
+          const logTextPreferenceSave = wasTextToolActive || this.textToolActive;
+          if (logTextPreferenceSave) {
+            this.logger.textTool("preferences-save-start", {
+              activeTool: preferences.activeTool,
+              fontSize: preferences.text.fontSize,
+              fontFamily: preferences.text.fontFamily
+            });
+          }
+          void options.saveSettings(preferences).then(() => {
+            if (logTextPreferenceSave) this.logger.textTool("preferences-save-complete", { activeTool: preferences.activeTool });
+          }).catch((error) => {
+            if (logTextPreferenceSave) {
+              this.logger.textTool("preferences-save-error", {
+                activeTool: preferences.activeTool,
+                error: this.errorMessage(error)
+              });
+            }
+          });
+          // Text-style changes synchronously update the focused editor, or
+          // refresh just the selected text annotations. A full session refresh
+          // here redraws every page a second time and makes font-size changes
+          // visibly laggy.
+          if (reason !== "text-style") this.refresh("preferences");
         },
         onEraserSizePreview: () => {
           this.refreshSurfaceCursors();
         },
+        onTextStyleChange: (change) => this.applyTextStyleToActiveEditor(change),
+        onTextFormatPointerDown: () => this.captureActiveTextSelection("toolbar-pointerdown"),
+        activeTextStyle: () => this.activeTextStyle(),
         onDrawModeChange: (enabled) => {
           this.drawEnabled = enabled;
           if (!enabled) this.clearSelection();
           this.logMousePanConfig("draw-mode");
           this.refresh("draw-mode");
         },
-        onUndo: () => this.history.undo(),
-        onRedo: () => this.history.redo(),
+        onUndo: () => this.applyTextHistory("undo"),
+        onRedo: () => this.applyTextHistory("redo"),
         onSave: () => this.manualSave(),
         onMore: (action) => void this.handleMore(action),
         toolbarPlacement: () => this.options.toolbarPlacement?.() ?? this.options.settings.toolbarPlacement
@@ -206,6 +351,7 @@ export class ViewerInkSession {
             reason: "autosave",
             documentId: this.identity.id,
             strokeCount: this.ink.all().length,
+            textCount: this.texts.all().length,
             dirty: this.isDirty(),
             updatedAt: new Date().toISOString(),
             error: this.errorMessage(error)
@@ -238,7 +384,9 @@ export class ViewerInkSession {
       withinTarget: (target) => {
         if (!(target instanceof Element)) return false;
         if (target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown, .native-pdf-handwriting-selection-toolbar")) return false;
-        return adapter.host.contains(target) || adapter.root.contains(target);
+        // The native PDF sidebar and its resize handle share the leaf host but
+        // must keep their own pointer handling. Only pan from the PDF viewport.
+        return adapter.root.contains(target);
       },
       captureElement: () => adapter.root,
       onPan: (phase, event, details) => this.logMousePan(phase, event, details)
@@ -378,6 +526,7 @@ export class ViewerInkSession {
       this.zoomBurstStartedAt = now;
       this.zoomTickCount = 0;
       this.zoomBurstScaleStart = scale ?? null;
+      this.zoomTextLayoutLoggedPages.clear();
     }
     this.zoomTickCount += 1;
     this.zoomBurstReason = reason;
@@ -410,12 +559,15 @@ export class ViewerInkSession {
       this.zoomBurstScaleEnd = null;
       this.lastZoomSignalAt = 0;
       this.endZoomCompositing();
+      this.zoomCompositeSettledAt = performance.now();
+      this.logger.zoomComposite("settle-paint", { pages: this.surfaces.size, burstTicks });
       this.repaintSurfaces(this.zoomBurstReason, {
         burstTicks,
         burstDurationMs,
         ...(scaleStart !== null ? { scaleStart } : {}),
         ...(scaleEnd !== null ? { scaleEnd } : {})
       });
+      this.releaseZoomCompositeAfterNativeRender();
     }, ViewerInkSession.ZOOM_SETTLE_MS);
   }
 
@@ -437,18 +589,122 @@ export class ViewerInkSession {
   }
 
   private beginZoomCompositing(): void {
+    this.cancelZoomCompositeRelease();
     this.cancelInkLayerUpgrades();
+    this.zoomCompositeSettledAt = 0;
+    this.zoomNativeContentMutations = 0;
+    this.lastZoomNativeContentAt = 0;
     this.zoomCompositing = true;
     for (const surface of this.surfaces.values()) {
       this.captureInkLayerFromCanvas(surface);
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
     }
+    this.logger.zoomComposite("begin", { pages: this.surfaces.size });
   }
 
   private endZoomCompositing(): void {
     this.zoomCompositing = false;
+  }
+
+  /**
+   * PDF.js asynchronously replaces its canvas/text layers after scalechanging.
+   * Keep our already-positioned layer over that native transition, then allow
+   * two browser paints only after the native replacement has gone quiet.
+   */
+  private releaseZoomCompositeAfterNativeRender(): void {
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) {
+      this.releaseZoomCompositeLayers();
+      return;
+    }
+    this.cancelZoomCompositeRelease();
+    const now = performance.now();
+    const settledAt = this.zoomCompositeSettledAt || now;
+    const nativeRenderReadyAt = settledAt + ViewerInkSession.ZOOM_NATIVE_RENDER_GRACE_MS;
+    const nativeContentQuietAt = this.lastZoomNativeContentAt > 0
+      ? this.lastZoomNativeContentAt + ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS
+      : nativeRenderReadyAt;
+    const releaseAt = Math.max(nativeRenderReadyAt, nativeContentQuietAt);
+    const delayMs = Math.max(0, releaseAt - now);
+    this.logger.zoomComposite("release-scheduled", {
+      pages: this.surfaces.size,
+      delayMs: roundMs(delayMs),
+      nativeContentMutations: this.zoomNativeContentMutations,
+      sinceSettleMs: roundMs(now - settledAt)
+    });
+    this.zoomCompositeReleaseTimer = window.setTimeout(() => {
+      this.zoomCompositeReleaseTimer = null;
+      this.zoomCompositeReleaseFrame = view.requestAnimationFrame(() => {
+        this.zoomCompositeReleaseFrame = view.requestAnimationFrame(() => {
+          this.zoomCompositeReleaseFrame = null;
+          if (this.destroyed || this.zoomCompositing) return;
+          this.releaseZoomCompositeLayers();
+        });
+      });
+    }, delayMs);
+  }
+
+  /** Adapter breadcrumb for the native PDF.js canvas/text layer replacement. */
+  onPdfPageContentMutation(recordCount: number): void {
+    if (this.destroyed) return;
+    const pages = this.options.adapter.pages();
+    const detachedOverlayPages = [...this.surfaces.entries()]
+      .filter(([pageNumber, surface]) => !surface.overlay.isConnected && pages.some((page) => page.pageNumber === pageNumber && page.element.isConnected))
+      .map(([pageNumber]) => pageNumber);
+    const reattached = detachedOverlayPages.length > 0 && this.tryReattachDisconnectedSurfaces(pages);
+    const reattachedOverlayPages = reattached
+      ? detachedOverlayPages.filter((pageNumber) => this.surfaces.get(pageNumber)?.overlay.isConnected)
+      : [];
+    const releasePending = this.zoomCompositing
+      || this.zoomCompositeReleaseTimer !== null
+      || this.zoomCompositeReleaseFrame !== null;
+
+    // A native redraw can remove our overlay even after the compositor's
+    // handoff. Recover that rare case without treating every canvas/text-layer
+    // update as a page remount (which was the source of zoom flashing).
+    if (!releasePending && !reattached) return;
+    const now = performance.now();
+    if (releasePending) {
+      this.zoomNativeContentMutations += recordCount;
+      this.lastZoomNativeContentAt = now;
+    }
+    this.logger.zoomComposite("native-content", {
+      records: recordCount,
+      nativeContentMutations: this.zoomNativeContentMutations,
+      releasePending,
+      pageCount: pages.length,
+      detachedOverlayPages,
+      reattachedOverlayPages,
+      sinceSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null
+    });
+
+    if (reattached) {
+      if (this.zoomCompositing) this.syncZoomOverlayLayouts();
+      else this.repaintSurfaces("native-content-reattach");
+    }
+    if (releasePending && !this.zoomCompositing) this.releaseZoomCompositeAfterNativeRender();
+  }
+
+  private releaseZoomCompositeLayers(): void {
     for (const surface of this.surfaces.values()) {
       surface.overlay.classList.remove("native-pdf-handwriting-zoom-compositing");
+    }
+    this.logger.zoomComposite("release", {
+      pages: this.surfaces.size,
+      nativeContentMutations: this.zoomNativeContentMutations,
+      heldAfterSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(performance.now() - this.zoomCompositeSettledAt) : null
+    });
+    this.zoomCompositeSettledAt = 0;
+  }
+
+  private cancelZoomCompositeRelease(): void {
+    if (this.zoomCompositeReleaseFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.zoomCompositeReleaseFrame);
+      this.zoomCompositeReleaseFrame = null;
+    }
+    if (this.zoomCompositeReleaseTimer !== null) {
+      window.clearTimeout(this.zoomCompositeReleaseTimer);
+      this.zoomCompositeReleaseTimer = null;
     }
   }
 
@@ -462,6 +718,7 @@ export class ViewerInkSession {
       if (!this.reattachSurface(surface, current)) continue;
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
       this.syncOverlayLayout(surface);
+      this.syncTextLayoutDuringZoom(surface);
     }
   }
 
@@ -509,6 +766,7 @@ export class ViewerInkSession {
 
   static async create(options: ViewerInkSessionOptions): Promise<ViewerInkSession> {
     const session = new ViewerInkSession(options);
+    options.adapter.setBoostedZoom?.(options.settings.boostedPdfZoom);
     session.persistEpoch = options.claimPersistEpoch?.(session.identity.id) ?? 1;
     const sidecar = await options.sidecars.load(session.identity.id);
     const recovery = await options.recovery.load(session.identity.id);
@@ -516,11 +774,17 @@ export class ViewerInkSession {
     const sidecarStrokes = countSidecarStrokes(sidecar);
     const recoveryStrokes = countSidecarStrokes(recovery);
     const loadedStrokes = countSidecarStrokes(stored);
+    const sidecarTexts = countSidecarTexts(sidecar);
+    const recoveryTexts = countSidecarTexts(recovery);
+    const loadedTexts = countSidecarTexts(stored);
     session.logger.sidecarLoad({
       documentId: session.identity.id,
       sidecarStrokes,
+      sidecarTexts,
       recoveryStrokes,
+      recoveryTexts,
       loadedStrokes,
+      loadedTexts,
       sidecarUpdatedAt: sidecar?.updatedAt ?? null,
       recoveryUpdatedAt: recovery?.updatedAt ?? null
     });
@@ -529,6 +793,7 @@ export class ViewerInkSession {
         session.pageMetrics.set(page.page, { width: page.width, height: page.height });
       }
       for (const stroke of page.strokes) session.ink.add(stroke);
+      for (const text of page.texts ?? []) session.texts.add(text);
     }
     options.adapter.mountToolbar(session.toolbar.element, session.currentToolbarPlacement());
     session.logger.sessionAttach({
@@ -539,8 +804,11 @@ export class ViewerInkSession {
       mouseDragScroll: options.settings.mouseDragScroll,
       toolbarPlacement: session.currentToolbarPlacement(),
       loadedStrokes,
+      loadedTexts,
       sidecarStrokes,
+      sidecarTexts,
       recoveryStrokes,
+      recoveryTexts,
       persistEpoch: session.persistEpoch
     });
     session.refreshDiagnostics();
@@ -575,18 +843,21 @@ export class ViewerInkSession {
         const current = pages.find((page) => page.pageNumber === pageNumber);
         if (!current) {
           surface.router?.destroy();
+          this.releaseInputOwner(surface.page.element);
           surface.overlay.remove();
           this.surfaces.delete(pageNumber);
           continue;
         }
         if (current.element !== surface.page.element) {
           surface.router?.destroy();
+          this.releaseInputOwner(surface.page.element);
           surface.overlay.remove();
           this.surfaces.delete(pageNumber);
           continue;
         }
         if (!this.reattachSurface(surface, current)) {
           surface.router?.destroy();
+          this.releaseInputOwner(surface.page.element);
           surface.overlay.remove();
           this.surfaces.delete(pageNumber);
           continue;
@@ -613,10 +884,11 @@ export class ViewerInkSession {
   }
 
   private ensureSelectionToolbar(options?: { resetPlacement?: boolean }): void {
-    if (!this.selected.length || this.selectionPage === null) return;
+    const count = this.selected.length + this.selectedTexts.length;
+    if (!count || this.selectionPage === null) return;
     if (options?.resetPlacement) this.selectionToolbar.resetPlacement();
     const anchor = this.autoToolbarAnchor();
-    this.selectionToolbar.show(this.selected.length, anchor);
+    this.selectionToolbar.show(count, anchor);
     this.selectionToolbar.reposition(anchor);
   }
 
@@ -792,14 +1064,17 @@ export class ViewerInkSession {
   }
 
   async manualSave(): Promise<void> {
+    this.logger.textTool("manual-save-start", { textCount: this.texts.all().length, dirty: this.isDirty() });
     this.toolbar.setSaveStatus("saving");
     try {
       await this.saveCoordinator.manualSave();
       this.toolbar.setSaveStatus("saved", new Date());
       this.options.notice("Annotations saved.");
+      this.logger.textTool("manual-save-complete", { textCount: this.texts.all().length, dirty: this.isDirty() });
     } catch (error) {
       this.toolbar.setSaveStatus("failed");
       this.options.notice(`Save failed: ${this.errorMessage(error)}`);
+      this.logger.textTool("manual-save-error", { textCount: this.texts.all().length, error: this.errorMessage(error) });
       throw error;
     }
   }
@@ -820,6 +1095,7 @@ export class ViewerInkSession {
       reason,
       documentId: this.identity.id,
       strokeCount: this.ink.all().length,
+      textCount: this.texts.all().length,
       dirty: false,
       updatedAt: new Date().toISOString(),
       skipped: "abandoned-writer"
@@ -837,11 +1113,13 @@ export class ViewerInkSession {
   emergencyPersist(writeSync: VaultSyncWriter, options: { force?: boolean; reason?: string } = {}): void {
     const reason = options.reason ?? "emergency";
     const strokeCount = this.ink.all().length;
+    const textCount = this.texts.all().length;
     if (this.writesAbandoned) {
       this.logger.sidecarPersist({
         reason,
         documentId: this.identity.id,
         strokeCount,
+        textCount,
         dirty: false,
         updatedAt: new Date().toISOString(),
         skipped: "abandoned-writer"
@@ -858,6 +1136,7 @@ export class ViewerInkSession {
         reason,
         documentId: this.identity.id,
         strokeCount,
+        textCount,
         dirty: false,
         updatedAt: new Date().toISOString(),
         skipped: "not-dirty"
@@ -879,6 +1158,7 @@ export class ViewerInkSession {
         reason,
         documentId: this.identity.id,
         strokeCount: countSidecarStrokes(snapshot),
+        textCount: countSidecarTexts(snapshot),
         dirty: false,
         updatedAt: snapshot.updatedAt
       });
@@ -887,6 +1167,7 @@ export class ViewerInkSession {
         reason,
         documentId: this.identity.id,
         strokeCount,
+        textCount,
         dirty: this.isDirty(),
         updatedAt: new Date().toISOString(),
         error: this.errorMessage(error)
@@ -907,7 +1188,14 @@ export class ViewerInkSession {
   }
 
   handleKeyDown(event: KeyboardEvent): boolean {
-    if (this.destroyed || shouldIgnoreSelectionShortcut(event.target)) return false;
+    // A native contenteditable owns every editor shortcut while it is open. The
+    // window-level listener may receive a retargeted event from Obsidian, so
+    // checking event.target alone is not sufficient here. Cmd/Ctrl+A is the
+    // exception: claim it before Obsidian's document shortcuts can move the
+    // selection outside this editor.
+    if (this.destroyed) return false;
+    if (this.handleActiveTextEditorSelectAll(event)) return true;
+    if (this.activeTextEditor || shouldIgnoreSelectionShortcut(event.target)) return false;
     const historyAction = parseHistoryShortcut(event);
     if (historyAction) {
       const ok = historyAction === "undo" ? this.history.undo() : this.history.redo();
@@ -924,17 +1212,46 @@ export class ViewerInkSession {
     return true;
   }
 
+  private handleActiveTextEditorSelectAll(event: KeyboardEvent): boolean {
+    const editor = this.activeTextEditor;
+    if (!editor || editor.composing || event.isComposing || event.altKey || event.shiftKey || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "a") return false;
+    const targetIsEditor = event.target instanceof Node && editor.element.contains(event.target);
+    if (!targetIsEditor && editor.element.ownerDocument.activeElement !== editor.element) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const range = editor.element.ownerDocument.createRange();
+    range.selectNodeContents(editor.element);
+    const selection = editor.element.ownerDocument.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    this.captureActiveTextSelection("select-all-shortcut");
+    this.logText(editor.surface, "select-all-shortcut", {
+      annotationId: editor.draft.id,
+      characterCount: plainTextFromRuns(editor.runs).length,
+      ...this.editorSelectionMetrics(editor.element)
+    });
+    return true;
+  }
+
   canSelectionShortcut(action: SelectionShortcutAction): boolean {
     if (this.destroyed) return false;
     if (action === "selectAll") return this.drawEnabled;
     if (action === "paste") {
-      return this.drawEnabled && Boolean(StrokeClipboard.peek()?.strokes.length);
+      const clipboard = StrokeClipboard.peek();
+      return this.drawEnabled && Boolean(clipboard?.strokes.length || clipboard?.texts.length);
     }
     this.reconcileSelection();
-    return this.selected.length > 0;
+    return this.selected.length > 0 || this.selectedTexts.length > 0;
   }
 
   applySelectionShortcut(action: SelectionShortcutAction): void {
+    this.logger.textTool("selection-shortcut", {
+      action,
+      page: this.selectionPage,
+      textCount: this.selectedTexts.length,
+      strokeCount: this.selected.length
+    });
     if (action === "selectAll") this.selectAllOnCurrentPage();
     else if (action === "copy") this.copySelection();
     else if (action === "cut") this.cutSelection();
@@ -942,31 +1259,62 @@ export class ViewerInkSession {
     else if (action === "delete") this.deleteSelection();
   }
 
-  async exportCopy(): Promise<void> {
-    await this.autosave.flush(this.identity.id);
-    const bytes = await this.exporter.export({
-      sourceBytes: await this.options.readSourcePdf(),
-      getStrokes: () => this.ink.all(),
-      pageMetrics: this.exportPageMetrics()
+  private applyTextHistory(action: "undo" | "redo"): void {
+    const before = this.texts.all().length;
+    const applied = action === "undo" ? this.history.undo() : this.history.redo();
+    this.logger.textTool(`history-${action}`, {
+      applied,
+      textCountBefore: before,
+      textCountAfter: this.texts.all().length
     });
-    const name = annotatedFilename(this.options.pdfPath.split("/").pop() ?? "document.pdf");
-    const path = await this.options.writeExport(name, bytes);
-    this.options.notice(`Exported ${typeof path === "string" ? path : name}. Original PDF unchanged.`);
+  }
+
+  async exportCopy(mode: "flattened" | "editable" = "flattened"): Promise<void> {
+    const texts = this.texts.all();
+    this.logger.textTool("export-start", {
+      mode,
+      textCount: texts.length,
+      textPageCount: new Set(texts.map((text) => text.page)).size,
+      richTextCount: texts.filter((text) => text.runs.length > 1).length,
+      unicodeTextCount: texts.filter((text) => /[^\x20-\x7e\n]/.test(text.text)).length
+    });
+    try {
+      await this.autosave.flush(this.identity.id);
+      const bytes = await this.exporter.export({
+        sourceBytes: await this.options.readSourcePdf(),
+        getStrokes: () => this.ink.all(),
+        getTexts: () => this.texts.all(),
+        mode,
+        pageMetrics: this.exportPageMetrics()
+      });
+      const sourceName = this.options.pdfPath.split("/").pop() ?? "document.pdf";
+      const name = mode === "editable" ? editableAnnotatedFilename(sourceName) : annotatedFilename(sourceName);
+      const path = await this.options.writeExport(name, bytes);
+      this.options.notice(`Exported ${typeof path === "string" ? path : name}. Original PDF unchanged.`);
+      this.logger.textTool("export-complete", { mode, textCount: this.texts.all().length, byteCount: bytes.length });
+    } catch (error) {
+      this.logger.textTool("export-error", { mode, textCount: this.texts.all().length, error: this.errorMessage(error) });
+      throw error;
+    }
   }
 
   async destroy(options: { silent?: boolean; alreadyPersisted?: boolean } = {}): Promise<boolean> {
     if (this.destroyed) return true;
+    this.commitActiveTextEditor("destroy");
+    this.cancelTextBoxTransform("destroy");
     if (this.detachCheckTimer !== null) {
       window.clearTimeout(this.detachCheckTimer);
       this.detachCheckTimer = null;
     }
     const strokeCount = this.ink.all().length;
+    const textCount = this.texts.all().length;
     const dirty = this.isDirty();
     const alreadyPersisted = Boolean(options.alreadyPersisted || this.alreadyEmergencyPersisted);
     this.logger.sessionDestroy({
       reason: options.silent ? "silent" : "close",
       silent: Boolean(options.silent),
       strokeCount,
+      textCount,
       dirty,
       alreadyPersisted
     });
@@ -1008,10 +1356,15 @@ export class ViewerInkSession {
       this.zoomSettleTimer = null;
     }
     this.cancelInkLayerUpgrades();
+    this.cancelZoomCompositeRelease();
     this.endZoomCompositing();
+    this.releaseZoomCompositeLayers();
     this.syncAnnotationCursorMode(false);
     this.resizeObserver?.disconnect();
-    for (const surface of this.surfaces.values()) surface.router?.destroy();
+    for (const surface of this.surfaces.values()) {
+      surface.router?.destroy();
+      this.releaseInputOwner(surface.page.element);
+    }
     this.surfaces.clear();
     this.selectionToolbar.destroy();
     this.viewerMousePan.destroy();
@@ -1023,10 +1376,15 @@ export class ViewerInkSession {
   }
 
   private syncAnnotationCursorMode(enabled = this.drawEnabled): void {
-    const tool = this.options.settings.toolPreferences.activeTool;
+    const tool = this.activeTool();
     const hideNativeCursor = enabled
       && (isInkDrawTool(tool) || tool === "eraser");
     this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
+  }
+
+  /** Physical eraser tips temporarily route as Eraser without changing saved tool choice. */
+  private activeTool(): ToolPreferences["activeTool"] {
+    return this.temporaryStylusEraserPointers > 0 ? "eraser" : this.options.settings.toolPreferences.activeTool;
   }
 
   private refreshSurfaceCursors(): void {
@@ -1064,18 +1422,24 @@ export class ViewerInkSession {
   }
 
   private mountPage(page: PdfPageInfo): PageSurface {
+    this.claimInputOwner(page.element, page.pageNumber);
     this.rememberPageMetrics(page);
     const overlay = this.options.adapter.mountOverlay(page.pageNumber);
     const canvas = overlay.ownerDocument.createElement("canvas");
     canvas.className = "native-pdf-handwriting-canvas";
-    canvas.setAttribute("aria-label", `Annotations for PDF page ${page.pageNumber}`);
+    if (this.options.settings.hideStylusAnnotationLabel) canvas.setAttribute("aria-hidden", "true");
+    else canvas.setAttribute("aria-label", `Annotations for PDF page ${page.pageNumber}`);
     overlay.append(canvas);
+    const textLayer = overlay.ownerDocument.createElement("div");
+    textLayer.className = "native-pdf-handwriting-text-layer";
+    overlay.append(textLayer);
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Canvas 2D rendering is unavailable");
     const surface: PageSurface = {
       page,
       overlay,
       canvas,
+      textLayer,
       context,
       inkLayer: null,
       inkLayerContext: null,
@@ -1083,9 +1447,15 @@ export class ViewerInkSession {
       router: null,
       builder: undefined,
       laserDraft: false,
+      laserDiscardedPoints: 0,
+      shapeHoldTimer: null,
+      shapePreview: null,
+      shapeResize: null,
       editPath: [],
       editTool: undefined,
-      eraserSize: undefined
+      eraserSize: undefined,
+      eraserWholeStrokes: undefined,
+      textIntent: null
     };
     surface.router = this.createPageRouter(surface);
     this.ensurePagePositioning(page.element);
@@ -1093,23 +1463,54 @@ export class ViewerInkSession {
     return surface;
   }
 
+  /** Keep exactly one session's page router active for a live PDF page node. */
+  private claimInputOwner(pageElement: HTMLElement, page: number): void {
+    const owners = inputOwners(pageElement);
+    const previous = owners.get(pageElement);
+    if (previous && previous !== this) {
+      this.logger.inputOwner("supersede", { page });
+      void previous.destroy({ silent: true, alreadyPersisted: true });
+    }
+    owners.set(pageElement, this);
+    this.ownedInputPages.add(pageElement);
+    this.logger.inputOwner("claim", { page, replaced: Boolean(previous && previous !== this) });
+  }
+
+  private releaseInputOwner(pageElement: HTMLElement): void {
+    this.ownedInputPages.delete(pageElement);
+    const owners = inputOwners(pageElement);
+    if (owners.get(pageElement) !== this) return;
+    owners.delete(pageElement);
+    this.logger.inputOwner("release", { page: pageElement.dataset.pageNumber ?? null });
+  }
+
   private createPageRouter(surface: PageSurface): PointerRouter {
     return new PointerRouter(surface.page.element, {
-      activeTool: () => this.options.settings.toolPreferences.activeTool,
+      activeTool: () => this.activeTool(),
       drawingEnabled: () => this.drawEnabled,
+      rightMouseEraserEnabled: () => this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton,
+      onStylusEraserStart: () => {
+        this.temporaryStylusEraserPointers += 1;
+        this.refreshSurfaceCursors();
+      },
+      onStylusEraserEnd: () => {
+        this.temporaryStylusEraserPointers = Math.max(0, this.temporaryStylusEraserPointers - 1);
+        this.refreshSurfaceCursors();
+      },
       scrollRoot: () => null,
       cursorParent: () => surface.overlay,
       eraserCursorDiameter: () => this.options.settings.toolPreferences.eraser.size * this.displayScale(surface),
       drawCursorColor: () => {
         const prefs = this.options.settings.toolPreferences;
-        if (prefs.activeTool === "laser") return prefs.laser.color;
-        return prefs[resolveDrawingTool(prefs.activeTool)].color;
+        const activeTool = this.activeTool();
+        if (activeTool === "laser") return prefs.laser.color;
+        return prefs[resolveDrawingTool(activeTool)].color;
       },
       projectCursor: (clientX, clientY) => this.projectInkScreenPoint(surface, clientX, clientY),
       onStart: (samples, route, event) => this.pointerStart(surface, samples, route, event),
       onMove: (samples, route, event) => this.pointerMove(surface, samples, route, event),
       onEnd: (samples, route, event) => this.pointerEnd(surface, samples, route, event),
-      onCancel: (_route, event) => this.pointerCancel(surface, event),
+      onCancel: (route, event) => this.pointerCancel(surface, route, event),
       onRoute: (route, event) => {
         this.updateDebug(surface, event);
         this.logger.pointerRoute(route, {
@@ -1130,18 +1531,51 @@ export class ViewerInkSession {
     });
   }
 
-  private pointerStart(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit", event: PointerEvent): void {
+  private pointerStart(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void {
     const preferences = this.options.settings.toolPreferences;
-    // Selected ink: drag inside selection moves it even when a drawing tool is active.
+    const activeTool = this.activeTool();
+    // Keep the existing one-click close behavior for a live editor before
+    // considering persisted annotation selection.
+    if (route === "text" && this.activeTextEditor) {
+      this.beginTextIntent(surface, samples[0]!, event);
+      return;
+    }
+    // Content clicks always edit text. Moving a selected text box is reserved
+    // for its NPDE-style frame edge, so a click on the selected words cannot
+    // be mistaken for a zero-distance selection drag.
+    if (route === "text" && event.target instanceof Element && event.target.closest(".native-pdf-handwriting-text-box")) {
+      this.beginTextIntent(surface, samples[0]!, event);
+      return;
+    }
+    // Selected annotations take priority over the current tool. Otherwise, the
+    // text tool turns a drag in an existing selection into a new-text intent.
     if (this.tryStartSelectionMove(surface, samples[0]!)) {
       this.renderPage(surface.page.pageNumber);
       return;
     }
+    if (route === "text") {
+      if (this.selected.length || this.selectedTexts.length) {
+        const point = this.toPdfPoint(surface, samples[0]!, true);
+        this.logger.textTool("selection-clear-click-away", {
+          page: surface.page.pageNumber,
+          selectedPage: this.selectionPage,
+          textCount: this.selectedTexts.length,
+          strokeCount: this.selected.length,
+          x: round(point.x),
+          y: round(point.y)
+        });
+        this.clearSelection();
+        return;
+      }
+      this.beginTextIntent(surface, samples[0]!, event);
+      return;
+    }
     if (route === "draw") {
-      const laser = preferences.activeTool === "laser";
+      const laser = activeTool === "laser";
       if (laser) {
         const laserPrefs = preferences.laser;
         surface.laserDraft = true;
+        surface.laserDiscardedPoints = 0;
         surface.builder = new StrokeBuilder({
           id: this.id(),
           page: surface.page.pageNumber,
@@ -1153,6 +1587,7 @@ export class ViewerInkSession {
           stabilization: "medium"
         });
         for (const sample of samples) surface.builder.add(this.toPdfPoint(surface, sample, false));
+        this.trimLaserDraft(surface, performance.now());
         const first = surface.builder.preview(true)[0];
         if (first) {
           this.lastPointerPdf = { x: first.x, y: first.y };
@@ -1162,7 +1597,7 @@ export class ViewerInkSession {
         this.ensureLaserFadeLoop();
       } else {
         surface.laserDraft = false;
-        const tool = resolveDrawingTool(preferences.activeTool);
+        const tool = resolveDrawingTool(activeTool);
         const drawing = preferences[tool];
         surface.builder = new StrokeBuilder({
           id: this.id(),
@@ -1181,82 +1616,137 @@ export class ViewerInkSession {
           this.logDraw(surface, "start", tool, [first]);
         }
         this.logPositionAlign(surface, samples[0]!, "start");
+        if (isDrawingTool(activeTool)) this.scheduleHeldShape(surface);
       }
     } else {
-      if (preferences.activeTool === "lasso" && this.selected.length > 0) {
+      if (activeTool === "lasso" && (this.selected.length > 0 || this.selectedTexts.length > 0)) {
         const point = this.toPdfPoint(surface, samples[0]!, true);
         if (!this.selectionShape || this.selectionPage !== surface.page.pageNumber || !shapeContainsPoint(this.selectionShape, point)) {
           this.clearSelection();
         }
       }
-      surface.editTool = preferences.activeTool === "eraser" ? "eraser" : "lasso";
+      surface.editTool = activeTool === "eraser" || this.isRightMouseEraser(event) ? "eraser" : "lasso";
       surface.eraserSize = surface.editTool === "eraser" ? preferences.eraser.size : undefined;
+      surface.eraserWholeStrokes = surface.editTool === "eraser" ? preferences.eraser.eraseWholeStrokes : undefined;
       surface.editPath = samples.map((sample) => this.toPdfPoint(surface, sample, true));
       if (surface.editPath[0]) this.lastPointerPdf = { x: surface.editPath[0].x, y: surface.editPath[0].y };
     }
     this.renderPage(surface.page.pageNumber);
   }
 
-  private pointerMove(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit", event: PointerEvent): void {
+  private pointerMove(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void {
     if (this.moveDrag?.page === surface.page.pageNumber) {
       const current = this.toPdfPoint(surface, samples.at(-1)!, true);
       const dx = current.x - this.moveDrag.start.x;
       const dy = current.y - this.moveDrag.start.y;
       this.movePreview = translateStrokes(this.moveDrag.before, dx, dy);
+      this.moveTextPreview = this.translateTextAnnotations(this.moveDrag.beforeTexts, dx, dy);
       this.moveShapePreview = translateShape(this.moveDrag.beforeShape, dx, dy);
       this.updateDebug(surface, event);
       this.renderPage(surface.page.pageNumber);
+      return;
+    }
+    if (route === "text") {
+      this.updateTextIntent(surface, samples.at(-1)!, event);
       return;
     }
     if (route === "draw" && surface.builder) {
       const simulate = surface.laserDraft
         ? false
         : this.options.settings.toolPreferences[
-          resolveDrawingTool(this.options.settings.toolPreferences.activeTool)
+          resolveDrawingTool(this.activeTool())
         ].simulateMousePressure;
-      for (const sample of samples) surface.builder.add(this.toPdfPoint(surface, sample, simulate));
+      const points = samples.map((sample) => this.toPdfPoint(surface, sample, simulate));
+      for (const point of points) surface.builder.add(point);
+      const lastPoint = points.at(-1);
+      if (lastPoint) this.resizeLockedShape(surface, lastPoint);
       const last = samples.at(-1);
       if (last) this.logPositionAlign(surface, last, "move");
-      if (surface.laserDraft) this.ensureLaserFadeLoop();
+      if (surface.laserDraft) {
+        this.trimLaserDraft(surface, performance.now());
+        this.ensureLaserFadeLoop();
+      }
+      if (isDrawingTool(this.activeTool()) && !surface.shapeResize) this.scheduleHeldShape(surface);
     } else if (route === "edit") {
       surface.editPath.push(...samples.map((sample) => this.toPdfPoint(surface, sample, true)));
     }
     this.updateDebug(surface, event);
-    this.renderPage(surface.page.pageNumber);
+    // The laser fade loop owns live laser painting. Rendering each pointer event
+    // duplicates full-canvas work and falls behind high-rate stylus input.
+    if (!surface.laserDraft) this.renderPage(surface.page.pageNumber);
   }
 
-  private pointerEnd(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit", event: PointerEvent): void {
+  private pointerEnd(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void {
     if (this.moveDrag?.page === surface.page.pageNumber) {
       const current = this.toPdfPoint(surface, samples.at(-1)!, true);
       const dx = current.x - this.moveDrag.start.x;
       const dy = current.y - this.moveDrag.start.y;
+      const drag = this.moveDrag;
       if (dx !== 0 || dy !== 0) {
-        const after = translateStrokes(this.moveDrag.before, dx, dy);
-        this.history.execute(new ReplaceStrokesCommand(this.ink, this.selected, after));
-        this.selected = after;
-        this.selectionShape = translateShape(this.moveDrag.beforeShape, dx, dy);
+        const afterStrokes = translateStrokes(drag.before, dx, dy);
+        const afterTexts = this.translateTextAnnotations(drag.beforeTexts, dx, dy);
+        this.history.execute(new ReplaceAnnotationSelectionCommand(
+          this.ink,
+          drag.before,
+          afterStrokes,
+          this.texts,
+          drag.beforeTexts,
+          afterTexts
+        ));
+        this.selected = afterStrokes;
+        this.selectedTexts = afterTexts;
+        this.selectionShape = translateShape(drag.beforeShape, dx, dy);
+        this.logText(surface, "selection-move-commit", {
+          strokeCount: afterStrokes.length,
+          textCount: afterTexts.length,
+          dx: round(dx),
+          dy: round(dy)
+        });
       }
       this.moveDrag = null;
       this.movePreview = null;
+      this.moveTextPreview = null;
       this.moveShapePreview = null;
       this.updateDebug(surface, event);
       this.renderPage(surface.page.pageNumber);
       return;
     }
+    if (route === "text") {
+      this.finishTextIntent(surface, samples.at(-1)!, event);
+      return;
+    }
     if (route === "draw" && surface.builder) {
+      this.cancelHeldShape(surface);
       const laserDraft = surface.laserDraft;
       const simulate = laserDraft
         ? false
         : this.options.settings.toolPreferences[
-          resolveDrawingTool(this.options.settings.toolPreferences.activeTool)
+          resolveDrawingTool(this.activeTool())
         ].simulateMousePressure;
-      for (const sample of samples) surface.builder.add(this.toPdfPoint(surface, sample, simulate));
+      const points = samples.map((sample) => this.toPdfPoint(surface, sample, simulate));
+      for (const point of points) surface.builder.add(point);
+      const lastPoint = points.at(-1);
+      if (lastPoint) this.resizeLockedShape(surface, lastPoint);
+      if (laserDraft) this.trimLaserDraft(surface, performance.now());
       // Match live preview geometry — finish()+simplify reshapes the path → visible snap.
       const stroke = surface.builder.finishMatchingPreview(
         laserDraft ? true : this.simplifyStrokesEnabled()
       );
+      if (surface.shapePreview?.length) {
+        stroke.points = surface.shapePreview;
+      }
+      const shapeResize = surface.shapeResize;
       surface.builder = undefined;
       surface.laserDraft = false;
+      surface.shapePreview = null;
+      surface.shapeResize = null;
+      if (shapeResize) {
+        this.logger.shapeTool("commit", {
+          page: surface.page.pageNumber,
+          shape: shapeResize.recognition.kind,
+          pointCount: stroke.points.length
+        });
+      }
       if (laserDraft) {
         const laser = this.options.settings.toolPreferences.laser;
         this.laserTrails.push({
@@ -1269,13 +1759,19 @@ export class ViewerInkSession {
           holdMs: laser.holdMs,
           fadeMs: laser.fadeMs
         });
+        this.logger.laserDraft(
+          surface.page.pageNumber,
+          stroke.points.length,
+          surface.laserDiscardedPoints,
+          laser.holdMs + laser.fadeMs
+        );
         this.lastPointerPdf = stroke.points.at(-1)
           ? { x: stroke.points.at(-1)!.x, y: stroke.points.at(-1)!.y }
           : this.lastPointerPdf;
         this.logDraw(surface, "end", "laser", stroke.points);
         this.ensureLaserFadeLoop();
       } else {
-        const tool = resolveDrawingTool(this.options.settings.toolPreferences.activeTool);
+        const tool = resolveDrawingTool(this.activeTool());
         this.history.execute(new AddStrokeCommand(this.ink, stroke));
         this.lastPointerPdf = stroke.points.at(-1)
           ? { x: stroke.points.at(-1)!.x, y: stroke.points.at(-1)!.y }
@@ -1297,15 +1793,33 @@ export class ViewerInkSession {
     this.renderPage(surface.page.pageNumber);
   }
 
-  private pointerCancel(surface: PageSurface, event: PointerEvent): void {
+  private pointerCancel(surface: PageSurface, route: "draw" | "edit" | "text", event: PointerEvent): void {
+    if (route === "text") {
+      this.logText(surface, "pointer-cancel", {
+        annotationId: this.textMoveDrag?.before.id ?? surface.textIntent?.hit?.id ?? null,
+        hadIntent: Boolean(surface.textIntent),
+        hadMove: Boolean(this.textMoveDrag)
+      });
+    }
     this.moveDrag = null;
     this.movePreview = null;
+    this.moveTextPreview = null;
     this.moveShapePreview = null;
     surface.builder = undefined;
+    this.cancelHeldShape(surface);
+    if (surface.shapeResize) {
+      this.logger.shapeTool("cancel", { page: surface.page.pageNumber, shape: surface.shapeResize.recognition.kind });
+    }
+    surface.shapePreview = null;
+    surface.shapeResize = null;
     surface.laserDraft = false;
+    surface.laserDiscardedPoints = 0;
     surface.editPath = [];
     surface.editTool = undefined;
     surface.eraserSize = undefined;
+    surface.eraserWholeStrokes = undefined;
+    surface.textIntent = null;
+    this.textMoveDrag = null;
     this.updateDebug(surface, event);
     this.renderPage(surface.page.pageNumber);
   }
@@ -1314,10 +1828,13 @@ export class ViewerInkSession {
     const preferences = this.options.settings.toolPreferences;
     const editTool = surface.editTool;
     const eraserSize = surface.eraserSize;
+    const eraserWholeStrokes = surface.eraserWholeStrokes;
     surface.editTool = undefined;
     surface.eraserSize = undefined;
+    surface.eraserWholeStrokes = undefined;
     if (editTool === "eraser" && eraserSize !== undefined) {
-      const result = eraseStrokes(this.ink.page(surface.page.pageNumber), surface.editPath, eraserSize, {
+      const erase = eraserWholeStrokes ? eraseWholeStrokes : eraseStrokes;
+      const result = erase(this.ink.page(surface.page.pageNumber), surface.editPath, eraserSize, {
         createFragmentId: () => this.id()
       });
       if (result.erased.length) {
@@ -1363,53 +1880,1103 @@ export class ViewerInkSession {
         livePageHeight: surface.page.height
       });
     }
-    if (!this.selected.length) {
+    this.selectedTexts = this.texts.page(surface.page.pageNumber).filter((text) =>
+      shapeContainsPoint(shape, { x: text.x + text.width / 2, y: text.y - text.height / 2 })
+    );
+    if (!this.selected.length && !this.selectedTexts.length) {
+      this.logText(surface, "lasso-selection-empty", {
+        shape: shape.type,
+        pathPoints: editPath.length,
+        strokeMatchCount: matched.length
+      });
       this.clearSelection();
       return;
     }
     this.selectionShape = shape;
     this.selectionPage = surface.page.pageNumber;
     this.invalidateInkLayer(surface);
-    this.logger.lassoSelection(surface.page.pageNumber, this.selected.length, editPath.length, shape.type);
+    this.logger.lassoSelection(surface.page.pageNumber, this.selected.length + this.selectedTexts.length, editPath.length, shape.type);
+    this.logText(surface, "lasso-selection", {
+      shape: shape.type,
+      pathPoints: editPath.length,
+      textSelectedCount: this.selectedTexts.length,
+      strokeSelectedCount: this.selected.length
+    });
     this.ensureSelectionToolbar({ resetPlacement: true });
   }
 
+  private isRightMouseEraser(event: PointerEvent): boolean {
+    return event.pointerType === "mouse" && event.button === 2
+      && this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton;
+  }
+
+  private scheduleHeldShape(surface: PageSurface): void {
+    this.cancelHeldShape(surface);
+    if (!this.options.settings.toolPreferences.shape.holdToRecognize || !surface.builder || surface.shapeResize) return;
+    surface.shapeHoldTimer = window.setTimeout(() => {
+      surface.shapeHoldTimer = null;
+      if (!this.options.settings.toolPreferences.shape.holdToRecognize || !surface.builder || !isDrawingTool(this.activeTool()) || surface.shapeResize) return;
+      const input = surface.builder.preview(this.simplifyStrokesEnabled());
+      const recognized = recognizeHeldShape(input);
+      if (!recognized) return;
+      const pointer = input.at(-1);
+      if (!pointer) return;
+      const handle = shapeResizeHandle(recognized.points, pointer);
+      surface.shapePreview = recognized.points;
+      surface.shapeResize = {
+        recognition: recognized,
+        anchor: structuredClone(shapeResizeAnchor(recognized.points, handle)),
+        handle: structuredClone(handle)
+      };
+      this.logger.refresh("shape-recognized", { page: surface.page.pageNumber, shape: recognized.kind });
+      this.logger.shapeTool("recognized", {
+        page: surface.page.pageNumber,
+        shape: recognized.kind,
+        holdMs: SHAPE_RECOGNITION_HOLD_MS,
+        pointCount: recognized.points.length,
+        anchorX: round(surface.shapeResize.anchor.x),
+        anchorY: round(surface.shapeResize.anchor.y),
+        handleX: round(handle.x),
+        handleY: round(handle.y)
+      });
+      this.renderPage(surface.page.pageNumber);
+    }, SHAPE_RECOGNITION_HOLD_MS);
+  }
+
+  private resizeLockedShape(surface: PageSurface, target: PdfPoint): void {
+    const resize = surface.shapeResize;
+    if (!resize) return;
+    surface.shapePreview = resizeShapePoints(resize.recognition.points, resize.anchor, resize.handle, target);
+    this.logger.shapeTool("resize", {
+      page: surface.page.pageNumber,
+      shape: resize.recognition.kind,
+      targetX: round(target.x),
+      targetY: round(target.y),
+      pointCount: surface.shapePreview.length
+    });
+  }
+
+  private cancelHeldShape(surface: PageSurface): void {
+    if (surface.shapeHoldTimer !== null) {
+      window.clearTimeout(surface.shapeHoldTimer);
+      surface.shapeHoldTimer = null;
+    }
+  }
+
+  private beginTextIntent(surface: PageSurface, sample: PointerSample, event: PointerEvent): void {
+    const point = this.toPdfPoint(surface, sample, true);
+    const activeEditor = this.activeTextEditor;
+    if (activeEditor) {
+      this.logText(activeEditor.surface, "outside-click-close", {
+        annotationId: activeEditor.draft.id,
+        existing: Boolean(activeEditor.existing),
+        targetPage: surface.page.pageNumber,
+        targetX: round(point.x),
+        targetY: round(point.y)
+      });
+      this.commitActiveTextEditor("outside-click");
+      surface.textIntent = null;
+      return;
+    }
+    const hit = this.textAt(surface.page.pageNumber, point);
+    surface.textIntent = { start: point, hit, pointerType: event.pointerType };
+    this.logText(surface, "intent", {
+      pointerType: event.pointerType || "(empty)", pointerId: event.pointerId,
+      x: round(point.x), y: round(point.y), committedPrevious: false
+    });
+    this.logText(surface, "hit-test", {
+      hit: Boolean(hit), annotationId: hit?.id ?? null,
+      x: round(point.x), y: round(point.y),
+      ...(hit ? this.textGeometry(hit) : {})
+    });
+  }
+
+  private updateTextIntent(surface: PageSurface, sample: PointerSample, event: PointerEvent): void {
+    const point = this.toPdfPoint(surface, sample, true);
+    if (this.textMoveDrag?.page === surface.page.pageNumber) {
+      const dx = point.x - this.textMoveDrag.start.x;
+      const dy = point.y - this.textMoveDrag.start.y;
+      this.textMoveDrag.preview = {
+        ...this.textMoveDrag.before,
+        x: this.textMoveDrag.before.x + dx,
+        y: this.textMoveDrag.before.y + dy,
+        updatedAt: new Date().toISOString()
+      };
+      this.logText(surface, "move", {
+        annotationId: this.textMoveDrag.preview.id,
+        dx: round(dx), dy: round(dy),
+        x: round(this.textMoveDrag.preview.x), y: round(this.textMoveDrag.preview.y)
+      });
+      this.renderTextAnnotations(surface);
+      return;
+    }
+    const intent = surface.textIntent;
+    if (!intent?.hit || intent.pointerType !== "pen") return;
+    const threshold = Math.max(3 / Math.max(this.displayScale(surface), 0.1), 2);
+    if (Math.hypot(point.x - intent.start.x, point.y - intent.start.y) < threshold) return;
+    this.textMoveDrag = {
+      page: surface.page.pageNumber,
+      start: intent.start,
+      before: structuredClone(intent.hit),
+      preview: structuredClone(intent.hit)
+    };
+    this.logText(surface, "move-start", {
+      annotationId: intent.hit.id, threshold: round(threshold),
+      startX: round(intent.start.x), startY: round(intent.start.y),
+      currentX: round(point.x), currentY: round(point.y)
+    });
+    surface.textIntent = null;
+    this.updateTextIntent(surface, sample, event);
+  }
+
+  private finishTextIntent(surface: PageSurface, sample: PointerSample, _event: PointerEvent): void {
+    if (this.textMoveDrag?.page === surface.page.pageNumber) {
+      const drag = this.textMoveDrag;
+      this.textMoveDrag = null;
+      if (drag.before.x !== drag.preview.x || drag.before.y !== drag.preview.y) {
+        this.history.execute(new ReplaceTextAnnotationCommand(this.texts, drag.before, drag.preview));
+        this.selectedTexts = [drag.preview];
+        this.selected = [];
+        this.selectionShape = boundingShapeFromSelection([], this.selectedTexts);
+        this.selectionPage = surface.page.pageNumber;
+        this.logText(surface, "move-commit", {
+          annotationId: drag.preview.id,
+          fromX: round(drag.before.x), fromY: round(drag.before.y),
+          toX: round(drag.preview.x), toY: round(drag.preview.y)
+        });
+      } else {
+        this.logText(surface, "move-cancel", { annotationId: drag.before.id, reason: "no-position-change" });
+      }
+      this.renderTextAnnotations(surface);
+      return;
+    }
+    const intent = surface.textIntent;
+    surface.textIntent = null;
+    if (!intent) return;
+    if (intent.hit) {
+      this.logText(surface, "edit-request", { annotationId: intent.hit.id, ...this.textGeometry(intent.hit) });
+      this.openTextEditor(surface, intent.hit);
+    } else {
+      this.logText(surface, "create-request", { x: round(intent.start.x), y: round(intent.start.y) });
+      this.openTextEditor(surface, null, intent.start);
+    }
+    this.renderTextAnnotations(surface);
+  }
+
+  private textAt(page: number, point: Pick<PdfPoint, "x" | "y">): PdfTextAnnotation | null {
+    return [...this.texts.page(page)].reverse().find((text) =>
+      point.x >= text.x && point.x <= text.x + text.width
+      && point.y <= text.y && point.y >= text.y - text.height
+    ) ?? null;
+  }
+
+  private logText(surface: PageSurface, phase: string, details: Record<string, unknown> = {}): void {
+    this.logger.textTool(phase, {
+      page: surface.page.pageNumber,
+      displayScale: Number(this.displayScale(surface).toFixed(4)),
+      ...details
+    });
+  }
+
+  private textGeometry(text: Pick<PdfTextAnnotation, "x" | "y" | "width" | "height" | "fontSize" | "fontFamily" | "bold" | "italic" | "strikethrough">): Record<string, unknown> {
+    return {
+      x: round(text.x), y: round(text.y), width: round(text.width), height: round(text.height),
+      fontSize: text.fontSize, fontFamily: text.fontFamily,
+      bold: text.bold, italic: text.italic, strikethrough: text.strikethrough
+    };
+  }
+
+  private editorSelectionMetrics(element: HTMLElement): {
+    selectedCharacters: number;
+    collapsed: boolean;
+    anchorOffset: number | null;
+    focusOffset: number | null;
+  } {
+    const selection = element.ownerDocument.getSelection();
+    if (!selection?.rangeCount || !element.contains(selection.anchorNode)) {
+      return { selectedCharacters: 0, collapsed: true, anchorOffset: null, focusOffset: null };
+    }
+    return {
+      selectedCharacters: selection.toString().length,
+      collapsed: selection.isCollapsed,
+      anchorOffset: selection.anchorOffset,
+      focusOffset: selection.focusOffset
+    };
+  }
+
+  private openTextEditor(surface: PageSurface, existing: PdfTextAnnotation | null, at?: Pick<PdfPoint, "x" | "y">): void {
+    this.commitActiveTextEditor();
+    const clearedSelection = this.selected.length > 0 || this.selectedTexts.length > 0;
+    // Editing has its own dotted DOM boundary. Suspend the canvas selection
+    // first so a text box can never render two competing outlines.
+    this.clearSelection({ refresh: false });
+    const preferences = this.options.settings.toolPreferences.text;
+    const style: TextStyle = existing
+      ? this.textStyle(existing)
+      : { ...preferences };
+    const metrics = this.metricsFor(surface);
+    const annotation = existing ?? {
+      id: this.id(),
+      page: surface.page.pageNumber,
+      text: "",
+      x: at?.x ?? metrics.width * 0.1,
+      y: at?.y ?? metrics.height * 0.9,
+      width: Math.min(260, Math.max(150, metrics.width * 0.4)),
+      height: style.fontSize * 1.6,
+      ...style,
+      runs: [],
+      sourceRuns: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const storedRuns = normalizeTextRuns(annotation.runs);
+    const runs = storedRuns.length && plainTextFromRuns(storedRuns) === annotation.text
+      ? storedRuns
+      : plainTextToRuns(annotation.text, style);
+    const insertionStyle = { ...(styleAtTextOffset(runs, runs.reduce((length, run) => length + run.text.length, 0)) ?? style) };
+    const element = surface.overlay.ownerDocument.createElement("div");
+    const abort = new AbortController();
+    element.className = "native-pdf-handwriting-text-input";
+    element.contentEditable = "true";
+    // contenteditable is programmatically focusable, but an explicit tab stop
+    // gives Obsidian's embedded PDF host a stable, native focus target.
+    element.tabIndex = 0;
+    element.spellcheck = true;
+    element.setAttribute("role", "textbox");
+    element.setAttribute("aria-multiline", "true");
+    element.setAttribute("aria-label", "Text annotation");
+    const listenerOptions = { signal: abort.signal };
+    element.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+      this.logText(surface, "editor-pointer", {
+        annotationId: annotation.id, pointerType: event.pointerType || "(empty)", pointerId: event.pointerId,
+        ...this.editorSelectionMetrics(element)
+      });
+    }, listenerOptions);
+    element.addEventListener("keydown", (event) => {
+      // Direct editors in pop-outs/embeds may not be the workspace's active
+      // session. Claim Select All here as a fallback to the window shortcut
+      // router so the next native keystroke replaces this editor's full text.
+      if (this.handleActiveTextEditorSelectAll(event)) return;
+      if (event.isComposing || (this.activeTextEditor?.element === element && this.activeTextEditor.composing)) {
+        this.logText(surface, "keydown-composition", { annotationId: annotation.id, key: event.key });
+        return;
+      }
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.logText(surface, "escape", { annotationId: annotation.id, ...this.editorSelectionMetrics(element) });
+      this.commitActiveTextEditor("escape");
+    }, listenerOptions);
+    element.addEventListener("beforeinput", (event) => {
+      this.logText(surface, "beforeinput", {
+        annotationId: annotation.id,
+        inputType: event.inputType || "(empty)",
+        dataLength: event.data?.length ?? 0,
+        isComposing: event.isComposing,
+        ...this.editorSelectionMetrics(element)
+      });
+      const editor = this.activeTextEditor;
+      if (editor?.element !== element || editor.composing || event.isComposing || !editor.pendingInsertionStyle) return;
+      if ((event.inputType === "insertText" && event.data) || event.inputType === "insertParagraph") {
+        event.preventDefault();
+        this.insertTextWithActiveStyle(editor, event.inputType === "insertParagraph" ? "\n" : event.data!);
+      }
+    }, listenerOptions);
+    element.addEventListener("input", () => {
+      const editor = this.activeTextEditor;
+      if (editor?.element === element && !editor.composing) this.syncActiveTextRuns(editor);
+      const value = editor?.element === element ? plainTextFromRuns(editor.runs) : "";
+      this.logText(surface, "input", {
+        annotationId: annotation.id,
+        characterCount: value.length,
+        lineCount: value ? value.split("\n").length : 0,
+        runCount: editor?.runs.length ?? 0
+      });
+    }, listenerOptions);
+    element.addEventListener("paste", (event) => {
+      event.preventDefault();
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      this.logText(surface, "paste", {
+        annotationId: annotation.id,
+        characterCount: text.length,
+        lineCount: text ? text.replace(/\r\n?/g, "\n").split("\n").length : 0,
+        ...this.editorSelectionMetrics(element)
+      });
+      const editor = this.activeTextEditor;
+      if (editor?.element !== element) return;
+      this.insertTextWithActiveStyle(editor, text.replace(/\r\n?/g, "\n"));
+    }, listenerOptions);
+    for (const type of ["copy", "cut"] as const) {
+      element.addEventListener(type, () => this.logText(surface, type, {
+        annotationId: annotation.id,
+        ...this.editorSelectionMetrics(element)
+      }), listenerOptions);
+    }
+    for (const type of ["compositionstart", "compositionupdate", "compositionend"] as const) {
+      element.addEventListener(type, (event) => {
+        if (this.activeTextEditor?.element === element) {
+          if (type === "compositionstart") this.activeTextEditor.composing = true;
+          if (type === "compositionend") {
+            this.activeTextEditor.composing = false;
+            const deferred = this.activeTextEditor.deferredStyleChange;
+            void Promise.resolve().then(() => {
+              const active = this.activeTextEditor;
+              if (active?.element !== element || active.composing) return;
+              this.syncActiveTextRuns(active);
+              if (!deferred) return;
+              active.deferredStyleChange = null;
+              this.applyTextStyleToActiveEditor(deferred);
+            }).catch((error) => {
+              this.logger.textTool("composition-style-error", {
+                annotationId: annotation.id,
+                error: this.errorMessage(error)
+              });
+            });
+          }
+        }
+        this.logText(surface, type, {
+          annotationId: annotation.id,
+          dataLength: event.data?.length ?? 0,
+          ...this.editorSelectionMetrics(element)
+        });
+      }, listenerOptions);
+    }
+    element.addEventListener("focus", () => this.logText(surface, "focus", { annotationId: annotation.id }), listenerOptions);
+    element.addEventListener("blur", () => this.logText(surface, "blur", { annotationId: annotation.id }), listenerOptions);
+    element.addEventListener("keyup", () => this.logText(surface, "selection", {
+      annotationId: annotation.id,
+      ...this.editorSelectionMetrics(element)
+    }), listenerOptions);
+    this.activeTextEditor = {
+      surface, existing, draft: annotation, style: { ...style }, runs, selection: null,
+      insertionStyle, pendingInsertionStyle: false, deferredStyleChange: null,
+      element, resizeObserver: null, abort, composing: false
+    };
+    element.ownerDocument.addEventListener("selectionchange", () => {
+      if (this.activeTextEditor?.element !== element) return;
+      this.captureActiveTextSelection("selectionchange");
+      this.logText(surface, "selectionchange", {
+        annotationId: annotation.id,
+        ...this.editorSelectionMetrics(element)
+      });
+    }, { signal: abort.signal });
+    if (typeof ResizeObserver !== "undefined") {
+      const resizeObserver = new ResizeObserver(() => {
+        const rect = element.getBoundingClientRect();
+        this.logText(surface, "resize", {
+          annotationId: annotation.id,
+          widthPx: round(rect.width), heightPx: round(rect.height),
+          width: round(rect.width / Math.max(this.displayScale(surface), 0.1)),
+          height: round(rect.height / Math.max(this.displayScale(surface), 0.1))
+        });
+      });
+      resizeObserver.observe(element);
+      this.activeTextEditor.resizeObserver = resizeObserver;
+    }
+    this.applyTextElementStyle(surface, element, annotation, style);
+    renderTextRuns(element, runs, this.displayScale(surface));
+    // Keep the live, focusable editor out of the non-interactive static-text
+    // layer. Obsidian/PDF viewers may restyle or replace their text layers;
+    // the overlay is the stable annotation owner and mirrors the working PR.
+    surface.overlay.append(element);
+    // Leave other committed annotations visible, but do not paint the edited
+    // annotation underneath its live contenteditable copy.
+    if (existing) {
+      for (const box of surface.textLayer.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")) {
+        if (box.dataset.annotationId === existing.id) box.remove();
+      }
+    }
+    this.logText(surface, existing ? "editor-open-existing" : "editor-open-new", {
+      annotationId: annotation.id,
+      characterCount: plainTextFromRuns(runs).length,
+      runCount: runs.length,
+      mount: "overlay",
+      clearedSelection,
+      ...this.textGeometry(annotation)
+    });
+    const focusNativeCaret = (phase: "initial" | "fallback"): void => {
+      if (this.activeTextEditor?.element !== element) return;
+      element.focus({ preventScroll: true });
+      const range = element.ownerDocument.createRange();
+      range.selectNodeContents(element);
+      range.collapse(false);
+      const selection = element.ownerDocument.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      this.captureActiveTextSelection("focus-ready");
+      this.logText(surface, "focus-ready", {
+        annotationId: annotation.id,
+        phase,
+        activeElementIsEditor: element.ownerDocument.activeElement === element,
+        isConnected: element.isConnected,
+        ...this.editorSelectionMetrics(element)
+      });
+      const computed = element.ownerDocument.defaultView?.getComputedStyle(element);
+      this.logText(surface, "editor-visual-style", {
+        annotationId: annotation.id,
+        backgroundColor: computed?.backgroundColor ?? null,
+        borderColor: computed?.borderColor ?? null,
+        borderStyle: computed?.borderStyle ?? null,
+        borderWidth: computed?.borderWidth ?? null,
+        boxShadow: computed?.boxShadow ?? null,
+        caretColor: computed?.caretColor ?? null,
+        color: computed?.color ?? null,
+        cursor: computed?.cursor ?? null
+      });
+    };
+    focusNativeCaret("initial");
+    window.requestAnimationFrame(() => {
+      // Do not steal focus from another control. This only covers an embedded
+      // viewer that has returned focus to the document body during mounting.
+      if (element.ownerDocument.activeElement !== element && element.ownerDocument.activeElement === element.ownerDocument.body) {
+        focusNativeCaret("fallback");
+      }
+    });
+  }
+
+  private commitActiveTextEditor(reason = "switch"): void {
+    const editor = this.activeTextEditor;
+    if (!editor) return;
+    if (editor.composing) {
+      this.logText(editor.surface, "commit-deferred-composition", { annotationId: editor.draft.id, reason });
+      return;
+    }
+    this.activeTextEditor = null;
+    // DOM is the live editing surface; runs are canonical persistence. Read it
+    // once at commit so contenteditable keeps its native caret/IME behavior.
+    editor.runs = readTextRuns(editor.element, editor.insertionStyle);
+    const runs = normalizeTextRuns(editor.runs);
+    const text = plainTextFromRuns(runs);
+    const rect = editor.element.getBoundingClientRect();
+    editor.resizeObserver?.disconnect();
+    editor.abort.abort();
+    editor.element.remove();
+    if (!text.trim()) {
+      if (editor.existing) {
+        this.history.execute(new DeleteTextAnnotationsCommand(this.texts, [editor.existing]));
+        this.logText(editor.surface, "delete-empty", { annotationId: editor.existing.id, reason });
+      } else this.logText(editor.surface, "discard-empty", { annotationId: editor.draft.id, reason });
+      this.renderTextAnnotations(editor.surface);
+      return;
+    }
+    const scale = Math.max(this.displayScale(editor.surface), 0.1);
+    const before = editor.existing;
+    const now = new Date().toISOString();
+    const base = before ?? editor.draft;
+    const displayStyle = styleAtTextOffset(runs, 0) ?? editor.insertionStyle;
+    const largestFontSize = Math.max(displayStyle.fontSize, ...runs.map((run) => run.fontSize));
+    const annotation: PdfTextAnnotation = {
+      ...base,
+      ...displayStyle,
+      text,
+      width: Math.max(24, rect.width / scale || base.width),
+      height: Math.max(largestFontSize * 1.4, rect.height / scale || base.height),
+      runs,
+      sourceRuns: runs.map((run) => ({ ...run })),
+      updatedAt: now
+    };
+    if (before) this.history.execute(new ReplaceTextAnnotationCommand(this.texts, before, annotation));
+    else this.history.execute(new AddTextAnnotationCommand(this.texts, annotation));
+    this.logText(editor.surface, before ? "commit-update" : "commit-create", {
+      annotationId: annotation.id, reason,
+      characterCount: text.length, lineCount: text.split("\n").length, runCount: runs.length,
+      widthPx: round(rect.width), heightPx: round(rect.height),
+      ...this.textGeometry(annotation)
+    });
+    this.renderTextAnnotations(editor.surface);
+  }
+
+  private textStyle(text: PdfTextAnnotation): TextStyle {
+    return {
+      color: text.color, fontSize: text.fontSize, fontFamily: text.fontFamily,
+      bold: text.bold, italic: text.italic, strikethrough: text.strikethrough
+    };
+  }
+
+  private applyTextStyleToActiveEditor(change: TextStyleChange): void {
+    const editor = this.activeTextEditor;
+    this.logger.textTool("style-preference", {
+      property: change.property,
+      value: change.value,
+      source: change.source,
+      editorActive: Boolean(editor),
+      defaultColor: this.options.settings.toolPreferences.text.color,
+      defaultFontSize: this.options.settings.toolPreferences.text.fontSize,
+      defaultFontFamily: this.options.settings.toolPreferences.text.fontFamily
+    });
+    if (!editor) {
+      this.applyTextStyleToSelection(change);
+      return;
+    }
+    if (editor.composing) {
+      editor.deferredStyleChange = change;
+      this.logText(editor.surface, "style-deferred-composition", {
+        annotationId: editor.draft.id, property: change.property
+      });
+      return;
+    }
+    this.syncActiveTextRuns(editor);
+    const offsets = editor.selection ?? selectionOffsets(editor.element) ?? {
+      start: plainTextFromRuns(editor.runs).length,
+      end: plainTextFromRuns(editor.runs).length
+    };
+    if (offsets.start === offsets.end) {
+      const current = styleAtTextOffset(editor.runs, offsets.start) ?? editor.insertionStyle;
+      editor.insertionStyle = this.patchTextStyle(current, change);
+      editor.style = { ...editor.insertionStyle };
+      editor.pendingInsertionStyle = true;
+      this.applyTextElementStyle(editor.surface, editor.element, editor.existing ?? editor.draft, editor.insertionStyle);
+      this.logText(editor.surface, "style-insertion", {
+        annotationId: editor.draft.id, property: change.property,
+        offset: offsets.start,
+        color: editor.insertionStyle.color, fontSize: editor.insertionStyle.fontSize,
+        fontFamily: editor.insertionStyle.fontFamily, bold: editor.insertionStyle.bold,
+        italic: editor.insertionStyle.italic, strikethrough: editor.insertionStyle.strikethrough
+      });
+      return;
+    }
+    editor.runs = patchTextRunRange(editor.runs, offsets.start, offsets.end, this.textStylePatch(change));
+    renderTextRuns(editor.element, editor.runs, this.displayScale(editor.surface));
+    restoreSelection(editor.element, offsets);
+    editor.selection = offsets;
+    editor.style = { ...(styleAtTextOffset(editor.runs, offsets.start) ?? editor.insertionStyle) };
+    this.applyTextElementStyle(editor.surface, editor.element, editor.existing ?? editor.draft, editor.style);
+    this.logText(editor.surface, "style-apply", {
+      annotationId: editor.draft.id,
+      property: change.property,
+      source: change.source,
+      selectionStart: offsets.start, selectionEnd: offsets.end, runCount: editor.runs.length,
+      color: editor.style.color, fontSize: editor.style.fontSize, fontFamily: editor.style.fontFamily,
+      bold: editor.style.bold, italic: editor.style.italic, strikethrough: editor.style.strikethrough
+    });
+  }
+
+  /** Serialize live DOM without replacing it; replacement would lose the caret. */
+  private syncActiveTextRuns(editor: ActiveTextEditor): void {
+    if (!editor.composing) editor.runs = readTextRuns(editor.element, editor.insertionStyle);
+    const offsets = selectionOffsets(editor.element);
+    if (offsets) editor.selection = offsets;
+  }
+
+  /** Capture selection before toolbar controls move focus away from contenteditable. */
+  private captureActiveTextSelection(phase: string): void {
+    const editor = this.activeTextEditor;
+    if (!editor) return;
+    const offsets = selectionOffsets(editor.element);
+    if (!offsets) return;
+    editor.selection = offsets;
+    if (!editor.composing) editor.runs = readTextRuns(editor.element, editor.insertionStyle);
+    this.logText(editor.surface, "selection-snapshot", {
+      annotationId: editor.draft.id, phase,
+      start: offsets.start, end: offsets.end, collapsed: offsets.start === offsets.end
+    });
+  }
+
+  private activeTextStyle(): TextStyle | undefined {
+    const editor = this.activeTextEditor;
+    if (!editor) return undefined;
+    const offsets = editor.selection ?? selectionOffsets(editor.element);
+    const style = offsets
+      ? styleAtTextOffset(editor.runs, offsets.start)
+      : editor.insertionStyle;
+    return { ...(style ?? editor.insertionStyle) };
+  }
+
+  private insertTextWithActiveStyle(editor: ActiveTextEditor, text: string): void {
+    if (!text) return;
+    const style = editor.pendingInsertionStyle
+      ? editor.insertionStyle
+      : styleAtTextOffset(editor.runs, editor.selection?.start ?? 0) ?? editor.insertionStyle;
+    if (!selectionOffsets(editor.element)) {
+      const range = editor.element.ownerDocument.createRange();
+      range.selectNodeContents(editor.element);
+      range.collapse(false);
+      const selection = editor.element.ownerDocument.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    const inserted = insertStyledText(editor.element, text, style, this.displayScale(editor.surface));
+    if (!inserted) return;
+    editor.pendingInsertionStyle = false;
+    this.syncActiveTextRuns(editor);
+    editor.selection = { start: inserted.end, end: inserted.end };
+  }
+
+  private patchTextStyle(style: TextStyle, change: TextStyleChange): TextStyle {
+    return { ...style, ...this.textStylePatch(change) };
+  }
+
+  private textStylePatch(change: TextStyleChange): Partial<TextStyle> {
+    switch (change.property) {
+      case "fontFamily": return { fontFamily: change.value as string };
+      case "color": return { color: change.value as string };
+      case "fontSize": return { fontSize: change.value as number };
+      case "bold": return { bold: change.value as boolean };
+      case "italic": return { italic: change.value as boolean };
+      case "strikethrough": return { strikethrough: change.value as boolean };
+    }
+  }
+
+  private applyTextStyleToSelection(change: TextStyleChange): void {
+    this.reconcileSelection();
+    if (!this.selectedTexts.length) return;
+    const before = [...this.selectedTexts];
+    const now = new Date().toISOString();
+    const after = before.map((text) => ({
+      ...text,
+      ...this.patchTextStyle(this.textStyle(text), change),
+      runs: text.runs.map((run) => ({ ...run, ...this.patchTextStyle(run, change) })),
+      sourceRuns: text.sourceRuns.map((run) => ({ ...run, ...this.patchTextStyle(run, change) })),
+      updatedAt: now
+    }));
+    this.history.execute({
+      label: "Style text annotations",
+      execute: () => after.forEach((text) => this.texts.replace(text)),
+      undo: () => before.forEach((text) => this.texts.replace(text))
+    });
+    this.selectedTexts = after;
+    this.logger.textTool("selection-style", {
+      page: this.selectionPage,
+      property: change.property,
+      textCount: after.length
+    });
+    this.refresh("text-style-selection");
+  }
+
+  private applyTextElementStyle(
+    surface: PageSurface,
+    element: HTMLElement,
+    annotation: Pick<PdfTextAnnotation, "x" | "y" | "width" | "height">,
+    style: TextStyle
+  ): void {
+    const origin = this.mapper(surface).toViewport({ x: annotation.x, y: annotation.y });
+    const scale = this.displayScale(surface);
+    Object.assign(element.style, {
+      left: `${origin.x}px`, top: `${origin.y}px`, width: `${Math.max(24, annotation.width * scale)}px`,
+      minHeight: `${Math.max(style.fontSize * scale * 1.4, annotation.height * scale)}px`,
+      color: style.color, fontFamily: style.fontFamily, fontSize: `${style.fontSize * scale}px`,
+      fontWeight: style.bold ? "700" : "400", fontStyle: style.italic ? "italic" : "normal",
+      textDecoration: style.strikethrough ? "line-through" : "none"
+    });
+  }
+
+  private renderTextAnnotations(surface: PageSurface): void {
+    // Replacing a focused contenteditable loses selection. It remains positioned
+    // until it is committed; all normal renders resume once editing finishes.
+    if (this.activeTextEditor?.surface === surface) {
+      this.logText(surface, "render-skipped-active-editor", { annotationId: this.activeTextEditor.draft.id });
+      return;
+    }
+    // Repainting the page while a control is held used to replaceChildren() on
+    // the frame being moved. Keep that exact DOM node alive until release so
+    // its outline remains visibly attached to the pointer.
+    if (this.textBoxTransformDrag?.surface === surface) return;
+    const preview = this.textMoveDrag?.page === surface.page.pageNumber ? this.textMoveDrag.preview : null;
+    const selectionPreviews = this.moveDrag?.page === surface.page.pageNumber
+      ? new Map((this.moveTextPreview ?? []).map((text) => [text.id, text]))
+      : null;
+    const annotations = this.texts.page(surface.page.pageNumber).map((text) =>
+      preview?.id === text.id ? preview : selectionPreviews?.get(text.id) ?? text
+    );
+    const selected = new Set(this.selectedTexts.map((text) => text.id));
+    if (this.syncCurrentTextBoxes(surface, annotations, selected)) return;
+    const boxes = annotations.map((annotation) => {
+      const box = surface.overlay.ownerDocument.createElement("div");
+      box.className = "native-pdf-handwriting-text-box";
+      box.dataset.annotationId = annotation.id;
+      box.dataset.annotationSignature = this.textBoxRenderSignature(annotation, selected.has(annotation.id));
+      if (this.drawEnabled) box.classList.add("is-editable");
+      if (selected.has(annotation.id)) box.classList.add("is-selected");
+      this.positionTextBox(surface, box, annotation);
+      const runs = normalizeTextRuns(annotation.runs);
+      renderTextRuns(
+        box,
+        runs.length && plainTextFromRuns(runs) === annotation.text ? runs : plainTextToRuns(annotation.text, this.textStyle(annotation)),
+        this.displayScale(surface)
+      );
+      this.attachTextBoxOutline(surface, box, annotation);
+      return box;
+    });
+    surface.textLayer.replaceChildren(...boxes);
+    this.logText(surface, "render", {
+      annotationCount: annotations.length,
+      selectedCount: selected.size,
+      previewAnnotationId: preview?.id ?? null
+    });
+  }
+
+  /** Reuse unchanged text DOM so zoom settles do not remove/reinsert visible words. */
+  private syncCurrentTextBoxes(
+    surface: PageSurface,
+    annotations: readonly PdfTextAnnotation[],
+    selected: ReadonlySet<string>
+  ): boolean {
+    const boxes = [...surface.textLayer.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")];
+    if (boxes.length !== annotations.length) return false;
+    const byId = new Map(boxes.map((box) => [box.dataset.annotationId, box]));
+    if (!annotations.every((annotation) => {
+      const box = byId.get(annotation.id);
+      return box?.dataset.annotationSignature === this.textBoxRenderSignature(annotation, selected.has(annotation.id));
+    })) return false;
+    for (const annotation of annotations) {
+      const box = byId.get(annotation.id);
+      if (!box) return false;
+      this.positionTextBox(surface, box, annotation);
+      rescaleTextRuns(box, this.displayScale(surface));
+      const outline = box.querySelector<HTMLElement>(".native-pdf-handwriting-text-selection-frame");
+      if (outline) this.layoutTextBoxOutline(surface, outline, annotation, annotation);
+    }
+    return true;
+  }
+
+  /** Geometry/state identity only — never store document text in a DOM data attribute. */
+  private textBoxRenderSignature(annotation: PdfTextAnnotation, selected: boolean): string {
+    return [
+      annotation.updatedAt, annotation.x, annotation.y, annotation.width, annotation.height,
+      annotation.color, annotation.fontSize, annotation.fontFamily, annotation.bold, annotation.italic,
+      annotation.strikethrough, annotation.text.length, annotation.runs.length, selected, this.drawEnabled
+    ].join("|");
+  }
+
+  private positionTextBox(surface: PageSurface, box: HTMLElement, annotation: PdfTextAnnotation): void {
+    const origin = this.mapper(surface).toViewport({ x: annotation.x, y: annotation.y });
+    const scale = this.displayScale(surface);
+    Object.assign(box.style, {
+      left: `${origin.x}px`, top: `${origin.y}px`, width: `${Math.max(24, annotation.width * scale)}px`,
+      minHeight: `${Math.max(annotation.fontSize * scale * 1.4, annotation.height * scale)}px`,
+      color: annotation.color, fontFamily: annotation.fontFamily, fontSize: `${annotation.fontSize * scale}px`,
+      fontWeight: annotation.bold ? "700" : "400", fontStyle: annotation.italic ? "italic" : "normal",
+      textDecoration: annotation.strikethrough ? "line-through" : "none"
+    });
+  }
+
+  /**
+   * Canvas ink is deliberately composited during a zoom burst, but text is DOM
+   * content. Reproject it immediately so it stays anchored to its PDF-space
+   * coordinates instead of retaining the previous scale until settle.
+   */
+  private syncTextLayoutDuringZoom(surface: PageSurface): void {
+    const storedAnnotations = this.texts.page(surface.page.pageNumber);
+    const activeEditor = this.activeTextEditor?.surface === surface ? this.activeTextEditor : null;
+    if (!storedAnnotations.length && !activeEditor) return;
+
+    const movingPreview = this.textMoveDrag?.page === surface.page.pageNumber ? this.textMoveDrag.preview : null;
+    const selectionPreviews = this.moveDrag?.page === surface.page.pageNumber
+      ? new Map((this.moveTextPreview ?? []).map((annotation) => [annotation.id, annotation]))
+      : null;
+    const annotations = storedAnnotations.map((annotation) =>
+      movingPreview?.id === annotation.id ? movingPreview : selectionPreviews?.get(annotation.id) ?? annotation
+    );
+
+    const annotationsById = new Map(annotations.map((annotation) => [annotation.id, annotation]));
+    const scale = this.displayScale(surface);
+    const transforming = this.textBoxTransformDrag?.surface === surface;
+    if (!transforming) {
+      for (const box of surface.textLayer.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")) {
+        const annotation = box.dataset.annotationId ? annotationsById.get(box.dataset.annotationId) : undefined;
+        if (!annotation) continue;
+        this.positionTextBox(surface, box, annotation);
+        rescaleTextRuns(box, scale);
+        const outline = box.querySelector<HTMLElement>(".native-pdf-handwriting-text-selection-frame");
+        if (outline) this.layoutTextBoxOutline(surface, outline, annotation, annotation);
+      }
+    }
+    if (activeEditor) {
+      const annotation = activeEditor.existing ?? activeEditor.draft;
+      this.applyTextElementStyle(surface, activeEditor.element, annotation, activeEditor.style);
+      // Do not replace the contenteditable children: that would lose its caret.
+      rescaleTextRuns(activeEditor.element, scale);
+    }
+
+    if (this.zoomTextLayoutLoggedPages.has(surface.page.pageNumber)) return;
+    this.zoomTextLayoutLoggedPages.add(surface.page.pageNumber);
+    const layout = this.pageLayout(surface);
+    const first = annotations[0];
+    const origin = first ? this.mapper(surface).toViewport({ x: first.x, y: first.y }) : null;
+    this.logger.textTool("zoom-layout", {
+      page: surface.page.pageNumber,
+      annotationCount: annotations.length,
+      activeEditor: Boolean(activeEditor),
+      transforming,
+      scale: round(scale),
+      offsetX: round(layout.offsetX),
+      offsetY: round(layout.offsetY),
+      contentWidth: round(layout.contentWidth),
+      contentHeight: round(layout.contentHeight),
+      ...(first && origin ? {
+        annotationId: first.id,
+        pdfX: round(first.x),
+        pdfY: round(first.y),
+        viewportX: round(origin.x),
+        viewportY: round(origin.y)
+      } : {})
+    });
+  }
+
+  /** NPDE-style frame: edge strips move, circular dots resize. */
+  private attachTextBoxOutline(surface: PageSurface, box: HTMLElement, annotation: PdfTextAnnotation): void {
+    if (!this.drawEnabled) return;
+    const outline = box.ownerDocument.createElement("div");
+    outline.className = "native-pdf-handwriting-text-selection-frame native-pdf-handwriting-selection-control";
+    outline.dataset.annotationId = annotation.id;
+    outline.setAttribute("aria-hidden", "true");
+    this.layoutTextBoxOutline(surface, outline, annotation, annotation);
+
+    const addControl = (kind: "move" | "resize", handle: TextBoxHandle): void => {
+      const control = box.ownerDocument.createElement("div");
+      control.className = `native-pdf-handwriting-text-${kind}-${handle} native-pdf-handwriting-selection-control`;
+      control.dataset.handle = handle;
+      control.setAttribute("aria-label", kind === "move" ? "Move text box" : `Resize text box ${handle}`);
+      control.addEventListener("pointerdown", (event) => this.startTextBoxTransform(surface, annotation, kind, handle, outline, event));
+      outline.append(control);
+    };
+    for (const handle of ["n", "e", "s", "w"] as const) addControl("move", handle);
+    for (const handle of ["n", "e", "s", "w", "nw", "ne", "sw", "se"] as const) addControl("resize", handle);
+    box.append(outline);
+  }
+
+  private startTextBoxTransform(
+    surface: PageSurface,
+    rendered: PdfTextAnnotation,
+    mode: "move" | "resize",
+    handle: TextBoxHandle,
+    outline: HTMLElement,
+    event: PointerEvent
+  ): void {
+    if (!this.drawEnabled || event.button !== 0) return;
+    const annotation = this.texts.page(surface.page.pageNumber).find((text) => text.id === rendered.id);
+    if (!annotation) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.cancelTextBoxTransform("superseded", false);
+    const box = outline.parentElement;
+    if (!box) return;
+    const abort = new AbortController();
+    const drag: TextBoxTransformDrag = {
+      surface,
+      pointerId: event.pointerId,
+      start: this.textPointerToPdfPoint(surface, event),
+      before: structuredClone(annotation),
+      preview: structuredClone(annotation),
+      mode,
+      handle,
+      box,
+      outline,
+      abort
+    };
+    this.textBoxTransformDrag = drag;
+    box.classList.add("is-selected", "is-transforming");
+    this.selected = [];
+    this.selectedTexts = [annotation];
+    this.selectionShape = boundingShapeFromSelection([], this.selectedTexts);
+    this.selectionPage = surface.page.pageNumber;
+    if (isElementInDocument(event.currentTarget, outline.ownerDocument)) {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    }
+    const options = { capture: true, signal: abort.signal };
+    surface.overlay.ownerDocument.addEventListener("pointermove", (move) => this.updateTextBoxTransform(move), options);
+    surface.overlay.ownerDocument.addEventListener("pointerup", (up) => this.finishTextBoxTransform(up), options);
+    surface.overlay.ownerDocument.addEventListener("pointercancel", (cancel) => this.cancelTextBoxTransform("pointer-cancel", true, cancel), options);
+    this.logText(surface, "box-transform-start", {
+      annotationId: annotation.id, mode, handle,
+      ...this.textGeometry(annotation)
+    });
+  }
+
+  private updateTextBoxTransform(event: PointerEvent): void {
+    const drag = this.textBoxTransformDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = this.textPointerToPdfPoint(drag.surface, event);
+    if (drag.mode === "move") {
+      drag.preview = {
+        ...drag.before,
+        x: drag.before.x + point.x - drag.start.x,
+        y: drag.before.y + point.y - drag.start.y
+      };
+      const origin = this.mapper(drag.surface).toViewport({ x: drag.preview.x, y: drag.preview.y });
+      const beforeOrigin = this.mapper(drag.surface).toViewport({ x: drag.before.x, y: drag.before.y });
+      setElementCssProps(drag.box, {
+        transform: `translate(${origin.x - beforeOrigin.x}px, ${origin.y - beforeOrigin.y}px)`
+      });
+      // The outline is a child of the translated static box, so it follows
+      // exactly without adding the move delta a second time.
+      this.layoutTextBoxOutline(drag.surface, drag.outline, drag.before, drag.before);
+    } else {
+      drag.preview = this.resizeTextAnnotation(drag.before, drag.handle, point);
+      this.layoutTextBoxOutline(drag.surface, drag.outline, drag.preview, drag.before);
+    }
+  }
+
+  private finishTextBoxTransform(event: PointerEvent): void {
+    const drag = this.textBoxTransformDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    drag.abort.abort();
+    this.textBoxTransformDrag = null;
+    setElementCssProps(drag.box, { transform: "none" });
+    const changed = drag.before.x !== drag.preview.x || drag.before.y !== drag.preview.y
+      || drag.before.width !== drag.preview.width || drag.before.height !== drag.preview.height;
+    if (changed) {
+      const after = { ...drag.preview, updatedAt: new Date().toISOString() };
+      this.history.execute(new ReplaceTextAnnotationCommand(this.texts, drag.before, after));
+      this.selectedTexts = [after];
+      this.selectionShape = boundingShapeFromSelection([], this.selectedTexts);
+      this.logText(drag.surface, "box-transform-commit", {
+        annotationId: after.id, mode: drag.mode, handle: drag.handle,
+        from: this.textGeometry(drag.before), to: this.textGeometry(after)
+      });
+    } else {
+      this.logText(drag.surface, "box-transform-cancel", { annotationId: drag.before.id, mode: drag.mode, handle: drag.handle, reason: "unchanged" });
+    }
+    this.renderPage(drag.surface.page.pageNumber);
+  }
+
+  private cancelTextBoxTransform(reason: string, render = true, event?: PointerEvent): void {
+    const drag = this.textBoxTransformDrag;
+    if (!drag) return;
+    drag.abort.abort();
+    this.textBoxTransformDrag = null;
+    setElementCssProps(drag.box, { transform: "none" });
+    drag.box.classList.remove("is-transforming");
+    this.logText(drag.surface, "box-transform-cancel", { annotationId: drag.before.id, mode: drag.mode, handle: drag.handle, reason });
+    if (render && !this.destroyed) this.renderPage(drag.surface.page.pageNumber);
+    event?.preventDefault();
+  }
+
+  private textPointerToPdfPoint(surface: PageSurface, event: PointerEvent): Pick<PdfPoint, "x" | "y"> {
+    const rect = surface.overlay.getBoundingClientRect();
+    return this.mapper(surface).toPdf({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+  }
+
+  private resizeTextAnnotation(before: PdfTextAnnotation, handle: TextBoxHandle, point: Pick<PdfPoint, "x" | "y">): PdfTextAnnotation {
+    const minimumWidth = 24;
+    const minimumHeight = Math.max(12, before.fontSize * 1.35);
+    let left = before.x;
+    let right = before.x + before.width;
+    let top = before.y;
+    let bottom = before.y - before.height;
+    if (handle.includes("w")) left = Math.min(point.x, right - minimumWidth);
+    if (handle.includes("e")) right = Math.max(point.x, left + minimumWidth);
+    if (handle.includes("n")) top = Math.max(point.y, bottom + minimumHeight);
+    if (handle.includes("s")) bottom = Math.min(point.y, top - minimumHeight);
+    return { ...before, x: left, y: top, width: right - left, height: top - bottom };
+  }
+
+  /** Move/resize frame only; text itself reflows after the pointer is released. */
+  private layoutTextBoxOutline(
+    surface: PageSurface,
+    outline: HTMLElement,
+    annotation: PdfTextAnnotation,
+    reference: PdfTextAnnotation
+  ): void {
+    const origin = this.mapper(surface).toViewport({ x: annotation.x, y: annotation.y });
+    const referenceOrigin = this.mapper(surface).toViewport({ x: reference.x, y: reference.y });
+    const scale = this.displayScale(surface);
+    const height = Math.max(annotation.fontSize * scale * 1.4, annotation.height * scale);
+    Object.assign(outline.style, {
+      left: `${origin.x - referenceOrigin.x - 3}px`,
+      top: `${origin.y - referenceOrigin.y - 3}px`,
+      width: `${Math.max(24, annotation.width * scale) + 6}px`,
+      height: `${height + 6}px`
+    });
+  }
+
   private tryStartSelectionMove(surface: PageSurface, sample: PointerSample): boolean {
-    if (!this.selectionShape || this.selectionPage !== surface.page.pageNumber || !this.selected.length) return false;
+    if (
+      !this.selectionShape
+      || this.selectionPage !== surface.page.pageNumber
+      || (!this.selected.length && !this.selectedTexts.length)
+    ) return false;
     const point = this.toPdfPoint(surface, sample, true);
     if (!shapeContainsPoint(this.selectionShape, point)) return false;
     this.moveDrag = {
       page: surface.page.pageNumber,
       start: point,
       before: this.selected.map((stroke) => structuredClone(stroke)),
+      beforeTexts: this.selectedTexts.map((text) => structuredClone(text)),
       beforeShape: structuredClone(this.selectionShape)
     };
     this.movePreview = this.moveDrag.before;
+    this.moveTextPreview = this.moveDrag.beforeTexts;
     this.moveShapePreview = this.moveDrag.beforeShape;
+    this.logText(surface, "selection-move-start", {
+      strokeCount: this.moveDrag.before.length,
+      textCount: this.moveDrag.beforeTexts.length
+    });
     return true;
+  }
+
+  private translateTextAnnotations(
+    texts: readonly PdfTextAnnotation[],
+    dx: number,
+    dy: number,
+    now = new Date().toISOString()
+  ): PdfTextAnnotation[] {
+    return texts.map((text) => ({ ...text, x: text.x + dx, y: text.y + dy, updatedAt: now }));
   }
 
   private deleteSelection(): void {
     this.reconcileSelection();
-    if (!this.selected.length) return;
-    this.history.execute(new DeleteStrokesCommand(this.ink, this.selected));
+    if (!this.selected.length && !this.selectedTexts.length) {
+      this.logger.textTool("selection-delete-skipped", { reason: "empty-selection" });
+      return;
+    }
+    const strokes = [...this.selected];
+    const texts = [...this.selectedTexts];
+    this.logger.textTool("selection-delete", {
+      page: this.selectionPage,
+      textCount: texts.length,
+      strokeCount: strokes.length
+    });
+    this.history.execute({
+      label: "Delete annotations",
+      execute: () => {
+        strokes.forEach((stroke) => this.ink.remove(stroke.id));
+        texts.forEach((text) => this.texts.remove(text.id));
+      },
+      undo: () => {
+        strokes.forEach((stroke) => this.ink.add(stroke));
+        texts.forEach((text) => this.texts.add(text));
+      }
+    });
     this.clearSelection();
   }
 
   private copySelection(): void {
-    if (!this.selected.length) return;
-    StrokeClipboard.store(this.selected, this.selectionPage ?? this.options.adapter.getViewState().pageNumber);
+    if (!this.selected.length && !this.selectedTexts.length) {
+      this.logger.textTool("selection-copy-skipped", { reason: "empty-selection" });
+      return;
+    }
+    const sourcePage = this.selectionPage ?? this.options.adapter.getViewState().pageNumber;
+    StrokeClipboard.store(this.selected, sourcePage, this.selectedTexts);
     this.pasteGeneration = 0;
+    this.logger.textTool("selection-copy", {
+      page: sourcePage,
+      textCount: this.selectedTexts.length,
+      strokeCount: this.selected.length
+    });
   }
 
   private cutSelection(): void {
+    this.logger.textTool("selection-cut", {
+      page: this.selectionPage,
+      textCount: this.selectedTexts.length,
+      strokeCount: this.selected.length
+    });
     this.copySelection();
     this.deleteSelection();
   }
 
   private pasteSelection(): void {
     const clipboard = StrokeClipboard.peek();
-    if (!clipboard?.strokes.length) return;
+    if (!clipboard?.strokes.length && !clipboard?.texts.length) {
+      this.logger.textTool("selection-paste-skipped", { reason: "empty-clipboard" });
+      return;
+    }
     this.pasteGeneration += 1;
     const targetPage = this.selectionPage ?? this.options.adapter.getViewState().pageNumber;
     const dx = 10 * this.pasteGeneration;
@@ -1421,46 +2988,103 @@ export class ViewerInkSession {
       page: targetPage,
       createdAt: now
     }));
-    this.history.execute(new AddStrokesCommand(this.ink, pasted));
+    const pastedTexts = clipboard.texts.map((text) => ({
+      ...text, id: this.id(), page: targetPage, x: text.x + dx, y: text.y + dy,
+      createdAt: now, updatedAt: now
+    }));
+    this.history.execute({
+      label: "Paste annotations",
+      execute: () => { pasted.forEach((stroke) => this.ink.add(stroke)); pastedTexts.forEach((text) => this.texts.add(text)); },
+      undo: () => { pasted.forEach((stroke) => this.ink.remove(stroke.id)); pastedTexts.forEach((text) => this.texts.remove(text.id)); }
+    });
     this.selected = pasted;
+    this.selectedTexts = pastedTexts;
     this.selectionPage = targetPage;
-    this.selectionShape = boundingShapeFromStrokes(pasted);
+    this.selectionShape = boundingShapeFromSelection(pasted, pastedTexts);
     this.moveDrag = null;
     this.movePreview = null;
+    this.moveTextPreview = null;
     this.moveShapePreview = null;
     this.ensureSelectionToolbar({ resetPlacement: true });
+    this.logger.textTool("selection-paste", {
+      sourcePage: clipboard.sourcePage,
+      targetPage,
+      textCount: pastedTexts.length,
+      strokeCount: pasted.length,
+      generation: this.pasteGeneration,
+      dx,
+      dy
+    });
     this.refresh("paste-selection");
   }
 
   private duplicateSelection(): void {
-    if (!this.selected.length) return;
+    if (!this.selected.length && !this.selectedTexts.length) {
+      this.logger.textTool("selection-duplicate-skipped", { reason: "empty-selection" });
+      return;
+    }
     const duplicates = translateStrokes(this.selected, 10, -10).map((stroke) => ({ ...stroke, id: this.id() }));
+    const now = new Date().toISOString();
+    const textDuplicates = this.selectedTexts.map((text) => ({ ...text, id: this.id(), x: text.x + 10, y: text.y - 10, createdAt: now, updatedAt: now }));
     const command: Command = {
-      label: "Duplicate strokes",
-      execute: () => duplicates.forEach((stroke) => this.ink.add(stroke)),
-      undo: () => duplicates.forEach((stroke) => this.ink.remove(stroke.id))
+      label: "Duplicate annotations",
+      execute: () => { duplicates.forEach((stroke) => this.ink.add(stroke)); textDuplicates.forEach((text) => this.texts.add(text)); },
+      undo: () => { duplicates.forEach((stroke) => this.ink.remove(stroke.id)); textDuplicates.forEach((text) => this.texts.remove(text.id)); }
     };
     this.history.execute(command);
     this.selected = duplicates;
-    this.selectionShape = boundingShapeFromStrokes(duplicates);
+    this.selectedTexts = textDuplicates;
+    this.selectionShape = boundingShapeFromSelection(duplicates, textDuplicates);
     this.ensureSelectionToolbar();
+    this.logger.textTool("selection-duplicate", {
+      page: this.selectionPage,
+      textCount: textDuplicates.length,
+      strokeCount: duplicates.length,
+      dx: 10,
+      dy: -10
+    });
   }
 
   private recolorSelection(color: string): void {
-    if (!this.selected.length) return;
+    if (!this.selected.length && !this.selectedTexts.length) {
+      this.logger.textTool("selection-recolor-skipped", { reason: "empty-selection", color });
+      return;
+    }
     const now = new Date().toISOString();
     const after = this.selected.map((stroke) => ({ ...stroke, color, updatedAt: now }));
-    this.history.execute(new ReplaceStrokesCommand(this.ink, this.selected, after));
+    const textAfter = this.selectedTexts.map((text) => ({
+      ...text,
+      color,
+      runs: text.runs.map((run) => ({ ...run, color })),
+      sourceRuns: text.sourceRuns.map((run) => ({ ...run, color })),
+      updatedAt: now
+    }));
+    const beforeStrokes = [...this.selected];
+    const beforeTexts = [...this.selectedTexts];
+    this.history.execute({
+      label: "Recolor annotations",
+      execute: () => { after.forEach((stroke) => this.ink.replace(stroke)); textAfter.forEach((text) => this.texts.replace(text)); },
+      undo: () => { beforeStrokes.forEach((stroke) => this.ink.replace(stroke)); beforeTexts.forEach((text) => this.texts.replace(text)); }
+    });
     this.selected = after;
+    this.selectedTexts = textAfter;
+    this.logger.textTool("selection-recolor", {
+      page: this.selectionPage,
+      color,
+      textCount: textAfter.length,
+      strokeCount: after.length
+    });
   }
 
   private selectAllOnCurrentPage(): void {
     const pageNumber = this.options.adapter.getViewState().pageNumber;
     const surface = this.surfaces.get(pageNumber);
     const pageStrokes = this.ink.page(pageNumber);
-    if (!surface || !pageStrokes.length) {
+    const pageTexts = this.texts.page(pageNumber);
+    if (!surface || (!pageStrokes.length && !pageTexts.length)) {
       this.clearSelection();
       this.logger.refresh("select-all", { selected: 0, page: pageNumber, empty: true });
+      this.logger.textTool("selection-select-all-empty", { page: pageNumber, reason: "page-empty-or-unavailable" });
       return;
     }
     const layout = this.pageLayout(surface);
@@ -1474,49 +3098,88 @@ export class ViewerInkSession {
       layout.contentHeight,
       (point) => mapper.toViewport(point)
     );
-    if (!selected.length) {
+    if (!selected.length && !pageTexts.length) {
       this.clearSelection();
       this.logger.refresh("select-all", { selected: 0, page: pageNumber, filtered: true });
+      this.logger.textTool("selection-select-all-empty", { page: pageNumber, reason: "strokes-filtered" });
       return;
     }
     this.selected = selected;
-    this.selectionShape = boundingShapeFromStrokes(selected);
+    this.selectedTexts = [...pageTexts];
+    this.selectionShape = boundingShapeFromSelection(selected, pageTexts);
     this.selectionPage = pageNumber;
     this.ensureSelectionToolbar({ resetPlacement: true });
+    this.logger.textTool("selection-select-all", {
+      page: pageNumber,
+      textCount: pageTexts.length,
+      strokeCount: selected.length,
+      availableStrokeCount: pageStrokes.length
+    });
     this.refresh("select-all");
   }
 
-  private clearSelection(): void {
+  private clearSelection(options: { refresh?: boolean } = {}): void {
+    const textCount = this.selectedTexts.length;
+    const strokeCount = this.selected.length;
+    const page = this.selectionPage;
     this.selected = [];
+    this.selectedTexts = [];
     this.selectionShape = null;
     this.selectionPage = null;
     this.moveDrag = null;
     this.movePreview = null;
+    this.moveTextPreview = null;
     this.moveShapePreview = null;
     this.selectionToolbar.hide();
-    this.refresh("clear-selection");
+    if (textCount) this.logger.textTool("selection-clear", { page, textCount, strokeCount });
+    if (options.refresh !== false) this.refresh("clear-selection");
   }
 
   private reconcileSelection(): void {
-    if (!this.selected.length || this.selectionPage === null) return;
+    if ((!this.selected.length && !this.selectedTexts.length) || this.selectionPage === null) return;
     const pageStrokes = this.ink.page(this.selectionPage);
     const byId = new Map(pageStrokes.map((stroke) => [stroke.id, stroke]));
     const synced = this.selected
       .map((stroke) => byId.get(stroke.id))
       .filter((stroke): stroke is InkStroke => stroke !== undefined);
-    if (!synced.length) {
+    const textById = new Map(this.texts.page(this.selectionPage).map((text) => [text.id, text]));
+    const syncedTexts = this.selectedTexts
+      .map((text) => textById.get(text.id))
+      .filter((text): text is PdfTextAnnotation => text !== undefined);
+    if (!synced.length && !syncedTexts.length) {
+      const selectedTextCount = this.selectedTexts.length;
+      const selectedStrokeCount = this.selected.length;
+      const page = this.selectionPage;
       this.selected = [];
+      this.selectedTexts = [];
       this.selectionShape = null;
       this.selectionPage = null;
       this.moveDrag = null;
       this.movePreview = null;
+      this.moveTextPreview = null;
       this.moveShapePreview = null;
       this.selectionToolbar.hide();
+      if (selectedTextCount) {
+        this.logger.textTool("selection-reconciled-empty", {
+          page,
+          previousTextCount: selectedTextCount,
+          previousStrokeCount: selectedStrokeCount
+        });
+      }
       return;
     }
-    if (synced.length !== this.selected.length || synced.some((stroke, index) => stroke !== this.selected[index])) {
-      this.selected = synced;
-      this.selectionShape = boundingShapeFromStrokes(synced) ?? this.selectionShape;
+    const strokesChanged = synced.length !== this.selected.length || synced.some((stroke, index) => stroke !== this.selected[index]);
+    if (strokesChanged) this.selected = synced;
+    if (syncedTexts.length !== this.selectedTexts.length || syncedTexts.some((text, index) => text !== this.selectedTexts[index])) {
+      this.logger.textTool("selection-reconciled", {
+        page: this.selectionPage,
+        previousTextCount: this.selectedTexts.length,
+        textCount: syncedTexts.length
+      });
+    }
+    this.selectedTexts = syncedTexts;
+    if (!this.selectionShape || this.selectionShape.type === "rectangle") {
+      this.selectionShape = boundingShapeFromSelection(this.selected, this.selectedTexts);
     }
   }
 
@@ -1731,7 +3394,7 @@ export class ViewerInkSession {
 
     const storedStrokes = this.ink.page(pageNumber);
     const visibleStrokes = erasingLive
-      ? eraseStrokes(storedStrokes, surface.editPath, surface.eraserSize!).kept
+      ? (surface.eraserWholeStrokes ? eraseWholeStrokes : eraseStrokes)(storedStrokes, surface.editPath, surface.eraserSize!).kept
       : storedStrokes;
 
     const useLayerCache = canBlit && !erasingLive && !movingSelection;
@@ -1780,7 +3443,7 @@ export class ViewerInkSession {
 
     if (surface.editTool === "lasso" && surface.editPath.length > 0) {
       this.drawLassoPreview(surface);
-    } else if (this.selectionShape && this.selectionPage === pageNumber) {
+    } else if (this.selectionShape && this.selectionPage === pageNumber && !this.selectedTexts.length) {
       this.drawSelectionShape(surface, this.moveShapePreview ?? this.selectionShape, { closeFreeform: true });
     }
     if (surface.builder?.preview().length) {
@@ -1801,7 +3464,7 @@ export class ViewerInkSession {
         const draftId = surface.builder.id;
         this.drawPoints(
           surface,
-          surface.builder.preview(this.simplifyStrokesEnabled()),
+          surface.shapePreview ?? surface.builder.preview(this.simplifyStrokesEnabled()),
           drawing.color,
           drawing.width,
           drawing.opacity,
@@ -1814,6 +3477,7 @@ export class ViewerInkSession {
       }
     }
     this.paintLaserTrails(surface, pageNumber);
+    this.renderTextAnnotations(surface);
   }
 
   private paintLaserPoints(
@@ -1837,6 +3501,14 @@ export class ViewerInkSession {
       fadeMs
     });
     this.lastLaserPaintAt = performance.now();
+  }
+
+  private trimLaserDraft(surface: PageSurface, now: number): void {
+    if (!surface.laserDraft || !surface.builder) return;
+    const laser = this.options.settings.toolPreferences.laser;
+    const retentionMs = Math.max(0, laser.holdMs) + Math.max(1, laser.fadeMs);
+    surface.laserDiscardedPoints += surface.builder.discardBefore(now - retentionMs);
+    surface.laserDiscardedPoints += surface.builder.discardToMaxPoints(ViewerInkSession.MAX_LASER_DRAFT_POINTS);
   }
 
   private paintLaserTrails(surface: PageSurface, pageNumber: number): void {
@@ -1872,12 +3544,14 @@ export class ViewerInkSession {
       window.devicePixelRatio || 1
     );
     // Must restore CSS-pixel transform after the identity blit — same as blitInkLayerToCanvas.
+    const startedAt = performance.now();
     this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
-    if (surface.builder?.preview().length && surface.laserDraft) {
+    const laserDraftPoints = surface.laserDraft ? surface.builder?.preview(true) ?? [] : [];
+    if (laserDraftPoints.length) {
       const laser = this.options.settings.toolPreferences.laser;
       this.paintLaserPoints(
         surface,
-        surface.builder.preview(true),
+        laserDraftPoints,
         laser.color,
         laser.width,
         laser.opacity,
@@ -1889,6 +3563,10 @@ export class ViewerInkSession {
       return;
     }
     this.paintLaserTrails(surface, pageNumber);
+    const durationMs = performance.now() - startedAt;
+    if (durationMs >= 16) {
+      this.logger.laserRepaintSlow(pageNumber, durationMs, laserDraftPoints.length, this.laserTrails.length);
+    }
   }
 
   private ensureLaserFadeLoop(): void {
@@ -1901,8 +3579,15 @@ export class ViewerInkSession {
 
       const dirtyPages = new Set<number>();
       for (const trail of this.laserTrails) dirtyPages.add(trail.page);
+      let visibleDraft = false;
       for (const surface of this.surfaces.values()) {
-        if (surface.laserDraft) dirtyPages.add(surface.page.pageNumber);
+        if (!surface.laserDraft) continue;
+        this.trimLaserDraft(surface, now);
+        const laser = this.options.settings.toolPreferences.laser;
+        const points = surface.builder?.preview(true) ?? [];
+        if (!laserTrailStillVisible(points, now, laser.holdMs, laser.fadeMs)) continue;
+        visibleDraft = true;
+        dirtyPages.add(surface.page.pageNumber);
       }
 
       this.laserTrails = this.laserTrails.filter((trail) => {
@@ -1916,8 +3601,7 @@ export class ViewerInkSession {
         for (const page of dirtyPages) this.repaintLaserOverlay(page);
       }
 
-      const stillActive = this.laserTrails.length > 0
-        || [...this.surfaces.values()].some((surface) => surface.laserDraft);
+      const stillActive = this.laserTrails.length > 0 || visibleDraft;
       if (stillActive) {
         this.laserFadeFrame = view.requestAnimationFrame(tick);
       }
@@ -2247,12 +3931,16 @@ export class ViewerInkSession {
   private snapshot(): SidecarSchemaV1 {
     const now = new Date().toISOString();
     const stored = new Map<number, InkStroke[]>();
+    const storedTexts = new Map<number, PdfTextAnnotation[]>();
     for (const stroke of this.ink.all()) stored.set(stroke.page, [...(stored.get(stroke.page) ?? []), stroke]);
+    for (const text of this.texts.all()) storedTexts.set(text.page, [...(storedTexts.get(text.page) ?? []), text]);
     const known = new Map(this.options.adapter.pages().map((page) => [page.pageNumber, page]));
     return {
       schemaVersion: 1,
       document: this.identity,
-      pages: [...stored.entries()].map(([pageNumber, strokes]) => {
+      pages: [...new Set([...stored.keys(), ...storedTexts.keys()])].map((pageNumber) => {
+        const strokes = stored.get(pageNumber) ?? [];
+        const texts = storedTexts.get(pageNumber) ?? [];
         const page = known.get(pageNumber);
         const metrics = this.pageMetrics.get(pageNumber) ?? {
           width: page?.width ?? 1,
@@ -2263,7 +3951,8 @@ export class ViewerInkSession {
           width: metrics.width,
           height: metrics.height,
           rotation: this.rotation(page?.rotation ?? 0),
-          strokes
+          strokes,
+          ...(texts.length ? { texts } : {})
         };
       }),
       createdAt: this.createdAt,
@@ -2283,11 +3972,13 @@ export class ViewerInkSession {
 
   private async persist(snapshot: SidecarSchemaV1, reason = "autosave"): Promise<void> {
     const strokeCount = countSidecarStrokes(snapshot);
+    const textCount = countSidecarTexts(snapshot);
     if (!this.stillOwnsPersist()) {
       this.logger.sidecarPersist({
         reason,
         documentId: this.identity.id,
         strokeCount,
+        textCount,
         dirty: false,
         updatedAt: snapshot.updatedAt,
         skipped: this.writesAbandoned ? "abandoned-writer" : "destroyed"
@@ -2304,6 +3995,7 @@ export class ViewerInkSession {
           reason,
           documentId: this.identity.id,
           strokeCount,
+          textCount,
           dirty: false,
           updatedAt: snapshot.updatedAt,
           skipped: "abandoned-after-recovery"
@@ -2316,6 +4008,7 @@ export class ViewerInkSession {
           reason,
           documentId: this.identity.id,
           strokeCount,
+          textCount,
           dirty: false,
           updatedAt: snapshot.updatedAt,
           skipped: "abandoned-after-sidecar"
@@ -2327,6 +4020,7 @@ export class ViewerInkSession {
         reason,
         documentId: this.identity.id,
         strokeCount,
+        textCount,
         dirty: false,
         updatedAt: snapshot.updatedAt
       });
@@ -2335,6 +4029,7 @@ export class ViewerInkSession {
         reason,
         documentId: this.identity.id,
         strokeCount,
+        textCount,
         dirty: this.isDirty(),
         updatedAt: snapshot.updatedAt,
         error: this.errorMessage(error)
@@ -2362,6 +4057,10 @@ export class ViewerInkSession {
     this.options.adapter.mountToolbar(this.toolbar.element, this.currentToolbarPlacement());
   }
 
+  setBoostedPdfZoom(enabled: boolean): void {
+    this.options.adapter.setBoostedZoom?.(enabled);
+  }
+
   /** False after PDF++ (or Obsidian) tears down the PDF DOM under this session. */
   isAttached(): boolean {
     if (this.destroyed || this.detachNotified) return false;
@@ -2382,12 +4081,32 @@ export class ViewerInkSession {
       await this.exportCopy().catch((error) => this.options.notice(`Export failed: ${this.errorMessage(error)}`));
       return;
     }
+    if (action === "export-editable") {
+      await this.exportCopy("editable").catch((error) => this.options.notice(`Export failed: ${this.errorMessage(error)}`));
+      return;
+    }
     if (action === "toolbar-main" || action === "toolbar-left" || action === "toolbar-right") {
       const placement = action.replace("toolbar-", "") as ToolbarPlacement;
+      const previousPlacement = this.currentToolbarPlacement();
+      this.logger.toolbarPlacement("request", { previousPlacement, requestedPlacement: placement });
       // Prefer savePluginSettings (assigns via saveSettings + remounts open leaves). Local mutate is fallback only.
-      if (this.options.savePluginSettings) await this.options.savePluginSettings({ toolbarPlacement: placement });
-      else this.options.settings.toolbarPlacement = placement;
-      this.remountToolbar();
+      try {
+        if (this.options.savePluginSettings) await this.options.savePluginSettings({ toolbarPlacement: placement });
+        else this.options.settings.toolbarPlacement = placement;
+        this.remountToolbar();
+        this.logger.toolbarPlacement("applied", {
+          previousPlacement,
+          requestedPlacement: placement,
+          resolvedPlacement: this.currentToolbarPlacement()
+        });
+      } catch (error) {
+        this.logger.toolbarPlacement("error", {
+          previousPlacement,
+          requestedPlacement: placement,
+          error: this.errorMessage(error)
+        });
+        throw error;
+      }
     }
   }
 
@@ -2413,12 +4132,15 @@ export class ViewerInkSession {
 
   private logDraw(surface: PageSurface, phase: DrawPositionLog["phase"], tool: string, points: readonly PdfPoint[]): void {
     if (!points.length) return;
+    const sampled = samplePoints(points, 24);
     this.logger.draw({
       phase,
       page: surface.page.pageNumber,
       tool,
       displayScale: Number(this.displayScale(surface).toFixed(4)),
-      points: points.map((point) => ({
+      pointCount: points.length,
+      bounds: drawBounds(points),
+      points: sampled.map((point) => ({
         x: Number(point.x.toFixed(2)),
         y: Number(point.y.toFixed(2)),
         ...(point.pressure !== undefined ? { pressure: Number(point.pressure.toFixed(3)) } : {})
@@ -2438,6 +4160,29 @@ export class ViewerInkSession {
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+function samplePoints<T>(points: readonly T[], maxPoints: number): T[] {
+  if (points.length <= maxPoints) return [...points];
+  const sampled: T[] = [];
+  for (let index = 0; index < maxPoints; index += 1) {
+    sampled.push(points[Math.round((index * (points.length - 1)) / (maxPoints - 1))]!);
+  }
+  return sampled;
+}
+
+function drawBounds(points: readonly PdfPoint[]): NonNullable<DrawPositionLog["bounds"]> {
+  let minX = points[0]!.x;
+  let minY = points[0]!.y;
+  let maxX = minX;
+  let maxY = minY;
+  for (const point of points.slice(1)) {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
+  return { minX: round(minX), minY: round(minY), maxX: round(maxX), maxY: round(maxY) };
 }
 
 function roundMs(value: number): number {

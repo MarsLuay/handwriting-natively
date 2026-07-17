@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PointerRouter } from "../src/input/PointerRouter";
+import { isStylusEraserInput, PointerRouter } from "../src/input/PointerRouter";
 import type { ToolId } from "../src/model";
 
 function pointer(type: string, pointerId: number, extra: Record<string, unknown> = {}): PointerEvent {
@@ -25,7 +25,7 @@ describe("PointerRouter", () => {
       hasPointerCapture: (id: number) => captures.includes(id),
       releasePointerCapture: vi.fn()
     });
-    let tool: ToolId = "pan";
+    let tool: ToolId = "pen";
     let drawingEnabled = false;
     const starts = vi.fn();
     const routes: string[] = [];
@@ -78,6 +78,56 @@ describe("PointerRouter", () => {
     expect(first.defaultPrevented).toBe(false);
     expect(second.defaultPrevented).toBe(false);
     router.destroy();
+  });
+
+  it("routes Text explicitly while preserving right-click eraser as an opt-in", () => {
+    const element = document.createElement("div");
+    let tool: ToolId = "text";
+    const starts = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => tool,
+      drawingEnabled: () => true,
+      rightMouseEraserEnabled: () => true,
+      onStart: starts
+    });
+    const text = pointer("mouse", 30);
+    element.dispatchEvent(text);
+    expect(text.defaultPrevented).toBe(true);
+    expect(starts.mock.calls[0]?.[1]).toBe("text");
+    tool = "pen";
+    const right = pointer("mouse", 31, { button: 2, buttons: 2 });
+    element.dispatchEvent(right);
+    expect(right.defaultPrevented).toBe(true);
+    expect(starts.mock.calls[1]?.[1]).toBe("edit");
+    router.destroy();
+  });
+
+  it("blocks a stale bubbling router when handling an explicit annotation gesture", () => {
+    const element = document.createElement("div");
+    const target = document.createElement("span");
+    element.append(target);
+    document.body.append(element);
+    Object.assign(element, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
+    const currentStart = vi.fn();
+    const staleStart = vi.fn();
+    // Mirrors a stale pre-capture router still registered on the PDF page.
+    element.addEventListener("pointerdown", staleStart);
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onStart: currentStart
+    });
+
+    target.dispatchEvent(pointer("pen", 77));
+    expect(currentStart).toHaveBeenCalledOnce();
+    expect(staleStart).not.toHaveBeenCalled();
+    router.destroy();
+  });
+
+  it("identifies physical stylus eraser tips", () => {
+    expect(isStylusEraserInput({ pointerType: "pen", button: 5, buttons: 32 })).toBe(true);
+    expect(isStylusEraserInput({ pointerType: "pen", button: 0, buttons: 32 })).toBe(true);
+    expect(isStylusEraserInput({ pointerType: "mouse", button: 5, buttons: 32 })).toBe(false);
   });
 
   it("delivers coalesced samples", () => {

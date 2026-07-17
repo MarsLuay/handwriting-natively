@@ -73,6 +73,17 @@ export function drawingAdvanced(
   const summary = ownerDocument.createElement("summary");
   summary.textContent = "Advanced settings";
   details.append(summary);
+  const shapeRecognition = ownerDocument.createElement("label");
+  const shapeRecognitionInput = ownerDocument.createElement("input");
+  shapeRecognitionInput.type = "checkbox";
+  shapeRecognitionInput.checked = preferences.shape.holdToRecognize;
+  shapeRecognitionInput.dataset.setting = "shape-recognition";
+  shapeRecognitionInput.addEventListener("change", () => {
+    preferences.shape.holdToRecognize = shapeRecognitionInput.checked;
+    onChange();
+  }, { signal });
+  shapeRecognition.append(shapeRecognitionInput, "Recognize shapes after a 0.5-second hold");
+  details.append(shapeRecognition);
   const fields: Array<[string, keyof typeof drawing, number, number, number]> = [
     ["Opacity", "opacity", 0.1, 1, 0.05],
     ["Thinning", "thinning", 0, 1, 0.05],

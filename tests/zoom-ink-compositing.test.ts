@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ObsidianPdfAdapter, PdfViewState } from "../src/integration/ObsidianPdfAdapter";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import { PdfCoordinateMapper } from "../src/pdf/PdfCoordinateMapper";
-import { DEFAULT_SETTINGS } from "../src/model";
+import { DEFAULT_SETTINGS, type PdfTextAnnotation } from "../src/model";
 import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
@@ -298,7 +298,9 @@ describe("zoom ink compositing", () => {
 
     await vi.advanceTimersByTimeAsync(120);
 
-    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+    // Keep the composited bitmap through one presented frame while the resized
+    // canvas and text DOM are reconciled, then release it cleanly.
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
     // Settle blits scaled ink — no graphite stamp rebuild on the settle tick.
     expect(paintStampCalls(context)).toBe(stampsBeforeBurst);
     expect(context.drawImage).toHaveBeenCalled();
@@ -322,6 +324,10 @@ describe("zoom ink compositing", () => {
     expect(overlay.style.width).toBe("900px");
     expect(overlay.style.height).toBe("1200px");
 
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+
     await session.destroy();
   });
 
@@ -341,6 +347,127 @@ describe("zoom ink compositing", () => {
     expect(overlay.style.top).toBe("20px");
     expect(overlay.style.width).toBe("900px");
     expect(overlay.style.height).toBe("1200px");
+
+    await session.destroy();
+  });
+
+  it("holds the compositor through a delayed native PDF.js page-content redraw", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const overlay = overlayOf(adapter);
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.25, { left: 0, top: 0, width: 750, height: 1000 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(120);
+
+    // PDF.js may replace its canvas/text layer after our zoom settle timer.
+    // Its mutation must extend the hold rather than expose a blank handoff.
+    await vi.advanceTimersByTimeAsync(450);
+    session.onPdfPageContentMutation(2);
+    await vi.advanceTimersByTimeAsync(119);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+    expect(debugCalls("ink zoom composite").map((call) => (call[2] as { phase: string }).phase))
+      .toContain("native-content");
+    await session.destroy();
+  });
+
+  it("reattaches an overlay removed by a native page redraw without remounting the page", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const overlay = overlayOf(adapter);
+
+    overlay.remove();
+    expect(overlay.isConnected).toBe(false);
+
+    session.onPdfPageContentMutation(1);
+
+    expect(overlay.parentElement).toBe(adapter.pageElement);
+    expect(overlay.isConnected).toBe(true);
+    expect(debugCalls("ink zoom composite").at(-1)?.[2]).toMatchObject({
+      detachedOverlayPages: [1],
+      reattachedOverlayPages: [1],
+      releasePending: false
+    });
+    await session.destroy();
+  });
+
+  it("reprojects text annotations during the zoom burst instead of waiting for settle", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const annotation: PdfTextAnnotation = {
+      id: "zoom-text", page: 1, text: "Anchored", x: 100, y: 600, width: 120, height: 30,
+      color: "#111827", fontSize: 20, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+      runs: [{ text: "Anchored", color: "#111827", fontSize: 20, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      sourceRuns: [{ text: "Anchored", color: "#111827", fontSize: 20, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      createdAt: "now", updatedAt: "now"
+    };
+    const internal = session as unknown as {
+      texts: { add(annotation: PdfTextAnnotation): void };
+      surfaces: Map<number, unknown>;
+      renderTextAnnotations(surface: unknown): void;
+    };
+    internal.texts.add(annotation);
+    internal.renderTextAnnotations(internal.surfaces.get(1));
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+
+    const box = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box");
+    const run = box?.querySelector<HTMLElement>(".native-pdf-handwriting-text-run");
+    expect(box?.style.left).toBe("150px");
+    expect(box?.style.top).toBe("300px");
+    expect(box?.style.width).toBe("180px");
+    expect(run?.style.fontSize).toBe("30px");
+
+    await vi.advanceTimersByTimeAsync(120);
+    // The zoom frame already has the right geometry, so settle must reuse it.
+    expect(adapter.pageElement.querySelector(".native-pdf-handwriting-text-box")).toBe(box);
+
+    await session.destroy();
+  });
+
+  it("reprojects an active text editor without replacing its caret DOM", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const annotation: PdfTextAnnotation = {
+      id: "zoom-editor", page: 1, text: "Editing", x: 120, y: 560, width: 140, height: 32,
+      color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+      runs: [{ text: "Editing", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      sourceRuns: [{ text: "Editing", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      createdAt: "now", updatedAt: "now"
+    };
+    const internal = session as unknown as {
+      surfaces: Map<number, unknown>;
+      activeTextEditor: { element: HTMLElement } | null;
+      openTextEditor(surface: unknown, existing: PdfTextAnnotation): void;
+    };
+    internal.openTextEditor(internal.surfaces.get(1), annotation);
+    const editor = internal.activeTextEditor?.element;
+    const run = editor?.querySelector<HTMLElement>(".native-pdf-handwriting-text-run");
+    const text = run?.firstChild;
+    const range = document.createRange();
+    range.setStart(text!, 3);
+    range.collapse(true);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+
+    expect(internal.activeTextEditor?.element).toBe(editor);
+    expect(editor?.querySelector(".native-pdf-handwriting-text-run")).toBe(run);
+    expect(editor?.style.left).toBe("180px");
+    expect(editor?.style.top).toBe("360px");
+    expect(run?.style.fontSize).toBe("27px");
+    expect(document.getSelection()?.anchorNode).toBe(text);
+    expect(document.getSelection()?.anchorOffset).toBe(3);
 
     await session.destroy();
   });
@@ -454,9 +581,12 @@ describe("zoom ink compositing", () => {
     expect(debugCalls("ink zoom tick").length).toBeGreaterThanOrEqual(1);
 
     await vi.advanceTimersByTimeAsync(120);
-    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
     expect(overlay.style.width).toBe("750px");
     expect(overlay.style.height).toBe("1000px");
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
     await session.destroy();
   });
 });

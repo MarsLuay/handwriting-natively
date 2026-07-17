@@ -1,5 +1,6 @@
-import { normalizePath, type Vault } from "obsidian";
+import type { Vault } from "obsidian";
 import type { VaultLogSink, VaultLogLevel } from "./VaultLogSink";
+import { normalizeVaultRelativePath } from "../storage/VaultFs";
 
 async function ensureParentFolder(vault: Vault, filePath: string): Promise<void> {
   const parent = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
@@ -14,7 +15,7 @@ async function ensureParentFolder(vault: Vault, filePath: string): Promise<void>
 export class VaultDebugLog implements VaultLogSink {
   private readonly buffer: string[] = [];
   private flushTimer: number | null = null;
-  private flushing = false;
+  private flushQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly vault: () => Vault,
@@ -49,24 +50,25 @@ export class VaultDebugLog implements VaultLogSink {
     }, 200);
   }
 
-  private async flush(): Promise<void> {
-    if (this.flushing || !this.buffer.length || !this.enabled()) {
-      this.buffer.length = 0;
-      return;
+  /** Persist every event written before this call, in write order. */
+  flush(): Promise<void> {
+    if (this.flushTimer !== null) {
+      window.clearTimeout(this.flushTimer);
+      this.flushTimer = null;
     }
-    this.flushing = true;
+    if (!this.buffer.length) return this.flushQueue;
     const chunk = `${this.buffer.splice(0).join("\n")}\n`;
-    try {
-      const vault = this.vault();
-      const filePath = normalizePath(this.path());
-      await ensureParentFolder(vault, filePath);
-      if (await vault.adapter.exists(filePath)) await vault.adapter.append(filePath, chunk);
-      else await vault.adapter.write(filePath, chunk);
-    } catch (error) {
-      console.error("[Handwriting Natively] vault debug log write failed", error);
-    } finally {
-      this.flushing = false;
-      if (this.buffer.length) this.scheduleFlush();
-    }
+    this.flushQueue = this.flushQueue.then(async () => {
+      try {
+        const vault = this.vault();
+        const filePath = normalizeVaultRelativePath(this.path());
+        await ensureParentFolder(vault, filePath);
+        if (await vault.adapter.exists(filePath)) await vault.adapter.append(filePath, chunk);
+        else await vault.adapter.write(filePath, chunk);
+      } catch (error) {
+        console.error("[Handwriting Natively] vault debug log write failed", error);
+      }
+    });
+    return this.flushQueue;
   }
 }

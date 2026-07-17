@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../src/model";
 import { AnnotationToolbar } from "../src/ui/AnnotationToolbar";
-import { DropdownController } from "../src/ui/DropdownController";
+import { DROPDOWN_MAX_HEIGHT, DropdownController } from "../src/ui/DropdownController";
 
 afterEach(() => { document.body.replaceChildren(); });
 
@@ -40,6 +40,15 @@ describe("DropdownController", () => {
     dropdown.open("x", trigger, { label: "X", options: [{ id: "x", label: "X", onSelect: vi.fn() }] });
     document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     expect(dropdown.isOpen()).toBe(false);
+  });
+
+  it("caps every icon dropdown so long menus scroll inside it", () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    const dropdown = new DropdownController(document);
+    dropdown.open("tools", trigger, { label: "Tools", options: [{ id: "tool", label: "Tool", onSelect: vi.fn() }] });
+    expect(document.querySelector<HTMLElement>(".native-pdf-handwriting-dropdown")?.style.maxHeight).toBe(`${DROPDOWN_MAX_HEIGHT}px`);
+    dropdown.destroy();
   });
 });
 
@@ -98,6 +107,12 @@ describe("AnnotationToolbar", () => {
     document.querySelector<HTMLButtonElement>("[data-option-id='highlighter']")?.click();
     expect(preferences.activeTool).toBe("highlighter");
     expect(drawing?.getAttribute("aria-label")).toBe("Highlighter");
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
+    expect(document.querySelector<HTMLButtonElement>("[data-option-id='shape']")).toBeNull();
+    const shapeRecognition = document.querySelector<HTMLInputElement>("[data-setting='shape-recognition']");
+    expect(shapeRecognition?.checked).toBe(true);
+    shapeRecognition?.click();
+    expect(preferences.shape.holdToRecognize).toBe(false);
     toolbar.setAutosave(true);
     expect(toolbar.element.querySelector("[data-control='save']")).toBeNull();
     toolbar.setSaveStatus("failed");
@@ -124,6 +139,34 @@ describe("AnnotationToolbar", () => {
     expect(ids.indexOf("color")).toBeLessThan(ids.indexOf("drawing"));
     expect(ids.indexOf("drawing")).toBeLessThan(ids.indexOf("eraser"));
     expect(ids.indexOf("eraser")).toBeLessThan(ids.indexOf("laser"));
+    toolbar.destroy();
+  });
+
+  it("reads the active toolbar placement each time More opens", () => {
+    let placement: "main" | "left" | "right" = "main";
+    const toolbar = new AnnotationToolbar({
+      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
+      autosave: true,
+      callbacks: {
+        onPreferencesChange: vi.fn(),
+        toolbarPlacement: () => placement,
+        onMore: (action) => {
+          if (action === "toolbar-main" || action === "toolbar-left" || action === "toolbar-right") {
+            placement = action.replace("toolbar-", "") as typeof placement;
+          }
+        }
+      },
+      supportedMoreActions: ["toolbar-main", "toolbar-left", "toolbar-right"],
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    const more = toolbar.element.querySelector<HTMLButtonElement>("[data-control='more']");
+    more?.click();
+    expect(document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']")?.getAttribute("aria-checked")).toBe("true");
+    document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-left']")?.click();
+    more?.click();
+    expect(document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-left']")?.getAttribute("aria-checked")).toBe("true");
+    expect(document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']")?.getAttribute("aria-checked")).toBe("false");
     toolbar.destroy();
   });
 
@@ -171,6 +214,29 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
+  it("reports which text style control changed", () => {
+    const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    preferences.activeTool = "text";
+    const textStyleChanged = vi.fn();
+    const preferencesChanged = vi.fn();
+    const toolbar = new AnnotationToolbar({
+      preferences,
+      autosave: true,
+      callbacks: { onPreferencesChange: preferencesChanged, onTextStyleChange: textStyleChanged },
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='text']")?.click();
+    const font = document.querySelector<HTMLSelectElement>(".native-pdf-handwriting-text-menu select");
+    expect(font).not.toBeNull();
+    font!.value = "serif";
+    font!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(preferences.text.fontFamily).toBe("serif");
+    expect(textStyleChanged).toHaveBeenCalledWith({ property: "fontFamily", value: "serif", source: "change" });
+    expect(preferencesChanged).toHaveBeenLastCalledWith(preferences, "text-style");
+    toolbar.destroy();
+  });
+
   it("shows the active drawing color as the color button icon", () => {
     const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
     preferences.pen.color = "#dc2626";
@@ -214,7 +280,7 @@ describe("AnnotationToolbar", () => {
     slider!.value = "20";
     slider!.dispatchEvent(new Event("input", { bubbles: true }));
     expect(preferences.activeTool).toBe("eraser");
-    expect(preferences.eraser).toEqual({ size: 20 });
+    expect(preferences.eraser).toEqual({ size: 20, eraseWholeStrokes: false, eraseWithRightMouseButton: false });
     expect(preview?.style.getPropertyValue("--ink-eraser-preview-size")).toBe("20px");
     expect(previewed).toHaveBeenCalledOnce();
     expect(changed).toHaveBeenCalledOnce(); // first click activated eraser

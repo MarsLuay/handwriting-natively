@@ -1,4 +1,4 @@
-import type { InkStroke, PdfPoint } from "../model";
+import type { InkStroke, PdfPoint, PdfTextAnnotation } from "../model";
 import { strokeBounds, type Bounds } from "../ink/StrokeHitTesting";
 
 const OVERLAY_MARGIN_PX = 4;
@@ -143,3 +143,29 @@ export function boundingShapeFromStrokes(strokes: readonly InkStroke[]): Selecti
   return { type: "rectangle", bounds: { minX, minY, maxX, maxY } };
 }
 
+/**
+ * The normal selection outline must cover every selected annotation type, not
+ * only ink. Text uses a top-left origin in PDF coordinates, so its vertical
+ * extent runs from `y - height` through `y`.
+ */
+export function boundingShapeFromSelection(
+  strokes: readonly InkStroke[],
+  texts: readonly Pick<PdfTextAnnotation, "x" | "y" | "width" | "height">[]
+): SelectionShape | null {
+  const inkShape = boundingShapeFromStrokes(strokes);
+  const inkBounds = inkShape ? shapeBounds(inkShape) : undefined;
+  let minX = inkBounds?.minX ?? Infinity;
+  let minY = inkBounds?.minY ?? Infinity;
+  let maxX = inkBounds?.maxX ?? -Infinity;
+  let maxY = inkBounds?.maxY ?? -Infinity;
+
+  for (const text of texts) {
+    minX = Math.min(minX, text.x);
+    minY = Math.min(minY, text.y - text.height);
+    maxX = Math.max(maxX, text.x + text.width);
+    maxY = Math.max(maxY, text.y);
+  }
+
+  if (!Number.isFinite(minX)) return null;
+  return { type: "rectangle", bounds: { minX, minY, maxX, maxY } };
+}

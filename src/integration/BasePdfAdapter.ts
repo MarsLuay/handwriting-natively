@@ -24,7 +24,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private readonly cleanup: Array<() => void> = [];
   private readonly mounted = new Set<HTMLElement>();
   private readonly callbacks: PdfAdapterCallbacks;
-  private readonly zoomBoost: PdfZoomBoostHandle | null;
+  private zoomBoost: PdfZoomBoostHandle | null = null;
   private destroyed = false;
   private sidebarRailFrame: number | null = null;
   private sidebarFollowFrame: number | null = null;
@@ -36,9 +36,18 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private sidebarFollowMaxJump = 0;
   private sidebarFollowReasons = new Set<PdfSidebarOffsetReason>();
   private sidebarFollowTrigger = "sync";
+  /** Sampled non-left toolbar layout events; these must never start an rAF loop. */
+  private ignoredSidebarLayoutTriggers = 0;
+  private lastIgnoredSidebarLayoutLogAt = 0;
+  /** Sampled count of PDF.js inner-layer mutations that must not remount overlays. */
+  private ignoredPageContentMutations = 0;
+  private lastIgnoredPageContentLogAt = 0;
   /** Cover Obsidian PDF sidebar open/close transitions (often ~250–400ms). */
   private static readonly SIDEBAR_FOLLOW_MS = 480;
   private static readonly SIDEBAR_JUMP_WARN_PX = 24;
+  private static readonly SIDEBAR_IGNORED_LAYOUT_LOG_INTERVAL_MS = 500;
+  /** Keep observer diagnostics useful without writing one entry for every PDF.js paint frame. */
+  private static readonly PAGE_CONTENT_MUTATION_LOG_INTERVAL_MS = 250;
 
   protected constructor(
     protected readonly compatibility: CompatibilityResult,
@@ -49,14 +58,21 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.root = compatibility.viewerRoot!;
     this.callbacks = callbacks;
     this.locator = new PdfPageLocator(this.root, compatibility.privateViewer);
-    this.zoomBoost = installPdfZoomBoost(compatibility.privateViewer);
-    if (this.zoomBoost) this.registerCleanup(() => this.zoomBoost?.destroy());
+    this.registerCleanup(() => this.zoomBoost?.destroy());
     for (const warning of compatibility.warnings) callbacks.onCompatibilityWarning?.(warning);
     this.listen();
   }
 
   pages(): PdfPageInfo[] {
     return this.locator.pages();
+  }
+
+  setBoostedZoom(enabled: boolean): void {
+    if (enabled && !this.zoomBoost) this.zoomBoost = installPdfZoomBoost(this.compatibility.privateViewer);
+    if (!enabled && this.zoomBoost) {
+      this.zoomBoost.destroy();
+      this.zoomBoost = null;
+    }
   }
 
   getViewState(): PdfViewState {
@@ -107,6 +123,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     toolbar.classList.remove("is-main", "is-sidebar-left", "is-sidebar-right");
 
     if (placement === "main") {
+      this.stopSidebarFollowLoop();
       this.unwrapSidebarChrome();
       toolbar.classList.add("is-main");
       const host = this.compatibility.toolbarHost ?? this.root.parentElement ?? this.root;
@@ -132,7 +149,15 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     else chrome.append(rail);
     this.mounted.add(rail);
     this.mounted.add(toolbar);
-    this.queueSyncLeftRailWithPdfSidebar(false, "mount-toolbar");
+    if (placement === "left") {
+      this.watchPdfSidebarLayout();
+      this.queueSyncLeftRailWithPdfSidebar(false, "mount-toolbar");
+    } else {
+      // A right rail never needs left-sidebar offset tracking. Clear any
+      // previous left offset once, then stop a pending left-follow loop.
+      this.stopSidebarFollowLoop();
+      this.syncLeftRailWithPdfSidebar("toolbar-right");
+    }
   }
 
   private clearToolbarMounts(toolbar: HTMLElement): void {
@@ -169,9 +194,13 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     // Insert at the scroll host's seat so an in-flow PDF sidebar sibling stays left of chrome.
     parent.insertBefore(chrome, wrapTarget);
     chrome.append(wrapTarget);
+    this.logSidebarRail("info", "pdf sidebar rail mount", {
+      wrapTarget: this.viewportLayout(wrapTarget),
+      parent: this.viewportLayout(parent),
+      root: this.viewportLayout(this.root)
+    });
     this.mounted.add(chrome);
     this.registerCleanup(() => this.unwrapSidebarChrome());
-    this.watchPdfSidebarLayout();
     return chrome;
   }
 
@@ -220,6 +249,10 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
 
   private queueSyncLeftRailWithPdfSidebar(follow = false, trigger = "sync"): void {
     if (this.destroyed) return;
+    if (!this.isLeftToolbarActive()) {
+      this.stopSidebarFollowLoop();
+      return;
+    }
     if (follow) {
       this.sidebarFollowTrigger = trigger;
       const view = this.host.ownerDocument.defaultView;
@@ -248,7 +281,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
 
   /** Track the PDF sidebar edge every frame while it opens/closes. */
   private startSidebarFollowLoop(): void {
-    if (this.destroyed || this.sidebarFollowFrame !== null) return;
+    if (this.destroyed || this.sidebarFollowFrame !== null || !this.isLeftToolbarActive()) return;
     const view = this.host.ownerDocument.defaultView;
     if (!view) {
       this.syncLeftRailWithPdfSidebar(this.sidebarFollowTrigger);
@@ -268,7 +301,10 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     let stableFrames = 0;
     const tick = (now: number): void => {
       this.sidebarFollowFrame = null;
-      if (this.destroyed) return;
+      if (this.destroyed || !this.isLeftToolbarActive()) {
+        this.stopSidebarFollowLoop();
+        return;
+      }
       this.sidebarFollowFrameCount += 1;
       const diag = this.syncLeftRailWithPdfSidebar(
         this.sidebarFollowTrigger,
@@ -297,6 +333,22 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       this.sidebarFollowReasons.clear();
     };
     this.sidebarFollowFrame = view.requestAnimationFrame(tick);
+  }
+
+  private stopSidebarFollowLoop(): void {
+    if (this.sidebarFollowFrame !== null) {
+      this.host.ownerDocument.defaultView?.cancelAnimationFrame(this.sidebarFollowFrame);
+      this.sidebarFollowFrame = null;
+    }
+    this.sidebarFollowUntil = 0;
+    this.sidebarFollowFrameCount = 0;
+    this.sidebarFollowMaxJump = 0;
+    this.sidebarFollowReasons.clear();
+  }
+
+  private isLeftToolbarActive(): boolean {
+    const chrome = this.host.querySelector(".native-pdf-handwriting-chrome");
+    return isHTMLElement(chrome) && chrome.classList.contains("is-toolbar-left");
   }
 
   private syncLeftRailWithPdfSidebar(
@@ -350,7 +402,8 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
         cssSidebarWidth: diag.cssSidebarWidth,
         contentMarginLeft: diag.contentMarginLeft,
         chrome: diag.chrome,
-        sidebar: diag.sidebar
+        sidebar: diag.sidebar,
+        viewport: this.viewportLayout(this.scrollElement())
       });
     }
 
@@ -368,23 +421,61 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.callbacks.onDebugLog?.(level, event, payload);
   }
 
+  /** Native PDF viewport metrics expose width/inset regressions during sidebar transitions. */
+  private viewportLayout(element: HTMLElement): Record<string, unknown> {
+    const rect = element.getBoundingClientRect();
+    const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+    return {
+      tag: element.tagName.toLowerCase(),
+      classes: [...element.classList],
+      clientWidth: element.clientWidth,
+      clientHeight: element.clientHeight,
+      scrollWidth: element.scrollWidth,
+      scrollHeight: element.scrollHeight,
+      scrollLeft: element.scrollLeft,
+      scrollTop: element.scrollTop,
+      rect: {
+        left: Math.round(rect.left * 10) / 10,
+        right: Math.round(rect.right * 10) / 10,
+        width: Math.round(rect.width * 10) / 10,
+        height: Math.round(rect.height * 10) / 10
+      },
+      position: style?.position ?? "",
+      width: style?.width ?? "",
+      insetInlineStart: style?.insetInlineStart ?? "",
+      insetInlineEnd: style?.insetInlineEnd ?? ""
+    };
+  }
+
   private watchPdfSidebarLayout(): void {
     if (this.sidebarWatchInstalled) return;
     this.sidebarWatchInstalled = true;
     const scope = this.pdfLayoutScope();
     const content = findPdfContentContainer(scope);
     const sidebar = findPdfSidebarContainer(scope);
-    const onLayout = (trigger: string): void => this.queueSyncLeftRailWithPdfSidebar(true, trigger);
-    // Class / style toggles often land on content, the sidebar, or a parent pdf host.
+    const onLayout = (trigger: string): void => {
+      if (!this.isLeftToolbarActive()) {
+        this.noteIgnoredSidebarLayoutTrigger(trigger);
+        return;
+      }
+      this.queueSyncLeftRailWithPdfSidebar(true, trigger);
+    };
+    // Sidebar transitions toggle one of these containers. Never observe the
+    // whole descendant tree: PDF.js and annotation style churn would otherwise
+    // restart a 480 ms rail-follow loop on every paint frame.
     const classHosts = [content, sidebar, this.host, isElement(scope) ? scope : null]
       .filter((node): node is HTMLElement => isHTMLElement(node));
     if (classHosts.length > 0) {
-      const observer = new MutationObserver(() => onLayout("mutation"));
+      const watched = new Set(classHosts);
+      const observer = new MutationObserver((records) => {
+        if (records.some((record) => isHTMLElement(record.target) && watched.has(record.target))) {
+          onLayout("mutation");
+        }
+      });
       for (const host of new Set(classHosts)) {
         observer.observe(host, {
           attributes: true,
-          attributeFilter: ["class", "style"],
-          subtree: host === this.host || host === scope
+          attributeFilter: ["class", "style"]
         });
       }
       this.registerCleanup(() => observer.disconnect());
@@ -406,6 +497,19 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     const onClick = (): void => onLayout("click");
     this.host.addEventListener("click", onClick, true);
     this.registerCleanup(() => this.host.removeEventListener("click", onClick, true));
+  }
+
+  private noteIgnoredSidebarLayoutTrigger(trigger: string): void {
+    this.ignoredSidebarLayoutTriggers += 1;
+    const now = Date.now();
+    if (now - this.lastIgnoredSidebarLayoutLogAt < BasePdfAdapter.SIDEBAR_IGNORED_LAYOUT_LOG_INTERVAL_MS) return;
+    this.logSidebarRail("info", "pdf sidebar rail ignored layout", {
+      trigger,
+      ignoredTriggers: this.ignoredSidebarLayoutTriggers,
+      reason: "not-left-toolbar"
+    });
+    this.ignoredSidebarLayoutTriggers = 0;
+    this.lastIgnoredSidebarLayoutLogAt = now;
   }
 
   compatibilityReport(): { errors: string[]; warnings: string[] } {
@@ -447,10 +551,25 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       let childListChanged = false;
       let scaleChanged = false;
       let rotationChanged = false;
+      let pageStructureRecords = 0;
+      let ignoredPageContentRecords = 0;
       for (const record of records) {
-        if (!this.isExternalMutation(record)) continue;
+        // A PDF.js page may replace all of its inner children, including our
+        // overlay, while keeping the outer `.page` node. The removed overlay
+        // is an internal node, so it needs an explicit escape hatch here;
+        // otherwise the session never gets a chance to reattach it.
+        const annotationOverlayRemoved = record.type === "childList" && this.removesAnnotationOverlay(record);
+        if (!annotationOverlayRemoved && !this.isExternalMutation(record)) continue;
         if (record.type === "childList") {
-          childListChanged = true;
+          // PDF.js replaces canvas/text-layer children while zooming. Those
+          // updates do not replace a .page node, so remounting our overlay for
+          // every one makes all annotations visibly blink at zoom settle.
+          if (this.isPdfPageStructureMutation(record)) {
+            childListChanged = true;
+            pageStructureRecords += 1;
+          } else {
+            ignoredPageContentRecords += 1;
+          }
           continue;
         }
         if (record.type !== "attributes") continue;
@@ -458,7 +577,19 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
         else if (record.attributeName === "data-rotation") rotationChanged = true;
         else if (record.attributeName === "data-page-number") childListChanged = true;
       }
-      if (childListChanged) this.callbacks.onPagesChanged?.("pages-dom");
+      if (ignoredPageContentRecords) {
+        this.logIgnoredPageContentMutations(ignoredPageContentRecords);
+        this.callbacks.onPageContentMutation?.(ignoredPageContentRecords);
+      }
+      if (childListChanged) {
+        this.logAdapterEvent("info", "pdf page observer", {
+          action: "page-structure",
+          records: pageStructureRecords,
+          scaleChanged,
+          rotationChanged
+        });
+        this.callbacks.onPagesChanged?.("pages-dom");
+      }
       else if (scaleChanged) notify("data-scale");
       else if (rotationChanged) notify("rotationchanging");
     });
@@ -492,6 +623,50 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     }
     if (record.type !== "childList") return false;
     return [...record.addedNodes, ...record.removedNodes].some((node) => !this.isInternalNode(node));
+  }
+
+  /** Only a page node (or a wrapper containing one) needs overlay reconciliation. */
+  private isPdfPageStructureMutation(record: MutationRecord): boolean {
+    return [...record.addedNodes, ...record.removedNodes].some((node) => this.nodeContainsPdfPage(node));
+  }
+
+  /** Detect a direct or wrapped removal of one of our page overlays. */
+  private removesAnnotationOverlay(record: MutationRecord): boolean {
+    return [...record.removedNodes].some((node) => this.nodeContainsAnnotationOverlay(node));
+  }
+
+  private nodeContainsAnnotationOverlay(node: Node): boolean {
+    if (!isHTMLElement(node)) return false;
+    if (node.classList.contains("native-pdf-handwriting-page-overlay")) return true;
+    return Boolean(node.querySelector(".native-pdf-handwriting-page-overlay"));
+  }
+
+  private nodeContainsPdfPage(node: Node): boolean {
+    if (!isHTMLElement(node)) return false;
+    if (this.isPdfPageElement(node)) return true;
+    return Boolean(node.querySelector(".page[data-page-number], .pdf-page-view[data-page-number]"));
+  }
+
+  private isPdfPageElement(element: HTMLElement): boolean {
+    return element.matches(".page[data-page-number], .pdf-page-view[data-page-number]");
+  }
+
+  private logIgnoredPageContentMutations(records: number): void {
+    this.ignoredPageContentMutations += records;
+    const now = Date.now();
+    if (now - this.lastIgnoredPageContentLogAt < BasePdfAdapter.PAGE_CONTENT_MUTATION_LOG_INTERVAL_MS) return;
+    this.logAdapterEvent("info", "pdf page observer", {
+      action: "ignored-page-content",
+      records: this.ignoredPageContentMutations
+    });
+    this.ignoredPageContentMutations = 0;
+    this.lastIgnoredPageContentLogAt = now;
+  }
+
+  private logAdapterEvent(level: "info" | "warn", event: string, payload: Record<string, unknown>): void {
+    if (level === "info") console.debug(LOG_PREFIX, event, payload);
+    else console.warn(LOG_PREFIX, event, payload);
+    this.callbacks.onDebugLog?.(level, event, payload);
   }
 
   private isInternalNode(node: Node): boolean {

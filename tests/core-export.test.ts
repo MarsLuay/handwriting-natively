@@ -1,8 +1,9 @@
-import { PDFDocument } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName } from "pdf-lib";
 import { describe, expect, it, vi } from "vitest";
 import type { InkStroke } from "../src/model";
 import {
   annotatedFilename,
+  editableAnnotatedFilename,
   mapInkPointToPdfPage,
   mapInkWidthToPdfPage,
   PdfExportService
@@ -20,6 +21,7 @@ describe("PDF export", () => {
   it("generates _export filenames beside the source name", () => {
     expect(annotatedFilename("paper.pdf")).toBe("paper_export.pdf");
     expect(annotatedFilename("PAPER.PDF")).toBe("PAPER_export.pdf");
+    expect(editableAnnotatedFilename("paper.pdf")).toBe("paper_editable.pdf");
   });
 
   it("scales ink page-space into PDF MediaBox points (CSS 96dpi vs PDF 72dpi)", () => {
@@ -64,5 +66,61 @@ describe("PDF export", () => {
     const first = await exporter.export({ sourceBytes: source, strokes: [stroke] });
     const second = await exporter.export({ sourceBytes: source, strokes: [stroke] });
     expect(first.byteLength).toBe(second.byteLength);
+  });
+
+  it("exports editable Ink and FreeText annotations with self-rendering appearances", async () => {
+    const source = await sourcePdf(); const original = source.slice();
+    const output = await new PdfExportService().export({
+      sourceBytes: source,
+      strokes: [stroke],
+      texts: [{
+        id: "text", page: 1, text: "Editable note", x: 10, y: 90, width: 70, height: 16,
+        color: "#111827", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+        runs: [{ text: "Editable note", color: "#111827", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+        sourceRuns: [{ text: "Editable note", color: "#111827", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+        createdAt: "now", updatedAt: "now"
+      }],
+      mode: "editable"
+    });
+    const page = (await PDFDocument.load(output)).getPages()[0]!;
+    const annotations = page.node.lookup(PDFName.of("Annots"), PDFArray);
+    expect(annotations.size()).toBe(2);
+    for (let index = 0; index < annotations.size(); index += 1) {
+      const annotation = annotations.lookup(index, PDFDict);
+      expect(annotation.lookup(PDFName.of("AP"), PDFDict).lookup(PDFName.of("N"))).toBeDefined();
+    }
+    expect(annotations.lookup(1, PDFDict).lookup(PDFName.of("RC"), PDFHexString).decodeText()).toContain("Editable note");
+    expect(source).toEqual(original);
+  });
+
+  it("preserves rich run styling and renders Unicode text in flattened and editable exports", async () => {
+    const canvasContext = {
+      font: "", fillStyle: "", strokeStyle: "", lineWidth: 0,
+      measureText: vi.fn((text: string) => ({ width: text.length * 12 })),
+      fillText: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn()
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(canvasContext as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL1rQAAAABJRU5ErkJggg=="
+    );
+    const text = {
+      id: "unicode", page: 1, text: "Bold 한글", x: 10, y: 90, width: 90, height: 24,
+      color: "#111827", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+      runs: [
+        { text: "Bold ", color: "#dc2626", fontSize: 18, fontFamily: "serif", bold: true, italic: true, strikethrough: true },
+        { text: "한글", color: "#111827", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }
+      ],
+      sourceRuns: [], createdAt: "now", updatedAt: "now"
+    };
+    const exporter = new PdfExportService();
+    const flattened = await exporter.export({ sourceBytes: await sourcePdf(), texts: [text] });
+    const editable = await exporter.export({ sourceBytes: await sourcePdf(), texts: [text], mode: "editable" });
+
+    expect(await PDFDocument.load(flattened)).toBeDefined();
+    const annotation = (await PDFDocument.load(editable)).getPages()[0]!
+      .node.lookup(PDFName.of("Annots"), PDFArray).lookup(0, PDFDict);
+    expect((annotation.lookup(PDFName.of("Contents")) as PDFHexString).decodeText()).toBe("Bold 한글");
+    expect(annotation.lookup(PDFName.of("AP"), PDFDict).lookup(PDFName.of("N"))).toBeDefined();
+    expect(canvasContext.fillText).toHaveBeenCalled();
   });
 });

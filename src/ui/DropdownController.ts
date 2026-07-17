@@ -14,6 +14,9 @@ export interface DropdownOpenOptions {
   content?: HTMLElement;
 }
 
+/** Keep every icon dropdown compact; longer menus scroll inside the popup. */
+export const DROPDOWN_MAX_HEIGHT = 360;
+
 export class DropdownController {
   private popup: HTMLElement | null = null;
   private trigger: HTMLElement | null = null;
@@ -136,11 +139,12 @@ export class DropdownController {
     const height = view?.innerHeight ?? this.ownerDocument.documentElement.clientHeight;
     const gap = 6;
     const popupWidth = popup.width || Math.min(320, width - 16);
-    const popupHeight = popup.height || 240;
+    const maxHeight = Math.max(120, Math.min(DROPDOWN_MAX_HEIGHT, height - 16));
+    const popupHeight = Math.min(popup.height || 240, maxHeight);
     const left = Math.max(8, Math.min(anchor.left, width - popupWidth - 8));
     const fitsBelow = anchor.bottom + gap + popupHeight <= height - 8;
     const top = fitsBelow ? anchor.bottom + gap : Math.max(8, anchor.top - popupHeight - gap);
-    Object.assign(this.popup.style, { left: `${left}px`, top: `${top}px`, maxHeight: `${Math.max(120, height - 16)}px` });
+    Object.assign(this.popup.style, { left: `${left}px`, top: `${top}px`, maxHeight: `${maxHeight}px` });
     this.popup.dataset.placement = fitsBelow ? "bottom" : "top";
   };
 }

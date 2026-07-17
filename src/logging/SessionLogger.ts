@@ -17,6 +17,8 @@ export interface DrawPositionLog {
   tool: string;
   displayScale: number;
   points: Array<{ x: number; y: number; pressure?: number }>;
+  /** Full input count when `points` is a bounded diagnostic sample. */
+  pointCount?: number;
   bounds?: { minX: number; minY: number; maxX: number; maxY: number };
 }
 
@@ -76,6 +78,7 @@ export class SessionLogger {
   private lastZoomTickAt = 0;
   private mousePanMoveCount = 0;
   private alignMoveCount = 0;
+  private shapeResizeMoveCount = 0;
 
   constructor(
     private readonly documentPath: string,
@@ -167,8 +170,28 @@ export class SessionLogger {
     this.emit("info", "draw position", {
       document: this.documentPath,
       ...entry,
-      pointCount: entry.points.length,
+      pointCount: entry.pointCount ?? entry.points.length,
       bounds
+    });
+  }
+
+  laserDraft(page: number, retainedPoints: number, discardedPoints: number, retentionMs: number): void {
+    this.emit("info", "laser draft", {
+      document: this.documentPath,
+      page,
+      retainedPoints,
+      discardedPoints,
+      retentionMs
+    });
+  }
+
+  laserRepaintSlow(page: number, durationMs: number, draftPoints: number, trailCount: number): void {
+    this.emit("warn", "laser repaint slow", {
+      document: this.documentPath,
+      page,
+      durationMs: round(durationMs),
+      draftPoints,
+      trailCount
     });
   }
 
@@ -193,10 +216,46 @@ export class SessionLogger {
     });
   }
 
+  /** Input ownership identifies and replaces duplicate page routers. */
+  inputOwner(phase: "claim" | "supersede" | "release", details: Record<string, unknown> = {}): void {
+    this.emit("info", "session input owner", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   /** Raw pointer/touch probe — every type (mouse/pen/touch/…) for diagnosis. */
   pointerSeen(details: Record<string, unknown>): void {
     this.emit("info", "pointer seen", {
       document: this.documentPath,
+      ...details
+    });
+  }
+
+  /**
+   * Structured Text-tool diagnostics. Annotation contents never enter logs;
+   * use lengths, line counts, geometry, and style flags to diagnose behavior.
+   */
+  textTool(phase: string, details: Record<string, unknown> = {}): void {
+    this.emit("info", "text tool", {
+      document: this.documentPath,
+      phase,
+      ...redactTextToolDetails(details)
+    });
+  }
+
+  /** Shape hold/resize diagnostics, with resize moves sampled to keep logs usable. */
+  shapeTool(phase: "recognized" | "resize" | "commit" | "cancel", details: Record<string, unknown> = {}): void {
+    if (phase === "resize") {
+      this.shapeResizeMoveCount += 1;
+      if (this.shapeResizeMoveCount !== 1 && this.shapeResizeMoveCount % 6 !== 0) return;
+    } else {
+      this.shapeResizeMoveCount = 0;
+    }
+    this.emit("info", "shape tool", {
+      document: this.documentPath,
+      phase,
       ...details
     });
   }
@@ -215,6 +274,15 @@ export class SessionLogger {
     });
   }
 
+  /** Placement transitions make stale More-menu state and failed remounts diagnosable. */
+  toolbarPlacement(phase: "request" | "applied" | "error", details: Record<string, unknown> = {}): void {
+    this.emit(phase === "error" ? "warn" : "info", "toolbar placement", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   sessionAttach(details: {
     scrollRoot: string;
     panCapture: string;
@@ -223,8 +291,11 @@ export class SessionLogger {
     mouseDragScroll?: boolean;
     toolbarPlacement?: string;
     loadedStrokes?: number;
+    loadedTexts?: number;
     sidecarStrokes?: number;
+    sidecarTexts?: number;
     recoveryStrokes?: number;
+    recoveryTexts?: number;
     persistEpoch?: number;
   }): void {
     this.emit("info", "session attach", {
@@ -236,8 +307,11 @@ export class SessionLogger {
   sidecarLoad(details: {
     documentId: string;
     sidecarStrokes: number;
+    sidecarTexts?: number;
     recoveryStrokes: number;
+    recoveryTexts?: number;
     loadedStrokes: number;
+    loadedTexts?: number;
     sidecarUpdatedAt: string | null;
     recoveryUpdatedAt: string | null;
   }): void {
@@ -251,6 +325,7 @@ export class SessionLogger {
     reason: string;
     documentId: string;
     strokeCount: number;
+    textCount?: number;
     dirty: boolean;
     updatedAt: string;
     skipped?: string;
@@ -266,6 +341,7 @@ export class SessionLogger {
     reason: string;
     silent: boolean;
     strokeCount: number;
+    textCount?: number;
     dirty: boolean;
     alreadyPersisted: boolean;
   }): void {
@@ -324,6 +400,18 @@ export class SessionLogger {
     });
   }
 
+  /** Tracks the compositor handoff around a zoom-settle repaint. */
+  zoomComposite(
+    phase: "begin" | "settle-paint" | "native-content" | "release-scheduled" | "release",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit("info", "ink zoom composite", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   private emit(level: "info" | "warn", event: string, payload: Record<string, unknown>): void {
     if (level === "info") console.debug(PREFIX, event, payload);
     else console.warn(PREFIX, event, payload);
@@ -345,4 +433,22 @@ function boundsFrom(points: readonly { x: number; y: number }[]): DrawPositionLo
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+const TEXT_CONTENT_KEYS = new Set(["text", "content", "html", "value", "data", "runs", "sourceruns"]);
+
+/** Keep text-tool debug diagnostics useful without storing annotation contents. */
+function redactTextToolDetails(details: Record<string, unknown>): Record<string, unknown> {
+  return redactTextToolValue(details) as Record<string, unknown>;
+}
+
+function redactTextToolValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactTextToolValue);
+  if (!value || typeof value !== "object") return value;
+  const safe: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (TEXT_CONTENT_KEYS.has(key.toLowerCase())) continue;
+    safe[key] = redactTextToolValue(child);
+  }
+  return safe;
 }

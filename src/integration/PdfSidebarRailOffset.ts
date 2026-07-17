@@ -217,11 +217,16 @@ export function pdfSidebarOverlapOffset(
 export function applyPdfSidebarRailOffset(chrome: HTMLElement, offsetPx: number): void {
   const rounded = Math.max(0, Math.round(offsetPx));
   if (rounded > 0) {
-    chrome.style.setProperty(INK_PDF_SIDEBAR_OFFSET_VAR, `${rounded}px`);
-    chrome.dataset.pdfSidebarOffset = String(rounded);
+    const value = `${rounded}px`;
+    if (chrome.style.getPropertyValue(INK_PDF_SIDEBAR_OFFSET_VAR) !== value) {
+      chrome.style.setProperty(INK_PDF_SIDEBAR_OFFSET_VAR, value);
+    }
+    if (chrome.dataset.pdfSidebarOffset !== String(rounded)) chrome.dataset.pdfSidebarOffset = String(rounded);
   } else {
-    chrome.style.removeProperty(INK_PDF_SIDEBAR_OFFSET_VAR);
-    delete chrome.dataset.pdfSidebarOffset;
+    if (chrome.style.getPropertyValue(INK_PDF_SIDEBAR_OFFSET_VAR)) {
+      chrome.style.removeProperty(INK_PDF_SIDEBAR_OFFSET_VAR);
+    }
+    if (chrome.dataset.pdfSidebarOffset !== undefined) delete chrome.dataset.pdfSidebarOffset;
   }
 }
 
