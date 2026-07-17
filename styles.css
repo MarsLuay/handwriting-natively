@@ -24,13 +24,13 @@
 
 .native-pdf-handwriting-chrome.is-toolbar-left {
   /* JS rAF-tracks --ink-pdf-sidebar-offset to the live PDF sidebar edge.
-     No CSS transition — it fights per-frame updates and glitches on close. */
+     It moves only the rail: native PDF layout already reserves the sidebar. */
   grid-template-columns: max-content minmax(0, 1fr);
-  padding-left: var(--ink-pdf-sidebar-offset, 0px);
 }
 
 .native-pdf-handwriting-chrome.is-toolbar-left[data-pdf-sidebar-offset] > .native-pdf-handwriting-rail {
-  /* Keep the rail above page ink once shifted past the PDF sidebar. */
+  /* Do not consume a second document column after Obsidian shifts the viewer. */
+  transform: translateX(var(--ink-pdf-sidebar-offset));
   z-index: 6;
 }
 
@@ -65,7 +65,6 @@
 .native-pdf-handwriting-chrome > .pdfViewer {
   min-height: 0;
   min-width: 0;
-  width: 100%;
 }
 
 .native-pdf-handwriting-rail {
@@ -213,7 +212,9 @@
   flex-direction: column;
   max-width: calc(100vw - 16px);
   min-width: min(260px, calc(100vw - 16px));
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   position: fixed;
   width: max-content;
@@ -343,12 +344,122 @@
 }
 
 .native-pdf-handwriting-page-overlay {
+  --native-pdf-handwriting-text-interaction-border: 1px dotted var(--interactive-accent, #2563eb);
   pointer-events: none;
   position: absolute;
   touch-action: auto;
   z-index: 4;
 }
 .native-pdf-handwriting-canvas { display: block; height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; z-index: 1; }
+.native-pdf-handwriting-text-layer { inset: 0; pointer-events: none; position: absolute; z-index: 2; }
+.native-pdf-handwriting-text-box,
+.native-pdf-handwriting-text-input {
+  box-sizing: border-box;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  position: absolute;
+  transform-origin: top left;
+  white-space: pre-wrap;
+}
+.native-pdf-handwriting-text-box { padding: 2px 3px; pointer-events: none; z-index: 2; }
+.native-pdf-handwriting-text-box.is-editable { cursor: text; pointer-events: auto; }
+.native-pdf-handwriting-text-box.is-selected {
+  background: transparent;
+  box-shadow: none;
+}
+.native-pdf-handwriting-text-selection-frame {
+  /* Text interaction always uses this one boundary: static selection, hover,
+   * and resize. The canvas never draws a second frame for selected text. */
+  border: var(--native-pdf-handwriting-text-interaction-border);
+  box-sizing: border-box;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity 80ms ease;
+  z-index: 5;
+}
+.native-pdf-handwriting-text-box.is-selected .native-pdf-handwriting-text-selection-frame,
+.native-pdf-handwriting-text-box.is-editable:hover .native-pdf-handwriting-text-selection-frame,
+.native-pdf-handwriting-text-box.is-transforming .native-pdf-handwriting-text-selection-frame { opacity: 1; }
+.native-pdf-handwriting-text-resize-n,
+.native-pdf-handwriting-text-resize-e,
+.native-pdf-handwriting-text-resize-s,
+.native-pdf-handwriting-text-resize-w,
+.native-pdf-handwriting-text-resize-nw,
+.native-pdf-handwriting-text-resize-ne,
+.native-pdf-handwriting-text-resize-sw,
+.native-pdf-handwriting-text-resize-se {
+  background: var(--interactive-accent, #2563eb);
+  border: 2px solid var(--background-primary, #fff);
+  border-radius: 50%;
+  box-sizing: border-box;
+  height: 10px;
+  pointer-events: auto;
+  position: absolute;
+  width: 10px;
+  z-index: 2;
+}
+.native-pdf-handwriting-text-resize-nw { cursor: nwse-resize; left: -6px; top: -6px; }
+.native-pdf-handwriting-text-resize-ne { cursor: nesw-resize; right: -6px; top: -6px; }
+.native-pdf-handwriting-text-resize-sw { bottom: -6px; cursor: nesw-resize; left: -6px; }
+.native-pdf-handwriting-text-resize-se { bottom: -6px; cursor: nwse-resize; right: -6px; }
+.native-pdf-handwriting-text-resize-n { cursor: ns-resize; left: 50%; top: -6px; transform: translateX(-50%); }
+.native-pdf-handwriting-text-resize-s { bottom: -6px; cursor: ns-resize; left: 50%; transform: translateX(-50%); }
+.native-pdf-handwriting-text-resize-w { cursor: ew-resize; left: -6px; top: 50%; transform: translateY(-50%); }
+.native-pdf-handwriting-text-resize-e { cursor: ew-resize; right: -6px; top: 50%; transform: translateY(-50%); }
+.native-pdf-handwriting-text-move-n,
+.native-pdf-handwriting-text-move-s {
+  cursor: move;
+  height: 8px;
+  left: 12px;
+  pointer-events: auto;
+  position: absolute;
+  right: 12px;
+}
+.native-pdf-handwriting-text-move-n { top: -5px; }
+.native-pdf-handwriting-text-move-s { bottom: -5px; }
+.native-pdf-handwriting-text-move-e,
+.native-pdf-handwriting-text-move-w {
+  bottom: 12px;
+  cursor: move;
+  pointer-events: auto;
+  position: absolute;
+  top: 12px;
+  width: 8px;
+}
+.native-pdf-handwriting-text-move-w { left: -5px; }
+.native-pdf-handwriting-text-move-e { right: -5px; }
+.native-pdf-handwriting-text-input {
+  background: transparent;
+  /* Active editing keeps the same one dotted text boundary. */
+  border: var(--native-pdf-handwriting-text-interaction-border);
+  caret-color: currentColor;
+  box-shadow: none;
+  cursor: text;
+  outline: none;
+  padding: 2px 3px;
+  pointer-events: auto;
+  resize: none;
+  z-index: 3;
+}
+.native-pdf-handwriting-text-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 230px;
+  padding: 8px;
+}
+.native-pdf-handwriting-text-menu label { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+.native-pdf-handwriting-text-style-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
+.native-pdf-handwriting-text-style-buttons button[aria-pressed="true"] { background: var(--interactive-accent, #2563eb); color: var(--text-on-accent, #fff); }
+.native-pdf-handwriting-text-menu-note { color: var(--text-muted); font-size: .85em; line-height: 1.35; margin: 0; }
+/* Keep the annotation overlay in its own compositor layer while PDF.js replaces
+   its underlying canvas/text layers after a pinch zoom. */
+.native-pdf-handwriting-page-overlay.native-pdf-handwriting-zoom-compositing {
+  isolation: isolate;
+  transform: translateZ(0);
+  will-change: transform;
+}
 .native-pdf-handwriting-zoom-compositing .native-pdf-handwriting-canvas {
   height: 100%;
   image-rendering: auto;

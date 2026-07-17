@@ -70,4 +70,23 @@ describe("stroke builder", () => {
     // Regular finish simplifies — that was the release snap.
     expect(simplifyBuilder.finish(true).points.length).toBeLessThan(matched.length);
   });
+
+  it("keeps one continuity anchor when discarding expired preview samples", () => {
+    const builder = new StrokeBuilder(base);
+    builder.add({ ...point(0, 0), time: 0 });
+    builder.add({ ...point(10, 0), time: 10 });
+    builder.add({ ...point(20, 0), time: 20 });
+    builder.add({ ...point(30, 0), time: 30 });
+
+    expect(builder.discardBefore(25)).toBe(2);
+    expect(builder.finish(false).points.map((item) => item.time)).toEqual([20, 30]);
+  });
+
+  it("caps an ephemeral preview at its newest samples", () => {
+    const builder = new StrokeBuilder(base);
+    for (let time = 0; time < 5; time += 1) builder.add({ ...point(time, 0), time });
+
+    expect(builder.discardToMaxPoints(3)).toBe(2);
+    expect(builder.finish(false).points.map((item) => item.time)).toEqual([2, 3, 4]);
+  });
 });

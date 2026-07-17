@@ -63,15 +63,21 @@ export function resolvePageCoordinateLayout(page: PdfPageInfo): PageCoordinateLa
   const contentRect = pdfCanvas?.getBoundingClientRect();
 
   if (!contentRect || contentRect.width <= 0 || contentRect.height <= 0) {
-    const scale = hostRect.width / Math.max(1, pdfWidth);
+    // PDF.js briefly reports a zero-sized page/canvas while it swaps zoom
+    // layers. Keep the last reported PDF scale for live text editors: zero
+    // would collapse the contenteditable before the real canvas returns.
+    const fallbackScale = Number.isFinite(page.scale) && page.scale > 0 ? page.scale : 1;
+    const scaleX = hostRect.width > 0 ? hostRect.width / Math.max(1, pdfWidth) : fallbackScale;
+    const scaleY = hostRect.height > 0 ? hostRect.height / Math.max(1, pdfHeight) : fallbackScale;
+    const scale = Math.min(scaleX, scaleY);
     return {
       offsetX: 0,
       offsetY: 0,
       contentWidth: hostRect.width,
       contentHeight: hostRect.height,
       scale,
-      scaleX: scale,
-      scaleY: hostRect.height / Math.max(1, pdfHeight),
+      scaleX,
+      scaleY,
       pdfWidth,
       pdfHeight,
       hostWidth: hostRect.width,

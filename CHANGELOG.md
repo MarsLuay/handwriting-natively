@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.9 — 2026-07-17
+
+- Add sidecar-backed rich text annotations with in-editor text styling and a Text toolbar dropdown.
+- Add held-stroke shape recognition (line, arrow, rectangle, ellipse, and related shapes) with resize handles.
+- Improve eraser, lasso, pointer routing, page-coordinate layout, and zoom/ink compositing.
+- Expand session logging / vault debug log coverage and sidebar layout CSS tests.
+
 ## 0.1.8 — 2026-07-14
 
 - Hide the native PDF cursor during ink/eraser with high-specificity selectors instead of `!important` (Stylelint / Obsidian css-important).

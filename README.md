@@ -2,7 +2,7 @@
 
 ## What Handwriting Natively Does
 
-Handwrite on PDFs with a stylus or mouse natively in obsidian! Annotations live in vault metadata with the original PDFs untouched. Export the copy for the PDF with the added notes.
+Handwrite on PDFs with a stylus or mouse natively in Obsidian. Annotations live in vault metadata with the original PDFs untouched. Export either a flattened copy or a separate editable-PDF annotation copy. Text boxes are sidecar-backed and editable in Text mode; physical eraser tips and optional whole-stroke/right-click erasing are supported.
 
 I made this plugin after realizing I use Obsidian a lot more than another nameless note taking app.. I hope you find it as useful as I do!
 
@@ -34,7 +34,7 @@ npm run build
 
 Copy `manifest.json`, `main.js`, and `styles.css` into your vault plugin folder, then reload Obsidian. See `docs/manual-test-checklist.md` before trusting private PDF-view integration.
 
-Settings includes **Copy all settings** for a local JSON snapshot. The UI is English; annotation files are language-independent.
+Settings includes **Copy all logs**, which copies the complete vault debug log after it is enabled and an issue is reproduced. The UI is English; annotation files are language-independent.
 
 ## License
 

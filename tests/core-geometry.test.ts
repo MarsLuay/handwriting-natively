@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { InkStroke, PdfPoint } from "../src/model";
+import type { InkStroke, PdfPoint, PdfTextAnnotation } from "../src/model";
 import { hitTestStroke } from "../src/ink/StrokeHitTesting";
 import { simplifyPoints } from "../src/ink/StrokeStabilizer";
 import { PdfCoordinateMapper, type PageRotation } from "../src/pdf/PdfCoordinateMapper";
-import { selectStrokes, shapeContainsPoint, strokeDiscernibleInOverlay, translateShape, type SelectionShape } from "../src/tools/LassoTool";
+import { boundingShapeFromSelection, selectStrokes, shapeContainsPoint, strokeDiscernibleInOverlay, translateShape, type SelectionShape } from "../src/tools/LassoTool";
 
 const point = (x: number, y: number): PdfPoint => ({ x, y, pressure: 0.5, time: x });
 const stroke = (id: string, points: PdfPoint[]): InkStroke => ({ id, page: 1, tool: "pen", color: "#000000", width: 2, opacity: 1, inputType: "pen", points, createdAt: "now", updatedAt: "now" });
@@ -58,6 +58,20 @@ describe("coordinates and geometry", () => {
     expect(shapeContainsPoint(moved, { x: 1, y: 0 })).toBe(false);
   });
 
+  it("bounds normal selection outlines around both ink and text annotations", () => {
+    const ink = stroke("ink", [point(10, 20), point(30, 40)]);
+    const text = { x: 80, y: 90, width: 120, height: 24 } as PdfTextAnnotation;
+
+    expect(boundingShapeFromSelection([ink], [text])).toEqual({
+      type: "rectangle",
+      bounds: { minX: 9, minY: 19, maxX: 200, maxY: 90 }
+    });
+    expect(boundingShapeFromSelection([], [text])).toEqual({
+      type: "rectangle",
+      bounds: { minX: 80, minY: 66, maxX: 200, maxY: 90 }
+    });
+  });
+
   it("maps host viewport coordinates through content offsets", () => {
     const mapper = new PdfCoordinateMapper({ width: 100, height: 200, scale: 2, rotation: 0, offsetX: 0, offsetY: 12 });
     expect(mapper.toPdf({ x: 20, y: 32 })).toEqual({ x: 10, y: 190 });
@@ -93,4 +107,3 @@ describe("coordinates and geometry", () => {
     expect(selectStrokes([dot, long], shape).map((item) => item.id)).toEqual(["dot"]);
   });
 });
-

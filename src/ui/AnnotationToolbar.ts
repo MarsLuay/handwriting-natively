@@ -1,4 +1,4 @@
-import type { DrawingTool, SaveStatus, ToolId, ToolPreferences } from "../model";
+import type { DrawingTool, SaveStatus, TextStyle, ToolId, ToolPreferences } from "../model";
 import { isDrawingTool, resolveDrawingTool } from "../model";
 import { colorOptions } from "./ColorPicker";
 import { DropdownController, type DropdownOpenOptions, type DropdownOption } from "./DropdownController";
@@ -7,6 +7,7 @@ import { eraserMenu } from "./EraserDropdown";
 import { laserMenu } from "./LaserDropdown";
 import { lassoOptions } from "./LassoDropdown";
 import { SaveStatusIndicator } from "./SaveStatusIndicator";
+import { textMenu, type TextStyleChange } from "./TextDropdown";
 import { setToolbarColorSwatch, setToolbarIcon, type ToolbarIcon } from "./ToolbarIcon";
 
 const DRAWING_LABELS: Record<DrawingTool, string> = {
@@ -17,13 +18,21 @@ const DRAWING_LABELS: Record<DrawingTool, string> = {
 
 export type MoreAction =
   | "export"
+  | "export-editable"
   | "toolbar-main"
   | "toolbar-left"
   | "toolbar-right";
 
+/** Identifies whether a preference change also needs a whole-session redraw. */
+export type PreferenceChangeReason = "general" | "text-style";
+
 export interface AnnotationToolbarCallbacks {
-  onPreferencesChange(preferences: ToolPreferences): void;
+  onPreferencesChange(preferences: ToolPreferences, reason?: PreferenceChangeReason): void;
   onEraserSizePreview?(size: number): void;
+  onTextStyleChange?(change: TextStyleChange): void;
+  /** Runs before the toolbar takes focus, preserving a contenteditable range. */
+  onTextFormatPointerDown?(): void;
+  activeTextStyle?(): TextStyle | undefined;
   onDrawModeChange?(enabled: boolean): void;
   onUndo?(): void;
   onRedo?(): void;
@@ -76,10 +85,11 @@ export class AnnotationToolbar {
     this.controls.append(this.groupedTool("eraser", () => this.eraserMenuOptions()));
     this.controls.append(this.groupedTool("laser", () => this.laserMenuOptions()));
     this.controls.append(this.groupedTool("lasso", () => ({ label: "Lasso options", options: this.lassoMenu() })));
+    this.controls.append(this.groupedTool("text", () => this.textMenuOptions()));
     this.controls.append(this.actionButton("undo", "Undo", () => this.callbacks.onUndo?.(), !this.callbacks.onUndo));
     this.controls.append(this.actionButton("redo", "Redo", () => this.callbacks.onRedo?.(), !this.callbacks.onRedo));
     const supportedMore = options.supportedMoreActions ?? [];
-    if (this.callbacks.onMore && supportedMore.length > 0) this.controls.append(this.menuButton("more", "More", this.moreMenu(supportedMore)));
+    if (this.callbacks.onMore && supportedMore.length > 0) this.controls.append(this.menuButton("more", "More", () => this.moreMenu(supportedMore)));
     if (!this.autosave && this.callbacks.onSave) this.controls.append(this.actionButton("save", "Save", () => void this.callbacks.onSave?.()));
     this.element.append(this.controls, this.saveStatus.element);
     this.updateButtons();
@@ -106,7 +116,7 @@ export class AnnotationToolbar {
     this.element.remove();
   }
 
-  private groupedTool(id: "drawing" | "eraser" | "lasso" | "laser", menu: () => DropdownOpenOptions): HTMLButtonElement {
+  private groupedTool(id: "drawing" | "text" | "eraser" | "lasso" | "laser", menu: () => DropdownOpenOptions): HTMLButtonElement {
     const main = this.actionButton(id, id, () => {
       const active = id === "drawing"
         ? isDrawingTool(this.preferences.activeTool)
@@ -114,6 +124,9 @@ export class AnnotationToolbar {
       if (active) this.dropdown.toggle(id, main, menu());
       else this.activate(id === "drawing" ? this.lastDrawingTool : id);
     });
+    if (id === "text") {
+      main.addEventListener("pointerdown", () => this.callbacks.onTextFormatPointerDown?.(), { signal: this.abort.signal });
+    }
     main.setAttribute("aria-haspopup", "menu");
     main.setAttribute("aria-expanded", "false");
     return main;
@@ -165,6 +178,7 @@ export class AnnotationToolbar {
       case "eraser":
       case "lasso":
       case "laser":
+      case "text":
       case "undo":
       case "redo":
       case "more":
@@ -175,8 +189,8 @@ export class AnnotationToolbar {
     }
   }
 
-  private menuButton(id: string, label: string, options: DropdownOption[]): HTMLButtonElement {
-    const button = this.actionButton(id, label, () => this.dropdown.toggle(id, button, { label: `${label} options`, options }));
+  private menuButton(id: string, label: string, options: () => DropdownOption[]): HTMLButtonElement {
+    const button = this.actionButton(id, label, () => this.dropdown.toggle(id, button, { label: `${label} options`, options: options() }));
     button.setAttribute("aria-haspopup", "menu");
     button.setAttribute("aria-expanded", "false");
     return button;
@@ -184,7 +198,7 @@ export class AnnotationToolbar {
 
   private drawingMenu(): DropdownOpenOptions {
     const content = this.ownerDocument.createElement("div");
-    for (const option of drawingOptions(this.preferences, (tool) => {
+    const options = drawingOptions(this.preferences, (tool) => {
       this.preferences.activeTool = tool;
       this.lastDrawingTool = tool;
       this.changed();
@@ -192,7 +206,11 @@ export class AnnotationToolbar {
       this.preferences[this.lastDrawingTool].width = width;
       this.preferences.activeTool = this.lastDrawingTool;
       this.changed();
-    })) content.append(this.inlineOption(option));
+    });
+    const tools = options.filter((option) => !option.id.startsWith("width-"));
+    const widths = options.filter((option) => option.id.startsWith("width-"));
+    for (const option of tools) content.append(this.inlineOption(option));
+    for (const option of widths) content.append(this.inlineOption(option));
     content.append(drawingAdvanced(this.ownerDocument, this.preferences, () => this.changed(), this.abort.signal));
     return { label: "Drawing options", content };
   }
@@ -217,9 +235,44 @@ export class AnnotationToolbar {
           this.preferences.activeTool = "eraser";
           this.preferences.eraser.size = size;
           this.changed();
+        },
+        onWholeStrokeChange: (enabled) => {
+          this.preferences.eraser.eraseWholeStrokes = enabled;
+          this.changed();
+        },
+        onRightMouseButtonChange: (enabled) => {
+          this.preferences.eraser.eraseWithRightMouseButton = enabled;
+          this.changed();
         }
       }, this.abort.signal)
     };
+  }
+
+  private textMenuOptions(): DropdownOpenOptions {
+    // An existing text box has its own persisted style. Show that style in the
+    // menu so changing one property does not visually imply the defaults apply.
+    const style = { ...(this.callbacks.activeTextStyle?.() ?? this.preferences.text) };
+    return {
+      label: "Text options",
+      content: textMenu(this.ownerDocument, style, (change) => {
+        this.applyTextPreference(change);
+        this.callbacks.onTextStyleChange?.(change);
+        // Active and selected text receive their own focused render before
+        // this callback. Do not follow it with a second full-page refresh.
+        this.changed("text-style");
+      }, this.abort.signal, () => this.callbacks.onTextFormatPointerDown?.())
+    };
+  }
+
+  private applyTextPreference(change: TextStyleChange): void {
+    switch (change.property) {
+      case "fontFamily": this.preferences.text.fontFamily = change.value as string; return;
+      case "color": this.preferences.text.color = change.value as string; return;
+      case "fontSize": this.preferences.text.fontSize = change.value as number; return;
+      case "bold": this.preferences.text.bold = change.value as boolean; return;
+      case "italic": this.preferences.text.italic = change.value as boolean; return;
+      case "strikethrough": this.preferences.text.strikethrough = change.value as boolean; return;
+    }
   }
 
   private lassoMenu(): DropdownOption[] {
@@ -245,9 +298,11 @@ export class AnnotationToolbar {
   private colorMenu(): HTMLElement {
     const content = this.ownerDocument.createElement("div");
     const laserActive = this.preferences.activeTool === "laser";
+    const textActive = this.preferences.activeTool === "text";
     const drawingTool = resolveDrawingTool(this.preferences.activeTool);
     const applyColor = (color: string): void => {
       if (laserActive) this.preferences.laser.color = color;
+      else if (textActive) this.preferences.text.color = color;
       else this.preferences[drawingTool].color = color;
       this.changed();
     };
@@ -256,11 +311,11 @@ export class AnnotationToolbar {
     colorLabel.textContent = "Custom color";
     const colorInput = this.ownerDocument.createElement("input");
     colorInput.type = "color";
-    colorInput.value = laserActive ? this.preferences.laser.color : this.preferences[drawingTool].color;
+    colorInput.value = laserActive ? this.preferences.laser.color : textActive ? this.preferences.text.color : this.preferences[drawingTool].color;
     colorInput.addEventListener("input", () => applyColor(colorInput.value), { signal: this.abort.signal });
     colorLabel.append(colorInput);
     content.append(colorLabel);
-    if (!laserActive) {
+    if (!laserActive && !textActive) {
       const opacityLabel = this.ownerDocument.createElement("label");
       opacityLabel.textContent = "Opacity";
       const opacity = this.ownerDocument.createElement("input");
@@ -282,6 +337,7 @@ export class AnnotationToolbar {
   private moreMenu(supported: MoreAction[]): DropdownOption[] {
     const labels: Record<MoreAction, string> = {
       export: "Export PDF",
+      "export-editable": "Export editable PDF annotations",
       "toolbar-main": "Toolbar: PDF bar",
       "toolbar-left": "Toolbar: Left sidebar",
       "toolbar-right": "Toolbar: Right sidebar"
@@ -317,9 +373,9 @@ export class AnnotationToolbar {
     this.changed();
   }
 
-  private changed(): void {
+  private changed(reason: PreferenceChangeReason = "general"): void {
     this.updateButtons();
-    this.callbacks.onPreferencesChange(this.preferences);
+    this.callbacks.onPreferencesChange(this.preferences, reason);
   }
 
   private updateButtons(): void {
@@ -332,12 +388,16 @@ export class AnnotationToolbar {
     this.presentButton(this.buttons.get("eraser")!, "Eraser", "eraser");
     this.presentButton(this.buttons.get("laser")!, "Laser pointer", "laser");
     this.presentButton(this.buttons.get("lasso")!, this.preferences.lasso.type === "freeform" ? "Lasso" : "Rectangle", "lasso");
+    this.presentButton(this.buttons.get("text")!, "Text", "text");
     this.buttons.get("drawing")!.setAttribute("aria-pressed", String(isDrawingTool(active)));
     this.buttons.get("eraser")!.setAttribute("aria-pressed", String(active === "eraser"));
     this.buttons.get("laser")!.setAttribute("aria-pressed", String(active === "laser"));
     this.buttons.get("lasso")!.setAttribute("aria-pressed", String(active === "lasso"));
+    this.buttons.get("text")!.setAttribute("aria-pressed", String(active === "text"));
     const colorValue = active === "laser"
       ? this.preferences.laser.color
+      : active === "text"
+        ? this.preferences.text.color
       : this.preferences[resolveDrawingTool(active)].color;
     const color = this.buttons.get("color");
     if (color) {

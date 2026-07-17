@@ -13,6 +13,8 @@ export interface PdfViewState {
 export interface PdfAdapterCallbacks {
   onViewStateChange?(state: PdfViewState, source: ViewStateSource): void;
   onPagesChanged?(reason: string): void;
+  /** PDF.js replaced page contents (canvas/text layer) without replacing a page node. */
+  onPageContentMutation?(recordCount: number): void;
   onCompatibilityWarning?(message: string): void;
   /** Optional vault debug sink (respects settings.vaultDebugLog). */
   onDebugLog?(level: VaultLogLevel, event: string, payload?: Record<string, unknown>): void;
@@ -28,6 +30,8 @@ export interface ObsidianPdfAdapter {
   scrollElement(): HTMLElement;
   mountOverlay(pageNumber: number): HTMLElement;
   mountToolbar(toolbar: HTMLElement, placement?: ToolbarPlacement): void;
+  /** Advanced opt-in only; normal PDF zoom stays under Obsidian's default cap. */
+  setBoostedZoom?(enabled: boolean): void;
   compatibilityReport(): { errors: string[]; warnings: string[] };
   destroy(): void;
 }

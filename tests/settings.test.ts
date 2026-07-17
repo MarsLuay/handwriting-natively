@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, mergeSettings, serializePluginSettings } from "../src/model";
+import { DEFAULT_SETTINGS, mergeSettings } from "../src/model";
 
 describe("safe defaults", () => {
   it("enables autosave", () => {
@@ -41,6 +41,12 @@ describe("safe defaults", () => {
     expect(merged.toolPreferences.laser.holdMs).toBe(500);
     expect(merged.toolPreferences.laser.fadeMs).toBe(DEFAULT_SETTINGS.toolPreferences.laser.fadeMs);
     expect(merged.toolPreferences.laser.width).toBe(DEFAULT_SETTINGS.toolPreferences.laser.width);
+  });
+
+  it("enables half-second shape recognition by default while allowing an opt-out", () => {
+    expect(DEFAULT_SETTINGS.toolPreferences.shape.holdToRecognize).toBe(true);
+    expect(mergeSettings({ toolPreferences: { shape: { holdToRecognize: false } } as never }).toolPreferences.shape.holdToRecognize).toBe(false);
+    expect(mergeSettings({ toolPreferences: { activeTool: "shape" } as never }).toolPreferences.activeTool).toBe("pen");
   });
 
   it("enables mouse drag scroll by default", () => {
@@ -86,10 +92,4 @@ describe("safe defaults", () => {
     expect(merged.toolPreferences.lasso).toEqual({ type: "rectangle" });
   });
 
-  it("copies every setting as readable JSON", () => {
-    const copied = JSON.parse(serializePluginSettings(DEFAULT_SETTINGS));
-    expect(copied).toEqual(DEFAULT_SETTINGS);
-    expect(serializePluginSettings(DEFAULT_SETTINGS)).toContain("\n  \"autosave\"");
-    expect(serializePluginSettings(DEFAULT_SETTINGS)).not.toContain("yoloMode");
-  });
 });

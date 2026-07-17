@@ -1,5 +1,6 @@
-import type { InkStroke } from "../model";
+import type { InkStroke, PdfTextAnnotation } from "../model";
 import type { InkSession } from "../ink/InkSession";
+import type { TextAnnotationSession } from "../text/TextAnnotationSession";
 import type { Command } from "./CommandHistory";
 
 export class AddStrokeCommand implements Command {
@@ -46,6 +47,34 @@ export class ReplaceStrokesCommand implements Command {
   }
   execute(): void { this.after.forEach((stroke) => this.session.replace(stroke)); }
   undo(): void { this.before.forEach((stroke) => this.session.replace(stroke)); }
+}
+
+/** Move an ink/text selection as one history operation. */
+export class ReplaceAnnotationSelectionCommand implements Command {
+  readonly label = "Move annotations";
+
+  constructor(
+    private readonly ink: InkSession,
+    private readonly beforeStrokes: readonly InkStroke[],
+    private readonly afterStrokes: readonly InkStroke[],
+    private readonly texts: TextAnnotationSession,
+    private readonly beforeTexts: readonly PdfTextAnnotation[],
+    private readonly afterTexts: readonly PdfTextAnnotation[]
+  ) {
+    if (beforeStrokes.length !== afterStrokes.length || beforeTexts.length !== afterTexts.length) {
+      throw new Error("Replacement sets must have equal lengths");
+    }
+  }
+
+  execute(): void {
+    this.afterStrokes.forEach((stroke) => this.ink.replace(stroke));
+    this.afterTexts.forEach((text) => this.texts.replace(text));
+  }
+
+  undo(): void {
+    this.beforeStrokes.forEach((stroke) => this.ink.replace(stroke));
+    this.beforeTexts.forEach((text) => this.texts.replace(text));
+  }
 }
 
 export function translateStrokes(strokes: readonly InkStroke[], dx: number, dy: number, now = new Date().toISOString()): InkStroke[] {

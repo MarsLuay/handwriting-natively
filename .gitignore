@@ -4,3 +4,8 @@ node_modules/
 coverage/
 *.map
 .DS_Store
+
+# Accidental tsc emit next to TypeScript sources
+src/**/*.js
+tests/**/*.js
+vitest.config.js

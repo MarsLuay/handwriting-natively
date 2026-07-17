@@ -5,16 +5,23 @@ import { PalmRejectionPolicy } from "./PalmRejectionPolicy";
 import { PointerCapabilities, type PointerSample } from "./PointerCapabilities";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
 
-export type PointerRoute = "draw" | "edit" | "touch-pan" | "touch-zoom-pan" | "mouse-pan" | "native" | "ignored";
+export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "mouse-pan" | "native" | "ignored";
 
 export function isAnnotationChromeTarget(target: EventTarget | null): boolean {
-  return target instanceof Element && Boolean(target.closest(".native-pdf-handwriting-selection-toolbar"));
+  return target instanceof Element && Boolean(target.closest(
+    ".native-pdf-handwriting-selection-toolbar, .native-pdf-handwriting-selection-control, .native-pdf-handwriting-text-input"
+  ));
 }
 
 /** Primary tip drag: mouse LMB or stylus tip (not barrel / eraser buttons). */
 export function isDragPanPointer(event: Pick<PointerEvent, "pointerType" | "button">): boolean {
   if (event.button !== 0) return false;
   return event.pointerType === "mouse" || event.pointerType === "pen";
+}
+
+/** W3C Pointer Events reports an eraser stylus tip as button 5 / buttons bit 32. */
+export function isStylusEraserInput(event: Pick<PointerEvent, "pointerType" | "button" | "buttons">): boolean {
+  return event.pointerType === "pen" && (event.button === 5 || (event.buttons & 32) !== 0);
 }
 
 interface PanGesture {
@@ -27,15 +34,18 @@ interface PanGesture {
 export interface PointerRouterCallbacks {
   activeTool(): ToolId;
   drawingEnabled(): boolean;
+  rightMouseEraserEnabled?(): boolean;
+  onStylusEraserStart?(): void;
+  onStylusEraserEnd?(): void;
   scrollRoot?(): HTMLElement | null;
   cursorParent?(): HTMLElement;
   eraserCursorDiameter?(): number;
   drawCursorColor?(): string;
   projectCursor?(clientX: number, clientY: number): { x: number; y: number } | null;
-  onStart?(samples: PointerSample[], route: "draw" | "edit", event: PointerEvent): void;
-  onMove?(samples: PointerSample[], route: "draw" | "edit", event: PointerEvent): void;
-  onEnd?(samples: PointerSample[], route: "draw" | "edit", event: PointerEvent): void;
-  onCancel?(route: "draw" | "edit", event: PointerEvent): void;
+  onStart?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
+  onMove?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
+  onEnd?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
+  onCancel?(route: "draw" | "edit" | "text", event: PointerEvent): void;
   onRoute?(route: PointerRoute, event: PointerEvent): void;
   onMousePan?(phase: "start" | "activate" | "move" | "end" | "abort", event: PointerEvent, details: Record<string, unknown>): void;
 }
@@ -43,7 +53,8 @@ export interface PointerRouterCallbacks {
 export class PointerRouter {
   private static readonly DRAW_CURSOR_SIZE_PX = 6;
 
-  private readonly routed = new Map<number, "draw" | "edit">();
+  private readonly routed = new Map<number, "draw" | "edit" | "text">();
+  private readonly stylusErasers = new Set<number>();
   private readonly panning = new Map<number, PanGesture>();
   private readonly touches = new Set<number>();
   private readonly palmPolicy: PalmRejectionPolicy;
@@ -67,11 +78,15 @@ export class PointerRouter {
     this.drawCursor.setAttribute("aria-hidden", "true");
     this.drawCursor.hidden = true;
     element.ownerDocument.body.append(this.eraserCursor, this.drawCursor);
-    const options = { signal: this.abort.signal };
+    // Explicit annotation gestures are handled in capture so a stale router
+    // left by a prior plugin session cannot process the same event in bubble.
+    // Native text inputs are excluded by isAnnotationChromeTarget above.
+    const options = { capture: true, signal: this.abort.signal };
     element.addEventListener("pointerdown", this.handleDown, options);
     element.addEventListener("pointermove", this.handleMove, options);
     element.addEventListener("pointerup", this.handleEnd, options);
     element.addEventListener("pointercancel", this.handleCancel, options);
+    element.addEventListener("contextmenu", this.suppressRightMouseEraserMenu, options);
     element.addEventListener("pointerleave", this.hideCustomCursors, options);
   }
 
@@ -87,7 +102,9 @@ export class PointerRouter {
       }
       return "native";
     }
+    if (tool === "text" && (event.pointerType === "pen" || (event.pointerType === "mouse" && event.button === 0))) return "text";
     const editing = tool === "eraser" || tool === "lasso";
+    if (event.pointerType === "mouse" && event.button === 2 && this.callbacks.rightMouseEraserEnabled?.()) return "edit";
     if (event.pointerType === "pen") return editing ? "edit" : "draw";
     if (event.pointerType === "mouse" && event.button === 0 && isInkDrawTool(tool)) return "draw";
     if (event.pointerType === "mouse" && event.button === 0 && editing) return "edit";
@@ -98,6 +115,10 @@ export class PointerRouter {
     if (isAnnotationChromeTarget(event.target)) return;
     this.updateCustomCursors(event);
     this.palmPolicy.pointerDown(event);
+    if (isStylusEraserInput(event) && this.callbacks.drawingEnabled()) {
+      this.stylusErasers.add(event.pointerId);
+      this.callbacks.onStylusEraserStart?.();
+    }
     const route = this.classify(event);
     if (event.pointerType === "touch" && route !== "ignored") this.touches.add(event.pointerId);
     this.callbacks.onRoute?.(route, event);
@@ -116,9 +137,10 @@ export class PointerRouter {
       });
       return;
     }
-    if (route !== "draw" && route !== "edit") return;
+    if (route !== "draw" && route !== "edit" && route !== "text") return;
     this.routed.set(event.pointerId, route);
     event.preventDefault();
+    event.stopImmediatePropagation();
     this.element.setPointerCapture?.(event.pointerId);
     this.callbacks.onStart?.(PointerCapabilities.samples(event), route, event);
   };
@@ -128,6 +150,7 @@ export class PointerRouter {
     const route = this.routed.get(event.pointerId);
     if (route) {
       event.preventDefault();
+      event.stopImmediatePropagation();
       this.callbacks.onMove?.(PointerCapabilities.samples(event), route, event);
       return;
     }
@@ -139,11 +162,13 @@ export class PointerRouter {
     const route = this.routed.get(event.pointerId);
     if (route) {
       event.preventDefault();
+      event.stopImmediatePropagation();
       this.callbacks.onEnd?.(PointerCapabilities.samples(event), route, event);
       if (this.element.hasPointerCapture?.(event.pointerId)) this.element.releasePointerCapture?.(event.pointerId);
       this.routed.delete(event.pointerId);
     }
     this.finishMousePan(event);
+    if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
     this.touches.delete(event.pointerId);
     this.palmPolicy.pointerUp(event);
   };
@@ -152,11 +177,13 @@ export class PointerRouter {
     const route = this.routed.get(event.pointerId);
     if (route) {
       event.preventDefault();
+      event.stopImmediatePropagation();
       this.callbacks.onCancel?.(route, event);
       if (this.element.hasPointerCapture?.(event.pointerId)) this.element.releasePointerCapture?.(event.pointerId);
       this.routed.delete(event.pointerId);
     }
     this.finishMousePan(event);
+    if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
     this.touches.delete(event.pointerId);
     this.palmPolicy.pointerUp(event);
     this.hideCustomCursors();
@@ -190,6 +217,7 @@ export class PointerRouter {
       if (this.element.hasPointerCapture?.(pointerId)) this.element.releasePointerCapture?.(pointerId);
     }
     this.routed.clear();
+    this.stylusErasers.clear();
     this.panning.clear();
     this.touches.clear();
     this.palmPolicy.reset();
@@ -198,6 +226,11 @@ export class PointerRouter {
     this.eraserCursor.remove();
     this.drawCursor.remove();
   }
+
+  private readonly suppressRightMouseEraserMenu = (event: MouseEvent): void => {
+    if (!this.callbacks.drawingEnabled() || !this.callbacks.rightMouseEraserEnabled?.() || event.button !== 2) return;
+    event.preventDefault();
+  };
 
   private updateMousePan(event: PointerEvent, pan: PanGesture): void {
     const root = this.callbacks.scrollRoot?.();

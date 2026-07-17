@@ -41,6 +41,28 @@ describe("SessionLogger", () => {
     debug.mockRestore();
   });
 
+  it("preserves the full draw count when points are sampled for diagnostics", () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const logger = new SessionLogger("Notes/example.pdf");
+
+    logger.draw({
+      phase: "end",
+      page: 1,
+      tool: "laser",
+      displayScale: 1,
+      pointCount: 2_000,
+      points: [{ x: 10, y: 20 }, { x: 30, y: 40 }],
+      bounds: { minX: 0, minY: 0, maxX: 40, maxY: 50 }
+    });
+
+    expect(debug.mock.calls[0]?.[2]).toMatchObject({
+      pointCount: 2_000,
+      points: [{ x: 10, y: 20 }, { x: 30, y: 40 }],
+      bounds: { minX: 0, minY: 0, maxX: 40, maxY: 50 }
+    });
+    debug.mockRestore();
+  });
+
   it("logs zoom tick deferral and repaint timing", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const logger = new SessionLogger("Notes/example.pdf");
@@ -71,6 +93,19 @@ describe("SessionLogger", () => {
       strokesRedrawn: 18,
       repaintsPerSec: expect.any(Number)
     });
+    debug.mockRestore();
+  });
+
+  it("logs the compositor handoff around a zoom settle", () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const logger = new SessionLogger("Notes/example.pdf");
+
+    logger.zoomComposite("begin", { pages: 1 });
+    logger.zoomComposite("settle-paint", { pages: 1, burstTicks: 8 });
+    logger.zoomComposite("release", { pages: 1 });
+
+    expect(debug.mock.calls.filter((call) => call[1] === "ink zoom composite").map((call) => (call[2] as { phase: string }).phase))
+      .toEqual(["begin", "settle-paint", "release"]);
     debug.mockRestore();
   });
 
@@ -108,6 +143,21 @@ describe("SessionLogger", () => {
     expect(moves.length).toBeGreaterThan(0);
   });
 
+  it("logs toolbar placement transitions", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
+    });
+
+    logger.toolbarPlacement("request", { previousPlacement: "main", requestedPlacement: "left" });
+    logger.toolbarPlacement("applied", { previousPlacement: "main", requestedPlacement: "left", resolvedPlacement: "left" });
+
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "toolbar placement", payload: expect.objectContaining({ phase: "request", requestedPlacement: "left" }) }),
+      expect.objectContaining({ event: "toolbar placement", payload: expect.objectContaining({ phase: "applied", resolvedPlacement: "left" }) })
+    ]));
+  });
+
   it("logs every pointer route and raw pointer seen types", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const logger = new SessionLogger("Notes/example.pdf");
@@ -120,5 +170,33 @@ describe("SessionLogger", () => {
     expect(debug.mock.calls.some((call) => call[1] === "pointer route" && (call[2] as { route: string }).route === "touch-pan")).toBe(true);
     expect(debug.mock.calls.some((call) => call[1] === "pointer seen" && (call[2] as { pointerType: string }).pointerType === "touch")).toBe(true);
     debug.mockRestore();
+  });
+
+  it("logs text-tool diagnostics without annotation contents", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const vaultLog = {
+      write: (_level: string, event: string, payload: Record<string, unknown>) => writes.push({ event, payload })
+    };
+    const logger = new SessionLogger("Notes/example.pdf", vaultLog);
+
+    logger.textTool("commit-create", {
+      annotationId: "text-1",
+      characterCount: 12,
+      text: "private annotation text",
+      content: "private content",
+      html: "<b>private markup</b>",
+      value: "private editor value",
+      geometry: { width: 240, text: "private nested text" }
+    });
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ event: "text tool" });
+    expect(writes[0]?.payload).toMatchObject({ phase: "commit-create", annotationId: "text-1", characterCount: 12 });
+    expect(writes[0]?.payload).not.toHaveProperty("text");
+    expect(writes[0]?.payload).not.toHaveProperty("content");
+    expect(writes[0]?.payload).not.toHaveProperty("html");
+    expect(writes[0]?.payload).not.toHaveProperty("value");
+    expect(writes[0]?.payload).toMatchObject({ geometry: { width: 240 } });
+    expect((writes[0]?.payload.geometry as Record<string, unknown> | undefined)?.text).toBeUndefined();
   });
 });
