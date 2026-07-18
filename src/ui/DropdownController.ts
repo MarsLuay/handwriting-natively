@@ -1,3 +1,4 @@
+import { appendToBodyOr, createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 export interface DropdownOption {
   id: string;
   label: string;
@@ -43,7 +44,7 @@ export class DropdownController {
     this.currentId = id;
     this.trigger = trigger;
     this.abort = new AbortController();
-    const popup = this.ownerDocument.createDiv();
+    const popup = createDetachedDiv(this.ownerDocument);
     popup.className = "native-pdf-handwriting-dropdown";
     popup.dataset.focusOverlayInternal = "true";
     popup.setAttribute("role", "menu");
@@ -54,7 +55,7 @@ export class DropdownController {
       for (const option of options.options) popup.append(this.optionButton(option));
     }
     if (options.content) popup.append(options.content);
-    this.ownerDocument.body.append(popup);
+    appendToBodyOr(this.ownerDocument, popup, this.trigger ?? this.ownerDocument.documentElement);
     this.popup = popup;
     trigger.setAttribute("aria-expanded", "true");
     this.reposition();
@@ -83,7 +84,7 @@ export class DropdownController {
   }
 
   private optionButton(option: DropdownOption): HTMLButtonElement {
-    const button = this.ownerDocument.createEl('button');
+    const button = createDetachedEl(this.ownerDocument, 'button');
     button.type = "button";
     button.className = "native-pdf-handwriting-dropdown-option";
     button.dataset.optionId = option.id;

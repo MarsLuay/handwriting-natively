@@ -12,6 +12,7 @@ import { StrokeClipboard } from "../ink/StrokeClipboard";
 import { simplifyPoints } from "../ink/StrokeStabilizer";
 import { PdfCoordinateMapper, type PageRotation } from "../pdf/PdfCoordinateMapper";
 import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type PageCoordinateLayout } from "../pdf/PageCoordinateLayout";
+import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { isElementInDocument, setElementCssProps } from "../dom/typeGuards";
 import { PdfExportService, annotatedFilename, editableAnnotatedFilename } from "../pdf/PdfExportService";
 import { AddStrokeCommand, ReplaceAnnotationSelectionCommand, ReplacePageStrokesCommand, translateStrokes } from "../history/AnnotationCommands";
@@ -192,6 +193,10 @@ export class ViewerInkSession {
   private readonly toolbar: AnnotationToolbar;
   private readonly selectionToolbar: SelectionToolbar;
   private readonly history: CommandHistory;
+  /** Pages dirtied by the next history.execute — avoids full multi-page refresh. */
+  private readonly historyDirtyPages = new Set<number>();
+  /** Pages already painted by the history callback in this turn. */
+  private readonly historyPaintedPages = new Set<number>();
   private readonly autosave: AutosaveQueue<SidecarSchemaV1>;
   private readonly saveCoordinator: SaveCoordinator;
   private selected: InkStroke[] = [];
@@ -251,6 +256,9 @@ export class ViewerInkSession {
   private readonly inkUpgradePages = new Set<number>();
   /** Wait after zoom settle before HQ graphite rebuild — avoids hitching mid-pinch. */
   private static readonly INK_UPGRADE_MS = 280;
+  /** Detect back-to-back page paints during handoff (flash proxy). */
+  private static readonly FLASH_DOUBLE_PAINT_MS = 50;
+  private readonly lastPagePaintAt = new Map<number, { at: number; reason: string }>();
   private pasteGeneration = 0;
   private readonly resizeObserver: ResizeObserver | null;
   private readonly logger: SessionLogger;
@@ -271,6 +279,7 @@ export class ViewerInkSession {
       fontFamily: options.settings.toolPreferences.text.fontFamily
     });
     this.toolbar = new AnnotationToolbar({
+      ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
       drawEnabled: this.drawEnabled,
@@ -282,13 +291,15 @@ export class ViewerInkSession {
           if (wasTextToolActive !== this.textToolActive) {
             this.logger.textTool(this.textToolActive ? "tool-activate" : "tool-deactivate", {
               activeTool: preferences.activeTool,
-              drawEnabled: this.drawEnabled
+              drawEnabled: this.drawEnabled,
+              textBoxesInteractable: this.textBoxesInteractable()
             });
             // A deactivated Text tool must not leave its contenteditable over
             // the page: it blocks normal static-text rendering until another
             // click happens to commit or discard it.
             if (!this.textToolActive) this.commitActiveTextEditor("tool-deactivate");
           }
+          if (!this.textBoxesInteractable()) this.cancelTextBoxTransform("tool-change", false);
           const logTextPreferenceSave = wasTextToolActive || this.textToolActive;
           if (logTextPreferenceSave) {
             this.logger.textTool("preferences-save-start", {
@@ -311,7 +322,15 @@ export class ViewerInkSession {
           // refresh just the selected text annotations. A full session refresh
           // here redraws every page a second time and makes font-size changes
           // visibly laggy.
-          if (reason !== "text-style") this.refresh("preferences");
+          // Tool/style preference changes must not invalidate committed ink —
+          // color/width/opacity only affect future strokes; rebuilding after a
+          // zoom blit looks like strokes "snapping" to a new color.
+          if (reason === "text-style") return;
+          if (reason === "tool") {
+            this.refreshToolChrome("tool-chrome");
+            return;
+          }
+          this.refreshToolChrome("preferences");
         },
         onEraserSizePreview: () => {
           this.refreshSurfaceCursors();
@@ -323,7 +342,8 @@ export class ViewerInkSession {
           this.drawEnabled = enabled;
           if (!enabled) this.clearSelection();
           this.logMousePanConfig("draw-mode");
-          this.refresh("draw-mode");
+          // Chrome/cursors only — full refresh invalidates ink and flashes after zoom blit.
+          this.refreshToolChrome("draw-mode");
         },
         onUndo: () => this.applyTextHistory("undo"),
         onRedo: () => this.applyTextHistory("redo"),
@@ -337,7 +357,7 @@ export class ViewerInkSession {
       onDuplicate: () => this.duplicateSelection(),
       onRecolor: (color) => this.recolorSelection(color),
       onClear: () => this.clearSelection()
-    });
+    }, options.adapter.host.ownerDocument);
     this.selectionToolbar.bindViewport(options.adapter.root);
     this.autosave = new AutosaveQueue<SidecarSchemaV1>({
       delayMs: options.settings.autosaveDelayMs,
@@ -368,11 +388,13 @@ export class ViewerInkSession {
     this.history = new CommandHistory(() => {
       this.saveCoordinator.completedCommand();
       this.toolbar.setSaveStatus("dirty");
-      this.refresh("history");
+      this.paintAfterHistory();
     });
     this.resizeObserver = typeof ResizeObserver === "undefined"
       ? null
       : new ResizeObserver(() => {
+        // Zoom already drives scheduleZoomRepaint via scalechanging — skip twin resize storms.
+        if (this.zoomCompositing || this.isZoomGestureActive()) return;
         this.scheduleRefresh("resize", true);
       });
     this.resizeObserver?.observe(options.adapter.root);
@@ -493,7 +515,9 @@ export class ViewerInkSession {
       this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
       return;
     }
-    if (this.isZoomGestureActive()) {
+    // Mount resize ticks arm ZOOM_ACTIVE_MS; create must still full-refresh and
+    // is not a mid-gesture flash risk — skip the interrupt noise.
+    if (this.isZoomGestureActive() && reason !== "create") {
       this.logger.zoomRepaintInterrupt(reason, { kind: "full-refresh-during-zoom" });
     }
     if (this.pendingScheduledRefresh) {
@@ -604,6 +628,25 @@ export class ViewerInkSession {
 
   private endZoomCompositing(): void {
     this.zoomCompositing = false;
+    // Do not drain HQ upgrades here — CSS handoff still holds the overlay.
+    // releaseZoomCompositeLayers() drains after the compositing class is removed.
+  }
+
+  /** True while burst paint is frozen OR CSS handoff has not released yet. */
+  private isZoomHandoffActive(): boolean {
+    if (this.zoomCompositing) return true;
+    if (this.zoomCompositeReleaseTimer !== null || this.zoomCompositeReleaseFrame !== null) return true;
+    for (const surface of this.surfaces.values()) {
+      if (surface.overlay.classList.contains("native-pdf-handwriting-zoom-compositing")) return true;
+    }
+    return false;
+  }
+
+  private hasZoomCompositingClass(): boolean {
+    for (const surface of this.surfaces.values()) {
+      if (surface.overlay.classList.contains("native-pdf-handwriting-zoom-compositing")) return true;
+    }
+    return false;
   }
 
   /**
@@ -651,6 +694,13 @@ export class ViewerInkSession {
     const detachedOverlayPages = [...this.surfaces.entries()]
       .filter(([pageNumber, surface]) => !surface.overlay.isConnected && pages.some((page) => page.pageNumber === pageNumber && page.element.isConnected))
       .map(([pageNumber]) => pageNumber);
+    if (detachedOverlayPages.length > 0) {
+      this.logger.zoomFlashProxy("overlay-disconnected", {
+        pages: detachedOverlayPages,
+        zoomCompositing: this.zoomCompositing,
+        handoff: this.isZoomHandoffActive()
+      });
+    }
     const reattached = detachedOverlayPages.length > 0 && this.tryReattachDisconnectedSurfaces(pages);
     const reattachedOverlayPages = reattached
       ? detachedOverlayPages.filter((pageNumber) => this.surfaces.get(pageNumber)?.overlay.isConnected)
@@ -679,22 +729,53 @@ export class ViewerInkSession {
     });
 
     if (reattached) {
-      if (this.zoomCompositing) this.syncZoomOverlayLayouts();
-      else this.repaintSurfaces("native-content-reattach");
+      // During CSS handoff, layout-only — full stroke redraw flashes over the held bitmap.
+      if (this.isZoomHandoffActive()) {
+        this.syncZoomOverlayLayouts();
+        this.logger.zoomFlashProxy("reattach-layout-only", {
+          reattachedOverlayPages,
+          skippedRepaint: true
+        });
+      } else {
+        this.repaintSurfaces("native-content-reattach");
+      }
     }
     if (releasePending && !this.zoomCompositing) this.releaseZoomCompositeAfterNativeRender();
   }
 
   private releaseZoomCompositeLayers(): void {
+    const now = performance.now();
+    if (this.lastZoomNativeContentAt > 0) {
+      const msSinceNative = now - this.lastZoomNativeContentAt;
+      if (msSinceNative < ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS) {
+        this.logger.zoomFlashProxy("release-while-native-mutating", {
+          msSinceNative: roundMs(msSinceNative),
+          nativeContentMutations: this.zoomNativeContentMutations
+        });
+      }
+    }
+    const pendingUpgrades = this.inkUpgradePages.size;
     for (const surface of this.surfaces.values()) {
       surface.overlay.classList.remove("native-pdf-handwriting-zoom-compositing");
     }
     this.logger.zoomComposite("release", {
       pages: this.surfaces.size,
       nativeContentMutations: this.zoomNativeContentMutations,
-      heldAfterSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(performance.now() - this.zoomCompositeSettledAt) : null
+      heldAfterSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null,
+      pendingUpgrades
     });
     this.zoomCompositeSettledAt = 0;
+    // HQ graphite rebuild only after the compositing class is gone (avoids clear/rebuild flash).
+    if (pendingUpgrades > 0) {
+      if (this.inkUpgradeTimer !== null) {
+        window.clearTimeout(this.inkUpgradeTimer);
+        this.inkUpgradeTimer = null;
+      }
+      this.inkUpgradeTimer = window.setTimeout(() => {
+        this.inkUpgradeTimer = null;
+        this.drainInkLayerUpgrades();
+      }, 0);
+    }
   }
 
   private cancelZoomCompositeRelease(): void {
@@ -747,9 +828,19 @@ export class ViewerInkSession {
     this.ensureSelectionToolbar();
     this.refreshSurfaceCursors();
     const view = this.options.adapter.getViewState();
+    const durationMs = roundMs(performance.now() - started);
+    if (durationMs >= 16 && this.isZoomHandoffActive()) {
+      this.logger.zoomFlashProxy("paint-duration-spike", {
+        reason,
+        durationMs,
+        pagesRepainted: stats.pagesRepainted,
+        strokesRedrawn: stats.strokesRedrawn,
+        canvasesResized: stats.canvasesResized
+      });
+    }
     this.logger.zoomRepaint({
       reason,
-      durationMs: roundMs(performance.now() - started),
+      durationMs,
       pagesRepainted: stats.pagesRepainted,
       canvasesResized: stats.canvasesResized,
       strokesRedrawn: stats.strokesRedrawn,
@@ -822,8 +913,11 @@ export class ViewerInkSession {
       this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
       return;
     }
-    if (this.isZoomGestureActive()) {
+    if (this.isZoomGestureActive() && reason !== "create") {
       this.logger.zoomRepaintInterrupt(reason, { kind: "full-refresh-during-zoom" });
+    }
+    if (this.isZoomHandoffActive()) {
+      this.logger.zoomFlashProxy("full-refresh-during-handoff", { reason });
     }
     if (this.refreshDepth >= 4) {
       this.logger.loopBlocked("refresh", this.refreshDepth);
@@ -881,6 +975,64 @@ export class ViewerInkSession {
     } finally {
       this.refreshDepth -= 1;
     }
+  }
+
+  /** Tool/draw-mode swaps update hit-testing/cursors/text chrome without rebuilding ink pixels. */
+  private refreshToolChrome(reason = "tool-chrome"): void {
+    this.logger.refresh(reason, {
+      selected: this.selected.length,
+      surfaces: this.surfaces.size,
+      activeTool: this.activeTool(),
+      textBoxesInteractable: this.textBoxesInteractable(),
+      chromeOnly: true
+    });
+    for (const surface of this.surfaces.values()) {
+      surface.router?.syncToolState();
+      this.renderTextAnnotations(surface);
+    }
+    this.syncAnnotationCursorMode();
+    this.refreshSurfaceCursors();
+    this.ensureSelectionToolbar();
+  }
+
+  /** Prefer page-local ink/text paint after undoable edits; full refresh only for undo/redo. */
+  private executeHistory(command: Command, pages?: number | readonly number[] | null): void {
+    if (pages != null) {
+      for (const page of typeof pages === "number" ? [pages] : pages) {
+        if (Number.isFinite(page)) this.historyDirtyPages.add(page);
+      }
+    }
+    this.history.execute(command);
+  }
+
+  private paintAfterHistory(): void {
+    if (this.historyDirtyPages.size === 0) {
+      this.refresh("history");
+      return;
+    }
+    const pages = [...this.historyDirtyPages];
+    this.historyDirtyPages.clear();
+    this.logger.refresh("history-local", {
+      selected: this.selected.length,
+      surfaces: this.surfaces.size,
+      pages: pages.length
+    });
+    for (const page of pages) {
+      const surface = this.surfaces.get(page);
+      if (!surface) continue;
+      this.invalidateInkLayer(surface);
+      this.renderPage(page);
+      this.historyPaintedPages.add(page);
+    }
+    this.ensureSelectionToolbar();
+  }
+
+  private needsPagePaint(page: number): boolean {
+    if (this.historyPaintedPages.has(page)) {
+      this.historyPaintedPages.delete(page);
+      return false;
+    }
+    return true;
   }
 
   private ensureSelectionToolbar(options?: { resetPlacement?: boolean }): void {
@@ -1387,6 +1539,13 @@ export class ViewerInkSession {
     return this.temporaryStylusEraserPointers > 0 ? "eraser" : this.options.settings.toolPreferences.activeTool;
   }
 
+  /** Text boxes steal hits only in Text/lasso — pen/eraser/laser must pass through. */
+  private textBoxesInteractable(): boolean {
+    if (!this.drawEnabled) return false;
+    const tool = this.activeTool();
+    return tool === "text" || tool === "lasso";
+  }
+
   private refreshSurfaceCursors(): void {
     for (const surface of this.surfaces.values()) surface.router?.refreshCursors();
   }
@@ -1425,12 +1584,12 @@ export class ViewerInkSession {
     this.claimInputOwner(page.element, page.pageNumber);
     this.rememberPageMetrics(page);
     const overlay = this.options.adapter.mountOverlay(page.pageNumber);
-    const canvas = overlay.ownerDocument.createEl('canvas');
+    const canvas = createDetachedEl(overlay.ownerDocument, 'canvas');
     canvas.className = "native-pdf-handwriting-canvas";
     if (this.options.settings.hideStylusAnnotationLabel) canvas.setAttribute("aria-hidden", "true");
     else canvas.setAttribute("aria-label", `Annotations for PDF page ${page.pageNumber}`);
     overlay.append(canvas);
-    const textLayer = overlay.ownerDocument.createDiv();
+    const textLayer = createDetachedDiv(overlay.ownerDocument);
     textLayer.className = "native-pdf-handwriting-text-layer";
     overlay.append(textLayer);
     const context = canvas.getContext("2d");
@@ -1622,7 +1781,12 @@ export class ViewerInkSession {
       if (activeTool === "lasso" && (this.selected.length > 0 || this.selectedTexts.length > 0)) {
         const point = this.toPdfPoint(surface, samples[0]!, true);
         if (!this.selectionShape || this.selectionPage !== surface.page.pageNumber || !shapeContainsPoint(this.selectionShape, point)) {
-          this.clearSelection();
+          const clearedPage = this.selectionPage;
+          // Caller always renderPage(surface) below — only paint a different page here.
+          this.clearSelection({ refresh: false });
+          if (clearedPage != null && clearedPage !== surface.page.pageNumber) {
+            this.paintAfterClearSelection(clearedPage);
+          }
         }
       }
       surface.editTool = activeTool === "eraser" || this.isRightMouseEraser(event) ? "eraser" : "lasso";
@@ -1685,14 +1849,14 @@ export class ViewerInkSession {
       if (dx !== 0 || dy !== 0) {
         const afterStrokes = translateStrokes(drag.before, dx, dy);
         const afterTexts = this.translateTextAnnotations(drag.beforeTexts, dx, dy);
-        this.history.execute(new ReplaceAnnotationSelectionCommand(
+        this.executeHistory(new ReplaceAnnotationSelectionCommand(
           this.ink,
           drag.before,
           afterStrokes,
           this.texts,
           drag.beforeTexts,
           afterTexts
-        ));
+        ), surface.page.pageNumber);
         this.selected = afterStrokes;
         this.selectedTexts = afterTexts;
         this.selectionShape = translateShape(drag.beforeShape, dx, dy);
@@ -1708,7 +1872,7 @@ export class ViewerInkSession {
       this.moveTextPreview = null;
       this.moveShapePreview = null;
       this.updateDebug(surface, event);
-      this.renderPage(surface.page.pageNumber);
+      if (this.needsPagePaint(surface.page.pageNumber)) this.renderPage(surface.page.pageNumber);
       return;
     }
     if (route === "text") {
@@ -1772,7 +1936,7 @@ export class ViewerInkSession {
         this.ensureLaserFadeLoop();
       } else {
         const tool = resolveDrawingTool(this.activeTool());
-        this.history.execute(new AddStrokeCommand(this.ink, stroke));
+        this.executeHistory(new AddStrokeCommand(this.ink, stroke), stroke.page);
         this.lastPointerPdf = stroke.points.at(-1)
           ? { x: stroke.points.at(-1)!.x, y: stroke.points.at(-1)!.y }
           : this.lastPointerPdf;
@@ -1790,7 +1954,7 @@ export class ViewerInkSession {
       surface.editPath = [];
     }
     this.updateDebug(surface, event);
-    this.renderPage(surface.page.pageNumber);
+    if (this.needsPagePaint(surface.page.pageNumber)) this.renderPage(surface.page.pageNumber);
   }
 
   private pointerCancel(surface: PageSurface, route: "draw" | "edit" | "text", event: PointerEvent): void {
@@ -1839,7 +2003,10 @@ export class ViewerInkSession {
       });
       if (result.erased.length) {
         this.clearSelection();
-        this.history.execute(new ReplacePageStrokesCommand(this.ink, surface.page.pageNumber, this.ink.page(surface.page.pageNumber), result.kept));
+        this.executeHistory(
+          new ReplacePageStrokesCommand(this.ink, surface.page.pageNumber, this.ink.page(surface.page.pageNumber), result.kept),
+          surface.page.pageNumber
+        );
       }
       return;
     }
@@ -2034,7 +2201,7 @@ export class ViewerInkSession {
       const drag = this.textMoveDrag;
       this.textMoveDrag = null;
       if (drag.before.x !== drag.preview.x || drag.before.y !== drag.preview.y) {
-        this.history.execute(new ReplaceTextAnnotationCommand(this.texts, drag.before, drag.preview));
+        this.executeHistory(new ReplaceTextAnnotationCommand(this.texts, drag.before, drag.preview), surface.page.pageNumber);
         this.selectedTexts = [drag.preview];
         this.selected = [];
         this.selectionShape = boundingShapeFromSelection([], this.selectedTexts);
@@ -2109,7 +2276,8 @@ export class ViewerInkSession {
     const clearedSelection = this.selected.length > 0 || this.selectedTexts.length > 0;
     // Editing has its own dotted DOM boundary. Suspend the canvas selection
     // first so a text box can never render two competing outlines.
-    this.clearSelection({ refresh: false });
+    // Page-local paint (not refresh:false) — otherwise canvas outline/z-index linger.
+    this.clearSelection();
     const preferences = this.options.settings.toolPreferences.text;
     const style: TextStyle = existing
       ? this.textStyle(existing)
@@ -2134,7 +2302,7 @@ export class ViewerInkSession {
       ? storedRuns
       : plainTextToRuns(annotation.text, style);
     const insertionStyle = { ...(styleAtTextOffset(runs, runs.reduce((length, run) => length + run.text.length, 0)) ?? style) };
-    const element = surface.overlay.ownerDocument.createDiv();
+    const element = createDetachedDiv(surface.overlay.ownerDocument);
     const abort = new AbortController();
     element.className = "native-pdf-handwriting-text-input";
     element.contentEditable = "true";
@@ -2255,11 +2423,8 @@ export class ViewerInkSession {
     };
     element.ownerDocument.addEventListener("selectionchange", () => {
       if (this.activeTextEditor?.element !== element) return;
+      // captureActiveTextSelection logs selection-snapshot — do not also emit selectionchange.
       this.captureActiveTextSelection("selectionchange");
-      this.logText(surface, "selectionchange", {
-        annotationId: annotation.id,
-        ...this.editorSelectionMetrics(element)
-      });
     }, { signal: abort.signal });
     if (typeof ResizeObserver !== "undefined") {
       const resizeObserver = new ResizeObserver(() => {
@@ -2354,10 +2519,10 @@ export class ViewerInkSession {
     editor.element.remove();
     if (!text.trim()) {
       if (editor.existing) {
-        this.history.execute(new DeleteTextAnnotationsCommand(this.texts, [editor.existing]));
+        this.executeHistory(new DeleteTextAnnotationsCommand(this.texts, [editor.existing]), editor.surface.page.pageNumber);
         this.logText(editor.surface, "delete-empty", { annotationId: editor.existing.id, reason });
       } else this.logText(editor.surface, "discard-empty", { annotationId: editor.draft.id, reason });
-      this.renderTextAnnotations(editor.surface);
+      if (this.needsPagePaint(editor.surface.page.pageNumber)) this.renderTextAnnotations(editor.surface);
       return;
     }
     const scale = Math.max(this.displayScale(editor.surface), 0.1);
@@ -2376,15 +2541,15 @@ export class ViewerInkSession {
       sourceRuns: runs.map((run) => ({ ...run })),
       updatedAt: now
     };
-    if (before) this.history.execute(new ReplaceTextAnnotationCommand(this.texts, before, annotation));
-    else this.history.execute(new AddTextAnnotationCommand(this.texts, annotation));
+    if (before) this.executeHistory(new ReplaceTextAnnotationCommand(this.texts, before, annotation), annotation.page);
+    else this.executeHistory(new AddTextAnnotationCommand(this.texts, annotation), annotation.page);
     this.logText(editor.surface, before ? "commit-update" : "commit-create", {
       annotationId: annotation.id, reason,
       characterCount: text.length, lineCount: text.split("\n").length, runCount: runs.length,
       widthPx: round(rect.width), heightPx: round(rect.height),
       ...this.textGeometry(annotation)
     });
-    this.renderTextAnnotations(editor.surface);
+    if (this.needsPagePaint(annotation.page)) this.renderTextAnnotations(editor.surface);
   }
 
   private textStyle(text: PdfTextAnnotation): TextStyle {
@@ -2530,11 +2695,11 @@ export class ViewerInkSession {
       sourceRuns: text.sourceRuns.map((run) => ({ ...run, ...this.patchTextStyle(run, change) })),
       updatedAt: now
     }));
-    this.history.execute({
+    this.executeHistory({
       label: "Style text annotations",
       execute: () => after.forEach((text) => this.texts.replace(text)),
       undo: () => before.forEach((text) => this.texts.replace(text))
-    });
+    }, this.selectionPage);
     this.selectedTexts = after;
     this.logger.textTool("selection-style", {
       page: this.selectionPage,
@@ -2579,14 +2744,20 @@ export class ViewerInkSession {
     const annotations = this.texts.page(surface.page.pageNumber).map((text) =>
       preview?.id === text.id ? preview : selectionPreviews?.get(text.id) ?? text
     );
+    if (
+      !annotations.length
+      && !preview
+      && !selectionPreviews?.size
+      && !surface.textLayer.childElementCount
+    ) return;
     const selected = new Set(this.selectedTexts.map((text) => text.id));
     if (this.syncCurrentTextBoxes(surface, annotations, selected)) return;
     const boxes = annotations.map((annotation) => {
-      const box = surface.overlay.ownerDocument.createDiv();
+      const box = createDetachedDiv(surface.overlay.ownerDocument);
       box.className = "native-pdf-handwriting-text-box";
       box.dataset.annotationId = annotation.id;
       box.dataset.annotationSignature = this.textBoxRenderSignature(annotation, selected.has(annotation.id));
-      if (this.drawEnabled) box.classList.add("is-editable");
+      if (this.textBoxesInteractable()) box.classList.add("is-editable");
       if (selected.has(annotation.id)) box.classList.add("is-selected");
       this.positionTextBox(surface, box, annotation);
       const runs = normalizeTextRuns(annotation.runs);
@@ -2635,7 +2806,8 @@ export class ViewerInkSession {
     return [
       annotation.updatedAt, annotation.x, annotation.y, annotation.width, annotation.height,
       annotation.color, annotation.fontSize, annotation.fontFamily, annotation.bold, annotation.italic,
-      annotation.strikethrough, annotation.text.length, annotation.runs.length, selected, this.drawEnabled
+      annotation.strikethrough, annotation.text.length, annotation.runs.length, selected,
+      this.textBoxesInteractable()
     ].join("|");
   }
 
@@ -2716,19 +2888,19 @@ export class ViewerInkSession {
 
   /** NPDE-style frame: edge strips move, circular dots resize. */
   private attachTextBoxOutline(surface: PageSurface, box: HTMLElement, annotation: PdfTextAnnotation): void {
-    if (!this.drawEnabled) return;
-    const outline = box.ownerDocument.createDiv();
+    if (!this.textBoxesInteractable()) return;
+    const outline = createDetachedDiv(box.ownerDocument);
     outline.className = "native-pdf-handwriting-text-selection-frame native-pdf-handwriting-selection-control";
     outline.dataset.annotationId = annotation.id;
     outline.setAttribute("aria-hidden", "true");
     this.layoutTextBoxOutline(surface, outline, annotation, annotation);
 
     const addControl = (kind: "move" | "resize", handle: TextBoxHandle): void => {
-      const control = box.ownerDocument.createDiv();
+      const control = createDetachedDiv(box.ownerDocument);
       control.className = `native-pdf-handwriting-text-${kind}-${handle} native-pdf-handwriting-selection-control`;
       control.dataset.handle = handle;
       control.setAttribute("aria-label", kind === "move" ? "Move text box" : `Resize text box ${handle}`);
-      control.addEventListener("pointerdown", (event) => this.startTextBoxTransform(surface, annotation, kind, handle, outline, event));
+      control.addEventListener("pointerdown", (event) => this.startTextBoxTransform(surface, annotation, kind, handle, outline, event), { signal: this.pointerProbeAbort.signal });
       outline.append(control);
     };
     for (const handle of ["n", "e", "s", "w"] as const) addControl("move", handle);
@@ -2744,7 +2916,7 @@ export class ViewerInkSession {
     outline: HTMLElement,
     event: PointerEvent
   ): void {
-    if (!this.drawEnabled || event.button !== 0) return;
+    if (!this.textBoxesInteractable() || event.button !== 0) return;
     const annotation = this.texts.page(surface.page.pageNumber).find((text) => text.id === rendered.id);
     if (!annotation) return;
     event.preventDefault();
@@ -2822,7 +2994,7 @@ export class ViewerInkSession {
       || drag.before.width !== drag.preview.width || drag.before.height !== drag.preview.height;
     if (changed) {
       const after = { ...drag.preview, updatedAt: new Date().toISOString() };
-      this.history.execute(new ReplaceTextAnnotationCommand(this.texts, drag.before, after));
+      this.executeHistory(new ReplaceTextAnnotationCommand(this.texts, drag.before, after), drag.surface.page.pageNumber);
       this.selectedTexts = [after];
       this.selectionShape = boundingShapeFromSelection([], this.selectedTexts);
       this.logText(drag.surface, "box-transform-commit", {
@@ -2832,7 +3004,7 @@ export class ViewerInkSession {
     } else {
       this.logText(drag.surface, "box-transform-cancel", { annotationId: drag.before.id, mode: drag.mode, handle: drag.handle, reason: "unchanged" });
     }
-    this.renderPage(drag.surface.page.pageNumber);
+    if (this.needsPagePaint(drag.surface.page.pageNumber)) this.renderPage(drag.surface.page.pageNumber);
   }
 
   private cancelTextBoxTransform(reason: string, render = true, event?: PointerEvent): void {
@@ -2927,12 +3099,15 @@ export class ViewerInkSession {
     }
     const strokes = [...this.selected];
     const texts = [...this.selectedTexts];
+    const page = this.selectionPage;
     this.logger.textTool("selection-delete", {
-      page: this.selectionPage,
+      page,
       textCount: texts.length,
       strokeCount: strokes.length
     });
-    this.history.execute({
+    // Clear chrome state before history paint so one page-local paint has no outlines.
+    this.clearSelection({ refresh: false });
+    this.executeHistory({
       label: "Delete annotations",
       execute: () => {
         strokes.forEach((stroke) => this.ink.remove(stroke.id));
@@ -2942,8 +3117,7 @@ export class ViewerInkSession {
         strokes.forEach((stroke) => this.ink.add(stroke));
         texts.forEach((text) => this.texts.add(text));
       }
-    });
-    this.clearSelection();
+    }, page);
   }
 
   private copySelection(): void {
@@ -2992,11 +3166,11 @@ export class ViewerInkSession {
       ...text, id: this.id(), page: targetPage, x: text.x + dx, y: text.y + dy,
       createdAt: now, updatedAt: now
     }));
-    this.history.execute({
+    this.executeHistory({
       label: "Paste annotations",
       execute: () => { pasted.forEach((stroke) => this.ink.add(stroke)); pastedTexts.forEach((text) => this.texts.add(text)); },
       undo: () => { pasted.forEach((stroke) => this.ink.remove(stroke.id)); pastedTexts.forEach((text) => this.texts.remove(text.id)); }
-    });
+    }, targetPage);
     this.selected = pasted;
     this.selectedTexts = pastedTexts;
     this.selectionPage = targetPage;
@@ -3031,7 +3205,7 @@ export class ViewerInkSession {
       execute: () => { duplicates.forEach((stroke) => this.ink.add(stroke)); textDuplicates.forEach((text) => this.texts.add(text)); },
       undo: () => { duplicates.forEach((stroke) => this.ink.remove(stroke.id)); textDuplicates.forEach((text) => this.texts.remove(text.id)); }
     };
-    this.history.execute(command);
+    this.executeHistory(command, this.selectionPage);
     this.selected = duplicates;
     this.selectedTexts = textDuplicates;
     this.selectionShape = boundingShapeFromSelection(duplicates, textDuplicates);
@@ -3061,11 +3235,11 @@ export class ViewerInkSession {
     }));
     const beforeStrokes = [...this.selected];
     const beforeTexts = [...this.selectedTexts];
-    this.history.execute({
+    this.executeHistory({
       label: "Recolor annotations",
       execute: () => { after.forEach((stroke) => this.ink.replace(stroke)); textAfter.forEach((text) => this.texts.replace(text)); },
       undo: () => { beforeStrokes.forEach((stroke) => this.ink.replace(stroke)); beforeTexts.forEach((text) => this.texts.replace(text)); }
-    });
+    }, this.selectionPage);
     this.selected = after;
     this.selectedTexts = textAfter;
     this.logger.textTool("selection-recolor", {
@@ -3132,7 +3306,28 @@ export class ViewerInkSession {
     this.moveShapePreview = null;
     this.selectionToolbar.hide();
     if (textCount) this.logger.textTool("selection-clear", { page, textCount, strokeCount });
-    if (options.refresh !== false) this.refresh("clear-selection");
+    if (options.refresh !== false) this.paintAfterClearSelection(page);
+  }
+
+  /** Drop selection chrome without a full multipage ink invalidate. */
+  private paintAfterClearSelection(page: number | null): void {
+    this.logger.refresh("clear-selection", {
+      selected: 0,
+      surfaces: this.surfaces.size,
+      page,
+      pages: page != null && this.surfaces.has(page) ? 1 : 0,
+      pageLocal: true
+    });
+    if (page != null) {
+      const surface = this.surfaces.get(page);
+      if (surface) {
+        this.invalidateInkLayer(surface);
+        this.renderPage(page);
+        this.renderTextAnnotations(surface);
+      }
+    }
+    this.syncAnnotationCursorMode();
+    this.refreshSurfaceCursors();
   }
 
   private reconcileSelection(): void {
@@ -3198,7 +3393,7 @@ export class ViewerInkSession {
     backingScale: number
   ): CanvasRenderingContext2D {
     if (!surface.inkLayer || !surface.inkLayerContext) {
-      surface.inkLayer = surface.overlay.ownerDocument.createEl('canvas');
+      surface.inkLayer = createDetachedEl(surface.overlay.ownerDocument, 'canvas');
       surface.inkLayerContext = surface.inkLayer.getContext("2d");
       if (!surface.inkLayerContext) throw new Error("Canvas 2D rendering is unavailable");
       surface.inkLayerValid = false;
@@ -3235,7 +3430,7 @@ export class ViewerInkSession {
       ? surface.inkLayer
       : surface.canvas;
     if (!src.width || !src.height) return null;
-    const snap = surface.overlay.ownerDocument.createEl('canvas');
+    const snap = createDetachedEl(surface.overlay.ownerDocument, 'canvas');
     snap.width = src.width;
     snap.height = src.height;
     const ctx = snap.getContext("2d");
@@ -3259,6 +3454,8 @@ export class ViewerInkSession {
 
   private queueInkLayerUpgrade(pageNumber: number): void {
     this.inkUpgradePages.add(pageNumber);
+    // During burst/CSS handoff, only enqueue — releaseZoomCompositeLayers drains.
+    if (this.isZoomHandoffActive()) return;
     if (this.inkUpgradeTimer !== null) {
       window.clearTimeout(this.inkUpgradeTimer);
       this.inkUpgradeTimer = null;
@@ -3270,7 +3467,23 @@ export class ViewerInkSession {
   }
 
   private drainInkLayerUpgrades(): void {
-    if (this.destroyed || this.zoomCompositing) return;
+    if (this.destroyed) return;
+    if (this.isZoomHandoffActive()) {
+      if (this.inkUpgradePages.size > 0) {
+        this.logger.refresh("ink-upgrade-deferred", {
+          selected: this.selected.length,
+          surfaces: this.surfaces.size,
+          pages: this.inkUpgradePages.size,
+          reason: this.zoomCompositing ? "zoom-compositing" : "zoom-handoff"
+        });
+        // Safety wake if release never runs; release path clears and drains at 0ms.
+        this.inkUpgradeTimer = window.setTimeout(() => {
+          this.inkUpgradeTimer = null;
+          this.drainInkLayerUpgrades();
+        }, ViewerInkSession.INK_UPGRADE_MS);
+      }
+      return;
+    }
     const next = this.inkUpgradePages.values().next();
     if (next.done) return;
     const pageNumber = next.value;
@@ -3283,7 +3496,22 @@ export class ViewerInkSession {
       if (this.inkUpgradePages.size > 0) this.queueInkLayerUpgrade([...this.inkUpgradePages][0]!);
       return;
     }
+    if (this.hasZoomCompositingClass()) {
+      this.logger.zoomFlashProxy("upgrade-while-compositing-class", {
+        page: pageNumber,
+        zoomCompositing: this.zoomCompositing
+      });
+    }
     surface.inkLayerValid = false;
+    this.logger.refresh("ink-upgrade", {
+      selected: this.selected.length,
+      surfaces: this.surfaces.size,
+      page: pageNumber,
+      compositingClass: this.hasZoomCompositingClass(),
+      msSinceSettle: this.zoomCompositeSettledAt > 0
+        ? roundMs(performance.now() - this.zoomCompositeSettledAt)
+        : null
+    });
     this.renderPage(pageNumber, undefined, "ink-upgrade");
     if (this.inkUpgradePages.size > 0) {
       // One page per turn — keep UI responsive while upgrading remainder.
@@ -3356,9 +3584,27 @@ export class ViewerInkSession {
       && !erasingLive
       && !movingSelection
       && !livePreview
-      && (reason.includes("pages-sync") || reason.includes("pages-reattach"))
+      && (
+        reason.includes("pages-sync")
+        || reason.includes("pages-reattach")
+        || reason.includes("native-content-reattach")
+      )
     ) {
       return;
+    }
+
+    const paintStarted = performance.now();
+    const previousPaint = this.lastPagePaintAt.get(pageNumber);
+    if (
+      previousPaint
+      && paintStarted - previousPaint.at < ViewerInkSession.FLASH_DOUBLE_PAINT_MS
+      && this.isZoomHandoffActive()
+    ) {
+      this.logger.zoomFlashProxy("double-paint-window", {
+        page: pageNumber,
+        reasons: [previousPaint.reason, reason || "render"],
+        gapMs: roundMs(paintStarted - previousPaint.at)
+      });
     }
 
     let scaledBlit: HTMLCanvasElement | null = null;
@@ -3441,9 +3687,17 @@ export class ViewerInkSession {
       }
     }
 
-    if (surface.editTool === "lasso" && surface.editPath.length > 0) {
+    this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
+
+    // Lasso/selection chrome is painted on the ink canvas (under the text layer
+    // by default). Raise the canvas while that chrome is visible so text boxes
+    // do not cover the outline — same look for ink-only and text selections.
+    const drawingLasso = surface.editTool === "lasso" && surface.editPath.length > 0;
+    const drawingSelection = Boolean(this.selectionShape && this.selectionPage === pageNumber) && !drawingLasso;
+    surface.canvas.classList.toggle("is-selection-chrome-raised", drawingLasso || drawingSelection);
+    if (drawingLasso) {
       this.drawLassoPreview(surface);
-    } else if (this.selectionShape && this.selectionPage === pageNumber && !this.selectedTexts.length) {
+    } else if (drawingSelection && this.selectionShape) {
       this.drawSelectionShape(surface, this.moveShapePreview ?? this.selectionShape, { closeFreeform: true });
     }
     if (surface.builder?.preview().length) {
@@ -3459,20 +3713,19 @@ export class ViewerInkSession {
           laser.fadeMs
         );
       } else {
-        const tool = resolveDrawingTool(this.options.settings.toolPreferences.activeTool);
-        const drawing = this.options.settings.toolPreferences[tool];
+        const draft = surface.builder.style;
         const draftId = surface.builder.id;
         this.drawPoints(
           surface,
           surface.shapePreview ?? surface.builder.preview(this.simplifyStrokesEnabled()),
-          drawing.color,
-          drawing.width,
-          drawing.opacity,
-          tool,
+          draft.color,
+          draft.width,
+          draft.opacity,
+          draft.tool,
           false,
           draftId,
           // Pencil: full grit while dragging so release does not densify/reseed.
-          tool === "pencil" ? "full" : "draft"
+          draft.tool === "pencil" ? "full" : "draft"
         );
       }
     }

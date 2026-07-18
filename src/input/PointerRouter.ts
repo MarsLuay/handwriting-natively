@@ -1,3 +1,4 @@
+import { appendToBodyOr, createDetachedSpan } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
 import { isInkDrawTool, type ToolId } from "../model";
 import { scrollPdfBy } from "../integration/PdfScrollRoot";
@@ -69,15 +70,17 @@ export class PointerRouter {
     palmPolicy = new PalmRejectionPolicy()
   ) {
     this.palmPolicy = palmPolicy;
-    this.eraserCursor = element.ownerDocument.createSpan();
+    this.eraserCursor = createDetachedSpan(element.ownerDocument);
     this.eraserCursor.className = "native-pdf-handwriting-eraser-cursor";
     this.eraserCursor.setAttribute("aria-hidden", "true");
     this.eraserCursor.hidden = true;
-    this.drawCursor = element.ownerDocument.createSpan();
+    this.drawCursor = createDetachedSpan(element.ownerDocument);
     this.drawCursor.className = "native-pdf-handwriting-draw-cursor";
     this.drawCursor.setAttribute("aria-hidden", "true");
     this.drawCursor.hidden = true;
-    element.ownerDocument.body.append(this.eraserCursor, this.drawCursor);
+    const cursorHost = this.callbacks.cursorParent?.() ?? element;
+    appendToBodyOr(element.ownerDocument, this.eraserCursor, cursorHost);
+    appendToBodyOr(element.ownerDocument, this.drawCursor, cursorHost);
     // Explicit annotation gestures are handled in capture so a stale router
     // left by a prior plugin session cannot process the same event in bubble.
     // Native text inputs are excluded by isAnnotationChromeTarget above.

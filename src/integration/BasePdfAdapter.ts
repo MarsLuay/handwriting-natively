@@ -1,3 +1,4 @@
+import { createDetachedDiv } from "../vendor/createDetached";
 import { isElement, isHTMLElement } from "../dom/typeGuards";
 import type { ViewStateSource } from "../logging/SessionLogger";
 import type { ToolbarPlacement } from "../model";
@@ -42,12 +43,16 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   /** Sampled count of PDF.js inner-layer mutations that must not remount overlays. */
   private ignoredPageContentMutations = 0;
   private lastIgnoredPageContentLogAt = 0;
+  /** Coalesced `.page` structure mutations (can fire hundreds/sec on attach). */
+  private pageStructureMutations = 0;
+  private lastPageStructureLogAt = 0;
   /** Cover Obsidian PDF sidebar open/close transitions (often ~250–400ms). */
   private static readonly SIDEBAR_FOLLOW_MS = 480;
   private static readonly SIDEBAR_JUMP_WARN_PX = 24;
   private static readonly SIDEBAR_IGNORED_LAYOUT_LOG_INTERVAL_MS = 500;
   /** Keep observer diagnostics useful without writing one entry for every PDF.js paint frame. */
   private static readonly PAGE_CONTENT_MUTATION_LOG_INTERVAL_MS = 250;
+  private static readonly PAGE_STRUCTURE_LOG_INTERVAL_MS = 250;
 
   protected constructor(
     protected readonly compatibility: CompatibilityResult,
@@ -102,7 +107,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   mountOverlay(pageNumber: number): HTMLElement {
     const page = this.locator.page(pageNumber);
     if (!page) throw new Error(`Cannot mount annotation overlay: PDF page ${pageNumber} is unavailable`);
-    const overlay = page.element.ownerDocument.createDiv();
+    const overlay = createDetachedDiv(page.element.ownerDocument);
     overlay.className = "native-pdf-handwriting-page-overlay";
     overlay.dataset.pageNumber = String(pageNumber);
     overlay.dataset.focusOverlayInternal = "true";
@@ -140,7 +145,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     const chrome = this.ensureSidebarChrome();
     chrome.classList.remove("is-toolbar-left", "is-toolbar-right");
     chrome.classList.add(placement === "left" ? "is-toolbar-left" : "is-toolbar-right");
-    const rail = toolbar.ownerDocument.createDiv();
+    const rail = createDetachedDiv(toolbar.ownerDocument);
     rail.className = `native-pdf-handwriting-rail is-${placement}`;
     toolbar.classList.add(placement === "left" ? "is-sidebar-left" : "is-sidebar-right");
     rail.append(toolbar);
@@ -149,6 +154,28 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     else chrome.append(rail);
     this.mounted.add(rail);
     this.mounted.add(toolbar);
+    // Catch full-pane rail stretch (missing is-toolbar-* / max-content blowup).
+    const railLayout = this.viewportLayout(rail);
+    const chromeLayout = this.viewportLayout(chrome);
+    const wrapNode = chrome.querySelector(".pdf-viewer-container, .pdf-viewer-scroll-container, #viewerContainer");
+    this.logSidebarRail("info", "pdf sidebar rail mounted", {
+      placement,
+      chromeClasses: [...chrome.classList],
+      railClasses: [...rail.classList],
+      chrome: chromeLayout,
+      rail: railLayout,
+      wrapTarget: this.viewportLayout(isHTMLElement(wrapNode) ? wrapNode : this.scrollElement())
+    });
+    const railWidth = Number((railLayout.rect as { width?: number } | undefined)?.width ?? 0);
+    const chromeWidth = Number((chromeLayout.rect as { width?: number } | undefined)?.width ?? 0);
+    if (chromeWidth > 0 && railWidth > Math.max(80, chromeWidth * 0.25)) {
+      this.logSidebarRail("warn", "pdf sidebar rail oversized", {
+        placement,
+        chromeClasses: [...chrome.classList],
+        railWidth,
+        chromeWidth
+      });
+    }
     if (placement === "left") {
       this.watchPdfSidebarLayout();
       this.queueSyncLeftRailWithPdfSidebar(false, "mount-toolbar");
@@ -189,7 +216,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     if (isHTMLElement(existing)) return existing;
     const wrapTarget = this.sidebarWrapTarget();
     const parent = wrapTarget.parentElement ?? this.host;
-    const chrome = wrapTarget.ownerDocument.createDiv();
+    const chrome = createDetachedDiv(wrapTarget.ownerDocument);
     chrome.className = "native-pdf-handwriting-chrome";
     // Insert at the scroll host's seat so an in-flow PDF sidebar sibling stays left of chrome.
     parent.insertBefore(chrome, wrapTarget);
@@ -582,12 +609,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
         this.callbacks.onPageContentMutation?.(ignoredPageContentRecords);
       }
       if (childListChanged) {
-        this.logAdapterEvent("info", "pdf page observer", {
-          action: "page-structure",
-          records: pageStructureRecords,
-          scaleChanged,
-          rotationChanged
-        });
+        this.logPageStructureMutations(pageStructureRecords, scaleChanged, rotationChanged);
         this.callbacks.onPagesChanged?.("pages-dom");
       }
       else if (scaleChanged) notify("data-scale");
@@ -649,6 +671,24 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
 
   private isPdfPageElement(element: HTMLElement): boolean {
     return element.matches(".page[data-page-number], .pdf-page-view[data-page-number]");
+  }
+
+  private logPageStructureMutations(
+    records: number,
+    scaleChanged: boolean,
+    rotationChanged: boolean
+  ): void {
+    this.pageStructureMutations += records;
+    const now = Date.now();
+    if (now - this.lastPageStructureLogAt < BasePdfAdapter.PAGE_STRUCTURE_LOG_INTERVAL_MS) return;
+    this.logAdapterEvent("info", "pdf page observer", {
+      action: "page-structure",
+      records: this.pageStructureMutations,
+      scaleChanged,
+      rotationChanged
+    });
+    this.pageStructureMutations = 0;
+    this.lastPageStructureLogAt = now;
   }
 
   private logIgnoredPageContentMutations(records: number): void {

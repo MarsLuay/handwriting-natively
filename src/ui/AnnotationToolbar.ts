@@ -8,6 +8,7 @@ import { laserMenu } from "./LaserDropdown";
 import { lassoOptions } from "./LassoDropdown";
 import { SaveStatusIndicator } from "./SaveStatusIndicator";
 import { textMenu, type TextStyleChange } from "./TextDropdown";
+import { createDetachedDiv, createDetachedEl, createDetachedSpan } from "../vendor/createDetached";
 import { setToolbarColorSwatch, setToolbarIcon, type ToolbarIcon } from "./ToolbarIcon";
 
 const DRAWING_LABELS: Record<DrawingTool, string> = {
@@ -24,7 +25,7 @@ export type MoreAction =
   | "toolbar-right";
 
 /** Identifies whether a preference change also needs a whole-session redraw. */
-export type PreferenceChangeReason = "general" | "text-style";
+export type PreferenceChangeReason = "general" | "text-style" | "tool";
 
 export interface AnnotationToolbarCallbacks {
   onPreferencesChange(preferences: ToolPreferences, reason?: PreferenceChangeReason): void;
@@ -71,12 +72,12 @@ export class AnnotationToolbar {
     this.lastDrawingTool = resolveDrawingTool(options.preferences.activeTool);
     this.dropdown = new DropdownController(this.ownerDocument);
     this.saveStatus = new SaveStatusIndicator(this.ownerDocument);
-    this.element = this.ownerDocument.createDiv();
+    this.element = createDetachedDiv(this.ownerDocument);
     this.element.className = "native-pdf-handwriting-toolbar";
     this.element.dataset.focusOverlayInternal = "true";
     this.element.setAttribute("role", "toolbar");
     this.element.setAttribute("aria-label", "PDF annotation tools");
-    this.controls = this.ownerDocument.createDiv();
+    this.controls = createDetachedDiv(this.ownerDocument);
     this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
     this.controls.append(this.drawToggle(options.drawEnabled ?? false));
@@ -133,7 +134,7 @@ export class AnnotationToolbar {
   }
 
   private actionButton(id: string, label: string, action: () => void, disabled = false): HTMLButtonElement {
-    const button = this.ownerDocument.createEl('button');
+    const button = createDetachedEl(this.ownerDocument, 'button');
     button.type = "button";
     button.className = "native-pdf-handwriting-toolbar-button clickable-icon";
     button.dataset.control = id;
@@ -145,11 +146,11 @@ export class AnnotationToolbar {
   }
 
   private drawToggle(enabled: boolean): HTMLLabelElement {
-    const label = this.ownerDocument.createEl('label');
+    const label = createDetachedEl(this.ownerDocument, 'label');
     label.className = "native-pdf-handwriting-draw-toggle";
     label.setAttribute("aria-label", "Turn on to draw, erase, or select annotations. Leave off for normal PDF controls.");
     label.removeAttribute("title");
-    const input = this.ownerDocument.createEl('input');
+    const input = createDetachedEl(this.ownerDocument, 'input');
     input.type = "checkbox";
     input.checked = enabled;
     input.dataset.control = "draw";
@@ -158,7 +159,7 @@ export class AnnotationToolbar {
       this.callbacks.onDrawModeChange?.(input.checked);
     }, { signal: this.abort.signal });
     label.dataset.enabled = String(enabled);
-    const text = this.ownerDocument.createSpan();
+    const text = createDetachedSpan(this.ownerDocument);
     text.className = "native-pdf-handwriting-draw-toggle-label";
     text.textContent = "Draw";
     label.append(input, text);
@@ -197,11 +198,11 @@ export class AnnotationToolbar {
   }
 
   private drawingMenu(): DropdownOpenOptions {
-    const content = this.ownerDocument.createDiv();
+    const content = createDetachedDiv(this.ownerDocument);
     const options = drawingOptions(this.preferences, (tool) => {
       this.preferences.activeTool = tool;
       this.lastDrawingTool = tool;
-      this.changed();
+      this.changed("tool");
     }, (width) => {
       this.preferences[this.lastDrawingTool].width = width;
       this.preferences.activeTool = this.lastDrawingTool;
@@ -279,12 +280,12 @@ export class AnnotationToolbar {
     return lassoOptions(this.preferences, (type) => {
       this.preferences.activeTool = "lasso";
       this.preferences.lasso.type = type;
-      this.changed();
+      this.changed("tool");
     });
   }
 
   private colorButton(): HTMLButtonElement {
-    const button = this.ownerDocument.createEl('button');
+    const button = createDetachedEl(this.ownerDocument, 'button');
     button.type = "button";
     button.className = "native-pdf-handwriting-toolbar-button clickable-icon";
     button.dataset.control = "color";
@@ -296,29 +297,38 @@ export class AnnotationToolbar {
   }
 
   private colorMenu(): HTMLElement {
-    const content = this.ownerDocument.createDiv();
+    const content = createDetachedDiv(this.ownerDocument);
     const laserActive = this.preferences.activeTool === "laser";
     const textActive = this.preferences.activeTool === "text";
     const drawingTool = resolveDrawingTool(this.preferences.activeTool);
     const applyColor = (color: string): void => {
-      if (laserActive) this.preferences.laser.color = color;
-      else if (textActive) this.preferences.text.color = color;
-      else this.preferences[drawingTool].color = color;
+      if (laserActive) {
+        this.preferences.laser.color = color;
+        this.changed();
+        return;
+      }
+      if (textActive) {
+        this.preferences.text.color = color;
+        this.callbacks.onTextStyleChange?.({ property: "color", value: color, source: "change" });
+        this.changed("text-style");
+        return;
+      }
+      this.preferences[drawingTool].color = color;
       this.changed();
     };
     for (const option of colorOptions(this.preferences, applyColor)) content.append(this.inlineOption(option));
-    const colorLabel = this.ownerDocument.createEl('label');
+    const colorLabel = createDetachedEl(this.ownerDocument, 'label');
     colorLabel.textContent = "Custom color";
-    const colorInput = this.ownerDocument.createEl('input');
+    const colorInput = createDetachedEl(this.ownerDocument, 'input');
     colorInput.type = "color";
     colorInput.value = laserActive ? this.preferences.laser.color : textActive ? this.preferences.text.color : this.preferences[drawingTool].color;
     colorInput.addEventListener("input", () => applyColor(colorInput.value), { signal: this.abort.signal });
     colorLabel.append(colorInput);
     content.append(colorLabel);
     if (!laserActive && !textActive) {
-      const opacityLabel = this.ownerDocument.createEl('label');
+      const opacityLabel = createDetachedEl(this.ownerDocument, 'label');
       opacityLabel.textContent = "Opacity";
-      const opacity = this.ownerDocument.createEl('input');
+      const opacity = createDetachedEl(this.ownerDocument, 'input');
       opacity.type = "range";
       opacity.min = "0.1";
       opacity.max = "1";
@@ -351,7 +361,7 @@ export class AnnotationToolbar {
   }
 
   private inlineOption(option: DropdownOption): HTMLButtonElement {
-    const button = this.ownerDocument.createEl('button');
+    const button = createDetachedEl(this.ownerDocument, 'button');
     button.type = "button";
     button.className = "native-pdf-handwriting-dropdown-option";
     button.dataset.optionId = option.id;
@@ -370,7 +380,7 @@ export class AnnotationToolbar {
   private activate(tool: ToolId): void {
     this.preferences.activeTool = tool;
     if (isDrawingTool(tool)) this.lastDrawingTool = tool;
-    this.changed();
+    this.changed("tool");
   }
 
   private changed(reason: PreferenceChangeReason = "general"): void {

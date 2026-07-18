@@ -1,3 +1,4 @@
+import { createDetachedEl, createDetachedSpan } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
 import {
   DEFAULT_SETTINGS,
@@ -47,7 +48,7 @@ export function drawingOptions(
     label: `${labels[index]} (${width})`,
     active: drawing.width === width,
     render: (button) => {
-      const preview = button.ownerDocument.createSpan();
+      const preview = createDetachedSpan(button.ownerDocument);
       preview.className = "native-pdf-handwriting-width-preview";
       setElementCssProps(preview, {
         "--ink-preview-width": `${Math.min(12, width)}px`,
@@ -68,13 +69,13 @@ export function drawingAdvanced(
 ): HTMLElement {
   const tool = resolveDrawingTool(preferences.activeTool);
   const drawing = preferences[tool];
-  const details = ownerDocument.createEl('details');
+  const details = createDetachedEl(ownerDocument, 'details');
   details.className = "native-pdf-handwriting-advanced";
-  const summary = ownerDocument.createEl('summary');
+  const summary = createDetachedEl(ownerDocument, 'summary');
   summary.textContent = "Advanced settings";
   details.append(summary);
-  const shapeRecognition = ownerDocument.createEl('label');
-  const shapeRecognitionInput = ownerDocument.createEl('input');
+  const shapeRecognition = createDetachedEl(ownerDocument, 'label');
+  const shapeRecognitionInput = createDetachedEl(ownerDocument, 'input');
   shapeRecognitionInput.type = "checkbox";
   shapeRecognitionInput.checked = preferences.shape.holdToRecognize;
   shapeRecognitionInput.dataset.setting = "shape-recognition";
@@ -91,9 +92,9 @@ export function drawingAdvanced(
   ];
   for (const [label, key, min, max, step] of fields) {
     if (tool === "highlighter" && key === "textureStrength") continue;
-    const wrapper = ownerDocument.createEl('label');
+    const wrapper = createDetachedEl(ownerDocument, 'label');
     wrapper.textContent = label;
-    const input = ownerDocument.createEl('input');
+    const input = createDetachedEl(ownerDocument, 'input');
     input.type = "range";
     input.min = String(min);
     input.max = String(max);
@@ -112,8 +113,8 @@ export function drawingAdvanced(
     ["Simulate mouse pressure", "simulateMousePressure"]
   ] as const) {
     if (tool === "highlighter" && key === "tiltSensitivity") continue;
-    const wrapper = ownerDocument.createEl('label');
-    const input = ownerDocument.createEl('input');
+    const wrapper = createDetachedEl(ownerDocument, 'label');
+    const input = createDetachedEl(ownerDocument, 'input');
     input.type = "checkbox";
     input.checked = drawing[key];
     input.addEventListener("change", () => {
@@ -123,10 +124,10 @@ export function drawingAdvanced(
     wrapper.append(input, label);
     details.append(wrapper);
   }
-  const stabilization = ownerDocument.createEl('select');
+  const stabilization = createDetachedEl(ownerDocument, 'select');
   stabilization.setAttribute("aria-label", "Stabilization");
   for (const value of ["off", "low", "medium", "high"] as const) {
-    const option = ownerDocument.createEl('option');
+    const option = createDetachedEl(ownerDocument, 'option');
     option.value = value;
     option.textContent = value[0]?.toUpperCase() + value.slice(1);
     option.selected = drawing.stabilization === value;
@@ -137,7 +138,7 @@ export function drawingAdvanced(
     onChange();
   }, { signal });
   details.append(stabilization);
-  const restore = ownerDocument.createEl('button');
+  const restore = createDetachedEl(ownerDocument, 'button');
   restore.type = "button";
   restore.textContent = "Restore tool defaults";
   restore.addEventListener("click", () => {

@@ -16,6 +16,8 @@ import { PdfViewerCompatibility } from "./integration/PdfViewerCompatibility";
 import { EmbedAnnotateChrome, findExistingEmbedChrome } from "./focus-view/EmbedAnnotateChrome";
 import { resolvePdfFileFromEmbed } from "./focus-view/embedFocusHelpers";
 import { ViewerInkSession } from "./runtime/ViewerInkSession";
+import { AttachRetryPolicy } from "./runtime/AttachRetryPolicy";
+import { ScanDebounce } from "./runtime/ScanDebounce";
 import { VaultDebugLog } from "./logging/VaultDebugLog";
 import { mergeSettings, NativePdfInkSettingTab } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
@@ -64,7 +66,9 @@ export default class NativePdfInkPlugin extends Plugin {
   private readonly attachingLeaves = new Set<WorkspaceLeaf>();
   private readonly embedChrome = new Map<HTMLElement, EmbedAnnotateChrome>();
   private readonly persistEpochByDoc = new Map<string, number>();
-  private scanTimer: number | null = null;
+  /** Back off repeated attach failures so layout rescans cannot storm a not-ready PDF. */
+  private readonly attachRetry = new AttachRetryPolicy();
+  private readonly scanDebounce = new ScanDebounce();
   private scanAgain = false;
   private unloaded = false;
   private readonly vaultDebugLog = new VaultDebugLog(
@@ -114,10 +118,8 @@ export default class NativePdfInkPlugin extends Plugin {
 
   onunload(): void {
     this.unloaded = true;
-    if (this.scanTimer !== null) {
-      window.clearTimeout(this.scanTimer);
-      this.scanTimer = null;
-    }
+    this.scanDebounce.clear();
+    this.attachRetry.clearAll();
     this.attachingLeaves.clear();
     for (const chrome of this.embedChrome.values()) chrome.destroy();
     this.embedChrome.clear();
@@ -231,11 +233,12 @@ export default class NativePdfInkPlugin extends Plugin {
 
   private scheduleDebouncedScan(delayMs = 100): void {
     this.scanAgain = true;
-    if (this.scanTimer !== null || this.unloaded) return;
-    this.scanTimer = window.setTimeout(() => {
-      this.scanTimer = null;
+    if (this.unloaded) return;
+    // Soonest wake wins: layout can still scan other leaves quickly, while
+    // AttachRetryPolicy.canAttempt blocks the cooling path until its deadline.
+    this.scanDebounce.schedule(delayMs, () => {
       void this.scanPdfViews();
-    }, delayMs);
+    });
   }
 
   private async scanPdfViews(): Promise<void> {
@@ -249,6 +252,7 @@ export default class NativePdfInkPlugin extends Plugin {
   private async scanPdfLeaves(): Promise<void> {
     const leaves = this.app.workspace.getLeavesOfType("pdf");
     const live = new Set(leaves);
+    const livePaths = new Set<string>();
     for (const [leaf, session] of [...this.sessions]) {
       if (!live.has(leaf)) {
         this.sessions.delete(leaf);
@@ -265,13 +269,13 @@ export default class NativePdfInkPlugin extends Plugin {
 
     for (const leaf of leaves) {
       if (this.sessions.has(leaf) || this.attachingLeaves.has(leaf)) continue;
-      this.attachingLeaves.add(leaf);
       const view = leaf.view;
       const file = view instanceof FileView ? view.file : (view as FileView).file;
-      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") {
-        this.attachingLeaves.delete(leaf);
-        continue;
-      }
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
+      livePaths.add(file.path);
+      if (!this.attachRetry.canAttempt(file.path)) continue;
+
+      this.attachingLeaves.add(leaf);
       let session: ViewerInkSession | undefined;
       try {
         const privateViewer = await PdfViewerCompatibility.resolvePrivateViewerFromPdfView(view);
@@ -292,17 +296,31 @@ export default class NativePdfInkPlugin extends Plugin {
           continue;
         }
         this.sessions.set(leaf, session);
+        this.attachRetry.clear(file.path);
       } catch (error) {
         console.warn("[Handwriting Natively] PDF view not ready or incompatible", error);
         this.vaultDebugLog.write("warn", "session attach failed", {
           document: file.path,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack ?? null : null
         });
-        this.scheduleDebouncedScan(500);
+        const delayMs = this.attachRetry.recordFailure(file.path);
+        this.scheduleDebouncedScan(delayMs);
       } finally {
         this.attachingLeaves.delete(leaf);
       }
     }
+
+    // Paths seen above omit leaves that already have sessions — still retain those paths
+    // so we do not prune an open doc's cooldown incorrectly when attach is in-flight only.
+    for (const leaf of leaves) {
+      const view = leaf.view;
+      const file = view instanceof FileView ? view.file : (view as FileView).file;
+      if (file instanceof TFile && file.extension.toLowerCase() === "pdf") livePaths.add(file.path);
+    }
+    this.attachRetry.retainOnly(livePaths);
+    const wait = this.attachRetry.msUntilNextRetry(livePaths);
+    if (wait != null) this.scheduleDebouncedScan(wait);
   }
 
   private scanPdfEmbeds(): void {

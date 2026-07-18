@@ -1,3 +1,4 @@
+import { createDetachedSpan } from "../vendor/createDetached";
 import type { SaveStatus } from "../model";
 
 const LABELS: Record<SaveStatus, string> = {
@@ -12,11 +13,11 @@ export class SaveStatusIndicator {
   private readonly dot: HTMLElement;
 
   constructor(ownerDocument: Document = activeDocument) {
-    this.element = ownerDocument.createSpan();
+    this.element = createDetachedSpan(ownerDocument);
     this.element.className = "native-pdf-handwriting-save-status";
     this.element.setAttribute("role", "status");
     this.element.setAttribute("aria-live", "polite");
-    this.dot = ownerDocument.createSpan();
+    this.dot = createDetachedSpan(ownerDocument);
     this.dot.className = "native-pdf-handwriting-save-status-dot";
     this.dot.setAttribute("aria-hidden", "true");
     this.element.append(this.dot);

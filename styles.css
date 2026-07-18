@@ -10,22 +10,28 @@
 }
 
 .native-pdf-handwriting-chrome {
+  /* Fill Obsidian's absolute .pdf-content-container the same way
+     .pdf-viewer-container does (top/bottom/inline insets), so wrapping
+     the scroller does not depend on percentage height of a static parent. */
+  --ink-rail-width: 44px;
   align-items: stretch;
+  bottom: 0;
   box-sizing: border-box;
   display: grid;
-  flex: 1 1 auto;
-  height: 100%;
-  max-height: 100%;
+  inset-inline-end: 0;
+  inset-inline-start: 0;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  width: 100%;
+  position: absolute;
+  top: 0;
 }
 
 .native-pdf-handwriting-chrome.is-toolbar-left {
   /* JS rAF-tracks --ink-pdf-sidebar-offset to the live PDF sidebar edge.
-     It moves only the rail: native PDF layout already reserves the sidebar. */
-  grid-template-columns: max-content minmax(0, 1fr);
+     It moves only the rail: native PDF layout already reserves the sidebar.
+     Fixed rail track — avoid intrinsic column sizing (wide status/controls blew the pane). */
+  grid-template-columns: var(--ink-rail-width) minmax(0, 1fr);
 }
 
 .native-pdf-handwriting-chrome.is-toolbar-left[data-pdf-sidebar-offset] > .native-pdf-handwriting-rail {
@@ -35,7 +41,7 @@
 }
 
 .native-pdf-handwriting-chrome.is-toolbar-right {
-  grid-template-columns: minmax(0, 1fr) max-content;
+  grid-template-columns: minmax(0, 1fr) var(--ink-rail-width);
 }
 
 .native-pdf-handwriting-chrome.is-toolbar-left > .native-pdf-handwriting-rail {
@@ -67,18 +73,46 @@
   min-width: 0;
 }
 
+/* Keep page scroll clear of the opaque right rail. Prefer is-toolbar-right
+   over :has() — Obsidian's absolute viewer often keeps a used width from
+   inset-end:0; width:auto lets the new end inset shrink the box.
+   Do not touch inset-inline-start — sidebarOpen owns that. */
+.native-pdf-handwriting-chrome.is-toolbar-right > .pdf-viewer-container,
+.native-pdf-handwriting-chrome.is-toolbar-right > .pdf-viewer-scroll-container,
+.native-pdf-handwriting-chrome.is-toolbar-right > #viewerContainer {
+  inset-inline-end: var(--ink-rail-width);
+  width: auto;
+}
+
 .native-pdf-handwriting-rail {
   align-self: stretch;
   background: var(--background-primary, #fff);
   border-inline: 1px solid var(--background-modifier-border, #d1d5db);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   max-height: 100%;
+  max-width: var(--ink-rail-width);
   overflow: hidden;
   padding: 6px 4px;
   /* Above page ink; still below Obsidian's PDF sidebar (z-index ~10) until offset. */
   position: relative;
+  width: var(--ink-rail-width);
   z-index: 5;
+}
+
+/* Pin rail to a side even if chrome loses is-toolbar-* (otherwise a lone
+   grid item stretches across the whole PDF and blocks the page). */
+.native-pdf-handwriting-rail.is-right {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.native-pdf-handwriting-rail.is-left {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
 }
 
 .native-pdf-handwriting-toolbar.is-sidebar-left,
@@ -351,6 +385,7 @@
   z-index: 4;
 }
 .native-pdf-handwriting-canvas { display: block; height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; z-index: 1; }
+.native-pdf-handwriting-canvas.is-selection-chrome-raised { z-index: 3; }
 .native-pdf-handwriting-text-layer { inset: 0; pointer-events: none; position: absolute; z-index: 2; }
 .native-pdf-handwriting-text-box,
 .native-pdf-handwriting-text-input {
@@ -368,8 +403,8 @@
   box-shadow: none;
 }
 .native-pdf-handwriting-text-selection-frame {
-  /* Text interaction always uses this one boundary: static selection, hover,
-   * and resize. The canvas never draws a second frame for selected text. */
+  /* Per-box frame for hover/selected/resize handles. The shared lasso/selection
+   * marquee still paints on the ink canvas (raised above this layer while active). */
   border: var(--native-pdf-handwriting-text-interaction-border);
   box-sizing: border-box;
   opacity: 0;

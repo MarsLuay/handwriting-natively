@@ -1,3 +1,4 @@
+import { createDetachedSpan } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
 import { resolveDrawingTool, type ToolPreferences } from "../model";
 import type { DropdownOption } from "./DropdownController";
@@ -9,7 +10,7 @@ export function colorOptions(preferences: ToolPreferences, select: (color: strin
     label: color,
     active: preferences[tool].color.toLowerCase() === color.toLowerCase(),
     render: (button) => {
-      const swatch = button.ownerDocument.createSpan();
+      const swatch = createDetachedSpan(button.ownerDocument);
       swatch.className = "native-pdf-handwriting-color-swatch";
       setElementCssProps(swatch, { "background-color": color });
       button.prepend(swatch);

@@ -691,6 +691,143 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("paints stroke commits page-locally instead of full history refresh", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "pen";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      refresh(reason: string): void;
+      invalidateInkLayers(): void;
+      ink: { all(): unknown[] };
+    };
+    const refresh = vi.spyOn(internal, "refresh");
+    const invalidateAll = vi.spyOn(internal, "invalidateInkLayers");
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    refresh.mockClear();
+    invalidateAll.mockClear();
+
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 120, 140));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 180, 200));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 220, 240));
+
+    expect(internal.ink.all()).toHaveLength(1);
+    expect(refresh).not.toHaveBeenCalledWith("history");
+    expect(invalidateAll).not.toHaveBeenCalled();
+
+    await session.destroy();
+  });
+
+  it("keeps committed ink layer pixels when switching to text after drawing", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "pen";
+    settings.toolPreferences.pen.color = "#dc2626";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 120, 140));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 180, 200));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 220, 240));
+
+    const internal = session as unknown as {
+      surfaces: Map<number, { inkLayerValid: boolean; builder?: unknown }>;
+      ink: { all(): Array<{ color: string }> };
+      invalidateInkLayers(): void;
+    };
+    const surface = internal.surfaces.get(1)!;
+    expect(surface.builder).toBeUndefined();
+    expect(internal.ink.all().at(-1)?.color).toBe("#dc2626");
+    const layerValidBefore = surface.inkLayerValid;
+    const invalidate = vi.spyOn(internal, "invalidateInkLayers");
+
+    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='text']")?.click();
+    expect(settings.toolPreferences.activeTool).toBe("text");
+    // Tool-chrome refresh must not invalidate committed ink (zoom-blit snap).
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(surface.inkLayerValid).toBe(layerValidBefore);
+    expect(internal.ink.all().at(-1)?.color).toBe("#dc2626");
+
+    await session.destroy();
+  });
+
+  it("makes text boxes interactable only in text or lasso mode while draw is on", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "pen";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    const annotation: PdfTextAnnotation = {
+      id: "pass-through", page: 1, text: "Ink over me", x: 100, y: 300, width: 140, height: 28,
+      color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+      runs: [{ text: "Ink over me", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      sourceRuns: [{ text: "Ink over me", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      createdAt: "now", updatedAt: "now"
+    };
+    const internal = session as unknown as {
+      texts: { add(annotation: PdfTextAnnotation): void };
+      surfaces: Map<number, unknown>;
+      renderTextAnnotations(surface: unknown): void;
+      options: { settings: { toolPreferences: { activeTool: string } } };
+      refreshToolChrome(reason?: string): void;
+    };
+    internal.texts.add(annotation);
+    internal.renderTextAnnotations(internal.surfaces.get(1));
+
+    let box = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box");
+    expect(box?.classList.contains("is-editable")).toBe(false);
+    expect(box?.querySelector(".native-pdf-handwriting-text-selection-frame")).toBeNull();
+
+    // Production tool/style prefs use chrome-only refresh (no ink invalidate).
+    internal.options.settings.toolPreferences.activeTool = "lasso";
+    internal.refreshToolChrome("tool-chrome");
+    box = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box");
+    expect(box?.classList.contains("is-editable")).toBe(true);
+    expect(box?.querySelector(".native-pdf-handwriting-text-selection-frame")).not.toBeNull();
+
+    internal.options.settings.toolPreferences.activeTool = "text";
+    internal.refreshToolChrome("tool-chrome");
+    box = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box");
+    expect(box?.classList.contains("is-editable")).toBe(true);
+
+    internal.options.settings.toolPreferences.activeTool = "eraser";
+    internal.refreshToolChrome("tool-chrome");
+    box = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box");
+    expect(box?.classList.contains("is-editable")).toBe(false);
+    expect(box?.querySelector(".native-pdf-handwriting-text-selection-frame")).toBeNull();
+
+    await session.destroy();
+  });
+
   it("resizes a locked shape from a drawing tool when the pointer moves instead of reverting to raw ink", async () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.toolPreferences.activeTool = "pen";
@@ -801,6 +938,67 @@ describe("viewer runtime tracer", () => {
     expect(context.moveTo).toHaveBeenCalled();
     expect(context.lineTo).toHaveBeenCalled();
     expect(context.stroke).toHaveBeenCalled();
+    const canvas = adapter.pageElement.querySelector<HTMLCanvasElement>(".native-pdf-handwriting-canvas");
+    expect(canvas?.classList.contains("is-selection-chrome-raised")).toBe(true);
+    await session.destroy();
+  });
+
+  it("keeps the shared lasso selection outline after selecting a text box", async () => {
+    const context = {
+      setTransform: vi.fn(), clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(),
+      beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), moveTo: vi.fn(), closePath: vi.fn(),
+      lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(), rect: vi.fn(), ellipse: vi.fn()
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "lasso";
+    settings.toolPreferences.lasso.type = "rectangle";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const text: PdfTextAnnotation = {
+      // PDF y grows upward; FakeAdapter maps clientY≈0 to pdfY≈800.
+      id: "lasso-text", page: 1, text: "Select me", x: 120, y: 650, width: 160, height: 36,
+      color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+      runs: [{ text: "Select me", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      sourceRuns: [{ text: "Select me", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      createdAt: "now", updatedAt: "now"
+    };
+    const internal = session as unknown as {
+      texts: { add(annotation: PdfTextAnnotation): void };
+      selectedTexts: PdfTextAnnotation[];
+      selectionShape: unknown;
+      renderPage(pageNumber: number): void;
+    };
+    internal.texts.add(text);
+    internal.renderPage(1);
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    context.stroke.mockClear();
+    context.rect.mockClear();
+    context.setLineDash.mockClear();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 80, 100));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 220, 240));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 220, 240));
+
+    expect(internal.selectedTexts).toHaveLength(1);
+    expect(internal.selectionShape).not.toBeNull();
+    expect(context.setLineDash).toHaveBeenCalled();
+    expect(context.rect).toHaveBeenCalled();
+    expect(context.stroke).toHaveBeenCalled();
+    const canvas = adapter.pageElement.querySelector<HTMLCanvasElement>(".native-pdf-handwriting-canvas");
+    expect(canvas?.classList.contains("is-selection-chrome-raised")).toBe(true);
+    expect(adapter.pageElement.querySelector(".native-pdf-handwriting-text-box.is-selected")).not.toBeNull();
     await session.destroy();
   });
 
