@@ -253,6 +253,14 @@ function debugCalls(event: string): unknown[][] {
   return (console.debug as ReturnType<typeof vi.fn>).mock.calls.filter((call) => call[1] === event);
 }
 
+function warnCalls(event: string): unknown[][] {
+  return (console.warn as ReturnType<typeof vi.fn>).mock.calls.filter((call) => call[1] === event);
+}
+
+function logCalls(event: string): unknown[][] {
+  return [...debugCalls(event), ...warnCalls(event)];
+}
+
 describe("zoom ink compositing", () => {
   let context: CanvasSpy;
 
@@ -314,9 +322,10 @@ describe("zoom ink compositing", () => {
       burstTicks: expect.any(Number)
     });
 
-    // Deferred HQ rebuild after settle.
+    // HQ rebuild must wait until CSS handoff releases (not mid-hold at 280ms).
     await vi.advanceTimersByTimeAsync(280);
-    expect(paintStampCalls(context)).toBeGreaterThan(stampsBeforeBurst);
+    expect(paintStampCalls(context)).toBe(stampsBeforeBurst);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
 
     // Settle path reattaches + syncs layout even if burst sync is missing.
     expect(overlay.style.left).toBe("40px");
@@ -327,6 +336,9 @@ describe("zoom ink compositing", () => {
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(32);
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+    // Drain queued after release (0ms timeout).
+    await vi.advanceTimersByTimeAsync(0);
+    expect(paintStampCalls(context)).toBeGreaterThan(stampsBeforeBurst);
 
     await session.destroy();
   });
@@ -487,6 +499,7 @@ describe("zoom ink compositing", () => {
     expect(context.drawImage).toHaveBeenCalled();
     expect(probeSurface(session).inkLayerValid).toBe(true);
     expect(probeSurface(session).inkLayer).not.toBeNull();
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 190, 200));
 
     const canvasBefore = probeSurface(session).canvas.width;
     const layerBefore = probeSurface(session).inkLayer!.width;
@@ -509,15 +522,124 @@ describe("zoom ink compositing", () => {
     expect(context.drawImage).toHaveBeenCalled();
     expect(debugCalls("ink zoom repaint").at(-1)?.[2]).toMatchObject({ canvasesResized: 1, strokesRedrawn: 0 });
 
-    // Deferred HQ upgrade after settle.
+    // HQ upgrade stays queued through the CSS handoff.
     await vi.advanceTimersByTimeAsync(280);
-    expect(debugCalls("ink zoom repaint").length).toBeGreaterThanOrEqual(1);
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(32);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(logCalls("session refresh").some((call) => (call[2] as { reason?: string }).reason === "ink-upgrade")).toBe(true);
 
     context.drawImage.mockClear();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 200, 220));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 230, 250));
     expect(context.drawImage).toHaveBeenCalled();
     expect(probeSurface(session).inkLayerValid).toBe(true);
+
+    await session.destroy();
+  });
+
+  it("skips full stroke redraw when overlay reattaches during zoom handoff", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const overlay = overlayOf(adapter);
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
+
+    context.arc.mockClear();
+    context.fill.mockClear();
+    context.stroke.mockClear();
+    const stampsAtSettle = paintStampCalls(context);
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.4, { left: 10, top: 10, width: 800, height: 1100 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(120);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+
+    overlay.remove();
+    session.onPdfPageContentMutation(1);
+    expect(overlay.isConnected).toBe(true);
+    // Layout-only during handoff — no graphite rebuild (that was the flash).
+    expect(paintStampCalls(context)).toBe(stampsAtSettle);
+    expect(logCalls("ink zoom flash proxy").some((call) => (call[2] as { proxy?: string }).proxy === "reattach-layout-only")).toBe(true);
+    expect(logCalls("ink zoom flash proxy").some((call) => (call[2] as { proxy?: string }).proxy === "overlay-disconnected")).toBe(true);
+
+    await session.destroy();
+  });
+
+  it("draw-mode toggle does not invalidate committed ink", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 90, 100));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 130));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 150, 160));
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+
+    // Toggle draw off then on via toolbar.
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+    const drawModeLogs = debugCalls("session refresh").filter((call) => (call[2] as { reason?: string }).reason === "draw-mode");
+    expect(drawModeLogs.length).toBeGreaterThanOrEqual(1);
+    expect(drawModeLogs.every((call) => (call[2] as { chromeOnly?: boolean }).chromeOnly === true)).toBe(true);
+
+    await session.destroy();
+  });
+
+  it("drawing preference changes are chrome-only and keep ink cache warm", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 90, 100));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 130));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 150, 160));
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+
+    const internal = session as unknown as {
+      options: { settings: { toolPreferences: { pen: { color: string } } } };
+      refreshToolChrome(reason?: string): void;
+    };
+    internal.options.settings.toolPreferences.pen.color = "#dc2626";
+    internal.refreshToolChrome("preferences");
+
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+    const prefLogs = debugCalls("session refresh").filter((call) => (call[2] as { reason?: string }).reason === "preferences");
+    expect(prefLogs.at(-1)?.[2]).toMatchObject({ chromeOnly: true });
+
+    await session.destroy();
+  });
+
+  it("clearing selection uses page-local paint instead of full refresh", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 90, 100));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 130));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 150, 160));
+
+    const internal = session as unknown as {
+      selected: Array<{ id: string }>;
+      selectionPage: number | null;
+      clearSelection(options?: { refresh?: boolean }): void;
+      ink: { all(): Array<{ id: string; page: number }> };
+    };
+    const stroke = internal.ink.all()[0]!;
+    internal.selected = [stroke];
+    internal.selectionPage = stroke.page;
+    internal.clearSelection();
+
+    const clearLogs = debugCalls("session refresh").filter((call) => (call[2] as { reason?: string }).reason === "clear-selection");
+    expect(clearLogs.at(-1)?.[2]).toMatchObject({ pageLocal: true, pages: 1, page: 1 });
 
     await session.destroy();
   });

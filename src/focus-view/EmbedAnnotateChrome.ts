@@ -1,3 +1,4 @@
+import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { isHTMLElement } from "../dom/typeGuards";
 export interface EmbedAnnotateChromeOptions {
   onAnnotate: () => void;
@@ -48,11 +49,11 @@ export class EmbedAnnotateChrome {
   ) {
     host.classList.add("native-pdf-handwriting-embed-host");
 
-    this.element = host.ownerDocument.createDiv();
+    this.element = createDetachedDiv(host.ownerDocument);
     this.element.className = "native-pdf-handwriting-embed-chrome";
     this.element.dataset.nativePdfHandwritingEmbedChrome = "true";
 
-    this.button = host.ownerDocument.createEl('button');
+    this.button = createDetachedEl(host.ownerDocument, 'button');
     this.button.type = "button";
     this.button.className = "native-pdf-handwriting-embed-annotate clickable-icon";
     this.button.textContent = options.label ?? "Annotate";

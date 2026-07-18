@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.12 — 2026-07-18
+
+- Keep the right annotation rail at a fixed width so it cannot stretch across the PDF pane.
+- Shrink the Obsidian PDF scroll host under a right rail (`inset-inline-end` + `width: auto`).
+- Skip false `full-refresh-during-zoom` warn noise on session `create` during mount resize.
+- Reduce full-session paint churn (tool chrome, preferences, page-local clear-selection, history-local strokes).
+- Harden zoom ink handoff (defer HQ upgrades until CSS compositing releases; layout-only reattach).
+- Add attach retry / scan debounce and detached DOM helpers for safer PDF viewer wrapping.
+
 ## 0.1.11 — 2026-07-17
 
 - Remove leftover `PluginSettingTab.display()` now that `getSettingDefinitions()` owns settings UI on `minAppVersion` 1.13.0+ (`obsidianmd/settings-tab/no-deprecated-display`).

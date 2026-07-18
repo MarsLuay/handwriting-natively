@@ -288,4 +288,33 @@ describe("AnnotationToolbar", () => {
     expect(changed).toHaveBeenCalledTimes(2);
     toolbar.destroy();
   });
+
+  it("builds toolbar icons without Obsidian Document.createSvg appending to document", () => {
+    const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    const doc = document as Document & { createSvg?: (tag: string) => SVGElement };
+    const previous = doc.createSvg;
+    Object.defineProperty(doc, "createSvg", {
+      configurable: true,
+      writable: true,
+      value: () => {
+        throw new DOMException(
+          "Failed to execute 'appendChild' on 'Node': Only one element on document allowed.",
+          "HierarchyRequestError"
+        );
+      }
+    });
+    try {
+      const toolbar = new AnnotationToolbar({
+        preferences,
+        autosave: true,
+        callbacks: { onPreferencesChange: vi.fn() },
+        ownerDocument: doc
+      });
+      expect(toolbar.element.querySelectorAll("svg.native-pdf-handwriting-toolbar-icon").length).toBeGreaterThan(0);
+      toolbar.destroy();
+    } finally {
+      if (previous) Object.defineProperty(doc, "createSvg", { configurable: true, writable: true, value: previous });
+      else Reflect.deleteProperty(doc, "createSvg");
+    }
+  });
 });

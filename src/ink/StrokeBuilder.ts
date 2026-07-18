@@ -22,6 +22,16 @@ export class StrokeBuilder {
     return this.options.id;
   }
 
+  /** Spawn-time style — live preview must not follow later toolbar color/tool changes. */
+  get style(): Pick<StrokeBuilderOptions, "tool" | "color" | "width" | "opacity"> {
+    return {
+      tool: this.options.tool,
+      color: this.options.color,
+      width: this.options.width,
+      opacity: this.options.opacity
+    };
+  }
+
   add(point: PdfPoint): void {
     if (![point.x, point.y, point.pressure, point.time].every(Number.isFinite)) throw new TypeError("Invalid stroke point");
     this.points.push({ ...point, pressure: Math.max(0, Math.min(1, point.pressure)) });

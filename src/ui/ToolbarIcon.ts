@@ -1,3 +1,4 @@
+import { createDetachedSpan, createDetachedSvg } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
 export type ToolbarIcon = "pen" | "pencil" | "highlighter" | "text" | "eraser" | "palette" | "lasso" | "laser" | "undo" | "redo" | "more" | "save" | "chevron";
 
@@ -30,7 +31,7 @@ const PATHS: Record<ToolbarIcon, readonly string[]> = {
 };
 
 export function setToolbarColorSwatch(element: HTMLElement, color: string): void {
-  const swatch = element.ownerDocument.createSpan();
+  const swatch = createDetachedSpan(element.ownerDocument);
   swatch.className = "native-pdf-handwriting-color-icon";
   setElementCssProps(swatch, { "background-color": color });
   swatch.setAttribute("aria-hidden", "true");
@@ -38,7 +39,7 @@ export function setToolbarColorSwatch(element: HTMLElement, color: string): void
 }
 
 export function setToolbarIcon(element: HTMLElement, icon: ToolbarIcon): void {
-  const svg = element.ownerDocument.createSvg('svg');
+  const svg = createDetachedSvg(element.ownerDocument, "svg");
   svg.classList.add("native-pdf-handwriting-toolbar-icon");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
@@ -48,7 +49,7 @@ export function setToolbarIcon(element: HTMLElement, icon: ToolbarIcon): void {
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
   for (const data of PATHS[icon]) {
-    const path = element.ownerDocument.createSvg('path');
+    const path = createDetachedSvg(element.ownerDocument, "path");
     path.setAttribute("d", data);
     svg.append(path);
   }

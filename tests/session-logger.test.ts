@@ -199,4 +199,26 @@ describe("SessionLogger", () => {
     expect(writes[0]?.payload).toMatchObject({ geometry: { width: 240 } });
     expect((writes[0]?.payload.geometry as Record<string, unknown> | undefined)?.text).toBeUndefined();
   });
+
+  it("samples high-frequency text-tool phases to avoid vault log floods", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const vaultLog = {
+      write: (_level: string, event: string, payload: Record<string, unknown>) => writes.push({ event, payload })
+    };
+    const logger = new SessionLogger("Notes/example.pdf", vaultLog);
+
+    for (let i = 0; i < 20; i += 1) logger.textTool("render", { annotationId: "t1" });
+    logger.textTool("focus", { annotationId: "t1" });
+
+    const renders = writes.filter((row) => row.payload.phase === "render");
+    expect(renders.length).toBe(3); // 1st + every 10th (10, 20)
+    expect(renders.map((row) => row.payload.sampleN)).toEqual([1, 10, 20]);
+    expect(writes.some((row) => row.payload.phase === "focus")).toBe(true);
+
+    // Boundary clears sample counters so the next burst logs its first event again.
+    writes.length = 0;
+    for (let i = 0; i < 3; i += 1) logger.textTool("selection-snapshot", { annotationId: "t1" });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.payload).toMatchObject({ phase: "selection-snapshot", sampleN: 1 });
+  });
 });

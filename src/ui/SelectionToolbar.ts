@@ -1,3 +1,4 @@
+import { appendToBodyOr, createDetachedDiv, createDetachedEl, createDetachedSpan } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
 export interface SelectionToolbarCallbacks {
   onDelete(): void;
@@ -27,15 +28,15 @@ export class SelectionToolbar {
   private drag: { pointerId: number; offsetX: number; offsetY: number } | null = null;
 
   constructor(callbacks: SelectionToolbarCallbacks, doc: Document = activeDocument) {
-    this.element = doc.createDiv();
+    this.element = createDetachedDiv(doc);
     this.element.className = "native-pdf-handwriting-selection-toolbar";
     this.element.dataset.focusOverlayInternal = "true";
     this.element.setAttribute("role", "toolbar");
     this.element.setAttribute("aria-label", "Selected strokes");
-    this.dragHandle = doc.createSpan();
+    this.dragHandle = createDetachedSpan(doc);
     this.dragHandle.className = "native-pdf-handwriting-selection-toolbar-drag";
     this.dragHandle.setAttribute("aria-label", "Drag selection toolbar");
-    this.count = doc.createSpan();
+    this.count = createDetachedSpan(doc);
     this.count.className = "native-pdf-handwriting-selection-toolbar-count";
     this.dragHandle.append(this.count);
     this.element.append(
@@ -43,7 +44,7 @@ export class SelectionToolbar {
       this.button(doc, "Delete", () => callbacks.onDelete()),
       this.button(doc, "Duplicate", () => callbacks.onDuplicate())
     );
-    const color = doc.createEl('input');
+    const color = createDetachedEl(doc, 'input');
     color.type = "color";
     color.setAttribute("aria-label", "Recolor selected strokes");
     color.addEventListener("input", () => callbacks.onRecolor(color.value), { signal: this.abort.signal });
@@ -61,7 +62,7 @@ export class SelectionToolbar {
 
   bindViewport(viewerRoot: HTMLElement): void {
     this.viewerRoot = viewerRoot;
-    if (!this.element.isConnected) viewerRoot.ownerDocument.body.append(this.element);
+    if (!this.element.isConnected) appendToBodyOr(viewerRoot.ownerDocument, this.element, viewerRoot);
     const signal = this.abort.signal;
     const relayout = () => this.layout();
     // Prefer element targets (AbortSignal) — avoid window/document listeners (plugin unload hygiene).
@@ -164,7 +165,7 @@ export class SelectionToolbar {
   };
 
   private button(doc: Document, label: string, action: () => void): HTMLButtonElement {
-    const button = doc.createEl('button');
+    const button = createDetachedEl(doc, 'button');
     button.type = "button";
     button.textContent = label;
     button.addEventListener("click", action, { signal: this.abort.signal });

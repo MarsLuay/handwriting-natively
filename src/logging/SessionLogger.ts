@@ -79,6 +79,32 @@ export class SessionLogger {
   private mousePanMoveCount = 0;
   private alignMoveCount = 0;
   private shapeResizeMoveCount = 0;
+  private readonly textToolHotCounts = new Map<string, number>();
+  /** High-frequency text phases — sample so vault debug does not flood disk I/O. */
+  private static readonly TEXT_TOOL_HOT_PHASES = new Set([
+    "render",
+    "selectionchange",
+    "selection-snapshot",
+    "render-skipped-active-editor",
+    "beforeinput",
+    "input",
+    "selection",
+    "resize",
+    "compositionupdate"
+  ]);
+  /** Reset hot-phase counters when an editor session boundary is crossed. */
+  private static readonly TEXT_TOOL_BOUNDARY_PHASES = new Set([
+    "focus",
+    "blur",
+    "focus-ready",
+    "editor-open-new",
+    "editor-open-existing",
+    "commit-create",
+    "commit-update",
+    "discard-empty",
+    "delete-empty",
+    "escape"
+  ]);
 
   constructor(
     private readonly documentPath: string,
@@ -236,12 +262,24 @@ export class SessionLogger {
   /**
    * Structured Text-tool diagnostics. Annotation contents never enter logs;
    * use lengths, line counts, geometry, and style flags to diagnose behavior.
+   * Hot phases (render/selection/input) are sampled like ink-align moves.
    */
   textTool(phase: string, details: Record<string, unknown> = {}): void {
+    if (SessionLogger.TEXT_TOOL_BOUNDARY_PHASES.has(phase)) {
+      this.textToolHotCounts.clear();
+    }
+    let sampled: Record<string, unknown> = {};
+    if (SessionLogger.TEXT_TOOL_HOT_PHASES.has(phase)) {
+      const n = (this.textToolHotCounts.get(phase) ?? 0) + 1;
+      this.textToolHotCounts.set(phase, n);
+      if (n !== 1 && n % 10 !== 0) return;
+      sampled = { sampled: true, sampleN: n };
+    }
     this.emit("info", "text tool", {
       document: this.documentPath,
       phase,
-      ...redactTextToolDetails(details)
+      ...redactTextToolDetails(details),
+      ...sampled
     });
   }
 
@@ -408,6 +446,18 @@ export class SessionLogger {
     this.emit("info", "ink zoom composite", {
       document: this.documentPath,
       phase,
+      ...details
+    });
+  }
+
+  /**
+   * Heuristic flash detectors (blank/handoff races). Warn so vault debug log
+   * surfaces them without a dedicated frame-capture metric.
+   */
+  zoomFlashProxy(proxy: string, details: Record<string, unknown> = {}): void {
+    this.emit("warn", "ink zoom flash proxy", {
+      document: this.documentPath,
+      proxy,
       ...details
     });
   }

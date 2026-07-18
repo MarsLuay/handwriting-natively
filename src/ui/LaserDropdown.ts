@@ -1,3 +1,4 @@
+import { createDetachedDiv, createDetachedEl, createDetachedSpan } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
 import type { ToolPreferences } from "../model";
 import type { DropdownOption } from "./DropdownController";
@@ -26,7 +27,7 @@ export function laserWidthOptions(
     label: `${LASER_WIDTH_LABELS[index]} (${value})`,
     active: width === value,
     render: (button) => {
-      const preview = button.ownerDocument.createSpan();
+      const preview = createDetachedSpan(button.ownerDocument);
       preview.className = "native-pdf-handwriting-width-preview";
       setElementCssProps(preview, {
         "--ink-preview-width": `${Math.min(12, value)}px`,
@@ -44,10 +45,10 @@ export function laserMenu(
   onChange: () => void,
   signal: AbortSignal
 ): HTMLElement {
-  const content = ownerDocument.createDiv();
+  const content = createDetachedDiv(ownerDocument);
   content.className = "native-pdf-handwriting-laser-menu";
 
-  const note = ownerDocument.createEl('p');
+  const note = createDetachedEl(ownerDocument, 'p');
   note.className = "native-pdf-handwriting-laser-note";
   note.textContent = "Laser strokes fade away and are never saved.";
   content.append(note);
@@ -70,7 +71,7 @@ export function laserMenu(
     syncWidthChecks();
     onChange();
   })) {
-    const button = ownerDocument.createEl('button');
+    const button = createDetachedEl(ownerDocument, 'button');
     button.type = "button";
     button.className = "native-pdf-handwriting-dropdown-option";
     button.dataset.optionId = option.id;
@@ -91,12 +92,12 @@ export function laserMenu(
     min: number,
     max: number
   ): void => {
-    const label = ownerDocument.createEl('label');
+    const label = createDetachedEl(ownerDocument, 'label');
     label.className = "native-pdf-handwriting-laser-range";
     label.textContent = labelText;
-    const value = ownerDocument.createSpan();
+    const value = createDetachedSpan(ownerDocument);
     value.className = "native-pdf-handwriting-laser-range-value";
-    const input = ownerDocument.createEl('input');
+    const input = createDetachedEl(ownerDocument, 'input');
     input.type = "range";
     input.min = String(min);
     input.max = String(max);
