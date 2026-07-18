@@ -468,13 +468,17 @@ describe("PointerRouter", () => {
     expect(cursor?.style.top).toBe("90px");
     expect(element.classList.contains("native-pdf-handwriting-has-eraser-cursor")).toBe(true);
 
+    element.dispatchEvent(pointer("mouse", 8, { eventType: "pointerdown", clientX: 130, clientY: 90, buttons: 1 }));
+    element.dispatchEvent(pointer("mouse", 8, { eventType: "pointerup", clientX: 130, clientY: 90, buttons: 0 }));
+    expect(cursor?.hidden).toBe(true);
+
     element.dispatchEvent(pointer("touch", 9, { eventType: "pointermove" }));
     expect(cursor?.hidden).toBe(true);
     router.destroy();
     expect(cursor?.isConnected).toBe(false);
   });
 
-  it("shows a small dot cursor for pen, pencil, highlighter, and laser in draw mode", () => {
+  it("does not create the legacy drawing cursor", () => {
     const element = document.createElement("div");
     element.getBoundingClientRect = () => ({
       x: 100, y: 50, left: 100, top: 50, right: 500, bottom: 650,
@@ -489,20 +493,117 @@ describe("PointerRouter", () => {
 
     const hover = pointer("mouse", 8, { eventType: "pointermove", clientX: 130, clientY: 90, buttons: 0 });
     element.dispatchEvent(hover);
-    const cursor = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-draw-cursor");
     expect(hover.defaultPrevented).toBe(false);
-    expect(cursor).toMatchObject({ hidden: false });
-    expect(cursor?.style.width).toBe("6px");
-    expect(cursor?.style.height).toBe("6px");
-    expect(cursor?.style.backgroundColor).toBe("rgb(255, 0, 0)");
-    expect(cursor?.style.left).toBe("130px");
-    expect(cursor?.style.top).toBe("90px");
-    expect(element.classList.contains("native-pdf-handwriting-has-draw-cursor")).toBe(true);
-
-    element.dispatchEvent(pointer("touch", 9, { eventType: "pointermove" }));
-    expect(cursor?.hidden).toBe(true);
+    expect(document.body.querySelector(".native-pdf-handwriting-draw-cursor")).toBeNull();
     router.destroy();
-    expect(cursor?.isConnected).toBe(false);
+  });
+
+  it("shows the active drawing-color cursor while a pen or mouse-reported pen hovers", () => {
+    const element = document.createElement("div");
+    element.getBoundingClientRect = () => ({
+      x: 100, y: 50, left: 100, top: 50, right: 500, bottom: 650,
+      width: 400, height: 600, toJSON: () => ({})
+    });
+    document.body.append(element);
+    let hoverCursorEnabled = true;
+    let strokeCursorEnabled = false;
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      stylusHoverCursorEnabled: () => hoverCursorEnabled,
+      stylusStrokeCursorEnabled: () => strokeCursorEnabled,
+      cursorParent: () => element,
+      drawCursorColor: () => "#ff0000"
+    });
+
+    element.dispatchEvent(pointer("pen", 17, { eventType: "pointermove", clientX: 130, clientY: 90, buttons: 0 }));
+    const hoverCursor = element.querySelector<HTMLElement>(".native-pdf-handwriting-stylus-hover-cursor");
+    expect(hoverCursor).toMatchObject({ hidden: false });
+    expect(hoverCursor?.style.width).toBe("6px");
+    expect(hoverCursor?.style.height).toBe("6px");
+    expect(hoverCursor?.style.getPropertyValue("--native-pdf-handwriting-hover-cursor-color")).toBe("#ff0000");
+    expect(hoverCursor?.style.left).toBe("30px");
+    expect(hoverCursor?.style.top).toBe("40px");
+    router.syncToolState();
+    expect(element.classList.contains("native-pdf-handwriting-has-color-cursor")).toBe(true);
+    expect(hoverCursor?.parentElement).toBe(element);
+    expect(element.style.getPropertyValue("--native-pdf-handwriting-color-cursor")).toContain("data:image/svg+xml");
+
+    document.dispatchEvent(pointer("pen", 19, { eventType: "pointermove", clientX: 150, clientY: 110, buttons: 0 }));
+    expect(hoverCursor).toMatchObject({ hidden: false });
+    expect(hoverCursor?.style.left).toBe("50px");
+    expect(hoverCursor?.style.top).toBe("60px");
+
+    document.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 160, clientY: 120, buttons: 0 }));
+    expect(hoverCursor?.style.left).toBe("60px");
+    expect(hoverCursor?.style.top).toBe("70px");
+
+    document.dispatchEvent(pointer("pen", 20, { eventType: "pointerrawupdate", clientX: 170, clientY: 130, buttons: 0 }));
+    expect(hoverCursor?.style.left).toBe("70px");
+    expect(hoverCursor?.style.top).toBe("80px");
+
+    element.dispatchEvent(pointer("pen", 17, { clientX: 130, clientY: 90, buttons: 1 }));
+    expect(hoverCursor?.hidden).toBe(true);
+
+    document.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 160, clientY: 120, buttons: 0 }));
+    expect(hoverCursor?.hidden).toBe(true);
+
+    strokeCursorEnabled = true;
+  element.dispatchEvent(pointer("pen", 17, { eventType: "pointermove", clientX: 130, clientY: 90, buttons: 1 }));
+    expect(hoverCursor?.hidden).toBe(false);
+
+    element.dispatchEvent(pointer("pen", 17, { eventType: "pointermove", clientX: 130, clientY: 90, buttons: 0 }));
+    expect(hoverCursor?.hidden).toBe(false);
+
+    element.dispatchEvent(pointer("pen", 17, { eventType: "pointerup", clientX: 130, clientY: 90, buttons: 0 }));
+    expect(hoverCursor?.hidden).toBe(true);
+    document.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 130, clientY: 90, buttons: 0 }));
+    expect(hoverCursor?.hidden).toBe(true);
+    element.dispatchEvent(pointer("mouse", 18, { eventType: "pointermove", clientX: 140, clientY: 100, buttons: 0 }));
+    expect(hoverCursor).toMatchObject({ hidden: false });
+    expect(hoverCursor?.style.left).toBe("40px");
+    expect(hoverCursor?.style.top).toBe("50px");
+
+    hoverCursorEnabled = false;
+  strokeCursorEnabled = false;
+    router.syncToolState();
+    expect(hoverCursor?.hidden).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-has-color-cursor")).toBe(false);
+    router.destroy();
+  });
+
+  it("keeps the native cursor visible when the host disables custom cursor hiding", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      stylusHoverCursorEnabled: () => true,
+      hideNativeCursor: () => false
+    });
+
+    element.dispatchEvent(pointer("pen", 18, { eventType: "pointermove", buttons: 0 }));
+    expect(element.classList.contains("native-pdf-handwriting-has-stylus-hover-cursor")).toBe(false);
+    const hoverCursor = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-stylus-hover-cursor");
+    expect(hoverCursor?.classList.contains("is-native-pointer-visible")).toBe(true);
+    expect(hoverCursor?.style.width).toBe("22px");
+    expect(hoverCursor?.style.height).toBe("22px");
+    router.destroy();
+  });
+
+  it("hides the native cursor while an enabled color marker is visible", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      stylusHoverCursorEnabled: () => true,
+      hideNativeCursor: () => true
+    });
+
+    element.dispatchEvent(pointer("mouse", 18, { eventType: "pointerover", buttons: 0 }));
+    expect(element.classList.contains("native-pdf-handwriting-has-stylus-hover-cursor")).toBe(true);
+    router.destroy();
   });
 
   it("routes laser pointer freehand as draw when Draw is on", () => {

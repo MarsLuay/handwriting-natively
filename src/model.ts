@@ -126,6 +126,8 @@ export interface PluginSettings extends TouchNavigationSettings {
   simplifyStrokes: boolean;
   holdToStraighten: boolean;
   hideStylusAnnotationLabel: boolean;
+  showStylusHoverCursor: boolean;
+  showStylusStrokeCursor: boolean;
   toolbarPlacement: ToolbarPlacement;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
@@ -152,6 +154,8 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   simplifyStrokes: true,
   holdToStraighten: false,
   hideStylusAnnotationLabel: false,
+  showStylusHoverCursor: false,
+  showStylusStrokeCursor: false,
   toolbarPlacement: "main",
   vaultDebugLog: false,
   vaultDebugLogPath: `${root}/plugins/${PLUGIN_ID}/debug.log`,
@@ -253,6 +257,8 @@ export function mergeSettings(
       : defaults.singleTouchMode,
     twoFingerPinchZoom: cleaned.twoFingerPinchZoom !== false,
     twoFingerSwipeScroll: cleaned.twoFingerSwipeScroll !== false,
+    showStylusHoverCursor: cleaned.showStylusHoverCursor === true,
+    showStylusStrokeCursor: cleaned.showStylusStrokeCursor === true,
     toolPreferences: {
       ...defaults.toolPreferences,
       ...savedToolPreferences,

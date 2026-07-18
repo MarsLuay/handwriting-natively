@@ -24,6 +24,16 @@ describe("sidecar storage", () => {
     expect(() => parseSidecar("{}")) .toThrow("invalid sidecar");
   });
 
+  it("quarantines malformed sidecars so a PDF session can still attach", async () => {
+    const files = new MemoryFiles();
+    files.data.set("annotations/doc.json", "{ invalid");
+    const repository = new SidecarRepository(files, "annotations");
+
+    await expect(repository.load("doc")).resolves.toBeNull();
+    expect(files.data.has("annotations/doc.json")).toBe(false);
+    expect([...files.data.keys()]).toContainEqual(expect.stringMatching(/^annotations\/doc\.json\.corrupt-\d+$/));
+  });
+
   it("migrates v0 pages to schema v1 with default rotation", () => {
     const migrated = new MigrationManager().migrate({ version: 0, pdf: { id: "doc", path: "a.pdf" }, pages: [{ page: 1, width: 100, height: 200, strokes: [stroke] }] }, "now");
     expect(migrated.schemaVersion).toBe(1);

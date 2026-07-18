@@ -22,7 +22,13 @@ export class SidecarRepository {
   async load(documentId: string): Promise<SidecarSchemaV1 | null> {
     const path = this.pathFor(documentId);
     if (!await this.files.exists(path)) return null;
-    return this.migration.migrate(await this.files.read(path));
+    try {
+      return this.migration.migrate(await this.files.read(path));
+    } catch (error) {
+      if (!this.files.rename) throw error;
+      await this.files.rename(path, `${path}.corrupt-${Date.now()}`);
+      return null;
+    }
   }
 
   async save(sidecar: SidecarSchemaV1): Promise<void> {

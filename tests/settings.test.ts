@@ -83,6 +83,16 @@ describe("safe defaults", () => {
     expect(mergeSettings({ hideStylusAnnotationLabel: true }).hideStylusAnnotationLabel).toBe(true);
   });
 
+  it("keeps the stylus hover cursor off until explicitly enabled", () => {
+    expect(DEFAULT_SETTINGS.showStylusHoverCursor).toBe(false);
+    expect(mergeSettings({ showStylusHoverCursor: true }).showStylusHoverCursor).toBe(true);
+  });
+
+  it("keeps the stroke color marker off until explicitly enabled", () => {
+    expect(DEFAULT_SETTINGS.showStylusStrokeCursor).toBe(false);
+    expect(mergeSettings({ showStylusStrokeCursor: true }).showStylusStrokeCursor).toBe(true);
+  });
+
   it("keeps vault debug log off by default", () => {
     expect(DEFAULT_SETTINGS.vaultDebugLog).toBe(false);
     expect(DEFAULT_SETTINGS.vaultDebugLogPath).toBe(

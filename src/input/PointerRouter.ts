@@ -45,7 +45,10 @@ export interface PointerRouterCallbacks {
   twoFingerSwipeScrollEnabled?(): boolean;
   scrollRoot?(): HTMLElement | null;
   cursorParent?(): HTMLElement;
+  hideNativeCursor?(): boolean;
   eraserCursorDiameter?(): number;
+  stylusHoverCursorEnabled?(): boolean;
+  stylusStrokeCursorEnabled?(): boolean;
   drawCursorColor?(): string;
   projectCursor?(clientX: number, clientY: number): { x: number; y: number } | null;
   onStart?(samples: PointerSample[], route: "draw" | "edit", event: PointerEvent): void;
@@ -59,19 +62,25 @@ export interface PointerRouterCallbacks {
 }
 
 export class PointerRouter {
-  private static readonly DRAW_CURSOR_SIZE_PX = 6;
+  private static readonly STYLUS_HOVER_CURSOR_SIZE_PX = 6;
+  private static readonly NATIVE_POINTER_HOVER_RING_SIZE_PX = 22;
+  private static readonly HOVER_RESUME_DISTANCE_PX = 3;
+  private static readonly HOVER_RESUME_DELAY_MS = 400;
 
   private readonly routed = new Map<number, "draw" | "edit">();
   private readonly routedTouches = new Set<number>();
   private readonly consumedTouches = new Set<number>();
   private readonly stylusEraserPointers = new Set<number>();
+  private readonly contactPointers = new Set<number>();
   private readonly panning = new Map<number, PanGesture>();
   private readonly touches = new Set<number>();
   private readonly palmPolicy: PalmRejectionPolicy;
   private readonly abort = new AbortController();
   private readonly eraserCursor: HTMLElement;
-  private readonly drawCursor: HTMLElement;
-  private lastCursorClient: { x: number; y: number } | null = null;
+  private readonly stylusHoverCursor: HTMLElement;
+  private lastCursor: { clientX: number; clientY: number; pointerId: number; pointerType: string; buttons: number } | null = null;
+  private hoverResumePoint: { x: number; y: number } | null = null;
+  private hoverResumeAfter = 0;
   private pinchDistance: number | null = null;
   private pinchCenter: { x: number; y: number } | null = null;
   private twoFingerGesture: "pinch" | "pan" | null = null;
@@ -87,18 +96,28 @@ export class PointerRouter {
     this.eraserCursor.className = "native-pdf-handwriting-eraser-cursor";
     this.eraserCursor.setAttribute("aria-hidden", "true");
     this.eraserCursor.hidden = true;
-    this.drawCursor = element.ownerDocument.createElement("span");
-    this.drawCursor.className = "native-pdf-handwriting-draw-cursor";
-    this.drawCursor.setAttribute("aria-hidden", "true");
-    this.drawCursor.hidden = true;
-    element.ownerDocument.body.append(this.eraserCursor, this.drawCursor);
+    this.stylusHoverCursor = element.ownerDocument.createElement("span");
+    this.stylusHoverCursor.className = "native-pdf-handwriting-stylus-hover-cursor";
+    this.stylusHoverCursor.setAttribute("aria-hidden", "true");
+    this.stylusHoverCursor.hidden = true;
+    element.ownerDocument.body.append(this.eraserCursor);
+    (this.callbacks.cursorParent?.() ?? element.ownerDocument.body).append(this.stylusHoverCursor);
     const options = { capture: true, signal: this.abort.signal, passive: false };
     element.addEventListener("pointerdown", this.routePointerEvent, options);
     element.addEventListener("pointermove", this.routePointerEvent, options);
     element.addEventListener("pointerup", this.routePointerEvent, options);
     element.addEventListener("pointercancel", this.routePointerEvent, options);
+    element.addEventListener("pointerover", this.updateHoverCursor, options);
+    element.addEventListener("pointerenter", this.updateHoverCursor, options);
+    element.addEventListener("pointerrawupdate", this.updateHoverCursor, options);
     element.addEventListener("contextmenu", this.suppressRightMouseEraserMenu, options);
     element.addEventListener("pointerleave", this.hideCustomCursors, options);
+    const documentHoverOptions = { capture: true, signal: this.abort.signal, passive: true };
+    element.ownerDocument.addEventListener("pointermove", this.updateDocumentHoverCursor, documentHoverOptions);
+    element.ownerDocument.addEventListener("pointerover", this.updateDocumentHoverCursor, documentHoverOptions);
+    element.ownerDocument.addEventListener("pointerrawupdate", this.updateDocumentHoverCursor, documentHoverOptions);
+    element.ownerDocument.addEventListener("mousemove", this.updateDocumentHoverCursor, documentHoverOptions);
+    element.ownerDocument.addEventListener("mouseover", this.updateDocumentHoverCursor, documentHoverOptions);
     const touchOptions = { signal: this.abort.signal, passive: false };
     gestureTarget.addEventListener("touchstart", this.suppressTouchGestures, touchOptions);
     gestureTarget.addEventListener("touchmove", this.suppressTouchGestures, touchOptions);
@@ -111,6 +130,10 @@ export class PointerRouter {
     else if (event.type === "pointermove") this.handleMove(event);
     else if (event.type === "pointerup") this.handleEnd(event);
     else if (event.type === "pointercancel") this.handleCancel(event);
+  }
+
+  observeHover(event: Pick<PointerEvent, "clientX" | "clientY" | "pointerId" | "pointerType" | "buttons">): void {
+    this.updateCustomCursors(event);
   }
 
   classify(event: PointerEvent): PointerRoute {
@@ -144,6 +167,25 @@ export class PointerRouter {
     this.routePointer(event as PointerEvent);
   };
 
+  private readonly updateHoverCursor = (event: Event): void => {
+    this.updateCustomCursors(event as PointerEvent);
+  };
+
+  private readonly updateDocumentHoverCursor = (event: Event): void => {
+    const pointer = event as PointerEvent;
+    if (!this.containsClientPoint(pointer.clientX, pointer.clientY)) {
+      this.hideStylusHoverCursor();
+      return;
+    }
+    this.updateCustomCursors({
+      clientX: pointer.clientX,
+      clientY: pointer.clientY,
+      pointerId: pointer.pointerId || -1,
+      pointerType: pointer.pointerType || "mouse",
+      buttons: pointer.buttons ?? 0
+    });
+  };
+
   private readonly suppressRightMouseEraserMenu = (event: Event): void => {
     const mouse = event as MouseEvent;
     if (!this.callbacks.drawingEnabled() || !this.callbacks.rightMouseEraserEnabled?.() || mouse.button !== 2) return;
@@ -156,6 +198,9 @@ export class PointerRouter {
     if (isTextInputTarget(event.target)) return;
     this.suppressPenGestures(event);
     if (isAnnotationChromeTarget(event.target)) return;
+    this.hoverResumePoint = null;
+    this.hoverResumeAfter = 0;
+    this.contactPointers.add(event.pointerId);
     if (this.callbacks.drawingEnabled() && isStylusEraserInput(event)) {
       this.stylusEraserPointers.add(event.pointerId);
       this.callbacks.onStylusEraser?.();
@@ -202,6 +247,7 @@ export class PointerRouter {
     if (event.pointerType === "touch") this.routedTouches.add(event.pointerId);
     event.preventDefault();
     this.element.setPointerCapture?.(event.pointerId);
+    this.updateStylusHoverCursor(event);
     this.callbacks.onStart?.(PointerCapabilities.samples(event), route, event);
   };
 
@@ -241,7 +287,12 @@ export class PointerRouter {
     this.finishMousePan(event);
     this.touches.delete(event.pointerId);
     this.palmPolicy.pointerUp(event);
+    this.contactPointers.delete(event.pointerId);
+    this.hideEraserCursor();
     if (this.stylusEraserPointers.delete(event.pointerId)) this.callbacks.onStylusEraserEnd?.();
+    this.hoverResumePoint = { x: event.clientX, y: event.clientY };
+    this.hoverResumeAfter = performance.now() + PointerRouter.HOVER_RESUME_DELAY_MS;
+    this.hideStylusHoverCursor();
   };
 
   private readonly handleCancel = (event: PointerEvent): void => {
@@ -262,27 +313,29 @@ export class PointerRouter {
     this.finishMousePan(event);
     this.touches.delete(event.pointerId);
     this.palmPolicy.pointerUp(event);
+    this.contactPointers.delete(event.pointerId);
     if (this.stylusEraserPointers.delete(event.pointerId)) this.callbacks.onStylusEraserEnd?.();
+    this.hoverResumePoint = { x: event.clientX, y: event.clientY };
+    this.hoverResumeAfter = performance.now() + PointerRouter.HOVER_RESUME_DELAY_MS;
     this.hideCustomCursors();
   };
 
   syncToolState(): void {
     if (!this.callbacks.drawingEnabled()) {
       this.hideCustomCursors();
+      this.syncColorCursor();
       return;
     }
     const tool = this.callbacks.activeTool();
     if (tool !== "eraser") this.hideEraserCursor();
-    if (!isInkDrawTool(tool)) this.hideDrawCursor();
+    this.syncColorCursor();
     this.refreshCursors();
   }
 
   refreshCursors(): void {
-    if (!this.lastCursorClient || !this.callbacks.drawingEnabled()) return;
-    const { x, y } = this.lastCursorClient;
-    const tool = this.callbacks.activeTool();
-    if (tool === "eraser" && !this.eraserCursor.hidden) this.paintEraserCursor(x, y);
-    if (isInkDrawTool(tool) && !this.drawCursor.hidden) this.paintDrawCursor(x, y);
+    if (!this.lastCursor || !this.callbacks.drawingEnabled()) return;
+    this.updateStylusHoverCursor(this.lastCursor);
+    this.updateEraserCursor(this.lastCursor);
   }
 
   private stylusRoute(tool: ToolId): PointerRoute {
@@ -308,6 +361,11 @@ export class PointerRouter {
 
   private cursorClientPoint(clientX: number, clientY: number): { x: number; y: number } {
     return this.callbacks.projectCursor?.(clientX, clientY) ?? { x: clientX, y: clientY };
+  }
+
+  private containsClientPoint(clientX: number, clientY: number): boolean {
+    const bounds = this.element.getBoundingClientRect();
+    return clientX >= bounds.left && clientX <= bounds.right && clientY >= bounds.top && clientY <= bounds.bottom;
   }
 
   private suppressPenGestures(event: PointerEvent): void {
@@ -376,15 +434,16 @@ export class PointerRouter {
     this.routed.clear();
     this.routedTouches.clear();
     this.stylusEraserPointers.clear();
+    this.contactPointers.clear();
     this.panning.clear();
     this.touches.clear();
     this.pinchCenter = null;
     this.twoFingerGesture = null;
     this.palmPolicy.reset();
     this.abort.abort();
-    this.element.classList.remove("native-pdf-handwriting-has-eraser-cursor", "native-pdf-handwriting-has-draw-cursor", "native-pdf-handwriting-panning");
+    this.element.classList.remove("native-pdf-handwriting-has-eraser-cursor", "native-pdf-handwriting-panning");
     this.eraserCursor.remove();
-    this.drawCursor.remove();
+    this.stylusHoverCursor.remove();
   }
 
   private updateMousePan(event: PointerEvent, pan: PanGesture): void {
@@ -437,43 +496,90 @@ export class PointerRouter {
     if (!this.panning.size) this.element.classList.remove("native-pdf-handwriting-panning");
   }
 
-  private updateCustomCursors(event: PointerEvent): void {
-    this.lastCursorClient = { x: event.clientX, y: event.clientY };
-    this.updateDrawCursor(event);
+  private updateCustomCursors(event: Pick<PointerEvent, "clientX" | "clientY" | "pointerId" | "pointerType" | "buttons">): void {
+    this.lastCursor = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      buttons: event.buttons
+    };
+    this.updateStylusHoverCursor(this.lastCursor);
     this.updateEraserCursor(event);
   }
 
-  private updateDrawCursor(event: PointerEvent): void {
-    if (event.pointerType !== "mouse" && event.pointerType !== "pen") {
-      this.hideDrawCursor();
+  private syncColorCursor(): void {
+    const enabled = this.callbacks.drawingEnabled()
+      && (this.callbacks.stylusHoverCursorEnabled?.() === true || this.callbacks.stylusStrokeCursorEnabled?.() === true);
+    if (!enabled) {
+      this.element.classList.remove("native-pdf-handwriting-has-color-cursor");
+      this.element.style.removeProperty("--native-pdf-handwriting-color-cursor");
       return;
     }
-    this.paintDrawCursor(event.clientX, event.clientY);
+    this.element.style.setProperty(
+      "--native-pdf-handwriting-color-cursor",
+      colorCursorCss(this.callbacks.drawCursorColor?.())
+    );
+    this.element.classList.add("native-pdf-handwriting-has-color-cursor");
   }
 
-  private paintDrawCursor(clientX: number, clientY: number): void {
-    const tool = this.callbacks.activeTool();
-    const visible = this.callbacks.drawingEnabled()
-      && isInkDrawTool(tool);
-    if (!visible) {
-      this.hideDrawCursor();
+  private updateStylusHoverCursor(event: Pick<PointerEvent, "clientX" | "clientY" | "pointerId" | "pointerType" | "buttons">): void {
+    if (!this.isStylusHover(event)) {
+      this.hideStylusHoverCursor();
       return;
     }
-    const size = PointerRouter.DRAW_CURSOR_SIZE_PX;
+    if (this.shouldHoldHoverAtStrokeEndpoint(event)) {
+      this.hideStylusHoverCursor();
+      return;
+    }
+    const point = this.cursorPointInParent(event.clientX, event.clientY, this.stylusHoverCursor.parentElement);
     const color = this.callbacks.drawCursorColor?.();
-    const point = this.cursorClientPoint(clientX, clientY);
-    setElementCssProps(this.drawCursor, {
-      width: `${size}px`,
-      height: `${size}px`,
-      left: `${point.x}px`,
-      top: `${point.y}px`,
-      "background-color": color ?? ""
-    });
-    this.drawCursor.hidden = false;
-    this.element.classList.add("native-pdf-handwriting-has-draw-cursor");
+    const nativePointerVisible = this.callbacks.hideNativeCursor?.() === false;
+    const size = nativePointerVisible
+      ? PointerRouter.NATIVE_POINTER_HOVER_RING_SIZE_PX
+      : PointerRouter.STYLUS_HOVER_CURSOR_SIZE_PX;
+    this.stylusHoverCursor.classList.toggle("is-native-pointer-visible", nativePointerVisible);
+    this.stylusHoverCursor.style.width = `${size}px`;
+    this.stylusHoverCursor.style.height = `${size}px`;
+    this.stylusHoverCursor.style.left = `${point.x}px`;
+    this.stylusHoverCursor.style.top = `${point.y}px`;
+    this.stylusHoverCursor.style.setProperty("--native-pdf-handwriting-hover-cursor-color", color ?? "var(--text-normal, #111827)");
+    this.stylusHoverCursor.hidden = false;
+    if (this.callbacks.hideNativeCursor?.() !== false) {
+      this.element.classList.add("native-pdf-handwriting-has-stylus-hover-cursor");
+    }
   }
 
-  private updateEraserCursor(event: PointerEvent): void {
+  private isStylusHover(event: Pick<PointerEvent, "pointerId" | "pointerType" | "buttons">): boolean {
+    const hovering = this.callbacks.stylusHoverCursorEnabled?.() === true
+      && event.pointerType !== "touch"
+      && this.contactPointers.size === 0
+      && event.buttons === 0;
+    const drawing = this.callbacks.stylusStrokeCursorEnabled?.() === true
+      && event.pointerType !== "touch"
+      && this.routed.get(event.pointerId) === "draw";
+    return hovering || drawing;
+  }
+
+  private shouldHoldHoverAtStrokeEndpoint(event: Pick<PointerEvent, "clientX" | "clientY" | "pointerId">): boolean {
+    if (!this.hoverResumePoint || this.routed.get(event.pointerId) === "draw") return false;
+    const distance = Math.hypot(event.clientX - this.hoverResumePoint.x, event.clientY - this.hoverResumePoint.y);
+    if (distance >= PointerRouter.HOVER_RESUME_DISTANCE_PX || performance.now() >= this.hoverResumeAfter) {
+      this.hoverResumePoint = null;
+      this.hoverResumeAfter = 0;
+      return false;
+    }
+    return true;
+  }
+
+  private cursorPointInParent(clientX: number, clientY: number, parent: HTMLElement | null): { x: number; y: number } {
+    const point = this.cursorClientPoint(clientX, clientY);
+    if (!parent || parent === parent.ownerDocument.body) return point;
+    const bounds = parent.getBoundingClientRect();
+    return { x: point.x - bounds.left, y: point.y - bounds.top };
+  }
+
+  private updateEraserCursor(event: Pick<PointerEvent, "clientX" | "clientY" | "pointerType">): void {
     if (event.pointerType !== "mouse" && event.pointerType !== "pen") {
       this.hideEraserCursor();
       return;
@@ -497,17 +603,19 @@ export class PointerRouter {
       top: `${point.y}px`
     });
     this.eraserCursor.hidden = false;
-    this.element.classList.add("native-pdf-handwriting-has-eraser-cursor");
+    if (this.callbacks.hideNativeCursor?.() !== false) {
+      this.element.classList.add("native-pdf-handwriting-has-eraser-cursor");
+    }
   }
-
-  private readonly hideDrawCursor = (): void => {
-    this.drawCursor.hidden = true;
-    this.element.classList.remove("native-pdf-handwriting-has-draw-cursor");
-  };
 
   private readonly hideCustomCursors = (): void => {
     this.hideEraserCursor();
-    this.hideDrawCursor();
+    this.hideStylusHoverCursor();
+  };
+
+  private readonly hideStylusHoverCursor = (): void => {
+    this.stylusHoverCursor.hidden = true;
+    this.element.classList.remove("native-pdf-handwriting-has-stylus-hover-cursor");
   };
 
   private readonly hideEraserCursor = (): void => {
@@ -522,6 +630,12 @@ function targetLabel(target: EventTarget | null): string {
   const tag = target.tagName.toLowerCase();
   const classes = [...target.classList].slice(0, 3).join(".");
   return classes ? `${tag}.${classes}` : tag;
+}
+
+function colorCursorCss(color: string | undefined): string {
+  const fill = /^#[0-9a-f]{3,8}$/i.test(color ?? "") ? color! : "#111827";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5" fill="${fill}" stroke="white" stroke-width="1.5"/></svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 8 8, crosshair`;
 }
 
 function scrollRootLabel(root: HTMLElement): string {

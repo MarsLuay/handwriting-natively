@@ -184,6 +184,24 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Show stylus hover cursor")
+      .setDesc("Show a small dot in the active drawing color while the stylus hovers above a PDF page without drawing.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.settings.showStylusHoverCursor).onChange(async (value) => {
+          await this.persistPatch({ showStylusHoverCursor: value });
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show color marker while drawing")
+      .setDesc("Show a small dot in the active drawing color at the pen or mouse tip while drawing a stroke.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.settings.showStylusStrokeCursor).onChange(async (value) => {
+          await this.persistPatch({ showStylusStrokeCursor: value });
+        })
+      );
+
+    new Setting(containerEl)
       .setName("Retry failed autosaves")
       .setDesc("Try saving again after an automatic save fails.")
       .addToggle((toggle) =>

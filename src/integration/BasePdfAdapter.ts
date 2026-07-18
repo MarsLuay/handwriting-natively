@@ -529,7 +529,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     if (element.classList.contains("native-pdf-handwriting-canvas")) return true;
     if (element.classList.contains("native-pdf-handwriting-selection-toolbar")) return true;
     if (element.classList.contains("native-pdf-handwriting-eraser-cursor")) return true;
-    if (element.classList.contains("native-pdf-handwriting-draw-cursor")) return true;
+    if (element.classList.contains("native-pdf-handwriting-stylus-hover-cursor")) return true;
     if (element.classList.contains("native-pdf-handwriting-toolbar")) return true;
     if (element.classList.contains("native-pdf-handwriting-rail")) return true;
     if (element.classList.contains("native-pdf-handwriting-chrome")) return true;

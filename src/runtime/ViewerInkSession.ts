@@ -156,6 +156,8 @@ export class ViewerInkSession {
   private moveTextPreview: PdfTextAnnotation[] | null = null;
   private moveShapePreview: SelectionShape | null = null;
   private drawEnabled = true;
+  private stylusHoverCursorVisible: boolean;
+  private stylusStrokeCursorVisible: boolean;
   private debugState: DebugState = {};
   private destroyed = false;
   private detachNotified = false;
@@ -194,6 +196,8 @@ export class ViewerInkSession {
   private constructor(private readonly options: ViewerInkSessionOptions) {
     this.identity = createDocumentIdentity({ vaultPath: options.pdfPath });
     this.logger = new SessionLogger(options.pdfPath, options.vaultLog);
+    this.stylusHoverCursorVisible = options.settings.showStylusHoverCursor;
+    this.stylusStrokeCursorVisible = options.settings.showStylusStrokeCursor;
     this.toolbar = new AnnotationToolbar({
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
@@ -295,6 +299,29 @@ export class ViewerInkSession {
     const options = { capture: true, signal: this.pointerProbeAbort.signal };
     let wheelPinchCount = 0;
     let lastWheelLogAt = 0;
+    let lastHoverLogAt = 0;
+    const probeHover = (source: string, event: Event): void => {
+      const pointer = event as PointerEvent;
+      const pointerType = pointer.pointerType || "mouse";
+      if (pointerType === "touch" || pointer.buttons !== 0 || !within(pointer.target)) return;
+      const now = performance.now();
+      if (now - lastHoverLogAt < 250) return;
+      lastHoverLogAt = now;
+      this.logger.pointerSeen({
+        source,
+        pointerType,
+        pointerId: pointer.pointerId ?? null,
+        buttons: pointer.buttons ?? 0,
+        pressure: pointer.pressure ?? null,
+        clientX: Math.round(pointer.clientX),
+        clientY: Math.round(pointer.clientY),
+        within: true,
+        target: targetLabel(pointer.target)
+      });
+    };
+    for (const source of ["pointerover", "pointermove", "pointerrawupdate", "mouseover", "mousemove"] as const) {
+      doc.addEventListener(source, (event) => probeHover(source, event), { ...options, passive: true });
+    }
     const within = (target: EventTarget | null): boolean => {
       if (!(target instanceof Element)) return false;
       return adapter.host.contains(target) || adapter.root.contains(target);
@@ -315,11 +342,29 @@ export class ViewerInkSession {
       pointer.stopImmediatePropagation();
       surface.router.routePointer(pointer);
     };
+    const routeHoverFromWindow = (event: Event): void => {
+      const pointer = event as PointerEvent;
+      const pointerType = pointer.pointerType || "mouse";
+      if (pointerType === "touch" || pointer.buttons !== 0) return;
+      const surface = this.surfaceForPointerTarget(pointer.target)
+        ?? this.surfaceAtClientPoint(pointer.clientX, pointer.clientY);
+      surface?.router?.observeHover({
+        clientX: pointer.clientX,
+        clientY: pointer.clientY,
+        pointerId: pointer.pointerId || -1,
+        pointerType,
+        buttons: pointer.buttons ?? 0
+      });
+    };
     const win = doc.defaultView;
     if (win) {
       const penOptions = { capture: true, passive: false, signal: this.pointerProbeAbort.signal };
       for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
         win.addEventListener(type, routeDrawModePen, penOptions);
+      }
+      const hoverOptions = { capture: true, passive: true, signal: this.pointerProbeAbort.signal };
+      for (const type of ["pointerover", "pointermove", "pointerrawupdate", "mouseover", "mousemove"] as const) {
+        win.addEventListener(type, routeHoverFromWindow, hoverOptions);
       }
     }
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
@@ -403,6 +448,16 @@ export class ViewerInkSession {
     if (!(target instanceof Element)) return null;
     for (const surface of this.surfaces.values()) {
       if (surface.page.element.contains(target)) return surface;
+    }
+    return null;
+  }
+
+  private surfaceAtClientPoint(clientX: number, clientY: number): PageSurface | null {
+    for (const surface of this.surfaces.values()) {
+      const bounds = surface.page.element.getBoundingClientRect();
+      if (clientX >= bounds.left && clientX <= bounds.right && clientY >= bounds.top && clientY <= bounds.bottom) {
+        return surface;
+      }
     }
     return null;
   }
@@ -1118,9 +1173,21 @@ export class ViewerInkSession {
   private syncAnnotationCursorMode(enabled = this.drawEnabled): void {
     const tool = this.options.settings.toolPreferences.activeTool;
     const hideNativeCursor = enabled
-      && (isDrawingTool(tool) || tool === "laser" || tool === "eraser");
+      && (isDrawingTool(tool) || tool === "laser" || tool === "eraser")
+      && this.shouldHideNativeCursor();
     this.options.adapter.root.classList.toggle("native-pdf-handwriting-draw-active", enabled);
     this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
+  }
+
+  private shouldHideNativeCursor(): boolean {
+    const userAgent = this.options.adapter.host.ownerDocument.defaultView?.navigator.userAgent ?? "";
+    return !/android/i.test(userAgent);
+  }
+
+  private shouldHideNativeCursorForCustomMarker(): boolean {
+    return this.shouldHideNativeCursor()
+      || this.stylusHoverCursorVisible
+      || this.stylusStrokeCursorVisible;
   }
 
   private activeDrawingTool(): DrawingTool {
@@ -1215,7 +1282,10 @@ export class ViewerInkSession {
       twoFingerSwipeScrollEnabled: () => this.touchNavigationSettings().twoFingerSwipeScroll,
       scrollRoot: () => null,
       cursorParent: () => surface.overlay,
+      hideNativeCursor: () => this.shouldHideNativeCursorForCustomMarker(),
       eraserCursorDiameter: () => this.options.settings.toolPreferences.eraser.size * this.displayScale(surface),
+      stylusHoverCursorEnabled: () => this.stylusHoverCursorVisible,
+      stylusStrokeCursorEnabled: () => this.stylusStrokeCursorVisible,
       drawCursorColor: () => {
         const preferences = this.options.settings.toolPreferences;
         return preferences.activeTool === "laser"
@@ -3536,6 +3606,16 @@ export class ViewerInkSession {
     for (const surface of this.surfaces.values()) {
       this.setCanvasAccessibilityLabel(surface.canvas, surface.page.pageNumber, hidden);
     }
+  }
+
+  setStylusHoverCursorVisible(visible: boolean): void {
+    this.stylusHoverCursorVisible = visible;
+    for (const surface of this.surfaces.values()) surface.router?.syncToolState();
+  }
+
+  setStylusStrokeCursorVisible(visible: boolean): void {
+    this.stylusStrokeCursorVisible = visible;
+    for (const surface of this.surfaces.values()) surface.router?.syncToolState();
   }
 
   setHoldToStraighten(enabled: boolean): void {

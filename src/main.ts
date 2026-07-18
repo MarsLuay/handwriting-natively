@@ -211,6 +211,8 @@ export default class NativePdfInkPlugin extends Plugin {
   async saveSettings(settings: PluginSettings): Promise<void> {
     const previousPlacement = this.settings.toolbarPlacement;
     const previousStylusAnnotationLabel = this.settings.hideStylusAnnotationLabel;
+    const previousStylusHoverCursor = this.settings.showStylusHoverCursor;
+    const previousStylusStrokeCursor = this.settings.showStylusStrokeCursor;
     const previousHoldToStraighten = this.settings.holdToStraighten;
     const previousSkipTextCancelConfirmation = this.settings.skipTextCancelConfirmation;
     const previousTextEscapeAction = this.settings.textEscapeAction;
@@ -221,6 +223,12 @@ export default class NativePdfInkPlugin extends Plugin {
     }
     if (previousStylusAnnotationLabel !== settings.hideStylusAnnotationLabel) {
       for (const session of this.allSessions()) session.setStylusAnnotationLabelHidden(settings.hideStylusAnnotationLabel);
+    }
+    if (previousStylusHoverCursor !== settings.showStylusHoverCursor) {
+      for (const session of this.allSessions()) session.setStylusHoverCursorVisible(settings.showStylusHoverCursor);
+    }
+    if (previousStylusStrokeCursor !== settings.showStylusStrokeCursor) {
+      for (const session of this.allSessions()) session.setStylusStrokeCursorVisible(settings.showStylusStrokeCursor);
     }
     if (previousHoldToStraighten !== settings.holdToStraighten) {
       for (const session of this.allSessions()) session.setHoldToStraighten(settings.holdToStraighten);

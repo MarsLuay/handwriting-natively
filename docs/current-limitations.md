@@ -10,6 +10,7 @@ First pass proves architecture and direct-view annotation path. Runtime compatib
 - Lasso resize and clipboard behavior are initial implementations and need large-document profiling.
 - OCR and handwriting recognition are intentionally absent.
 - MacBook Force Touch trackpad pressure is not available in Obsidian (Electron); stylus pressure works when the OS exposes it.
+- Android mouse hover is rendered as a plugin-owned color marker beside the OS cursor because WebView CSS cannot replace the system-composited cursor. Android stylus contact reaches the plugin as `pointerType: "pen"`, but some Obsidian Android WebView builds do not forward the platform's pre-contact `ACTION_HOVER_MOVE` events to DOM at all. In that case a community plugin cannot know the pen position before contact; a complete fix requires Obsidian to expose those native hover events through a mobile bridge.
 - Source PDFs are never modified; annotated copies are export-only.
 - Flattened exports rasterize text into the PDF page content, so its visible appearance does not depend on PDF annotation support. Editable exports use FreeText annotations instead.
 - Text annotations support bold, italic, strike-through, and heading sizes. Leading `#` markers are retained in the editor source, while saved/exported text runs resolve each heading to explicit bold and size formatting.

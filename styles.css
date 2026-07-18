@@ -481,10 +481,10 @@
 .native-pdf-handwriting-has-eraser-cursor .page,
 .native-pdf-handwriting-has-eraser-cursor .page .textLayer,
 .native-pdf-handwriting-has-eraser-cursor .page .textLayer *,
-.native-pdf-handwriting-has-draw-cursor,
-.native-pdf-handwriting-has-draw-cursor .page,
-.native-pdf-handwriting-has-draw-cursor .page .textLayer,
-.native-pdf-handwriting-has-draw-cursor .page .textLayer * {
+.native-pdf-handwriting-has-stylus-hover-cursor,
+.native-pdf-handwriting-has-stylus-hover-cursor .page,
+.native-pdf-handwriting-has-stylus-hover-cursor .page .textLayer,
+.native-pdf-handwriting-has-stylus-hover-cursor .page .textLayer * {
   cursor: none;
 }
 /* Keep toolbar / chrome clickable cursors usable if nested under the viewer root. */
@@ -501,19 +501,34 @@
 .native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-selection-toolbar button {
   cursor: pointer;
 }
+.native-pdf-handwriting-has-color-cursor,
+.native-pdf-handwriting-has-color-cursor .page,
+.native-pdf-handwriting-has-color-cursor .page .textLayer,
+.native-pdf-handwriting-has-color-cursor .page .textLayer *,
+.native-pdf-handwriting-has-color-cursor .page .annotationLayer,
+.native-pdf-handwriting-has-color-cursor .page .annotationLayer *,
+.native-pdf-handwriting-has-color-cursor .page canvas {
+  cursor: var(--native-pdf-handwriting-color-cursor);
+}
 .native-pdf-handwriting-panning { cursor: grabbing; }
 .native-pdf-handwriting-panning * { cursor: grabbing; }
-.native-pdf-handwriting-draw-cursor {
-  background: var(--text-normal, #111827);
+.native-pdf-handwriting-stylus-hover-cursor {
+  background: var(--native-pdf-handwriting-hover-cursor-color, var(--text-normal, #111827));
+  border: 0;
   border-radius: 50%;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
   box-sizing: border-box;
   pointer-events: none;
-  position: fixed;
+  position: absolute;
   transform: translate(-50%, -50%);
-  z-index: 1000;
+  z-index: 10;
 }
-.native-pdf-handwriting-draw-cursor[hidden] { display: none; }
+.native-pdf-handwriting-stylus-hover-cursor.is-native-pointer-visible {
+  background: var(--native-pdf-handwriting-hover-cursor-color, var(--text-normal, #111827));
+  border: 2px solid var(--native-pdf-handwriting-hover-cursor-color, var(--text-normal, #111827));
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 92%), 0 0 0 3px rgb(0 0 0 / 45%);
+  opacity: 0.82;
+}
+.native-pdf-handwriting-stylus-hover-cursor[hidden] { display: none; }
 .native-pdf-handwriting-eraser-cursor {
   background: rgba(37, 99, 235, 0.16);
   border: 2px solid rgba(37, 99, 235, 0.95);
