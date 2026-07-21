@@ -27,14 +27,18 @@ export class VaultDebugLog implements VaultLogSink {
 
   write(level: VaultLogLevel, event: string, payload: Record<string, unknown> = {}): void {
     if (!this.enabled()) return;
-    this.buffer.push(JSON.stringify({
-      ts: new Date().toISOString(),
-      level,
-      event,
-      ...this.context(),
-      ...payload
-    }));
+    this.buffer.push(this.serialize(level, event, payload));
     this.scheduleFlush();
+  }
+
+  /**
+   * Write and flush immediately so breadcrumbs survive Obsidian Mobile crashes
+   * that kill the WebView before the 200ms debounce flush runs.
+   */
+  async writeUrgent(level: VaultLogLevel, event: string, payload: Record<string, unknown> = {}): Promise<void> {
+    if (!this.enabled()) return;
+    this.buffer.push(this.serialize(level, event, payload));
+    await this.flush();
   }
 
   destroy(): void {
@@ -43,6 +47,16 @@ export class VaultDebugLog implements VaultLogSink {
       this.flushTimer = null;
     }
     void this.flush();
+  }
+
+  private serialize(level: VaultLogLevel, event: string, payload: Record<string, unknown>): string {
+    return JSON.stringify({
+      ts: new Date().toISOString(),
+      level,
+      event,
+      ...this.context(),
+      ...payload
+    });
   }
 
   private scheduleFlush(): void {

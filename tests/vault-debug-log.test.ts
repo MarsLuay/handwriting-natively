@@ -72,4 +72,18 @@ describe("VaultDebugLog", () => {
       document: "a.pdf"
     });
   });
+
+  it("writeUrgent flushes before returning so crash breadcrumbs persist", async () => {
+    const { vault, files } = createVault();
+    const log = new VaultDebugLog(
+      () => vault,
+      () => "debug.log",
+      () => true,
+      () => ({ pluginVersion: "0.1.17" })
+    );
+
+    await log.writeUrgent("info", "session attach prepare", { document: "big.pdf" });
+    expect(files.get("debug.log")).toContain("session attach prepare");
+    expect(files.get("debug.log")).toContain("0.1.17");
+  });
 });

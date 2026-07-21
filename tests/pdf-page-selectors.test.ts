@@ -31,18 +31,18 @@ describe("pdfPageSelectors", () => {
     root.append(page);
 
     const pending = waitForPdfPageNodes(root, 5_000);
-    queueMicrotask(() => {
+    window.setTimeout(() => {
       page.dataset.pageNumber = "1";
-    });
-    await vi.runAllTimersAsync();
+    }, 150);
+    await vi.advanceTimersByTimeAsync(300);
     await expect(pending).resolves.toBe(true);
   });
 
   it("times out when pages never appear", async () => {
     vi.useFakeTimers();
     const root = document.createElement("div");
-    const pending = waitForPdfPageNodes(root, 100);
-    await vi.advanceTimersByTimeAsync(100);
+    const pending = waitForPdfPageNodes(root, 250);
+    await vi.advanceTimersByTimeAsync(500);
     await expect(pending).resolves.toBe(false);
   });
 
