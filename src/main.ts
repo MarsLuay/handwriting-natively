@@ -61,7 +61,7 @@ class UnsavedChangesModal extends Modal {
 }
 
 export default class NativePdfInkPlugin extends Plugin {
-  settings: PluginSettings = mergeSettings(undefined, "config");
+  inkSettings: PluginSettings = mergeSettings(undefined, "config");
   private readonly sessions = new Map<WorkspaceLeaf, ViewerInkSession>();
   private readonly attachingLeaves = new Set<WorkspaceLeaf>();
   private readonly embedChrome = new Map<HTMLElement, EmbedAnnotateChrome>();
@@ -73,12 +73,12 @@ export default class NativePdfInkPlugin extends Plugin {
   private unloaded = false;
   private readonly vaultDebugLog = new VaultDebugLog(
     () => this.app.vault,
-    () => this.settings.vaultDebugLogPath,
-    () => this.settings.vaultDebugLog
+    () => this.inkSettings.vaultDebugLogPath,
+    () => this.inkSettings.vaultDebugLog
   );
 
   async onload(): Promise<void> {
-    this.settings = mergeSettings(
+    this.inkSettings = mergeSettings(
       await this.loadData() as Partial<PluginSettings> | null,
       this.app.vault.configDir
     );
@@ -211,9 +211,9 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   async saveSettings(settings: PluginSettings): Promise<void> {
-    const previousPlacement = this.settings.toolbarPlacement;
-    const previousBoostedZoom = this.settings.boostedPdfZoom;
-    this.settings = settings;
+    const previousPlacement = this.inkSettings.toolbarPlacement;
+    const previousBoostedZoom = this.inkSettings.boostedPdfZoom;
+    this.inkSettings = settings;
     await this.saveData(settings);
     if (previousPlacement !== settings.toolbarPlacement) {
       for (const session of this.allSessions()) session.remountToolbar();
@@ -225,7 +225,7 @@ export default class NativePdfInkPlugin extends Plugin {
 
   async readAllLogs(): Promise<string | null> {
     await this.vaultDebugLog.flush();
-    const path = normalizePath(this.settings.vaultDebugLogPath);
+    const path = normalizePath(this.inkSettings.vaultDebugLogPath);
     if (!path || !await this.app.vault.adapter.exists(path)) return null;
     const logs = await this.app.vault.adapter.read(path);
     return logs.trim() ? logs : null;
@@ -373,22 +373,22 @@ export default class NativePdfInkPlugin extends Plugin {
     return ViewerInkSession.create({
       adapter,
       pdfPath: file.path,
-      settings: this.settings,
-      sidecars: new SidecarRepository(textFiles, this.settings.sidecarFolder),
-      recovery: new RecoveryRepository(textFiles, `${this.settings.sidecarFolder}/recovery`),
+      settings: this.inkSettings,
+      sidecars: new SidecarRepository(textFiles, this.inkSettings.sidecarFolder),
+      recovery: new RecoveryRepository(textFiles, `${this.inkSettings.sidecarFolder}/recovery`),
       saveSettings: async (preferences) => this.saveToolPreferences(preferences),
       savePluginSettings: async (patch) => {
-        await this.saveSettings({ ...this.settings, ...patch });
+        await this.saveSettings({ ...this.inkSettings, ...patch });
       },
       readSourcePdf: async () => new Uint8Array(await this.app.vault.readBinary(file)),
       writeExport: async (name, bytes) => this.writeAndOpenExport(file, name, bytes),
       notice: (message) => new Notice(message),
       decideUnsaved: () => this.decideUnsaved(),
-      mouseDragScrollEnabled: () => this.settings.mouseDragScroll,
-      simplifyStrokesEnabled: () => this.settings.simplifyStrokes,
-      toolbarPlacement: () => this.settings.toolbarPlacement,
+      mouseDragScrollEnabled: () => this.inkSettings.mouseDragScroll,
+      simplifyStrokesEnabled: () => this.inkSettings.simplifyStrokes,
+      toolbarPlacement: () => this.inkSettings.toolbarPlacement,
       vaultLog: this.vaultDebugLog,
-      debugEnabled: () => this.settings.vaultDebugLog,
+      debugEnabled: () => this.inkSettings.vaultDebugLog,
       writeSync: createVaultSyncWriter(this.app.vault),
       claimPersistEpoch: (documentId) => this.claimPersistEpoch(documentId),
       livePersistEpoch: (documentId) => this.livePersistEpoch(documentId),
@@ -449,11 +449,11 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private async saveToolPreferences(preferences: ToolPreferences): Promise<void> {
-    this.settings = {
-      ...this.settings,
+    this.inkSettings = {
+      ...this.inkSettings,
       toolPreferences: structuredClone(preferences)
     };
-    await this.saveData(this.settings);
+    await this.saveData(this.inkSettings);
   }
 
   private async writeAndOpenExport(source: TFile, name: string, bytes: Uint8Array): Promise<string> {
