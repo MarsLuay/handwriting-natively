@@ -84,6 +84,35 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
+  it("routes one finger to draw when draw mode is on", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const routes: string[] = [];
+    const starts = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onStart: starts,
+      onRoute: (route) => routes.push(route)
+    });
+    const finger = pointer("touch", 21);
+    element.dispatchEvent(finger);
+    expect(routes.at(-1)).toBe("draw");
+    expect(finger.defaultPrevented).toBe(true);
+    expect(starts).toHaveBeenCalledOnce();
+    const second = pointer("touch", 22);
+    element.dispatchEvent(second);
+    expect(routes.at(-1)).toBe("touch-zoom-pan");
+    expect(second.defaultPrevented).toBe(false);
+    router.destroy();
+    element.remove();
+  });
+
   it("routes Text explicitly while preserving right-click eraser as an opt-in", () => {
     const element = document.createElement("div");
     let tool: ToolId = "text";

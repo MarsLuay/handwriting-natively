@@ -44,6 +44,9 @@ class FakeAdapter implements ObsidianPdfAdapter {
   pages(): PdfPageInfo[] {
     return [{ pageNumber: 1, width: 600, height: 800, scale: 1, rotation: 0, element: this.pageElement }];
   }
+  page(pageNumber: number): PdfPageInfo | undefined {
+    return this.pages().find((page) => page.pageNumber === pageNumber);
+  }
   getViewState(): PdfViewState { return { pageNumber: 1, scrollFraction: 0, scale: 1, rotation: 0 }; }
   restoreViewState(): void {}
   scrollElement(): HTMLElement { return this.root; }

@@ -2,7 +2,7 @@ import type { DrawingTool, InkStroke, PdfPoint, PdfTextAnnotation, PdfTextRun, P
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
 import type { ObsidianPdfAdapter } from "../integration/ObsidianPdfAdapter";
 import type { PdfPageInfo } from "../integration/PdfPageLocator";
-import { selectPagesForInkMount } from "./selectPagesForInkMount";
+import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { PointerRouter } from "../input/PointerRouter";
 import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, type SelectionShortcutAction } from "../input/SelectionShortcuts";
@@ -241,6 +241,10 @@ export class ViewerInkSession {
   private refreshDepth = 0;
   private resizeFrame: number | null = null;
   private pendingScheduledRefresh: { reason: string; repaintOnly: boolean } | null = null;
+  /** Trailing debounce for mobile scroll remounts (rAF alone still storms every frame). */
+  private mobileScrollRefreshTimer: number | null = null;
+  /** Remount after zoom/handoff if scroll/pagechanging arrived while compositing. */
+  private pendingMobileScrollRemount = false;
   private zoomSettleTimer: number | null = null;
   private zoomBurstStartedAt = 0;
   private zoomTickCount = 0;
@@ -266,6 +270,7 @@ export class ViewerInkSession {
   private zoomCompositing = false;
   private static readonly ZOOM_SETTLE_MS = 120;
   private static readonly ZOOM_ACTIVE_MS = 500;
+  private static readonly MOBILE_SCROLL_REFRESH_MS = 200;
   /** PDF.js usually swaps canvas/text layers hundreds of ms after scalechanging. */
   private static readonly ZOOM_NATIVE_RENDER_GRACE_MS = 500;
   /** Do not release during the tail of a native page-content replacement burst. */
@@ -301,7 +306,9 @@ export class ViewerInkSession {
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
       drawEnabled: this.drawEnabled,
-      supportedMoreActions: ["export", "export-editable", "toolbar-main", "toolbar-left", "toolbar-right"],
+      supportedMoreActions: (options.runtimePlatform?.().mobile ?? false)
+        ? ["export", "export-editable", "toolbar-left", "toolbar-right"]
+        : ["export", "export-editable", "toolbar-main", "toolbar-left", "toolbar-right"],
       callbacks: {
         onPreferencesChange: (preferences, reason = "general") => {
           const wasTextToolActive = this.textToolActive;
@@ -367,7 +374,7 @@ export class ViewerInkSession {
         onRedo: () => this.applyTextHistory("redo"),
         onSave: () => this.manualSave(),
         onMore: (action) => void this.handleMore(action),
-        toolbarPlacement: () => this.options.toolbarPlacement?.() ?? this.options.settings.toolbarPlacement
+        toolbarPlacement: () => this.currentToolbarPlacement()
       }
     });
     this.selectionToolbar = new SelectionToolbar({
@@ -419,7 +426,8 @@ export class ViewerInkSession {
     const adapter = options.adapter;
     this.viewerMousePan = new ViewerMousePan(adapter.host.ownerDocument, {
       enabled: () => !this.drawEnabled && (this.options.mouseDragScrollEnabled?.() ?? this.options.settings.mouseDragScroll),
-      touchPanEnabled: () => true,
+      // Draw mode owns the finger — pan only when ink is off (GoodNotes when draw off).
+      touchPanEnabled: () => !this.drawEnabled,
       scrollRoot: () => adapter.scrollElement(),
       withinTarget: (target) => {
         if (!(target instanceof Element)) return false;
@@ -533,10 +541,15 @@ export class ViewerInkSession {
       this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
       return;
     }
-    // Mount resize ticks arm ZOOM_ACTIVE_MS; create must still full-refresh and
-    // is not a mid-gesture flash risk — skip the interrupt noise.
-    if (this.isZoomGestureActive() && reason !== "create") {
-      this.logger.zoomRepaintInterrupt(reason, { kind: "full-refresh-during-zoom" });
+    // Full remount during pinch/CSS handoff fights compositing — layout-only path.
+    if (reason !== "create" && (this.isZoomGestureActive() || this.isZoomHandoffActive())) {
+      const kind = this.isZoomGestureActive() ? "full-refresh-during-zoom" : "full-refresh-during-handoff";
+      this.logger.zoomRepaintInterrupt(reason, { kind });
+      this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
+      if (reason.includes("scroll") || reason.includes("pagechanging")) {
+        this.pendingMobileScrollRemount = true;
+      }
+      return;
     }
     if (this.pendingScheduledRefresh) {
       this.pendingScheduledRefresh.reason = reason;
@@ -552,6 +565,43 @@ export class ViewerInkSession {
       if (!pending) return;
       if (pending.repaintOnly) this.repaintSurfaces(pending.reason);
       else this.refresh(pending.reason);
+    });
+  }
+
+  /** Coalesce mobile scroll/pagechanging remounts; skip while zoom/handoff active. */
+  private scheduleMobileScrollRefresh(): void {
+    if (this.destroyed || !this.runtimePlatform().mobile) return;
+    if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
+      this.pendingMobileScrollRemount = true;
+      this.scheduleZoomRepaint("view-scroll-mobile", this.options.adapter.getViewState().scale);
+      return;
+    }
+    if (this.mobileScrollRefreshTimer !== null) {
+      window.clearTimeout(this.mobileScrollRefreshTimer);
+    }
+    this.mobileScrollRefreshTimer = window.setTimeout(() => {
+      this.mobileScrollRefreshTimer = null;
+      if (this.destroyed) return;
+      if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
+        this.pendingMobileScrollRemount = true;
+        return;
+      }
+      this.refresh("view-scroll-mobile");
+    }, ViewerInkSession.MOBILE_SCROLL_REFRESH_MS);
+  }
+
+  private flushPendingMobileScrollRemount(): void {
+    if (!this.pendingMobileScrollRemount || this.destroyed) return;
+    this.pendingMobileScrollRemount = false;
+    if (!this.runtimePlatform().mobile) return;
+    this.scheduleMobileScrollRefresh();
+  }
+
+  private mobileMountSetUnchanged(pages: PdfPageInfo[]): boolean {
+    if (pages.length !== this.surfaces.size) return false;
+    return pages.every((page) => {
+      const surface = this.surfaces.get(page.pageNumber);
+      return Boolean(surface && surface.page.element === page.element && surface.overlay.isConnected);
     });
   }
 
@@ -843,6 +893,8 @@ export class ViewerInkSession {
         this.drainInkLayerUpgrades();
       }, 0);
     }
+    // Scroll/pagechanging during pinch deferred remount until CSS handoff ends.
+    this.flushPendingMobileScrollRemount();
   }
 
   private cancelZoomCompositeRelease(): void {
@@ -945,13 +997,16 @@ export class ViewerInkSession {
       else sink.write("info", event, payload);
     };
     const platform = options.runtimePlatform?.() ?? { mobile: false, phone: false };
-    const domPages = options.adapter.pages();
+    const domPageCount = options.adapter.pages().length;
     await urgent("session create begin", {
       document: options.pdfPath,
       mobile: platform.mobile,
       phone: platform.phone,
-      domPageCount: domPages.length,
-      toolbarPlacement: options.toolbarPlacement?.() ?? options.settings.toolbarPlacement,
+      domPageCount,
+      toolbarPlacement: resolveToolbarPlacement(
+        options.toolbarPlacement?.() ?? options.settings.toolbarPlacement,
+        platform.mobile
+      ),
       boostedPdfZoom: options.settings.boostedPdfZoom
     });
     const session = new ViewerInkSession(options);
@@ -1031,19 +1086,23 @@ export class ViewerInkSession {
       persistEpoch: session.persistEpoch
     });
     session.refreshDiagnostics();
-    const mountPages = session.pagesForInkMount(domPages);
+    const mountPages = session.pagesForInkMount();
     await urgent("session create refresh begin", {
       document: options.pdfPath,
       mobile: platform.mobile,
       phone: platform.phone,
-      domPageCount: domPages.length,
+      domPageCount,
+      currentPage: options.adapter.getViewState().pageNumber,
       mountPageCount: mountPages.length,
-      mountPages: mountPages.map((page) => page.pageNumber)
+      mountPages: mountPages.map((page) => page.pageNumber),
+      toolbarPlacement: session.currentToolbarPlacement()
     });
     session.refresh("create");
     await urgent("session create refresh ok", {
       document: options.pdfPath,
       surfaces: session.surfaces.size,
+      mountPages: [...session.surfaces.keys()].sort((a, b) => a - b),
+      toolbarPlacement: session.currentToolbarPlacement(),
       mobile: platform.mobile
     });
     return session;
@@ -1051,16 +1110,45 @@ export class ViewerInkSession {
 
   refresh(reason = "manual"): void {
     if (this.destroyed) return;
-    if (this.isZoomGestureActive() && (reason.startsWith("pages-") || reason.startsWith("view-"))) {
+    if (
+      reason !== "create"
+      && (this.isZoomGestureActive() || this.isZoomHandoffActive())
+      && (reason.startsWith("pages-") || reason.startsWith("view-"))
+    ) {
       this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
+      if (reason.includes("scroll") || reason.includes("pagechanging")) {
+        this.pendingMobileScrollRemount = true;
+      }
       return;
     }
     if (this.isZoomGestureActive() && reason !== "create") {
       this.logger.zoomRepaintInterrupt(reason, { kind: "full-refresh-during-zoom" });
     }
-    if (this.isZoomHandoffActive()) {
+    if (this.isZoomHandoffActive() && reason !== "create") {
       this.logger.zoomFlashProxy("full-refresh-during-handoff", { reason });
     }
+
+    const pages = this.pagesForInkMount();
+    // Scroll settle: layout-only when mount set already matches — avoid invalidate/repaint storm.
+    if (
+      (reason === "view-scroll-mobile" || reason === "view-pagechanging")
+      && this.runtimePlatform().mobile
+      && this.mobileMountSetUnchanged(pages)
+    ) {
+      for (const page of pages) {
+        const surface = this.surfaces.get(page.pageNumber);
+        if (!surface) continue;
+        surface.page = page;
+        this.syncOverlayLayout(surface);
+      }
+      this.logger.refresh(`${reason}-skip-unchanged`, {
+        selected: this.selected.length,
+        surfaces: this.surfaces.size,
+        mountPages: pages.map((page) => page.pageNumber)
+      });
+      return;
+    }
+
     if (this.refreshDepth >= 4) {
       this.logger.loopBlocked("refresh", this.refreshDepth);
       return;
@@ -1070,14 +1158,14 @@ export class ViewerInkSession {
     this.invalidateInkLayers();
     this.logger.refresh(reason, {
       selected: this.selected.length,
-      surfaces: this.surfaces.size
+      surfaces: this.surfaces.size,
+      mountPages: pages.map((page) => page.pageNumber)
     });
     try {
-      const allPages = this.options.adapter.pages();
-      const pages = this.pagesForInkMount(allPages);
       const live = new Set(pages.map((page) => page.pageNumber));
       for (const [pageNumber, surface] of this.surfaces) {
-        const current = allPages.find((page) => page.pageNumber === pageNumber) ?? pages.find((page) => page.pageNumber === pageNumber);
+        const current = pages.find((page) => page.pageNumber === pageNumber)
+          ?? this.options.adapter.page(pageNumber);
         if (!current || !live.has(pageNumber)) {
           surface.router?.destroy();
           this.releaseInputOwner(surface.page.element);
@@ -1127,13 +1215,25 @@ export class ViewerInkSession {
     }
   }
 
-  /** Desktop: every DOM page. Mobile: viewport (±1) so canvas alloc cannot OOM the WebView. */
-  private pagesForInkMount(allPages: PdfPageInfo[]): PdfPageInfo[] {
-    return selectPagesForInkMount(allPages, {
-      mobile: this.runtimePlatform().mobile,
-      currentPage: this.options.adapter.getViewState().pageNumber,
-      scrollRoot: this.options.adapter.scrollElement()
-    });
+  /**
+   * Desktop: every DOM page. Mobile: currentPage ± 1 via O(1) `adapter.page`
+   * (never scan all 900+ page rects on scroll).
+   */
+  private pagesForInkMount(): PdfPageInfo[] {
+    if (!this.runtimePlatform().mobile) {
+      return this.options.adapter.pages();
+    }
+    const pad = 1;
+    const currentPage = this.options.adapter.getViewState().pageNumber;
+    const resolved: PdfPageInfo[] = [];
+    for (let pageNumber = currentPage - pad; pageNumber <= currentPage + pad; pageNumber += 1) {
+      if (pageNumber < 1) continue;
+      const page = this.options.adapter.page(pageNumber);
+      if (page) resolved.push(page);
+    }
+    if (resolved.length > 0) return resolved;
+    const fallback = this.options.adapter.page(1) ?? this.options.adapter.pages()[0];
+    return fallback ? [fallback] : [];
   }
 
   /** Tool/draw-mode swaps update hit-testing/cursors/text chrome without rebuilding ink pixels. */
@@ -1233,13 +1333,19 @@ export class ViewerInkSession {
     this.logger.viewState(state, source);
     if (source === "scroll") {
       if (this.selected.length) this.selectionToolbar.relayout();
-      // Mobile only mounts viewport pages — scroll must remount neighbors.
-      if (this.runtimePlatform().mobile) this.scheduleRefresh("view-scroll-mobile");
+      // Mobile only mounts current±pad — debounce remount; never full-refresh mid-zoom.
+      if (this.runtimePlatform().mobile) this.scheduleMobileScrollRefresh();
       return;
     }
     if (ViewerInkSession.isZoomRepaintSource(source)) {
       if (this.selected.length) this.selectionToolbar.relayout();
       this.scheduleZoomRepaint(`view-${source}`, state.scale);
+      return;
+    }
+    // Pinch fires unstable pagechanging — coalesce with scroll remount path on mobile.
+    if (source === "pagechanging" && this.runtimePlatform().mobile) {
+      if (this.selected.length) this.selectionToolbar.relayout();
+      this.scheduleMobileScrollRefresh();
       return;
     }
     this.refresh(`view-${source}`);
@@ -1728,6 +1834,11 @@ export class ViewerInkSession {
       window.cancelAnimationFrame(this.resizeFrame);
       this.resizeFrame = null;
     }
+    if (this.mobileScrollRefreshTimer !== null) {
+      window.clearTimeout(this.mobileScrollRefreshTimer);
+      this.mobileScrollRefreshTimer = null;
+    }
+    this.pendingMobileScrollRemount = false;
     if (this.zoomSettleTimer !== null) {
       window.clearTimeout(this.zoomSettleTimer);
       this.zoomSettleTimer = null;
@@ -1801,6 +1912,7 @@ export class ViewerInkSession {
       drawEnabled: this.drawEnabled,
       mouseDragScroll,
       panEnabled: !this.drawEnabled && mouseDragScroll,
+      touchPanEnabled: !this.drawEnabled,
       scrollRoot: describeScrollElement(this.options.adapter.scrollElement()),
       ...(reason ? { reason } : {})
     };
@@ -4802,7 +4914,8 @@ export class ViewerInkSession {
   }
 
   private currentToolbarPlacement(): ToolbarPlacement {
-    return this.options.toolbarPlacement?.() ?? this.options.settings.toolbarPlacement ?? "main";
+    const configured = this.options.toolbarPlacement?.() ?? this.options.settings.toolbarPlacement;
+    return resolveToolbarPlacement(configured, this.runtimePlatform().mobile);
   }
 
   private async handleMore(action: MoreAction): Promise<void> {

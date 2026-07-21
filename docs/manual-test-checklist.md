@@ -4,7 +4,7 @@
 
 - Desktop mouse: PDF links, text selection, scroll, zoom work until edit tool active.
 - Drawing tablet and Apple Pencil: pen input draws; pressure values update in vault debug log when enabled.
-- One finger scrolls. Two fingers zoom/pan. Trackpad behavior remains native.
+- Draw off: one finger scrolls. Draw on: one finger inks; two fingers still zoom/pan. Trackpad behavior remains native.
 - Note PDF embed (`![[file.pdf|alias]]`) shows an **Annotate** button left of ⋮; click opens the PDF in a new tab (ink attaches on that leaf).
 - Direct / tab PDF overlay stays aligned across zoom, scroll, resize, page change, rotation.
 - Note switching, embed removal, PDF close, plugin disable/re-enable leave no stray Annotate chrome.
