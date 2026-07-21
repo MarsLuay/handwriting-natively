@@ -4,7 +4,7 @@ import { DEFAULT_SETTINGS, mergeSettings, type PluginSettings } from "./model";
 export { mergeSettings, DEFAULT_SETTINGS };
 
 export interface SettingsHost {
-  settings: PluginSettings;
+  inkSettings: PluginSettings;
   saveSettings(settings: PluginSettings): Promise<void>;
   readAllLogs(): Promise<string | null>;
 }
@@ -66,7 +66,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         desc: "Save completed edits automatically. Enabled by default.",
         render: (setting: Setting) => {
           setting.addToggle((toggle) =>
-            toggle.setValue(this.host.settings.autosave).onChange(async (value) => {
+            toggle.setValue(this.host.inkSettings.autosave).onChange(async (value) => {
               await this.persistPatch({ autosave: value });
             })
           );
@@ -78,7 +78,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         render: (setting: Setting) => {
           this.addDelayInput(setting, {
             descriptionId: "native-pdf-handwriting-autosave-delay-description",
-            value: this.host.settings.autosaveDelayMs,
+            value: this.host.inkSettings.autosaveDelayMs,
             min: 100,
             max: 60_000,
             persist: async (autosaveDelayMs) => this.persistPatch({ autosaveDelayMs })
@@ -90,7 +90,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         desc: "Flush pending autosaves before a PDF view closes.",
         render: (setting: Setting) => {
           setting.addToggle((toggle) =>
-            toggle.setValue(this.host.settings.saveWhenClosing).onChange(async (value) => {
+            toggle.setValue(this.host.inkSettings.saveWhenClosing).onChange(async (value) => {
               await this.persistPatch({ saveWhenClosing: value });
             })
           );
@@ -101,7 +101,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         desc: "Show whether the current PDF is saved, saving, or needs attention.",
         render: (setting: Setting) => {
           setting.addToggle((toggle) =>
-            toggle.setValue(this.host.settings.showSaveStatus).onChange(async (value) => {
+            toggle.setValue(this.host.inkSettings.showSaveStatus).onChange(async (value) => {
               await this.persistPatch({ showSaveStatus: value });
             })
           );
@@ -116,7 +116,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             desc: "Vertical mouse drag on empty PDF areas scrolls the document. Text selection and links still work normally.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
-                toggle.setValue(this.host.settings.mouseDragScroll).onChange(async (value) => {
+                toggle.setValue(this.host.inkSettings.mouseDragScroll).onChange(async (value) => {
                   await this.persistPatch({ mouseDragScroll: value });
                 })
               );
@@ -131,7 +131,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
                   .addOption("main", "PDF toolbar (default)")
                   .addOption("left", "Left sidebar")
                   .addOption("right", "Right sidebar")
-                  .setValue(this.host.settings.toolbarPlacement)
+                  .setValue(this.host.inkSettings.toolbarPlacement)
                   .onChange(async (value) => {
                     if (value === "main" || value === "left" || value === "right") {
                       await this.persistPatch({ toolbarPlacement: value });
@@ -151,7 +151,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             desc: "Snap finished ink to cleaner straight segments. Off keeps the exact path you drew.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
-                toggle.setValue(this.host.settings.simplifyStrokes).onChange(async (value) => {
+                toggle.setValue(this.host.inkSettings.simplifyStrokes).onChange(async (value) => {
                   await this.persistPatch({ simplifyStrokes: value });
                 })
               );
@@ -162,7 +162,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             desc: "Try saving again after an automatic save fails.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
-                toggle.setValue(this.host.settings.retryFailedAutosaves).onChange(async (value) => {
+                toggle.setValue(this.host.inkSettings.retryFailedAutosaves).onChange(async (value) => {
                   await this.persistPatch({ retryFailedAutosaves: value });
                 })
               );
@@ -179,7 +179,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             desc: "Vault-relative folder for editable annotation JSON. The original PDF is never changed; export creates a separate copy.",
             render: (setting: Setting) => {
               this.addFolderPathInput(setting, {
-                value: this.host.settings.sidecarFolder,
+                value: this.host.inkSettings.sidecarFolder,
                 persist: async (sidecarFolder) => this.persistPatch({ sidecarFolder })
               });
             }
@@ -195,7 +195,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             desc: "Increase the PDF viewer zoom limit beyond Obsidian's normal 10× cap. This can use substantially more memory on large pdfs.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
-                toggle.setValue(this.host.settings.boostedPdfZoom).onChange(async (value) => {
+                toggle.setValue(this.host.inkSettings.boostedPdfZoom).onChange(async (value) => {
                   await this.persistPatch({ boostedPdfZoom: value });
                 })
               );
@@ -206,7 +206,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             desc: "Remove the invisible page label announced to screen readers when the annotation canvas is focused.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
-                toggle.setValue(this.host.settings.hideStylusAnnotationLabel).onChange(async (value) => {
+                toggle.setValue(this.host.inkSettings.hideStylusAnnotationLabel).onChange(async (value) => {
                   await this.persistPatch({ hideStylusAnnotationLabel: value });
                 })
               );
@@ -217,7 +217,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             desc: "Append every plugin event to a line-delimited log file in the vault so agents can read it directly. Off by default. Includes left-toolbar PDF sidebar offset diagnostics (reason, rects, jumps).",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
-                toggle.setValue(this.host.settings.vaultDebugLog).onChange(async (value) => {
+                toggle.setValue(this.host.inkSettings.vaultDebugLog).onChange(async (value) => {
                   await this.persistPatch({ vaultDebugLog: value });
                 })
               );
@@ -228,7 +228,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             desc: "Vault-relative location for the optional debug log. One JSON object per line.",
             render: (setting: Setting) => {
               this.addFolderPathInput(setting, {
-                value: this.host.settings.vaultDebugLogPath,
+                value: this.host.inkSettings.vaultDebugLogPath,
                 persist: async (vaultDebugLogPath) => this.persistPatch({ vaultDebugLogPath }),
                 fileName: "debug.log"
               });
@@ -370,7 +370,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
   }
 
   private async persistPatch(patch: Partial<PluginSettings>): Promise<void> {
-    // Do not assign host.settings before saveSettings — it compares previous placement to remount open PDFs.
-    await this.host.saveSettings({ ...this.host.settings, ...patch });
+    // Do not assign host.inkSettings before saveSettings — it compares previous placement to remount open PDFs.
+    await this.host.saveSettings({ ...this.host.inkSettings, ...patch });
   }
 }

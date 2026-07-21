@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.14 — 2026-07-21
+
+- Set `minAppVersion` to `1.8.9` (actual PDF-viewer floor; matches 0.1.1). Rename plugin field `settings` → `inkSettings` so catalog/`Plugin.settings` (@since 1.13) does not force 1.13. Keep `display()` + `getSettingDefinitions()` for 1.12.x and 1.13+.
+
 ## 0.1.13 — 2026-07-21
 
 - Restore `PluginSettingTab.display()` that renders the same rows as `getSettingDefinitions()`, so settings are not blank on Obsidian 1.12.x (1.13+ still uses the declarative API).
