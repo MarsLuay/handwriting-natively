@@ -1,7 +1,7 @@
 import { BasePdfAdapter } from "./BasePdfAdapter";
 import { PdfAdapterCompatibilityError, type PdfAdapterCallbacks } from "./ObsidianPdfAdapter";
 import { PdfViewerCompatibility, type PdfJsViewerLike } from "./PdfViewerCompatibility";
-import { waitForPdfPageNodes } from "./pdfPageSelectors";
+import { ensurePdfPageNumbers, waitForPdfPageNodes } from "./pdfPageSelectors";
 
 export class NativePdfViewAdapter extends BasePdfAdapter {
   readonly kind = "direct" as const;
@@ -23,6 +23,7 @@ export class NativePdfViewAdapter extends BasePdfAdapter {
 
     if (pagesMissing && compatibility.viewerRoot) {
       await waitForPdfPageNodes(compatibility.viewerRoot, options.pageWaitMs ?? 5_000);
+      ensurePdfPageNumbers(compatibility.viewerRoot);
       compatibility = PdfViewerCompatibility.direct(host, options.privateViewer);
     }
 

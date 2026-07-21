@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   describePdfPageDom,
+  ensurePdfPageNumbers,
   queryPdfPageNodes,
   waitForPdfPageNodes
 } from "../src/integration/pdfPageSelectors";
@@ -57,5 +58,31 @@ describe("pdfPageSelectors", () => {
       candidatePageCount: 1,
       firstCandidateHasPageNumber: false
     });
+  });
+
+  it("ensurePdfPageNumbers stamps plausible page shells without data-page-number", () => {
+    const root = document.createElement("div");
+    root.className = "pdf-viewer";
+    const page = document.createElement("div");
+    page.className = "page";
+    Object.defineProperty(page, "getBoundingClientRect", {
+      value: () => ({ width: 400, height: 600, top: 0, left: 0, right: 400, bottom: 600, x: 0, y: 0, toJSON: () => ({}) })
+    });
+    root.append(page);
+    expect(queryPdfPageNodes(root)).toHaveLength(0);
+    expect(ensurePdfPageNumbers(root)).toBe(1);
+    expect(page.dataset.pageNumber).toBe("1");
+    expect(queryPdfPageNodes(root)).toHaveLength(1);
+  });
+
+  it("accepts bare data-page-number nodes without .page class", () => {
+    const root = document.createElement("div");
+    const page = document.createElement("div");
+    page.dataset.pageNumber = "2";
+    Object.defineProperty(page, "getBoundingClientRect", {
+      value: () => ({ width: 300, height: 400, top: 0, left: 0, right: 300, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    });
+    root.append(page);
+    expect(queryPdfPageNodes(root)).toHaveLength(1);
   });
 });

@@ -51,4 +51,25 @@ describe("VaultDebugLog", () => {
 
     expect(files.get("debug.log")).toContain("captured-before-disable");
   });
+
+  it("merges plugin and Obsidian version context into every event", async () => {
+    const { vault, files } = createVault();
+    const log = new VaultDebugLog(
+      () => vault,
+      () => "debug.log",
+      () => true,
+      () => ({ pluginVersion: "0.1.16", obsidianVersion: "1.8.9" })
+    );
+
+    log.write("warn", "session attach failed", { document: "a.pdf" });
+    await log.flush();
+
+    const event = JSON.parse((files.get("debug.log") ?? "").trim()) as Record<string, unknown>;
+    expect(event).toMatchObject({
+      event: "session attach failed",
+      pluginVersion: "0.1.16",
+      obsidianVersion: "1.8.9",
+      document: "a.pdf"
+    });
+  });
 });
