@@ -30,7 +30,7 @@ export class PdfPageLocator {
 
   page(pageNumber: number): PdfPageInfo | undefined {
     const element = this.viewerRoot.querySelector<HTMLElement>(
-      `.page[data-page-number="${pageNumber}"], .pdf-page-view[data-page-number="${pageNumber}"]`
+      `.page[data-page-number="${pageNumber}"], .pdf-page-view[data-page-number="${pageNumber}"], [data-page-number="${pageNumber}"]`
     );
     return element ? this.info(element) : undefined;
   }

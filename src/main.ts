@@ -6,6 +6,7 @@ import {
   Platform,
   Plugin,
   TFile,
+  apiVersion,
   normalizePath,
   type WorkspaceLeaf
 } from "obsidian";
@@ -76,7 +77,11 @@ export default class NativePdfInkPlugin extends Plugin {
   private readonly vaultDebugLog = new VaultDebugLog(
     () => this.app.vault,
     () => this.inkSettings.vaultDebugLogPath,
-    () => this.inkSettings.vaultDebugLog
+    () => this.inkSettings.vaultDebugLog,
+    () => ({
+      pluginVersion: this.manifest.version,
+      obsidianVersion: apiVersion
+    })
   );
 
   async onload(): Promise<void> {
@@ -155,9 +160,14 @@ export default class NativePdfInkPlugin extends Plugin {
         winners.set(id, session);
       }
     }
+    const openPdfLeaves = this.app.workspace.getLeavesOfType("pdf").length;
     this.vaultDebugLog.write("info", "emergency persist begin", {
       sessions: sessions.length,
-      documents: winners.size
+      documents: winners.size,
+      openPdfLeaves,
+      attachingLeaves: this.attachingLeaves.size,
+      mobile: Platform.isMobile,
+      phone: Platform.isPhone
     });
     for (const session of sessions) {
       const winner = winners.get(session.getDocumentId());
@@ -281,7 +291,15 @@ export default class NativePdfInkPlugin extends Plugin {
       let session: ViewerInkSession | undefined;
       try {
         const privateViewer = await PdfViewerCompatibility.resolvePrivateViewerFromPdfView(view);
-        const pageWaitMs = Platform.isMobile ? 8_000 : 5_000;
+        // Large textbooks on phone need a longer first paint before page nodes exist.
+        const pageWaitMs = Platform.isMobile ? 12_000 : 5_000;
+        this.vaultDebugLog.write("info", "session attach begin", {
+          document: file.path,
+          mobile: Platform.isMobile,
+          phone: Platform.isPhone,
+          pageWaitMs,
+          hasPrivateViewer: Boolean(privateViewer)
+        });
         const adapter = await NativePdfViewAdapter.attach(
           view.containerEl,
           this.sessionAdapterCallbacks(() => session),
@@ -304,10 +322,15 @@ export default class NativePdfInkPlugin extends Plugin {
         }
         this.sessions.set(leaf, session);
         this.attachRetry.clear(file.path);
+        this.vaultDebugLog.write("info", "session attach ok", {
+          document: file.path,
+          mobile: Platform.isMobile
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const pagesMissing = message.includes("PDF page nodes missing");
         const preview = PdfViewerCompatibility.direct(view.containerEl);
+        const dom = describePdfPageDom(preview.viewerRoot);
         console.warn("[Handwriting Natively] PDF view not ready or incompatible", error);
         this.vaultDebugLog.write("warn", "session attach failed", {
           document: file.path,
@@ -316,7 +339,7 @@ export default class NativePdfInkPlugin extends Plugin {
           mobile: Platform.isMobile,
           phone: Platform.isPhone,
           pagesMissing,
-          ...describePdfPageDom(preview.viewerRoot)
+          ...dom
         });
         // After waiting for pages, keep mobile from re-attach-storming large PDFs.
         const delayMs = pagesMissing && Platform.isMobile

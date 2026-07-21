@@ -20,7 +20,9 @@ export class VaultDebugLog implements VaultLogSink {
   constructor(
     private readonly vault: () => Vault,
     private readonly path: () => string,
-    private readonly enabled: () => boolean
+    private readonly enabled: () => boolean,
+    /** Merged into every event before the call-site payload (e.g. plugin + Obsidian versions). */
+    private readonly context: () => Record<string, unknown> = () => ({})
   ) {}
 
   write(level: VaultLogLevel, event: string, payload: Record<string, unknown> = {}): void {
@@ -29,6 +31,7 @@ export class VaultDebugLog implements VaultLogSink {
       ts: new Date().toISOString(),
       level,
       event,
+      ...this.context(),
       ...payload
     }));
     this.scheduleFlush();

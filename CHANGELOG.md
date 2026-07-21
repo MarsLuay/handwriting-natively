@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.16 — 2026-07-21
+
+- Stamp `data-page-number` on mobile page shells that mount without it; accept bare `[data-page-number]` nodes.
+- Longer mobile page wait (12s). Richer attach/emergency logs (DOM child sample, open PDF leaf counts).
+- Every vault debug log line includes `pluginVersion` and `obsidianVersion` (`apiVersion`).
+
 ## 0.1.15 — 2026-07-21
 
 - Wait for PDF page nodes before attach; soft-fail + hard cooldown on mobile when page DOM is still missing (stops attach-retry storms that crash Obsidian Mobile).
