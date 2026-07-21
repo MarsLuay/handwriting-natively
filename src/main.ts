@@ -28,6 +28,7 @@ import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
 import type { PluginSettings, ToolPreferences } from "./model";
 import { createVaultFsTextAdapter, createVaultSyncWriter } from "./storage/VaultFs";
+import { parsePageRanges } from "./util/parsePageRanges";
 
 class UnsavedChangesModal extends Modal {
   private readonly abort = new AbortController();
@@ -60,6 +61,68 @@ class UnsavedChangesModal extends Modal {
   onClose(): void {
     this.abort.abort();
     this.contentEl.empty();
+  }
+}
+
+/** Prompt for pages like `1, 3-5` — no default hotkey; used by clear-freehand command. */
+class PageRangePromptModal extends Modal {
+  private readonly abort = new AbortController();
+  private inputEl: HTMLInputElement | null = null;
+  private focusTimer: number | null = null;
+
+  constructor(
+    app: NativePdfInkPlugin["app"],
+    private readonly onSubmit: (pages: number[]) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("Clear freehand on pages");
+    this.contentEl.createEl("p", {
+      text: "Enter page numbers or ranges (example: 1, 3-5, 8)."
+    });
+    this.inputEl = this.contentEl.createEl("input", {
+      type: "text",
+      placeholder: "1, 3-5"
+    });
+    this.inputEl.addClass("native-pdf-handwriting-page-range-input");
+    this.inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        this.submit();
+      }
+    }, { signal: this.abort.signal });
+
+    const actions = this.contentEl.createDiv({ cls: "native-pdf-handwriting-confirm-actions" });
+    const clearButton = actions.createEl("button", { text: "Clear", cls: "mod-cta" });
+    clearButton.addEventListener("click", () => this.submit(), { signal: this.abort.signal });
+    const cancelButton = actions.createEl("button", { text: "Cancel" });
+    cancelButton.addEventListener("click", () => this.close(), { signal: this.abort.signal });
+    this.focusTimer = window.setTimeout(() => {
+      this.focusTimer = null;
+      this.inputEl?.focus();
+    }, 0);
+  }
+
+  private submit(): void {
+    const pages = parsePageRanges(this.inputEl?.value ?? "");
+    if (!pages) {
+      new Notice("Enter valid page numbers or ranges (example: 1, 3-5).");
+      return;
+    }
+    this.onSubmit(pages);
+    this.close();
+  }
+
+  onClose(): void {
+    if (this.focusTimer !== null) {
+      window.clearTimeout(this.focusTimer);
+      this.focusTimer = null;
+    }
+    this.abort.abort();
+    this.contentEl.empty();
+    this.inputEl = null;
   }
 }
 
@@ -102,25 +165,90 @@ export default class NativePdfInkPlugin extends Plugin {
       callback: () => void this.activeSession()?.exportCopy()
     });
     this.registerSelectionCommands();
+    this.registerClearDrawingCommands();
+    this.registerCrashBreadcrumbs();
 
-    this.registerEvent(this.app.workspace.on("layout-change", () => this.scheduleDebouncedScan()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => {
+      void this.logWorkspacePulse("layout-change");
+      this.scheduleDebouncedScan();
+    }));
     this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => {
       for (const [sessionLeaf, session] of this.sessions) {
         if (sessionLeaf !== leaf) void session.flush();
       }
+      void this.logWorkspacePulse("active-leaf-change", leaf);
       this.scheduleDebouncedScan();
     }));
-    this.registerEvent(this.app.workspace.on("file-open", () => {
+    this.registerEvent(this.app.workspace.on("file-open", (file) => {
       for (const session of this.sessions.values()) void session.flush();
-      this.scheduleDebouncedScan();
+      void this.vaultDebugLog.writeUrgent("info", "file-open", {
+        path: file?.path ?? null,
+        extension: file?.extension ?? null,
+        mobile: Platform.isMobile,
+        phone: Platform.isPhone
+      });
+      this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100);
     }));
-    this.app.workspace.onLayoutReady(() => this.scheduleDebouncedScan());
+    this.app.workspace.onLayoutReady(() => {
+      void this.vaultDebugLog.writeUrgent("info", "layout-ready", {
+        mobile: Platform.isMobile,
+        phone: Platform.isPhone
+      });
+      this.scheduleDebouncedScan();
+    });
     this.registerDomEvent(window, "beforeunload", () => {
       this.emergencyPersistAllSessions();
     });
     this.registerDomEvent(window, "keydown", (event) => {
       this.activeSession()?.handleKeyDown(event);
     }, { capture: true });
+    void this.vaultDebugLog.writeUrgent("info", "plugin-onload", {
+      mobile: Platform.isMobile,
+      phone: Platform.isPhone,
+      vaultDebugLog: this.inkSettings.vaultDebugLog
+    });
+  }
+
+  /** Catch uncaught errors before the WebView dies so mobile crash logs still land on disk. */
+  private registerCrashBreadcrumbs(): void {
+    this.registerDomEvent(window, "error", (event) => {
+      void this.vaultDebugLog.writeUrgent("error", "window-error", {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        stack: event.error instanceof Error ? event.error.stack ?? null : null,
+        mobile: Platform.isMobile,
+        phone: Platform.isPhone
+      });
+    });
+    this.registerDomEvent(window, "unhandledrejection", (event) => {
+      const reason: unknown = event.reason;
+      void this.vaultDebugLog.writeUrgent("error", "unhandled-rejection", {
+        message: reason instanceof Error ? reason.message : String(reason),
+        stack: reason instanceof Error ? reason.stack ?? null : null,
+        mobile: Platform.isMobile,
+        phone: Platform.isPhone
+      });
+    });
+  }
+
+  private async logWorkspacePulse(reason: string, leaf?: WorkspaceLeaf | null): Promise<void> {
+    if (!this.inkSettings.vaultDebugLog) return;
+    const pdfLeaves = this.app.workspace.getLeavesOfType("pdf");
+    if (pdfLeaves.length === 0 && reason === "layout-change") return;
+    const leafFile = leaf?.view instanceof FileView ? leaf.view.file : null;
+    const file = leafFile ?? this.app.workspace.getActiveFile();
+    await this.vaultDebugLog.writeUrgent("info", "workspace-pulse", {
+      reason,
+      pdfLeafCount: pdfLeaves.length,
+      sessions: this.sessions.size,
+      attachingLeaves: this.attachingLeaves.size,
+      activePath: file?.path ?? null,
+      activeExtension: file?.extension ?? null,
+      mobile: Platform.isMobile,
+      phone: Platform.isPhone
+    });
   }
 
   onunload(): void {
@@ -263,6 +391,13 @@ export default class NativePdfInkPlugin extends Plugin {
 
   private async scanPdfLeaves(): Promise<void> {
     const leaves = this.app.workspace.getLeavesOfType("pdf");
+    await this.vaultDebugLog.writeUrgent("info", "scan-pdf-leaves", {
+      pdfLeafCount: leaves.length,
+      sessions: this.sessions.size,
+      attachingLeaves: this.attachingLeaves.size,
+      mobile: Platform.isMobile,
+      phone: Platform.isPhone
+    });
     const live = new Set(leaves);
     const livePaths = new Set<string>();
     for (const [leaf, session] of [...this.sessions]) {
@@ -285,15 +420,35 @@ export default class NativePdfInkPlugin extends Plugin {
       const file = view instanceof FileView ? view.file : (view as FileView).file;
       if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
       livePaths.add(file.path);
-      if (!this.attachRetry.canAttempt(file.path)) continue;
+      if (!this.attachRetry.canAttempt(file.path)) {
+        await this.vaultDebugLog.writeUrgent("info", "session attach cooling", {
+          document: file.path,
+          mobile: Platform.isMobile
+        });
+        continue;
+      }
 
       this.attachingLeaves.add(leaf);
       let session: ViewerInkSession | undefined;
       try {
+        await this.vaultDebugLog.writeUrgent("info", "session attach prepare", {
+          document: file.path,
+          mobile: Platform.isMobile,
+          phone: Platform.isPhone,
+          hostChildCount: view.containerEl?.childElementCount ?? null
+        });
+        // Let Obsidian Mobile finish mounting the PDF shell before we touch it.
+        if (Platform.isMobile) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+          if (this.unloaded) continue;
+        }
+        await this.vaultDebugLog.writeUrgent("info", "session attach resolve-viewer", {
+          document: file.path
+        });
         const privateViewer = await PdfViewerCompatibility.resolvePrivateViewerFromPdfView(view);
         // Large textbooks on phone need a longer first paint before page nodes exist.
         const pageWaitMs = Platform.isMobile ? 12_000 : 5_000;
-        this.vaultDebugLog.write("info", "session attach begin", {
+        await this.vaultDebugLog.writeUrgent("info", "session attach begin", {
           document: file.path,
           mobile: Platform.isMobile,
           phone: Platform.isPhone,
@@ -305,6 +460,9 @@ export default class NativePdfInkPlugin extends Plugin {
           this.sessionAdapterCallbacks(() => session),
           privateViewer ? { privateViewer, pageWaitMs } : { pageWaitMs }
         );
+        await this.vaultDebugLog.writeUrgent("info", "session attach adapter-ok", {
+          document: file.path
+        });
         session = await this.createInkSession(file, adapter, {
           onDetached: () => {
             const current = this.sessions.get(leaf);
@@ -322,17 +480,25 @@ export default class NativePdfInkPlugin extends Plugin {
         }
         this.sessions.set(leaf, session);
         this.attachRetry.clear(file.path);
-        this.vaultDebugLog.write("info", "session attach ok", {
+        await this.vaultDebugLog.writeUrgent("info", "session attach ok", {
           document: file.path,
           mobile: Platform.isMobile
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const pagesMissing = message.includes("PDF page nodes missing");
-        const preview = PdfViewerCompatibility.direct(view.containerEl);
-        const dom = describePdfPageDom(preview.viewerRoot);
+        let dom: Record<string, unknown> = { viewerRoot: false };
+        try {
+          const preview = PdfViewerCompatibility.direct(view.containerEl);
+          dom = describePdfPageDom(preview.viewerRoot);
+        } catch (domError) {
+          dom = {
+            viewerRoot: false,
+            domDescribeError: domError instanceof Error ? domError.message : String(domError)
+          };
+        }
         console.warn("[Handwriting Natively] PDF view not ready or incompatible", error);
-        this.vaultDebugLog.write("warn", "session attach failed", {
+        await this.vaultDebugLog.writeUrgent("warn", "session attach failed", {
           document: file.path,
           error: message,
           stack: error instanceof Error ? error.stack ?? null : null,
@@ -486,6 +652,58 @@ export default class NativePdfInkPlugin extends Plugin {
     register("cut-selected-pdf-ink", "Cut selected PDF ink", "cut");
     register("paste-selected-pdf-ink", "Paste PDF ink", "paste");
     register("select-all-pdf-ink", "Select all PDF ink", "selectAll");
+  }
+
+  /**
+   * Palette-only clear commands (no default hotkeys). Bind in Settings → Hotkeys.
+   * Clears freehand ink strokes only; text annotations are left alone.
+   */
+  private registerClearDrawingCommands(): void {
+    const runClear = (scope: "all" | "selected" | readonly number[]): void => {
+      const session = this.activeSession();
+      if (!session?.canClearFreehandDrawings()) {
+        new Notice("Open a PDF with handwriting annotations first.");
+        return;
+      }
+      const cleared = session.clearFreehandDrawings(scope);
+      if (cleared === 0) new Notice("No freehand drawings to clear.");
+      else new Notice(`Cleared ${cleared} freehand drawing${cleared === 1 ? "" : "s"}.`);
+    };
+
+    this.addCommand({
+      id: "clear-all-pdf-freehand",
+      name: "Clear all freehand drawings",
+      checkCallback: (checking) => {
+        const session = this.activeSession();
+        if (!session?.canClearFreehandDrawings()) return false;
+        if (!checking) runClear("all");
+        return true;
+      }
+    });
+
+    this.addCommand({
+      id: "clear-selected-pages-pdf-freehand",
+      name: "Clear freehand drawings on selected pages",
+      checkCallback: (checking) => {
+        const session = this.activeSession();
+        if (!session?.canClearFreehandDrawings()) return false;
+        if (!checking) runClear("selected");
+        return true;
+      }
+    });
+
+    this.addCommand({
+      id: "clear-specific-pages-pdf-freehand",
+      name: "Clear freehand drawings on specific pages",
+      checkCallback: (checking) => {
+        const session = this.activeSession();
+        if (!session?.canClearFreehandDrawings()) return false;
+        if (!checking) {
+          new PageRangePromptModal(this.app, (pages) => runClear(pages)).open();
+        }
+        return true;
+      }
+    });
   }
 
   private async saveToolPreferences(preferences: ToolPreferences): Promise<void> {

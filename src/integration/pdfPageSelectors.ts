@@ -43,36 +43,40 @@ export function ensurePdfPageNumbers(root: HTMLElement): number {
 
 /**
  * Wait until at least one numbered page node exists under `root`.
- * Mobile PDF.js often mounts the viewer shell before page nodes.
+ *
+ * Uses a cleared setTimeout chain (not MutationObserver / setInterval): observing
+ * a large PDF.js tree on Obsidian Mobile can OOM the WebView, and raw setInterval
+ * must live behind Plugin.registerInterval.
  */
 export function waitForPdfPageNodes(root: HTMLElement, timeoutMs = 5_000): Promise<boolean> {
+  if (queryPdfPageNodes(root).length > 0) return Promise.resolve(true);
+  ensurePdfPageNumbers(root);
   if (queryPdfPageNodes(root).length > 0) return Promise.resolve(true);
 
   return new Promise((resolve) => {
     let settled = false;
+    let timer: number | undefined;
+    const started = Date.now();
     const finish = (ok: boolean): void => {
       if (settled) return;
       settled = true;
-      observer.disconnect();
-      window.clearTimeout(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
       resolve(ok);
     };
 
-    const observer = new MutationObserver(() => {
+    const tick = (): void => {
       ensurePdfPageNumbers(root);
-      if (queryPdfPageNodes(root).length > 0) finish(true);
-    });
-    observer.observe(root, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["data-page-number", "class"]
-    });
-
-    const timer = window.setTimeout(() => {
-      ensurePdfPageNumbers(root);
-      finish(queryPdfPageNodes(root).length > 0);
-    }, timeoutMs);
+      if (queryPdfPageNodes(root).length > 0) {
+        finish(true);
+        return;
+      }
+      if (Date.now() - started >= timeoutMs) {
+        finish(queryPdfPageNodes(root).length > 0);
+        return;
+      }
+      timer = window.setTimeout(tick, 250);
+    };
+    timer = window.setTimeout(tick, 250);
   });
 }
 

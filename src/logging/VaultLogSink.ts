@@ -1,4 +1,4 @@
-export type VaultLogLevel = "info" | "warn";
+export type VaultLogLevel = "info" | "warn" | "error";
 
 export interface VaultLogSink {
   write(level: VaultLogLevel, event: string, payload?: Record<string, unknown>): void;

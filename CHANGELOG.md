@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.17 — 2026-07-21
+
+- Crash breadcrumbs: urgent vault-log flush, `file-open` / `scan-pdf-leaves` / attach-step events, window error handlers.
+- Wait for PDF pages via polling (no MutationObserver on large mobile PDF trees).
+- Defer mobile attach 500ms after prepare so Obsidian can finish mounting the PDF shell.
+
+- Add palette commands (no default hotkeys) to clear freehand drawings: all pages, selected pages (or current page), and specific pages via prompt.
+
 ## 0.1.16 — 2026-07-21
 
 - Stamp `data-page-number` on mobile page shells that mount without it; accept bare `[data-page-number]` nodes.

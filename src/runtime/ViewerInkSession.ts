@@ -1493,6 +1493,67 @@ export class ViewerInkSession {
     else if (action === "delete") this.deleteSelection();
   }
 
+  /** True when this session can run a freehand clear command. */
+  canClearFreehandDrawings(): boolean {
+    return !this.destroyed && this.isAttached();
+  }
+
+  /**
+   * Remove freehand ink strokes (not text annotations).
+   * - `"all"`: every page
+   * - `"selected"`: pages that currently have selected strokes, else the current viewer page
+   * - number[]: explicit 1-based pages
+   * Returns how many strokes were cleared.
+   */
+  clearFreehandDrawings(scope: "all" | "selected" | readonly number[]): number {
+    if (!this.canClearFreehandDrawings()) return 0;
+
+    let pages: number[];
+    if (scope === "all") {
+      pages = [...new Set(this.ink.all().map((stroke) => stroke.page))];
+    } else if (scope === "selected") {
+      this.reconcileSelection();
+      const fromSelection = new Set(this.selected.map((stroke) => stroke.page));
+      if (this.selectionPage != null) fromSelection.add(this.selectionPage);
+      pages = fromSelection.size > 0
+        ? [...fromSelection]
+        : [this.options.adapter.getViewState().pageNumber];
+    } else {
+      pages = [...new Set(scope.filter((page) => Number.isFinite(page) && page >= 1))];
+    }
+
+    const pageSet = new Set(pages);
+    const strokes = this.ink.all().filter((stroke) => pageSet.has(stroke.page));
+    if (strokes.length === 0) {
+      this.logger.textTool("clear-freehand-skipped", {
+        scope: scope === "all" || scope === "selected" ? scope : "pages",
+        pages,
+        reason: "no-strokes"
+      });
+      return 0;
+    }
+
+    const dirtyPages = [...new Set(strokes.map((stroke) => stroke.page))].sort((a, b) => a - b);
+    this.clearSelection({ refresh: false });
+    this.logger.textTool("clear-freehand", {
+      scope: scope === "all" || scope === "selected" ? scope : "pages",
+      pages: dirtyPages,
+      strokeCount: strokes.length
+    });
+    this.executeHistory({
+      label: dirtyPages.length === 1
+        ? `Clear freehand on page ${dirtyPages[0]}`
+        : `Clear freehand on ${dirtyPages.length} pages`,
+      execute: () => {
+        for (const stroke of strokes) this.ink.remove(stroke.id);
+      },
+      undo: () => {
+        for (const stroke of strokes) this.ink.add(stroke);
+      }
+    }, dirtyPages);
+    return strokes.length;
+  }
+
   private applyTextHistory(action: "undo" | "redo"): void {
     const before = this.texts.all().length;
     const applied = action === "undo" ? this.history.undo() : this.history.redo();
