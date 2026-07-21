@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.19 — 2026-07-21
+
+- Mobile: debounce scroll/pagechanging ink remounts; skip work when mount set unchanged.
+- Mobile: mount current page ±1 via O(1) page lookup (no full-DOM rect scans on scroll).
+- Suppress full ink remount during zoom gesture and CSS handoff; flush remount after release.
+- Draw mode: finger draws instead of panning; touch pan only when draw is off.
+- Mobile: ink toolbar defaults to the left sidebar when placement is PDF toolbar (`main`).
+
 ## 0.1.18 — 2026-07-21
 
 - Mobile: mount ink canvases only for viewport pages (±1) so large textbooks cannot OOM Obsidian Mobile during attach.

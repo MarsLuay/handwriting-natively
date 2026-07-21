@@ -99,7 +99,15 @@ export class PointerRouter {
     const tool = this.callbacks.activeTool();
     if (event.pointerType === "touch") {
       if (this.palmPolicy.shouldIgnore(event)) return "ignored";
-      return this.touches.size + (this.touches.has(event.pointerId) ? 0 : 1) >= 2 ? "touch-zoom-pan" : "touch-pan";
+      const multi = this.touches.size + (this.touches.has(event.pointerId) ? 0 : 1) >= 2;
+      if (multi) return "touch-zoom-pan";
+      // Draw mode: finger inks (ViewerMousePan releases touch when draw is on).
+      if (this.callbacks.drawingEnabled()) {
+        if (tool === "text") return "text";
+        if (tool === "eraser" || tool === "lasso") return "edit";
+        if (isInkDrawTool(tool)) return "draw";
+      }
+      return "touch-pan";
     }
     if (!this.callbacks.drawingEnabled()) {
       if (isDragPanPointer(event) && this.callbacks.scrollRoot?.()) {

@@ -25,6 +25,8 @@ export interface ObsidianPdfAdapter {
   readonly host: HTMLElement;
   readonly root: HTMLElement;
   pages(): PdfPageInfo[];
+  /** O(1) page lookup — prefer over `pages()` when only a few mounts are needed. */
+  page(pageNumber: number): PdfPageInfo | undefined;
   getViewState(): PdfViewState;
   restoreViewState(state: PdfViewState): void;
   scrollElement(): HTMLElement;

@@ -73,6 +73,10 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     return this.locator.pages();
   }
 
+  page(pageNumber: number): PdfPageInfo | undefined {
+    return this.locator.page(pageNumber);
+  }
+
   setBoostedZoom(enabled: boolean): void {
     if (enabled && !this.zoomBoost) this.zoomBoost = installPdfZoomBoost(this.compatibility.privateViewer);
     if (!enabled && this.zoomBoost) {

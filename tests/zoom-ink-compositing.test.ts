@@ -127,6 +127,9 @@ class ZoomAdapter implements ObsidianPdfAdapter {
       element: this.pageElement
     }];
   }
+  page(pageNumber: number): PdfPageInfo | undefined {
+    return this.pages().find((page) => page.pageNumber === pageNumber);
+  }
 
   getViewState(): PdfViewState {
     return { pageNumber: 1, scrollFraction: 0, scale: this.scale, rotation: 0 };

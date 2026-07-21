@@ -26,7 +26,7 @@ export function isFingerPanPointer(event: Pick<PointerEvent, "pointerType" | "bu
 export interface ViewerMousePanCallbacks {
   /** Mouse/stylus drag-scroll when Draw is off. */
   enabled(): boolean;
-  /** Finger pan — GoodNotes-style; defaults to always on. */
+  /** Finger pan when draw is off; defaults to on if omitted. */
   touchPanEnabled?(): boolean;
   scrollRoot(): HTMLElement;
   withinTarget?(target: EventTarget | null): boolean;
@@ -136,13 +136,13 @@ export class ViewerMousePan {
       this.callbacks.onPan?.("skip", event, { reason: "toolbar", target: targetLabel(event.target) });
       return;
     }
-    // Mouse/stylus on PDF text → native selection. Finger still pans (GoodNotes).
+    // Mouse/stylus on PDF text → native selection. Finger still pans when touch pan is enabled.
     if (!finger && isSelectablePdfTarget(event.target)) {
       this.callbacks.onPan?.("skip", event, { reason: "selectable", target: targetLabel(event.target) });
       return;
     }
 
-    // Finger always pans (GoodNotes). Mouse/stylus only when Draw is off.
+    // Finger pans when touchPanEnabled (draw off). Mouse/stylus only when Draw is off.
     if (finger) {
       if (!this.touchPanAllowed()) {
         this.callbacks.onPan?.("skip", event, { reason: "touch-disabled", target: targetLabel(event.target) });

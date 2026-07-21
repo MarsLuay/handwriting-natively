@@ -179,7 +179,7 @@ describe("viewer mouse pan", () => {
     scroller.remove();
   });
 
-  it("always pans with one finger even when mouse drag-scroll is disabled", () => {
+  it("pans with one finger when touch pan is enabled even if mouse drag-scroll is off", () => {
     let scrollTop = 100;
     let scrollLeft = 50;
     const scroller = document.createElement("div");
@@ -217,6 +217,39 @@ describe("viewer mouse pan", () => {
     // Grab feel: finger down/left → page follows → scrollTop down, scrollLeft up.
     expect(scrollTop).toBe(60);
     expect(scrollLeft).toBe(80);
+    pan.destroy();
+    scroller.remove();
+  });
+
+  it("does not pan with finger when touch pan is disabled (draw mode)", () => {
+    let scrollTop = 100;
+    const phases: MousePanPhase[] = [];
+    const scroller = document.createElement("div");
+    Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(scroller, "scrollTop", {
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = value; }
+    });
+    const canvas = document.createElement("canvas");
+    scroller.append(canvas);
+    document.body.append(scroller);
+    Object.assign(canvas, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
+
+    const pan = new ViewerMousePan(document, {
+      enabled: () => false,
+      touchPanEnabled: () => false,
+      scrollRoot: () => scroller,
+      withinTarget: (target) => target instanceof Node && scroller.contains(target),
+      captureElement: () => scroller,
+      onPan: (phase) => { phases.push(phase); }
+    });
+
+    canvas.dispatchEvent(pointer("pointerdown", canvas, 40, 100, 9, "touch"));
+    canvas.dispatchEvent(pointer("pointermove", canvas, 40, 140, 9, "touch"));
+    expect(scrollTop).toBe(100);
+    expect(phases).toContain("skip");
+    expect(phases).not.toContain("activate");
     pan.destroy();
     scroller.remove();
   });
