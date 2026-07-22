@@ -144,6 +144,11 @@ export interface PluginSettings {
   textEscapeAction: "save";
   sidecarFolder: string;
   mouseDragScroll: boolean;
+  /**
+   * When draw mode is on, route finger touch to ink/edit tools.
+   * Off (default): fingers keep native PDF scroll/pinch; stylus draws.
+   */
+  fingerDraw: boolean;
   simplifyStrokes: boolean;
   /** Advanced opt-in: raise Obsidian PDF viewer zoom from 10× to 25×. */
   boostedPdfZoom: boolean;
@@ -169,6 +174,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   textEscapeAction: "save",
   sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
   mouseDragScroll: true,
+  fingerDraw: false,
   simplifyStrokes: true,
   boostedPdfZoom: false,
   hideStylusAnnotationLabel: false,
@@ -282,6 +288,7 @@ export function mergeSettings(
     textEscapeAction: "save" as const,
     boostedPdfZoom: cleaned.boostedPdfZoom === true,
     hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,
+    fingerDraw: cleaned.fingerDraw === true,
     toolPreferences: {
       ...defaults.toolPreferences,
       ...savedToolPreferences,

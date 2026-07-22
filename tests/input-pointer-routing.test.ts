@@ -84,7 +84,7 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
-  it("routes one finger to draw when draw mode is on", () => {
+  it("keeps finger native when draw mode is on and finger draw is off", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -97,6 +97,39 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
       drawingEnabled: () => true,
+      fingerDrawEnabled: () => false,
+      onStart: starts,
+      onRoute: (route) => routes.push(route)
+    });
+    const finger = pointer("touch", 21);
+    element.dispatchEvent(finger);
+    expect(routes.at(-1)).toBe("touch-pan");
+    expect(finger.defaultPrevented).toBe(false);
+    expect(starts).not.toHaveBeenCalled();
+
+    const stylus = pointer("pen", 23, { pressure: 0.7 });
+    element.dispatchEvent(stylus);
+    expect(routes.at(-1)).toBe("draw");
+    expect(stylus.defaultPrevented).toBe(true);
+    expect(starts).toHaveBeenCalledOnce();
+    router.destroy();
+    element.remove();
+  });
+
+  it("routes one finger to draw when draw mode is on and finger draw is enabled", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const routes: string[] = [];
+    const starts = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      fingerDrawEnabled: () => true,
       onStart: starts,
       onRoute: (route) => routes.push(route)
     });

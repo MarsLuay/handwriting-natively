@@ -54,6 +54,13 @@ describe("safe defaults", () => {
     expect({ ...DEFAULT_SETTINGS, mouseDragScroll: false }.mouseDragScroll).toBe(false);
   });
 
+  it("keeps finger draw off by default and merges the opt-in", () => {
+    expect(DEFAULT_SETTINGS.fingerDraw).toBe(false);
+    expect(mergeSettings({}).fingerDraw).toBe(false);
+    expect(mergeSettings({ fingerDraw: true }).fingerDraw).toBe(true);
+    expect(mergeSettings({ fingerDraw: false }).fingerDraw).toBe(false);
+  });
+
   it("enables stroke simplification by default", () => {
     expect(DEFAULT_SETTINGS.simplifyStrokes).toBe(true);
     expect({ ...DEFAULT_SETTINGS, simplifyStrokes: false }.simplifyStrokes).toBe(false);

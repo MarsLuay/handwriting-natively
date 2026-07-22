@@ -2,13 +2,16 @@
 
 ## Unreleased
 
-- Vault debug log default path is `debug.md` (opens as a note); existing `debug.log` settings migrate.
+## 0.1.21 — 2026-07-22
+
+- Draw mode default: fingers keep native scroll/pinch; stylus draws. Opt-in setting **Draw with finger** restores finger inking.
 
 ## 0.1.20 — 2026-07-22
 
 - Mobile: leave one-finger scroll to the native PDF viewer when draw is off (no custom touch `scrollBy` pan).
 - Mouse/stylus drag-scroll still uses plugin pan when draw is off and the setting is enabled.
 - Mouse/stylus: defer pointer capture until the drag activates; allow horizontal pan after activation when zoomed.
+- Vault debug log default path is `debug.md` (opens as a note); existing `debug.log` settings migrate.
 
 ## 0.1.19 — 2026-07-21
 

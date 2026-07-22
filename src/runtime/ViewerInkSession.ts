@@ -1996,6 +1996,7 @@ export class ViewerInkSession {
     return new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
       drawingEnabled: () => this.drawEnabled,
+      fingerDrawEnabled: () => this.options.settings.fingerDraw,
       rightMouseEraserEnabled: () => this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton,
       onStylusEraserStart: () => {
         this.temporaryStylusEraserPointers += 1;

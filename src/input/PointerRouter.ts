@@ -35,6 +35,8 @@ interface PanGesture {
 export interface PointerRouterCallbacks {
   activeTool(): ToolId;
   drawingEnabled(): boolean;
+  /** When false/omitted, fingers stay native even if draw mode is on. */
+  fingerDrawEnabled?(): boolean;
   rightMouseEraserEnabled?(): boolean;
   onStylusEraserStart?(): void;
   onStylusEraserEnd?(): void;
@@ -101,8 +103,8 @@ export class PointerRouter {
       if (this.palmPolicy.shouldIgnore(event)) return "ignored";
       const multi = this.touches.size + (this.touches.has(event.pointerId) ? 0 : 1) >= 2;
       if (multi) return "touch-zoom-pan";
-      // Draw mode: finger inks (ViewerMousePan releases touch when draw is on).
-      if (this.callbacks.drawingEnabled()) {
+      // Opt-in: finger inks when draw mode is on. Default leaves scroll/pinch native.
+      if (this.callbacks.drawingEnabled() && (this.callbacks.fingerDrawEnabled?.() ?? false)) {
         if (tool === "text") return "text";
         if (tool === "eraser" || tool === "lasso") return "edit";
         if (isInkDrawTool(tool)) return "draw";

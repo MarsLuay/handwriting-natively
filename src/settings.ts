@@ -147,6 +147,17 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         heading: "Drawing",
         items: [
           {
+            name: "Draw with finger",
+            desc: "When draw mode is on, finger touch draws (or erases / lassos) instead of scrolling. Off (default): fingers keep native scroll and pinch; stylus draws.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.fingerDraw).onChange(async (value) => {
+                  await this.persistPatch({ fingerDraw: value });
+                })
+              );
+            }
+          },
+          {
             name: "Simplify strokes on release",
             desc: "Snap finished ink to cleaner straight segments. Off keeps the exact path you drew.",
             render: (setting: Setting) => {
