@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.25 — 2026-07-27
+
+- Restore genuinely detached DOM creation for PDF toolbar rails so the sidebar mounts reliably in host and popout documents.
+- Prevent the lint autofix from replacing that required native DOM factory.
+
 ## 0.1.24 — 2026-07-27
 
 - Quarantine malformed annotation sidecars and recovery snapshots as timestamped `.corrupt-*` files, then open safely with clear recovery notices and logs.
