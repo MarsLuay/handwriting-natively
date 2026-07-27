@@ -1,33 +1,31 @@
 /**
- * Detached DOM nodes for Obsidian popouts. Document-level HTML helpers create
- * nodes in the supplied owner document without attaching them. SVG creation
- * uses the document's window helper because Document.createSvg may attach to
- * the document in some Obsidian hosts.
+ * Detached DOM nodes for Obsidian popouts.
+ *
+ * Do not use Obsidian's Document.createEl/createDiv/createSpan/createSvg
+ * helpers here: some host and popout documents attach their result immediately.
+ * These nodes must remain detached until the caller places them in the PDF
+ * chrome, otherwise sidebar mounting can fail before its rail is inserted.
  */
-type ObsidianWindow = Window & {
-  createSvg<K extends keyof SVGElementTagNameMap>(tag: K): SVGElementTagNameMap[K];
-};
-
 export function createDetachedEl<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
   tag: K
 ): HTMLElementTagNameMap[K] {
-  return doc.createEl(tag);
+  return doc.createElement(tag);
 }
 
 export function createDetachedDiv(doc: Document): HTMLDivElement {
-  return doc.createDiv();
+  return doc.createElement("div");
 }
 
 export function createDetachedSpan(doc: Document): HTMLSpanElement {
-  return doc.createSpan();
+  return doc.createElement("span");
 }
 
 export function createDetachedSvg(
   doc: Document,
   tag: keyof SVGElementTagNameMap
 ): SVGElement {
-  return (doc.win as ObsidianWindow).createSvg(tag);
+  return doc.createElementNS("http://www.w3.org/2000/svg", tag);
 }
 
 /** Prefer body; fall back to a connected host so attach cannot target `document`. */

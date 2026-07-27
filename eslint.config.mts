@@ -31,4 +31,12 @@ export default defineConfig([
       "obsidianmd/settings-tab/no-deprecated-display": "off",
     },
   },
+  {
+    // This factory must use native Document creation so callers receive a detached node.
+    // Obsidian helpers can attach it before the PDF sidebar chrome is ready.
+    files: ["src/vendor/createDetached.ts"],
+    rules: {
+      "obsidianmd/prefer-create-el": "off",
+    },
+  },
 ]);
