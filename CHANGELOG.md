@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.23 — 2026-07-27
+
+- Use Obsidian detached-element helpers while keeping popout SVG creation safe.
+- Remove the Draw-mode `!important` override in favor of PDF-viewer-specific selectors.
+
 ## 0.1.22 — 2026-07-27
 
 - Add assignable, unbound hotkey commands for pen, eraser, laser pointer, lasso, text, undo, and redo.
