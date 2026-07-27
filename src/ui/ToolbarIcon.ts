@@ -1,6 +1,6 @@
 import { createDetachedSpan, createDetachedSvg } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
-export type ToolbarIcon = "pen" | "pencil" | "highlighter" | "text" | "eraser" | "palette" | "lasso" | "laser" | "undo" | "redo" | "more" | "save" | "chevron";
+export type ToolbarIcon = "pen" | "pencil" | "highlighter" | "text" | "eraser" | "palette" | "lasso" | "laser" | "undo" | "redo" | "plus" | "more" | "save" | "chevron";
 
 const PATHS: Record<ToolbarIcon, readonly string[]> = {
   pen: ["M12 19 19 12 22 15 15 22 11 23 12 19Z", "M18 13 16.5 5.5 2 2 5.5 16.5 13 18", "M2 2 9.5 9.5"],
@@ -25,6 +25,7 @@ const PATHS: Record<ToolbarIcon, readonly string[]> = {
   ],
   undo: ["M9 14 4 9 9 4", "M4 9H14.5A5.5 5.5 0 0 1 20 14.5 5.5 5.5 0 0 1 14.5 20H12"],
   redo: ["M15 14 20 9 15 4", "M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H12"],
+  plus: ["M12 5V19", "M5 12H19"],
   more: ["M5 12H5.01", "M12 12H12.01", "M19 12H19.01"],
   save: ["M5 21H19A2 2 0 0 0 21 19V7L17 3H5A2 2 0 0 0 3 5V19A2 2 0 0 0 5 21Z", "M7 3V8H17V3", "M7 21V14H17V21"],
   chevron: ["M7 10 12 15 17 10"]

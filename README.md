@@ -11,6 +11,8 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 - Pen, graphite pencil, highlighter, laser pointer (fades away, not saved), circular eraser, and lasso tools with a compact Draw toolbar
 - Draw mode opt-in so normal PDF mouse/trackpad behavior stays intact until you annotate
 - Autosave, recovery, and explicit Save; commands for save, export, and select-all ink (`save-active-pdf-annotations`, `export-active-annotated-pdf`, `select-all-pdf-ink`)
+- Commands to create a handwritten PDF, add a matching blank page, and export selected ink as SVG (`create-handwritten-pdf`, `add-page-to-active-pdf`, `export-selected-pdf-ink-as-svg`)
+- Assignable Hotkeys commands to switch to Pen, Eraser, Laser Pointer, Lasso, or Text (`select-pdf-pen`, `select-pdf-eraser`, `select-pdf-laser-pointer`, `select-pdf-lasso`, `select-pdf-text`), plus undo and redo (`undo-pdf-annotation`, `redo-pdf-annotation`)
 - Clear freehand strokes only (no default hotkeys): all pages, selected/current pages, or a page range prompt (`clear-all-pdf-freehand`, `clear-selected-pages-pdf-freehand`, `clear-specific-pages-pdf-freehand`)
 - Desktop and mobile PDF adapters without telemetry or hosted services
 

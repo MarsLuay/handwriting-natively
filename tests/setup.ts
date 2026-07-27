@@ -79,10 +79,33 @@ function installCreateElHelpers(proto: typeof Node.prototype): void {
 
 installCreateElHelpers(Node.prototype);
 
+function installWindowCreateElHelpers(target: Window): void {
+  Object.defineProperty(target, "createEl", {
+    configurable: true,
+    writable: true,
+    value(this: Window, tag: string, o?: DomOptions) {
+      const el = this.document.createElement(tag);
+      applyDomOptions(el, o);
+      return el;
+    }
+  });
+  Object.defineProperty(target, "createDiv", {
+    configurable: true,
+    writable: true,
+    value(this: Window, o?: DomOptions) {
+      return (this as Window & { createEl: (tag: string, options?: DomOptions) => HTMLElement }).createEl("div", o);
+    }
+  });
+}
+
+installWindowCreateElHelpers(window);
+
 beforeEach(() => {
   (globalThis as typeof globalThis & { activeDocument: Document; activeWindow: Window }).activeDocument =
     globalThis.document;
   (globalThis as typeof globalThis & { activeDocument: Document; activeWindow: Window }).activeWindow =
     globalThis.window;
+  Object.defineProperty(document, "win", { configurable: true, value: window });
   installCreateElHelpers(Node.prototype);
+  installWindowCreateElHelpers(window);
 });

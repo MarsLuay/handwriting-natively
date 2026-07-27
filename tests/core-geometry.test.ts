@@ -15,6 +15,28 @@ describe("coordinates and geometry", () => {
     expect(mapper.toPdf(viewport)).toEqual({ x: 25, y: 50 });
   });
 
+  it.each<[PageRotation, { x: number; y: number }]>([
+    [0, { x: 55, y: 517 }],
+    [90, { x: 80, y: 67 }],
+    [180, { x: 205, y: 97 }],
+    [270, { x: 430, y: 247 }]
+  ])("uses exact non-uniform rendered axes at rotation %i", (rotation, expected) => {
+    const mapper = new PdfCoordinateMapper({
+      width: 100,
+      height: 200,
+      scale: 2,
+      scaleX: 2.5,
+      scaleY: 3,
+      rotation,
+      offsetX: 5,
+      offsetY: 7
+    });
+    const source = { x: 20, y: 30 };
+    const viewport = mapper.toViewport(source);
+    expect(viewport).toEqual(expected);
+    expect(mapper.toPdf(viewport)).toEqual(source);
+  });
+
   it("uses expected rotated viewport axes", () => {
     expect(new PdfCoordinateMapper({ width: 100, height: 200, scale: 1, rotation: 90 }).toViewport({ x: 20, y: 30 })).toEqual({ x: 30, y: 20 });
     expect(new PdfCoordinateMapper({ width: 100, height: 200, scale: 1, rotation: 270 }).toViewport({ x: 20, y: 30 })).toEqual({ x: 170, y: 80 });

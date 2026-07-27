@@ -16,6 +16,12 @@ describe("HighlighterTool", () => {
     expect(soft).toBeCloseTo(prefs.width, 5);
   });
 
+  it("scales its minimum width with the viewport", () => {
+    const tiny = { ...DEFAULT_SETTINGS.toolPreferences.highlighter, width: 0.01 };
+    const point = { x: 0, y: 0, pressure: 0.5, time: 0 };
+    expect(highlighterSampleWidth(tiny, point, 2)).toBeCloseTo(highlighterSampleWidth(tiny, point) * 2, 8);
+  });
+
   it("thins slightly when pressure sensitivity is on", () => {
     const prefs = {
       ...DEFAULT_SETTINGS.toolPreferences.highlighter,
@@ -25,6 +31,18 @@ describe("HighlighterTool", () => {
     const soft = highlighterSampleWidth(prefs, { x: 0, y: 0, pressure: 0.35, time: 0 });
     const hard = highlighterSampleWidth(prefs, { x: 0, y: 0, pressure: 1, time: 0 });
     expect(hard).toBeGreaterThan(soft);
+  });
+
+  it("preserves calibrated light pressure while retaining its geometry floor", () => {
+    const prefs = {
+      ...DEFAULT_SETTINGS.toolPreferences.highlighter,
+      pressureSensitivity: true,
+      thinning: 0.9,
+      width: 20
+    };
+    const zero = highlighterSampleWidth(prefs, { x: 0, y: 0, pressure: 0, time: 0 });
+    const light = highlighterSampleWidth(prefs, { x: 0, y: 0, pressure: 0.2, time: 0 });
+    expect(light).toBeGreaterThan(zero);
   });
 
   it("builds segment thicknesses for export", () => {

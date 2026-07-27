@@ -7,6 +7,7 @@ function pointer(type: string, pointerId: number, extra: Record<string, unknown>
   Object.defineProperties(event, {
     pointerType: { value: type }, pointerId: { value: pointerId }, button: { value: extra.button ?? 0 },
     buttons: { value: extra.buttons ?? 1 }, pressure: { value: extra.pressure ?? 0.5 },
+    isPrimary: { value: extra.isPrimary ?? true },
     tiltX: { value: extra.tiltX ?? 0 }, tiltY: { value: extra.tiltY ?? 0 },
     width: { value: extra.width ?? 1 }, height: { value: extra.height ?? 1 },
     clientX: { value: extra.clientX ?? 10 }, clientY: { value: extra.clientY ?? 20 },
@@ -75,7 +76,7 @@ describe("PointerRouter", () => {
     const routes: string[] = [];
     const router = new PointerRouter(element, { activeTool: () => "pen", drawingEnabled: () => false, onRoute: (route) => routes.push(route) });
     const first = pointer("touch", 10);
-    const second = pointer("touch", 11);
+    const second = pointer("touch", 11, { isPrimary: false });
     element.dispatchEvent(first);
     element.dispatchEvent(second);
     expect(routes).toEqual(["touch-pan", "touch-zoom-pan"]);
@@ -84,7 +85,7 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
-  it("keeps finger native when draw mode is on and finger draw is off", () => {
+  it("routes a finger to Draw without a second hidden preference", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -97,39 +98,6 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
       drawingEnabled: () => true,
-      fingerDrawEnabled: () => false,
-      onStart: starts,
-      onRoute: (route) => routes.push(route)
-    });
-    const finger = pointer("touch", 21);
-    element.dispatchEvent(finger);
-    expect(routes.at(-1)).toBe("touch-pan");
-    expect(finger.defaultPrevented).toBe(false);
-    expect(starts).not.toHaveBeenCalled();
-
-    const stylus = pointer("pen", 23, { pressure: 0.7 });
-    element.dispatchEvent(stylus);
-    expect(routes.at(-1)).toBe("draw");
-    expect(stylus.defaultPrevented).toBe(true);
-    expect(starts).toHaveBeenCalledOnce();
-    router.destroy();
-    element.remove();
-  });
-
-  it("routes one finger to draw when draw mode is on and finger draw is enabled", () => {
-    const element = document.createElement("div");
-    document.body.append(element);
-    Object.assign(element, {
-      setPointerCapture: vi.fn(),
-      hasPointerCapture: () => true,
-      releasePointerCapture: vi.fn()
-    });
-    const routes: string[] = [];
-    const starts = vi.fn();
-    const router = new PointerRouter(element, {
-      activeTool: () => "pen",
-      drawingEnabled: () => true,
-      fingerDrawEnabled: () => true,
       onStart: starts,
       onRoute: (route) => routes.push(route)
     });
@@ -138,10 +106,102 @@ describe("PointerRouter", () => {
     expect(routes.at(-1)).toBe("draw");
     expect(finger.defaultPrevented).toBe(true);
     expect(starts).toHaveBeenCalledOnce();
-    const second = pointer("touch", 22);
+
+    const stylus = pointer("pen", 23, { pressure: 0.7 });
+    element.dispatchEvent(stylus);
+    expect(routes.at(-1)).toBe("draw");
+    expect(stylus.defaultPrevented).toBe(true);
+    expect(starts).toHaveBeenCalledTimes(2);
+    router.destroy();
+    element.remove();
+  });
+
+  it("keeps a second finger available for the router's multi-touch path", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const routes: string[] = [];
+    const starts = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onStart: starts,
+      onRoute: (route) => routes.push(route)
+    });
+    const finger = pointer("touch", 21);
+    element.dispatchEvent(finger);
+    expect(routes.at(-1)).toBe("draw");
+    expect(finger.defaultPrevented).toBe(true);
+    expect(starts).toHaveBeenCalledOnce();
+    const second = pointer("touch", 22, { isPrimary: false });
     element.dispatchEvent(second);
     expect(routes.at(-1)).toBe("touch-zoom-pan");
     expect(second.defaultPrevented).toBe(false);
+    router.destroy();
+    element.remove();
+  });
+
+  it("clears a native touch that ends on document before the next drawing touch", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    let drawingEnabled = false;
+    const routes: string[] = [];
+    const lifecycle = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => drawingEnabled,
+      onRoute: (route) => routes.push(route),
+      onTouchLifecycle: lifecycle
+    });
+
+    element.dispatchEvent(pointer("touch", 40));
+    expect(routes.at(-1)).toBe("touch-pan");
+    document.dispatchEvent(pointer("touch", 40, { eventType: "pointerup" }));
+    drawingEnabled = true;
+    element.dispatchEvent(pointer("touch", 41));
+
+    expect(routes.at(-1)).toBe("draw");
+    expect(lifecycle).toHaveBeenCalledWith("pointerup", expect.any(Event), { trackedBefore: 1, trackedAfter: 0 });
+    router.destroy();
+    element.remove();
+  });
+
+  it("finishes a routed touch whose pointerup lands outside a virtualized page", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const onEnd = vi.fn();
+    const lifecycle = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onEnd,
+      onTouchLifecycle: lifecycle
+    });
+
+    element.dispatchEvent(pointer("touch", 42));
+    document.dispatchEvent(pointer("touch", 42, { eventType: "pointerup" }));
+
+    expect(onEnd).toHaveBeenCalledWith(expect.any(Array), "draw", expect.any(Event));
+    expect(lifecycle).toHaveBeenCalledWith("pointerup", expect.any(Event), {
+      trackedBefore: 1,
+      trackedAfter: 0,
+      route: "draw",
+      completion: "document-end"
+    });
     router.destroy();
     element.remove();
   });
@@ -254,7 +314,7 @@ describe("PointerRouter", () => {
     expect(cursor?.isConnected).toBe(false);
   });
 
-  it("shows a small dot cursor for pen, pencil, highlighter, and laser in draw mode", async () => {
+  it("shows a small dot cursor while drawing and clears it when the pointer ends or loses capture", async () => {
     const element = document.createElement("div");
     element.getBoundingClientRect = () => ({
       x: 100, y: 50, left: 100, top: 50, right: 500, bottom: 650,
@@ -279,6 +339,16 @@ describe("PointerRouter", () => {
     expect(cursor?.style.left).toBe("130px");
     expect(cursor?.style.top).toBe("90px");
     expect(element.classList.contains("native-pdf-handwriting-has-draw-cursor")).toBe(true);
+
+    element.dispatchEvent(pointer("mouse", 8, { eventType: "pointerup", clientX: 130, clientY: 90, buttons: 0 }));
+    expect(cursor?.hidden).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-has-draw-cursor")).toBe(false);
+
+    element.dispatchEvent(pointer("pen", 8, { eventType: "pointermove", clientX: 130, clientY: 90, buttons: 0 }));
+    await nextAnimationFrame();
+    expect(cursor?.hidden).toBe(false);
+    element.dispatchEvent(pointer("pen", 8, { eventType: "lostpointercapture" }));
+    expect(cursor?.hidden).toBe(true);
 
     element.dispatchEvent(pointer("touch", 9, { eventType: "pointermove" }));
     expect(cursor?.hidden).toBe(true);

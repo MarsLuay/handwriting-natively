@@ -3,6 +3,17 @@ export type DrawingTool = "pen" | "pencil" | "highlighter";
 export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser";
 export type LassoType = "freeform" | "rectangle";
 export type ToolbarPlacement = "main" | "left" | "right";
+/** Which input source supplies pressure for new ink strokes. */
+export type PressureProfile = "auto" | "pen" | "mouse";
+/** Compact, device-agnostic controls applied to future pen strokes. */
+export interface PressureCalibration {
+  /** Visible start width when a pen reports near-zero pressure. */
+  initialFloor: number;
+  /** Multiplier before the pen response curve. */
+  gain: number;
+  /** 0 responds immediately; 1 favours a steadier line. */
+  smoothing: number;
+}
 export type SaveStatus = "saved" | "saving" | "dirty" | "failed";
 
 export const DRAWING_TOOLS = ["pen", "pencil", "highlighter"] as const;
@@ -143,12 +154,13 @@ export interface PluginSettings {
   /** Escape commits an active text annotation, per the selected workflow. */
   textEscapeAction: "save";
   sidecarFolder: string;
+  /** Vault-relative PDF template; page one is used. Empty means blank US Letter paper. */
+  pdfTemplatePath: string;
   mouseDragScroll: boolean;
-  /**
-   * When draw mode is on, route finger touch to ink/edit tools.
-   * Off (default): fingers keep native PDF scroll/pinch; stylus draws.
-   */
-  fingerDraw: boolean;
+  /** Auto uses stylus pressure when available; Pen/Mouse force that input model. */
+  pressureProfile: PressureProfile;
+  /** Device-pressure tuning; captured when each stroke starts. */
+  pressureCalibration: PressureCalibration;
   simplifyStrokes: boolean;
   /** Advanced opt-in: raise Obsidian PDF viewer zoom from 10× to 25×. */
   boostedPdfZoom: boolean;
@@ -173,8 +185,10 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   retryFailedAutosaves: true,
   textEscapeAction: "save",
   sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
+  pdfTemplatePath: "",
   mouseDragScroll: true,
-  fingerDraw: false,
+  pressureProfile: "auto",
+  pressureCalibration: { initialFloor: 0.08, gain: 1.15, smoothing: 0.78 },
   simplifyStrokes: true,
   boostedPdfZoom: false,
   hideStylusAnnotationLabel: false,
@@ -243,6 +257,8 @@ export function createDefaultSettings(configDir: string): PluginSettings {
 export const DEFAULT_SETTINGS: PluginSettings = createDefaultSettings("config");
 
 const LEGACY_SETTING_KEYS = [
+  // Draw mode is now the single source of truth for one-finger editing.
+  "fingerDraw",
   "yoloMode",
   "yoloConfirmed",
   "yoloAutosaveDelayMs",
@@ -269,6 +285,11 @@ export function mergeSettings(
     type: lassoRaw.type === "freeform" || lassoRaw.type === "rectangle" ? lassoRaw.type : "freeform" as const
   };
   const toolbarPlacement = cleaned.toolbarPlacement;
+  const pdfTemplatePath = typeof cleaned.pdfTemplatePath === "string"
+    ? cleaned.pdfTemplatePath.trim()
+    : defaults.pdfTemplatePath;
+  const pressureProfile = cleaned.pressureProfile;
+  const pressureCalibration = normalizePressureCalibration(cleaned.pressureCalibration, defaults.pressureCalibration);
   const savedToolPreferences = { ...(cleaned.toolPreferences ?? {}) } as Record<string, unknown>;
   delete savedToolPreferences.pan;
   // Shape recognition used to be a separate active tool. It is now an enabled-by-default
@@ -285,10 +306,14 @@ export function mergeSettings(
     toolbarPlacement: toolbarPlacement === "left" || toolbarPlacement === "right" || toolbarPlacement === "main"
       ? toolbarPlacement
       : defaults.toolbarPlacement,
+    pdfTemplatePath,
     textEscapeAction: "save" as const,
     boostedPdfZoom: cleaned.boostedPdfZoom === true,
     hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,
-    fingerDraw: cleaned.fingerDraw === true,
+    pressureProfile: pressureProfile === "pen" || pressureProfile === "mouse" || pressureProfile === "auto"
+      ? pressureProfile
+      : defaults.pressureProfile,
+    pressureCalibration,
     toolPreferences: {
       ...defaults.toolPreferences,
       ...savedToolPreferences,
@@ -356,6 +381,21 @@ function remapPluginDataPath(saved: string | undefined, fallback: string, config
     return `${root}${normalized.slice(index)}`;
   }
   return saved;
+}
+
+function normalizePressureCalibration(value: unknown, fallback: PressureCalibration): PressureCalibration {
+  const raw = value && typeof value === "object" ? value as Partial<PressureCalibration> : {};
+  return {
+    initialFloor: clampPressureCalibration(raw.initialFloor, 0, 0.3, fallback.initialFloor),
+    gain: clampPressureCalibration(raw.gain, 0.4, 2, fallback.gain),
+    smoothing: clampPressureCalibration(raw.smoothing, 0, 1, fallback.smoothing)
+  };
+}
+
+function clampPressureCalibration(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(max, Math.max(min, value))
+    : fallback;
 }
 
 function clampLaserMs(value: number, min: number, max: number, fallback: number): number {

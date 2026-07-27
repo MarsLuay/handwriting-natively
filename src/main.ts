@@ -22,8 +22,11 @@ import { ViewerInkSession } from "./runtime/ViewerInkSession";
 import { AttachRetryPolicy } from "./runtime/AttachRetryPolicy";
 import { ScanDebounce } from "./runtime/ScanDebounce";
 import { VaultDebugLog } from "./logging/VaultDebugLog";
+import { createPdfFromTemplate, deletePdfPage, insertMatchingBlankPage } from "./pdf/PdfNoteService";
 import { mergeSettings, NativePdfInkSettingTab } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
+import { createDocumentIdentity } from "./storage/DocumentIdentity";
+import { insertPageIntoSidecar, removePageFromSidecar } from "./storage/SidecarPageRemoval";
 import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
 import type { PluginSettings, ToolPreferences } from "./model";
@@ -153,6 +156,23 @@ export default class NativePdfInkPlugin extends Plugin {
       this.app.vault.configDir
     );
     this.addSettingTab(new NativePdfInkSettingTab(this.app, this));
+    this.addRibbonIcon("file-plus-2", "Create handwritten PDF", () => void this.createPdfNote());
+
+    this.addCommand({
+      id: "create-handwritten-pdf",
+      name: "Create handwritten PDF from template",
+      callback: () => void this.createPdfNote()
+    });
+    this.addCommand({
+      id: "add-page-to-active-pdf",
+      name: "Add page at end of active PDF",
+      checkCallback: (checking) => {
+        const session = this.activeSession();
+        if (!session) return false;
+        if (!checking) void session.addPageAt(Number.MAX_SAFE_INTEGER);
+        return true;
+      }
+    });
 
     this.addCommand({
       id: "save-active-pdf-annotations",
@@ -164,7 +184,22 @@ export default class NativePdfInkPlugin extends Plugin {
       name: "Export active annotated PDF",
       callback: () => void this.activeSession()?.exportCopy()
     });
+    this.addCommand({
+      id: "export-selected-pdf-ink-as-svg",
+      name: "Export selected PDF ink as SVG",
+      checkCallback: (checking) => {
+        const session = this.activeSession();
+        if (!session?.canExportSelectedInkSvg()) return false;
+        if (!checking) {
+          void session.exportSelectedInkSvg().catch((error) => {
+            new Notice(`SVG export failed: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }
+        return true;
+      }
+    });
     this.registerSelectionCommands();
+    this.registerToolbarHotkeyCommands();
     this.registerClearDrawingCommands();
     this.registerCrashBreadcrumbs();
 
@@ -202,6 +237,12 @@ export default class NativePdfInkPlugin extends Plugin {
     this.registerDomEvent(window, "keydown", (event) => {
       this.activeSession()?.handleKeyDown(event);
     }, { capture: true });
+    this.registerDomEvent(window, "keyup", (event) => {
+      for (const session of this.sessions.values()) session.handleKeyUp(event);
+    }, { capture: true });
+    this.registerDomEvent(window, "blur", () => {
+      for (const session of this.sessions.values()) session.clearTemporaryEraserModifier();
+    });
     void this.vaultDebugLog.writeUrgent("info", "plugin-onload", {
       mobile: Platform.isMobile,
       phone: Platform.isPhone,
@@ -355,6 +396,12 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousBoostedZoom = this.inkSettings.boostedPdfZoom;
     this.inkSettings = settings;
     await this.saveData(settings);
+    this.vaultDebugLog.write("info", "plugin settings saved", {
+      changedKeys: [
+        ...(previousPlacement !== settings.toolbarPlacement ? ["toolbarPlacement"] : []),
+        ...(previousBoostedZoom !== settings.boostedPdfZoom ? ["boostedPdfZoom"] : [])
+      ]
+    });
     if (previousPlacement !== settings.toolbarPlacement) {
       for (const session of this.allSessions()) session.remountToolbar();
     }
@@ -437,11 +484,6 @@ export default class NativePdfInkPlugin extends Plugin {
           phone: Platform.isPhone,
           hostChildCount: view.containerEl?.childElementCount ?? null
         });
-        // Let Obsidian Mobile finish mounting the PDF shell before we touch it.
-        if (Platform.isMobile) {
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
-          if (this.unloaded) continue;
-        }
         await this.vaultDebugLog.writeUrgent("info", "session attach resolve-viewer", {
           document: file.path
         });
@@ -592,9 +634,14 @@ export default class NativePdfInkPlugin extends Plugin {
       },
       readSourcePdf: async () => new Uint8Array(await this.app.vault.readBinary(file)),
       writeExport: async (name, bytes) => this.writeAndOpenExport(file, name, bytes),
+      onInsertPage: (pageNumber) => this.insertPageInPlace(file, pageNumber),
+      onDeletePage: (pageNumber) => this.deletePageInPlace(file, pageNumber),
+      writeSvgExport: async (name, svg) => this.writeSvgExport(file, name, svg),
       notice: (message) => new Notice(message),
       decideUnsaved: () => this.decideUnsaved(),
       mouseDragScrollEnabled: () => this.inkSettings.mouseDragScroll,
+      pressureProfile: () => this.inkSettings.pressureProfile,
+      pressureCalibration: () => this.inkSettings.pressureCalibration,
       simplifyStrokesEnabled: () => this.inkSettings.simplifyStrokes,
       toolbarPlacement: () => this.inkSettings.toolbarPlacement,
       vaultLog: this.vaultDebugLog,
@@ -660,6 +707,53 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   /**
+   * Palette commands intentionally have no default hotkeys. They become
+   * assignable in Settings → Hotkeys while remaining inactive outside a live
+   * Handwriting Natively PDF session.
+   */
+  private registerToolbarHotkeyCommands(): void {
+    const registerTool = (
+      id: string,
+      name: string,
+      tool: ToolPreferences["activeTool"]
+    ): void => {
+      this.addCommand({
+        id,
+        name,
+        checkCallback: (checking) => {
+          const session = this.activeSession();
+          if (!session?.canSelectTool()) return false;
+          if (!checking) session.selectTool(tool);
+          return true;
+        }
+      });
+    };
+    const registerHistory = (id: string, name: string, action: "undo" | "redo"): void => {
+      this.addCommand({
+        id,
+        name,
+        checkCallback: (checking) => {
+          const session = this.activeSession();
+          if (!session || !(action === "undo" ? session.canUndo() : session.canRedo())) return false;
+          if (!checking) {
+            if (action === "undo") session.undo();
+            else session.redo();
+          }
+          return true;
+        }
+      });
+    };
+
+    registerTool("select-pdf-pen", "Switch to pen", "pen");
+    registerTool("select-pdf-eraser", "Switch to eraser", "eraser");
+    registerTool("select-pdf-laser-pointer", "Switch to laser pointer", "laser");
+    registerTool("select-pdf-lasso", "Switch to lasso", "lasso");
+    registerTool("select-pdf-text", "Switch to text", "text");
+    registerHistory("undo-pdf-annotation", "Undo annotation", "undo");
+    registerHistory("redo-pdf-annotation", "Redo annotation", "redo");
+  }
+
+  /**
    * Palette-only clear commands (no default hotkeys). Bind in Settings → Hotkeys.
    * Clears freehand ink strokes only; text annotations are left alone.
    */
@@ -719,6 +813,157 @@ export default class NativePdfInkPlugin extends Plugin {
     await this.saveData(this.inkSettings);
   }
 
+  /** Read the configured vault PDF. Empty setting deliberately means blank Letter paper. */
+  private async readPdfTemplate(): Promise<Uint8Array | undefined> {
+    const configuredPath = this.inkSettings.pdfTemplatePath.trim();
+    if (!configuredPath) return undefined;
+    const path = normalizePath(configuredPath);
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") {
+      throw new Error(`Configured PDF template was not found: ${configuredPath}`);
+    }
+    return new Uint8Array(await this.app.vault.readBinary(file));
+  }
+
+  private templateLogValue(): string {
+    return this.inkSettings.pdfTemplatePath.trim() || "blank-us-letter";
+  }
+
+  /** Insert in place: source pages and every later sidecar page move together. */
+  private async insertPageInPlace(file: TFile, requestedPageNumber: number): Promise<number> {
+    const source = new Uint8Array(await this.app.vault.readBinary(file));
+    const inserted = await insertMatchingBlankPage(source, requestedPageNumber);
+    const files = createVaultFsTextAdapter(this.app.vault);
+    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
+    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
+    const documentId = createDocumentIdentity({ vaultPath: file.path }).id;
+    const sidecarBefore = await sidecars.load(documentId);
+    const recoveryBefore = await recovery.load(documentId);
+    const sidecarAfter = sidecarBefore ? insertPageIntoSidecar(sidecarBefore, inserted.pageNumber) : null;
+    const recoveryAfter = recoveryBefore ? insertPageIntoSidecar(recoveryBefore, inserted.pageNumber) : null;
+    let pdfWritten = false;
+    try {
+      await this.vaultDebugLog.writeUrgent("info", "pdf-page-insert-start", {
+        document: file.path,
+        page: inserted.pageNumber,
+        requestedPage: requestedPageNumber,
+        hasSidecar: Boolean(sidecarBefore),
+        hasRecovery: Boolean(recoveryBefore)
+      });
+      await this.app.vault.modifyBinary(file, inserted.bytes.slice().buffer);
+      pdfWritten = true;
+      if (sidecarAfter) await sidecars.save(sidecarAfter);
+      if (recoveryAfter) await recovery.save(recoveryAfter);
+      await this.vaultDebugLog.writeUrgent("info", "pdf-page-insert-complete", {
+        document: file.path,
+        page: inserted.pageNumber,
+        sourceBytes: source.byteLength,
+        resultBytes: inserted.bytes.byteLength,
+        sidecarRemapped: Boolean(sidecarAfter),
+        recoveryRemapped: Boolean(recoveryAfter)
+      });
+      return inserted.pageNumber;
+    } catch (error) {
+      if (pdfWritten) await this.app.vault.modifyBinary(file, source.slice().buffer).catch(() => undefined);
+      if (sidecarBefore) await sidecars.save(sidecarBefore).catch(() => undefined);
+      if (recoveryBefore) await recovery.save(recoveryBefore).catch(() => undefined);
+      await this.vaultDebugLog.writeUrgent("error", "pdf-page-insert-failed", {
+        document: file.path,
+        requestedPage: requestedPageNumber,
+        rolledBackPdf: pdfWritten,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
+  }
+
+  /** Delete one source page and its matching sidecar/recovery annotations together. */
+  private async deletePageInPlace(file: TFile, pageNumber: number): Promise<void> {
+    const source = new Uint8Array(await this.app.vault.readBinary(file));
+    const updated = await deletePdfPage(source, pageNumber);
+    const files = createVaultFsTextAdapter(this.app.vault);
+    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
+    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
+    const documentId = createDocumentIdentity({ vaultPath: file.path }).id;
+    const sidecarBefore = await sidecars.load(documentId);
+    const recoveryBefore = await recovery.load(documentId);
+    const sidecarAfter = sidecarBefore ? removePageFromSidecar(sidecarBefore, pageNumber) : null;
+    const recoveryAfter = recoveryBefore ? removePageFromSidecar(recoveryBefore, pageNumber) : null;
+    let pdfWritten = false;
+    try {
+      await this.vaultDebugLog.writeUrgent("info", "pdf-page-delete-start", {
+        document: file.path,
+        page: pageNumber,
+        hasSidecar: Boolean(sidecarBefore),
+        hasRecovery: Boolean(recoveryBefore)
+      });
+      await this.app.vault.modifyBinary(file, updated.slice().buffer);
+      pdfWritten = true;
+      if (sidecarAfter) await sidecars.save(sidecarAfter);
+      if (recoveryAfter) await recovery.save(recoveryAfter);
+      await this.vaultDebugLog.writeUrgent("info", "pdf-page-delete-complete", {
+        document: file.path,
+        page: pageNumber,
+        sourceBytes: source.byteLength,
+        resultBytes: updated.byteLength,
+        sidecarRemapped: Boolean(sidecarAfter),
+        recoveryRemapped: Boolean(recoveryAfter)
+      });
+    } catch (error) {
+      if (pdfWritten) await this.app.vault.modifyBinary(file, source.slice().buffer).catch(() => undefined);
+      if (sidecarBefore) await sidecars.save(sidecarBefore).catch(() => undefined);
+      if (recoveryBefore) await recovery.save(recoveryBefore).catch(() => undefined);
+      await this.vaultDebugLog.writeUrgent("error", "pdf-page-delete-failed", {
+        document: file.path,
+        page: pageNumber,
+        rolledBackPdf: pdfWritten,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
+  }
+
+  private async createPdfNote(): Promise<void> {
+    const template = this.templateLogValue();
+    try {
+      await this.vaultDebugLog.writeUrgent("info", "pdf-create-start", { template });
+      const bytes = await createPdfFromTemplate(await this.readPdfTemplate());
+      const folder = this.app.workspace.getActiveFile()?.parent?.path ?? "";
+      const created = await this.createUniquePdf(folder, this.handwrittenPdfName(), bytes);
+      await this.openPdfInNewTab(created);
+      await this.vaultDebugLog.writeUrgent("info", "pdf-create-complete", {
+        document: created.path,
+        template,
+        resultBytes: bytes.byteLength
+      });
+      new Notice("New handwritten PDF created.");
+    } catch (error) {
+      console.error("[Handwriting Natively] create PDF from template failed", error);
+      await this.vaultDebugLog.writeUrgent("error", "pdf-create-failed", {
+        template,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      new Notice(`Could not create handwritten PDF: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private handwrittenPdfName(): string {
+    const now = new Date();
+    const pad = (value: number) => String(value).padStart(2, "0");
+    return `Handwritten note ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.pdf`;
+  }
+
+  private async createUniquePdf(folder: string, name: string, bytes: Uint8Array): Promise<TFile> {
+    const stem = name.replace(/\.pdf$/i, "");
+    let path = normalizePath(folder ? `${folder}/${name}` : name);
+    let suffix = 2;
+    while (await this.app.vault.adapter.exists(path)) {
+      path = normalizePath(folder ? `${folder}/${stem}-${suffix}.pdf` : `${stem}-${suffix}.pdf`);
+      suffix += 1;
+    }
+    return this.app.vault.createBinary(path, bytes.slice().buffer);
+  }
+
   private async writeAndOpenExport(source: TFile, name: string, bytes: Uint8Array): Promise<string> {
     const folder = source.parent?.path ?? "";
     const stem = name.replace(/\.pdf$/i, "");
@@ -733,6 +978,19 @@ export default class NativePdfInkPlugin extends Plugin {
     await leaf.openFile(created, { active: true });
     this.app.workspace.setActiveLeaf(leaf, { focus: true });
     return created.path;
+  }
+
+  /** SVG exports stay separate from PDFs and never mutate the source document. */
+  private async writeSvgExport(source: TFile, name: string, svg: string): Promise<string> {
+    const folder = source.parent?.path ?? "";
+    const stem = name.replace(/\.svg$/i, "") || "selected_ink";
+    let path = normalizePath(folder ? `${folder}/${stem}.svg` : `${stem}.svg`);
+    let suffix = 2;
+    while (await this.app.vault.adapter.exists(path)) {
+      path = normalizePath(folder ? `${folder}/${stem}-${suffix}.svg` : `${stem}-${suffix}.svg`);
+      suffix += 1;
+    }
+    return (await this.app.vault.create(path, svg)).path;
   }
 
   private decideUnsaved(): Promise<CloseChoice> {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.22 — 2026-07-27
+
+- Add assignable, unbound hotkey commands for pen, eraser, laser pointer, lasso, text, undo, and redo.
+- Add and delete PDF pages in place from the native thumbnail sidebar; inserted pages match their neighbor and receive focus.
+- Add laser-pointer color, an Advanced settings dropdown, and stable pen pressure controls.
+- Keep ink and text geometry stable through native PDF zoom and refreshes; remove the mobile 500 ms attach delay.
+
 ## 0.1.21 — 2026-07-22
 
 - Draw mode default: fingers keep native scroll/pinch; stylus draws. Opt-in setting **Draw with finger** restores finger inking.

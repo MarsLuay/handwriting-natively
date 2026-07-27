@@ -15,6 +15,10 @@ export interface DrawPositionLog {
   phase: "start" | "end" | "eraser" | "lasso";
   page: number;
   tool: string;
+  /** Why this terminal ink record was committed. */
+  termination?: "pointerup" | "surface-unmount";
+  /** Surface lifecycle reason when the browser virtualized the source page. */
+  terminalDetail?: string;
   displayScale: number;
   points: Array<{ x: number; y: number; pressure?: number }>;
   /** Full input count when `points` is a bounded diagnostic sample. */
@@ -231,6 +235,20 @@ export class SessionLogger {
     });
   }
 
+  /** Zoom-time canvas/overlay anchor proof; coordinates contain no document content. */
+  zoomInkLayout(
+    page: number,
+    phase: "burst" | "settle" | "native-content" | "handoff-final",
+    details: Record<string, unknown>
+  ): void {
+    this.emit("info", "ink zoom layout", {
+      document: this.documentPath,
+      page,
+      phase,
+      ...details
+    });
+  }
+
   /** Check sampling before callers spend time gathering layout diagnostics. */
   shouldLogPositionAlign(phase: PositionAlignLog["phase"]): boolean {
     if (!this.isEnabled()) return false;
@@ -252,6 +270,15 @@ export class SessionLogger {
       kind,
       durationMs: round(durationMs),
       sampleCount
+    });
+  }
+
+  /** Terminal proof that preview and committed ink used the same renderer. */
+  inkRenderer(page: number, details: Record<string, unknown>): void {
+    this.emit("info", "ink renderer", {
+      document: this.documentPath,
+      page,
+      ...details
     });
   }
 
@@ -333,9 +360,61 @@ export class SessionLogger {
     });
   }
 
+  /** A finger route must either finish or leave a terminal breadcrumb. */
+  touchInput(
+    phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit("info", "touch input", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
+  /** Confirms whether a sidebar action augmented Obsidian's existing menu. */
+  thumbnailMenu(
+    phase: "context-seen" | "context-ignored" | "menu-scan" | "native-template-armed" | "native-template-appended" | "native-template-unavailable" | "native-menu-appended" | "native-menu-missing" | "standalone-add",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit(phase === "native-menu-missing" ? "warn" : "info", "thumbnail menu", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   /** Placement transitions make stale More-menu state and failed remounts diagnosable. */
   toolbarPlacement(phase: "request" | "applied" | "error", details: Record<string, unknown> = {}): void {
     this.emit(phase === "error" ? "warn" : "info", "toolbar placement", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
+  /** Page edits originate in the native thumbnail sidebar; persistence logs cover the vault write. */
+  pdfPageAction(
+    phase:
+      | "insert-start"
+      | "insert-complete"
+      | "insert-error"
+      | "insert-focus"
+      | "delete-start"
+      | "delete-cancel"
+      | "delete-complete"
+      | "delete-error"
+      | "page-shield-captured"
+      | "page-shield-skipped"
+      | "page-shield-window-captured"
+      | "page-shield-window-skipped"
+      | "page-shield-native-content"
+      | "page-shield-waiting"
+      | "page-shield-ready"
+      | "page-shield-released",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit(phase.endsWith("error") ? "warn" : "info", "pdf page action", {
       document: this.documentPath,
       phase,
       ...details
@@ -461,7 +540,7 @@ export class SessionLogger {
 
   /** Tracks the compositor handoff around a zoom-settle repaint. */
   zoomComposite(
-    phase: "begin" | "settle-paint" | "native-content" | "release-scheduled" | "release",
+    phase: "begin" | "settle-paint" | "native-content" | "release-scheduled" | "final-canonical" | "release",
     details: Record<string, unknown> = {}
   ): void {
     this.emit("info", "ink zoom composite", {

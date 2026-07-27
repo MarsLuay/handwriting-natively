@@ -157,6 +157,12 @@ class PdfjsAdapter implements ObsidianPdfAdapter {
   }
   getViewState(): PdfViewState { return { pageNumber: 1, scrollFraction: 0, scale: this.scale, rotation: this.rotation }; }
   restoreViewState(): void {}
+  focusPage(pageNumber: number): boolean {
+    const page = this.pagesByNumber.find((surface) => surface.pageNumber === pageNumber);
+    if (!page) return false;
+    page.element.scrollIntoView({ block: "start" });
+    return true;
+  }
   scrollElement(): HTMLElement { return this.root; }
   mountOverlay(pageNumber: number): HTMLElement {
     const surface = this.pagesByNumber.find((entry) => entry.pageNumber === pageNumber);

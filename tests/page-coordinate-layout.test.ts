@@ -56,6 +56,29 @@ describe("page coordinate layout", () => {
     expect(layout.contentWidth).toBe(250);
   });
 
+  it("keeps fractional PDF.js page borders out of the overlay origin", () => {
+    const host = document.createElement("div");
+    host.style.borderLeftWidth = "0.5px";
+    host.style.borderTopWidth = "0.5px";
+    const canvas = document.createElement("canvas");
+    host.getBoundingClientRect = () => ({
+      x: 100, y: 50, left: 100, top: 50, right: 500, bottom: 550,
+      width: 400, height: 500, toJSON: () => ({})
+    });
+    // Browser clientLeft/clientTop round the true 0.5px border to 1px.
+    Object.defineProperty(host, "clientLeft", { configurable: true, value: 1 });
+    Object.defineProperty(host, "clientTop", { configurable: true, value: 1 });
+    canvas.getBoundingClientRect = () => ({
+      x: 110.5, y: 60.5, left: 110.5, top: 60.5, right: 360.5, bottom: 560.5,
+      width: 250, height: 500, toJSON: () => ({})
+    });
+    host.append(canvas);
+
+    const layout = resolvePageCoordinateLayout(page(host));
+    expect(layout.offsetX).toBe(10);
+    expect(layout.offsetY).toBe(10);
+  });
+
   it("keeps the reported PDF scale while the viewer briefly reports zero dimensions", () => {
     const host = document.createElement("div");
     host.getBoundingClientRect = () => ({

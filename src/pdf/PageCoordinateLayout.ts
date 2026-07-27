@@ -46,8 +46,15 @@ export function overlayOffsetInParent(
   contentRect: DOMRect,
   parentRect: DOMRect = parent.getBoundingClientRect()
 ): { offsetX: number; offsetY: number } {
-  const borderLeft = parent.clientLeft || 0;
-  const borderTop = parent.clientTop || 0;
+  // clientLeft/clientTop are integers. PDF.js page borders can be fractional
+  // after browser/device scaling, so rounding them shifts an absolute overlay
+  // by half a CSS pixel while zooming. CSS left/top are relative to the
+  // padding edge; retain the computed fractional border width for that origin.
+  const style = parent.ownerDocument.defaultView?.getComputedStyle(parent);
+  const computedBorderLeft = Number.parseFloat(style?.borderLeftWidth ?? "");
+  const computedBorderTop = Number.parseFloat(style?.borderTopWidth ?? "");
+  const borderLeft = Number.isFinite(computedBorderLeft) ? computedBorderLeft : parent.clientLeft || 0;
+  const borderTop = Number.isFinite(computedBorderTop) ? computedBorderTop : parent.clientTop || 0;
   return {
     offsetX: contentRect.left - parentRect.left - borderLeft,
     offsetY: contentRect.top - parentRect.top - borderTop

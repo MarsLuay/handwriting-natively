@@ -13,15 +13,17 @@ export interface HighlighterStrokeOptions {
   opacity: number;
   pressureSensitivity: boolean;
   thinning: number;
+  /** Viewport coordinates per PDF-space unit for zoom-stable geometry floors. */
+  coordinateScale?: number;
 }
 
 export function highlighterSampleWidth(
-  preferences: DrawingToolPreferences,
-  point: PdfPoint
+  preferences: DrawingToolPreferences, point: PdfPoint, coordinateScale = 1
 ): number {
-  const pressure = preferences.pressureSensitivity ? Math.max(0.35, point.pressure) : 1;
+  const pressure = preferences.pressureSensitivity ? Math.min(1, Math.max(0, point.pressure)) : 1;
   const thinned = 1 - preferences.thinning * (1 - pressure);
-  return Math.max(2, preferences.width * thinned);
+  const scale = normalizedCoordinateScale(coordinateScale);
+  return Math.max(2 * scale, preferences.width * thinned);
 }
 
 function widthAt(options: HighlighterStrokeOptions, point: HighlighterPoint): number {
@@ -37,8 +39,13 @@ function widthAt(options: HighlighterStrokeOptions, point: HighlighterPoint): nu
       tiltSensitivity: false,
       simulateMousePressure: false
     },
-    { x: point.x, y: point.y, pressure: point.pressure, time: 0 }
+    { x: point.x, y: point.y, pressure: point.pressure, time: 0 },
+    options.coordinateScale
   );
+}
+
+function normalizedCoordinateScale(value: number | undefined): number {
+  return Number.isFinite(value) && value! > 0 ? value! : 1;
 }
 
 interface Vec2 {
@@ -72,13 +79,14 @@ export function highlighterRibbonEdges(
   points: readonly HighlighterPoint[],
   options: HighlighterStrokeOptions
 ): { left: Vec2[]; right: Vec2[]; widths: number[] } {
+  const coordinateScale = normalizedCoordinateScale(options.coordinateScale);
   const left: Vec2[] = [];
   const right: Vec2[] = [];
   const widths: number[] = [];
   for (let i = 0; i < points.length; i += 1) {
     const point = points[i]!;
     const tangent = tangentAt(points, i);
-    const half = Math.max(1, widthAt(options, point) / 2);
+    const half = Math.max(1 * coordinateScale, widthAt(options, point) / 2);
     // Perpendicular to heading — flat marker tip across the stroke.
     const nx = -tangent.y;
     const ny = tangent.x;
@@ -129,6 +137,7 @@ export function drawHighlighterStroke(
   options: HighlighterStrokeOptions
 ): void {
   if (!points.length) return;
+  const coordinateScale = normalizedCoordinateScale(options.coordinateScale);
   context.save();
   context.globalAlpha = options.opacity;
   context.fillStyle = options.color;
@@ -147,7 +156,7 @@ export function drawHighlighterStroke(
   const minW = Math.min(...widths);
   const maxW = Math.max(...widths);
   // Near-constant tip width → smooth centerline stroke (best continuity).
-  if (maxW - minW <= Math.max(0.75, minW * 0.12)) {
+  if (maxW - minW <= Math.max(0.75 * coordinateScale, minW * 0.12)) {
     strokeSmoothCenterline(context, points, (minW + maxW) / 2);
     context.restore();
     return;

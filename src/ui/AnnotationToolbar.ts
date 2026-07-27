@@ -107,6 +107,16 @@ export class AnnotationToolbar {
     }
   }
 
+  /**
+   * Select a tool without opening its options menu. Used by palette commands
+   * and hotkeys so they follow the exact same preference/change path as the
+   * visible toolbar controls.
+   */
+  selectTool(tool: ToolId): void {
+    this.dropdown.close(false);
+    this.activate(tool);
+  }
+
   setSaveStatus(status: SaveStatus, lastSavedAt?: Date): void {
     this.saveStatus.update(status, lastSavedAt);
   }
@@ -316,7 +326,12 @@ export class AnnotationToolbar {
       this.preferences[drawingTool].color = color;
       this.changed();
     };
-    for (const option of colorOptions(this.preferences, applyColor)) content.append(this.inlineOption(option));
+    const selectedColor = laserActive
+      ? this.preferences.laser.color
+      : textActive
+        ? this.preferences.text.color
+        : this.preferences[drawingTool].color;
+    for (const option of colorOptions(this.preferences, applyColor, selectedColor)) content.append(this.inlineOption(option));
     const colorLabel = createDetachedEl(this.ownerDocument, 'label');
     colorLabel.textContent = "Custom color";
     const colorInput = createDetachedEl(this.ownerDocument, 'input');
