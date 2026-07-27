@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.24 — 2026-07-27
+
+- Quarantine malformed annotation sidecars and recovery snapshots as timestamped `.corrupt-*` files, then open safely with clear recovery notices and logs.
+- Retain only the most recent hour of vault debug-log events, including automatic hourly cleanup.
+
 ## 0.1.23 — 2026-07-27
 
 - Use Obsidian detached-element helpers while keeping popout SVG creation safe.

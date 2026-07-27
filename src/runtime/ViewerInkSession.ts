@@ -1167,8 +1167,10 @@ export class ViewerInkSession {
       document: options.pdfPath,
       documentId: session.identity.id
     });
-    const sidecar = await options.sidecars.load(session.identity.id);
-    const recovery = await options.recovery.load(session.identity.id);
+    const sidecarResult = await options.sidecars.loadWithStatus(session.identity.id);
+    const recoveryResult = await options.recovery.loadWithStatus(session.identity.id);
+    const sidecar = sidecarResult.data;
+    const recovery = recoveryResult.data;
     const stored = pickNewerSidecar(sidecar, recovery);
     const sidecarStrokes = countSidecarStrokes(sidecar);
     const recoveryStrokes = countSidecarStrokes(recovery);
@@ -1176,6 +1178,23 @@ export class ViewerInkSession {
     const sidecarTexts = countSidecarTexts(sidecar);
     const recoveryTexts = countSidecarTexts(recovery);
     const loadedTexts = countSidecarTexts(stored);
+    const quarantined = [sidecarResult.quarantined, recoveryResult.quarantined].filter(
+      (result): result is NonNullable<typeof result> => result !== null
+    );
+    for (const result of quarantined) {
+      // Keep this warning available even when optional vault debug logging is off.
+      console.warn("[Handwriting Natively] annotation file quarantined", {
+        document: options.pdfPath,
+        documentId: session.identity.id,
+        ...result
+      });
+      session.logger.sidecarQuarantined({ documentId: session.identity.id, ...result });
+    }
+    if (quarantined.length) {
+      const paths = quarantined.map((result) => result.quarantinePath).join(", ");
+      const outcome = stored ? "A valid remaining annotation snapshot was kept." : "Opened with empty annotations.";
+      options.notice(`Malformed annotation data moved to ${paths}. ${outcome}`);
+    }
     await urgent("session create sidecar ok", {
       document: options.pdfPath,
       documentId: session.identity.id,
@@ -1186,7 +1205,13 @@ export class ViewerInkSession {
       loadedStrokes,
       loadedTexts,
       hasSidecar: Boolean(sidecar),
-      hasRecovery: Boolean(recovery)
+      hasRecovery: Boolean(recovery),
+      quarantined: quarantined.map((result) => ({
+        store: result.store,
+        sourcePath: result.sourcePath,
+        quarantinePath: result.quarantinePath,
+        error: result.error
+      }))
     });
     session.logger.sidecarLoad({
       documentId: session.identity.id,

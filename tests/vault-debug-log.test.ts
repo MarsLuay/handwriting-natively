@@ -15,6 +15,11 @@ function createVault(): { vault: Vault; files: Map<string, string> } {
       async write(path: string, data: string) {
         files.set(path, data);
       },
+      async read(path: string) {
+        const value = files.get(path);
+        if (value === undefined) throw new Error(`Missing ${path}`);
+        return value;
+      },
       async append(path: string, data: string) {
         files.set(path, `${files.get(path) ?? ""}${data}`);
       }
@@ -85,5 +90,25 @@ describe("VaultDebugLog", () => {
     await log.writeUrgent("info", "session attach prepare", { document: "big.pdf" });
     expect(files.get("debug.md")).toContain("session attach prepare");
     expect(files.get("debug.md")).toContain("0.1.17");
+  });
+
+  it("removes stale or malformed entries while retaining the last hour of diagnostics", async () => {
+    const { vault, files } = createVault();
+    const now = new Date("2026-07-27T12:00:00.000Z");
+    files.set("debug.md", [
+      JSON.stringify({ ts: "2026-07-27T10:59:59.999Z", event: "stale" }),
+      JSON.stringify({ ts: "2026-07-27T11:00:00.000Z", event: "one-hour-old" }),
+      JSON.stringify({ ts: "2026-07-27T11:45:00.000Z", event: "recent" }),
+      "not valid JSON"
+    ].join("\n").concat("\n"));
+    const log = new VaultDebugLog(() => vault, () => "debug.md", () => true, () => ({}), () => now);
+
+    log.write("info", "new");
+    await log.flush();
+
+    const events = (files.get("debug.md") ?? "").trim().split("\n")
+      .map((line) => JSON.parse(line) as { event: string });
+    expect(events.map((event) => event.event)).toEqual(["one-hour-old", "recent", "new"]);
+    log.destroy();
   });
 });

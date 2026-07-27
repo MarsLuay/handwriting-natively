@@ -459,6 +459,19 @@ export class SessionLogger {
     });
   }
 
+  sidecarQuarantined(details: {
+    documentId: string;
+    store: "sidecar" | "recovery";
+    sourcePath: string;
+    quarantinePath: string;
+    error: string;
+  }): void {
+    this.emit("warn", "sidecar quarantined", {
+      document: this.documentPath,
+      ...details
+    });
+  }
+
   sidecarPersist(details: {
     reason: string;
     documentId: string;
