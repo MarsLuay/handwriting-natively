@@ -22,10 +22,53 @@ describe("pencil graphite approximation", () => {
     expect(light.textureStrength).toBe(pencil.textureStrength);
   });
 
+  it("preserves calibrated light pressure rather than applying an input floor", () => {
+    const zero = pencilSample(pencil, { x: 0, y: 0, pressure: 0, time: 0 });
+    const light = pencilSample(pencil, { x: 0, y: 0, pressure: 0.08, time: 0 });
+    expect(light.width).toBeGreaterThan(zero.width);
+    expect(light.opacity).toBeGreaterThan(zero.opacity);
+  });
+
   it("uses deterministic grain noise for stable redraws", () => {
     expect(graphiteNoise(42, 3, 1)).toBe(graphiteNoise(42, 3, 1));
     expect(graphiteNoise(42, 3, 1)).not.toBe(graphiteNoise(42, 4, 1));
     expect(seedFromId("a")).not.toBe(seedFromId("b"));
+  });
+
+  it("keeps canonical graphite marks identical in PDF space across zoom", () => {
+    const scale = 1.75;
+    const points = [
+      { x: 12, y: 20, pressure: 0.35, tiltX: 8, tiltY: -4 },
+      { x: 75, y: 44, pressure: 0.8, tiltX: 14, tiltY: 6 }
+    ];
+    const options = {
+      color: "#111827",
+      width: 5.5,
+      opacity: 0.72,
+      textureStrength: 0.6,
+      pressureSensitivity: true,
+      tiltSensitivity: true,
+      thinning: 0.25,
+      seed: 73
+    } as const;
+
+    const normal = graphiteMarks(points, options);
+    const zoomed = graphiteMarks(
+      points.map((point) => ({ ...point, x: point.x * scale, y: point.y * scale })),
+      { ...options, width: options.width * scale, coordinateScale: scale }
+    );
+
+    expect(zoomed).toHaveLength(normal.length);
+    for (const [index, mark] of normal.entries()) {
+      const scaled = zoomed[index]!;
+      expect(scaled.kind).toBe(mark.kind);
+      expect(scaled.x).toBeCloseTo(mark.x * scale, 8);
+      expect(scaled.y).toBeCloseTo(mark.y * scale, 8);
+      expect(scaled.rx).toBeCloseTo(mark.rx * scale, 8);
+      expect(scaled.ry).toBeCloseTo(mark.ry * scale, 8);
+      expect(scaled.rotation).toBeCloseTo(mark.rotation, 8);
+      expect(scaled.opacity).toBeCloseTo(mark.opacity, 8);
+    }
   });
 
   it("keeps spacing proportional to tip so zoom-in does not multiply stamps", () => {

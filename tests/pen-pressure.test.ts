@@ -11,6 +11,18 @@ describe("pen pressure / thinning", () => {
     expect(heavy).toBeGreaterThan(light);
   });
 
+  it("preserves calibrated pressure below the visible geometry floor", () => {
+    const zero = penSampleWidth(pen, { x: 0, y: 0, pressure: 0, time: 0 });
+    const light = penSampleWidth(pen, { x: 0, y: 0, pressure: 0.1, time: 0 });
+    expect(light).toBeGreaterThan(zero);
+  });
+
+  it("scales its minimum width with the viewport", () => {
+    const tiny = { ...pen, width: 0.01 };
+    const point = { x: 0, y: 0, pressure: 0.5, time: 0 };
+    expect(penSampleWidth(tiny, point, 2)).toBeCloseTo(penSampleWidth(tiny, point) * 2, 8);
+  });
+
   it("amplifies pressure effect as thinning increases", () => {
     const lowThin = { ...pen, thinning: 0.1 };
     const highThin = { ...pen, thinning: 0.9 };

@@ -1,3 +1,4 @@
+# Dependencies and local analyzer state.
 node_modules/
 .code-analysis/
 .serena/
@@ -5,7 +6,11 @@ coverage/
 *.map
 .DS_Store
 
-# Accidental tsc emit next to TypeScript sources
+# Local reference clones; never part of the distributable plugin.
+Inspiration/
+
+# The TypeScript sources are canonical; these are accidental compiler emits.
 src/**/*.js
 tests/**/*.js
+scripts/**/*.js
 vitest.config.js

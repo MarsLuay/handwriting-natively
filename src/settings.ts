@@ -1,4 +1,4 @@
-import { FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFolder } from "obsidian";
+import { FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder } from "obsidian";
 import { DEFAULT_SETTINGS, mergeSettings, type PluginSettings } from "./model";
 
 export { mergeSettings, DEFAULT_SETTINGS };
@@ -8,6 +8,19 @@ export interface SettingsHost {
   saveSettings(settings: PluginSettings): Promise<void>;
   readAllLogs(): Promise<string | null>;
 }
+
+type ImperativeSettingDefinition =
+  | {
+    type: "group";
+    heading: string;
+    items: readonly ImperativeSettingDefinition[];
+  }
+  | {
+    name?: string;
+    desc?: string;
+    searchable?: boolean;
+    render?: (setting: Setting) => void;
+  };
 
 /** Vault-only picker used for paths that must never escape the current vault. */
 class FolderPicker extends FuzzySuggestModal<string> {
@@ -30,6 +43,29 @@ class FolderPicker extends FuzzySuggestModal<string> {
 
   onChooseItem(path: string): void {
     this.onChoose(path);
+  }
+}
+
+/** Vault-only PDF picker for the optional handwritten-note template. */
+class PdfPicker extends FuzzySuggestModal<TFile> {
+  constructor(
+    app: ConstructorParameters<typeof PluginSettingTab>[0],
+    private readonly onChoose: (file: TFile) => void
+  ) {
+    super(app);
+    this.setPlaceholder("Choose a PDF template");
+  }
+
+  getItems(): TFile[] {
+    return this.app.vault.getFiles().filter((file) => file.extension.toLowerCase() === "pdf");
+  }
+
+  getItemText(file: TFile): string {
+    return file.path;
+  }
+
+  onChooseItem(file: TFile): void {
+    this.onChoose(file);
   }
 }
 
@@ -58,7 +94,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
     return [
       {
         name: "About",
-        desc: "PDF handwriting for a stylus or mouse. Write directly in the document view while keeping the original file untouched.",
+        desc: "PDF handwriting for a stylus or mouse. Ink remains editable in a sidecar; Add page updates the PDF itself.",
         searchable: false
       },
       {
@@ -147,15 +183,31 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         heading: "Drawing",
         items: [
           {
-            name: "Draw with finger",
-            desc: "When draw mode is on, finger touch draws (or erases / lassos) instead of scrolling. Off (default): fingers keep native scroll and pinch; stylus draws.",
+            name: "Touch drawing",
+            desc: "With Draw on, one finger draws, erases, lassos, or places text. Turn Draw off to scroll or pinch the PDF."
+          },
+          {
+            name: "Input pressure profile",
+            desc: "Auto uses real stylus pressure and steady mouse/finger ink. Choose Pen to force stylus pressure, or Mouse for a steady pressure-independent stroke.",
             render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.fingerDraw).onChange(async (value) => {
-                  await this.persistPatch({ fingerDraw: value });
-                })
+              setting.addDropdown((dropdown) =>
+                dropdown
+                  .addOption("auto", "Auto (recommended)")
+                  .addOption("pen", "Pen")
+                  .addOption("mouse", "Mouse")
+                  .setValue(this.host.inkSettings.pressureProfile)
+                  .onChange(async (value) => {
+                    if (value === "auto" || value === "pen" || value === "mouse") {
+                      await this.persistPatch({ pressureProfile: value });
+                    }
+                  })
               );
             }
+          },
+          {
+            name: "Pressure calibration",
+            desc: "Tune how new Pen and Auto strokes start and respond. Mouse profile remains steady.",
+            render: (setting: Setting) => this.renderPressureCalibration(setting)
           },
           {
             name: "Simplify strokes on release",
@@ -187,87 +239,30 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         items: [
           {
             name: "Annotation sidecar folder",
-            desc: "Vault-relative folder for editable annotation JSON. The original PDF is never changed; export creates a separate copy.",
+            desc: "Vault-relative folder for editable annotation JSON. Ink stays editable here while Add page updates the PDF itself.",
             render: (setting: Setting) => {
               this.addFolderPathInput(setting, {
                 value: this.host.inkSettings.sidecarFolder,
                 persist: async (sidecarFolder) => this.persistPatch({ sidecarFolder })
               });
             }
+          },
+          {
+            name: "PDF template",
+            desc: "Vault-relative PDF used for new handwritten notes. Only its first page is used; leave empty for blank US Letter paper.",
+            render: (setting: Setting) => {
+              this.addPdfPathInput(setting, {
+                value: this.host.inkSettings.pdfTemplatePath,
+                persist: async (pdfTemplatePath) => this.persistPatch({ pdfTemplatePath })
+              });
+            }
           }
         ]
       },
       {
-        type: "group" as const,
-        heading: "Advanced settings",
-        items: [
-          {
-            name: "Allow 25× PDF zoom",
-            desc: "Increase the PDF viewer zoom limit beyond Obsidian's normal 10× cap. This can use substantially more memory on large pdfs.",
-            render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.boostedPdfZoom).onChange(async (value) => {
-                  await this.persistPatch({ boostedPdfZoom: value });
-                })
-              );
-            }
-          },
-          {
-            name: "Hide stylus annotation label",
-            desc: "Remove the invisible page label announced to screen readers when the annotation canvas is focused.",
-            render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.hideStylusAnnotationLabel).onChange(async (value) => {
-                  await this.persistPatch({ hideStylusAnnotationLabel: value });
-                })
-              );
-            }
-          },
-          {
-            name: "Vault debug log",
-            desc: "Append every plugin event to a line-delimited log file in the vault so agents can read it directly. Off by default. Includes left-toolbar PDF sidebar offset diagnostics (reason, rects, jumps).",
-            render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.vaultDebugLog).onChange(async (value) => {
-                  await this.persistPatch({ vaultDebugLog: value });
-                })
-              );
-            }
-          },
-          {
-            name: "Vault debug log path",
-            desc: "Vault-relative location for the optional debug log (Markdown note). One JSON object per line.",
-            render: (setting: Setting) => {
-              this.addFolderPathInput(setting, {
-                value: this.host.inkSettings.vaultDebugLogPath,
-                persist: async (vaultDebugLogPath) => this.persistPatch({ vaultDebugLogPath }),
-                fileName: "debug.md"
-              });
-            }
-          },
-          {
-            name: "Copy all logs",
-            desc: "Copy the complete vault debug log. Enable vault debug log and reproduce an issue first to capture new events.",
-            render: (setting: Setting) => {
-              setting.addButton((button) =>
-                button.setButtonText("Copy logs").onClick(async () => {
-                  try {
-                    const logs = await this.host.readAllLogs();
-                    if (!logs) {
-                      new Notice("No vault debug logs are available. Enable vault debug log and reproduce the issue first.");
-                      return;
-                    }
-                    await navigator.clipboard.writeText(logs);
-                    new Notice("All debug logs copied.");
-                  } catch (error) {
-                    console.error("Handwriting Natively could not copy logs", error);
-                    new Notice("Could not copy logs. Check clipboard permission and try again.");
-                  }
-                })
-              );
-            }
-          }
-        ]
+        name: "Advanced settings",
+        searchable: false,
+        render: (setting: Setting) => this.renderAdvancedSettingsDropdown(setting)
       },
       {
         name: "Support",
@@ -299,7 +294,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
 
   private renderSettingDefinitions(
     containerEl: HTMLElement,
-    definitions: ReturnType<NativePdfInkSettingTab["getSettingDefinitions"]>
+    definitions: readonly ImperativeSettingDefinition[]
   ): void {
     for (const definition of definitions) {
       if (definition && typeof definition === "object" && "type" in definition && definition.type === "group") {
@@ -314,6 +309,119 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         definition.render(setting);
       }
     }
+  }
+
+  private renderAdvancedSettingsDropdown(setting: Setting): void {
+    setting.settingEl.empty();
+    setting.settingEl.addClass("native-pdf-handwriting-advanced-settings-dropdown");
+    const details = setting.settingEl.createEl("details", {
+      cls: "native-pdf-handwriting-advanced-settings-details"
+    });
+    details.createEl("summary", { text: "Advanced settings" });
+    const contents = details.createDiv({ cls: "native-pdf-handwriting-advanced-settings-contents" });
+
+    new Setting(contents)
+      .setName("Allow 25× PDF zoom")
+      .setDesc("Increase the PDF viewer zoom limit beyond Obsidian's normal 10× cap. This can use substantially more memory on large pdfs.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.inkSettings.boostedPdfZoom).onChange(async (value) => {
+          await this.persistPatch({ boostedPdfZoom: value });
+        })
+      );
+
+    new Setting(contents)
+      .setName("Hide stylus annotation label")
+      .setDesc("Remove the invisible page label announced to screen readers when the annotation canvas is focused.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.inkSettings.hideStylusAnnotationLabel).onChange(async (value) => {
+          await this.persistPatch({ hideStylusAnnotationLabel: value });
+        })
+      );
+
+    new Setting(contents)
+      .setName("Vault debug log")
+      .setDesc("Append every plugin event to a line-delimited log file in the vault so agents can read it directly. Off by default. Includes left-toolbar PDF sidebar offset diagnostics (reason, rects, jumps).")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.inkSettings.vaultDebugLog).onChange(async (value) => {
+          await this.persistPatch({ vaultDebugLog: value });
+        })
+      );
+
+    const logPath = new Setting(contents)
+      .setName("Vault debug log path")
+      .setDesc("Vault-relative location for the optional debug log (Markdown note). One JSON object per line.");
+    this.addFolderPathInput(logPath, {
+      value: this.host.inkSettings.vaultDebugLogPath,
+      persist: async (vaultDebugLogPath) => this.persistPatch({ vaultDebugLogPath }),
+      fileName: "debug.md"
+    });
+
+    new Setting(contents)
+      .setName("Copy all logs")
+      .setDesc("Copy the complete vault debug log. Enable vault debug log and reproduce an issue first to capture new events.")
+      .addButton((button) =>
+        button.setButtonText("Copy logs").onClick(async () => {
+          try {
+            const logs = await this.host.readAllLogs();
+            if (!logs) {
+              new Notice("No vault debug logs are available. Enable vault debug log and reproduce the issue first.");
+              return;
+            }
+            await navigator.clipboard.writeText(logs);
+            new Notice("All debug logs copied.");
+          } catch (error) {
+            console.error("Handwriting Natively could not copy logs", error);
+            new Notice("Could not copy logs. Check clipboard permission and try again.");
+          }
+        })
+      );
+  }
+
+  private renderPressureCalibration(setting: Setting): void {
+    setting.settingEl.empty();
+    setting.settingEl.addClass("native-pdf-handwriting-pressure-calibration");
+    const details = setting.settingEl.createEl("details");
+    details.createEl("summary", { text: "Pressure calibration" });
+    const contents = details.createDiv();
+    contents.createEl("p", {
+      text: "Draw a few strokes in the PDF after changing a control. Settings affect only strokes started afterwards."
+    });
+    const calibration = { ...this.host.inkSettings.pressureCalibration };
+    const syncControls: Array<() => void> = [];
+    const fields = [
+      ["Start pressure", "Keeps the beginning of a light pen stroke visible.", "initialFloor", 0, 0.3, 0.01, (value: number) => `${Math.round(value * 100)}%`],
+      ["Response", "Raises or lowers the pen-pressure response.", "gain", 0.4, 2, 0.05, (value: number) => `${value.toFixed(2)}×`],
+      ["Smoothing", "Higher values remove small pressure flicker.", "smoothing", 0, 1, 0.01, (value: number) => `${Math.round(value * 100)}%`]
+    ] as const;
+    for (const [name, desc, key, min, max, step, format] of fields) {
+      const control = new Setting(contents)
+        .setName(`${name} (${format(calibration[key])})`)
+        .setDesc(desc)
+      let sync: () => void = () => undefined;
+      control.addSlider((slider) => {
+        sync = () => {
+          control.setName(`${name} (${format(calibration[key])})`);
+          slider.setValue(calibration[key]);
+        };
+        return slider
+          .setLimits(min, max, step)
+          .setInstant(true)
+          .setValue(calibration[key])
+          .onChange(async (value) => {
+            calibration[key] = value;
+            await this.persistPatch({ pressureCalibration: { ...calibration } });
+          });
+      });
+      syncControls.push(sync);
+    }
+    new Setting(contents)
+      .setName("Reset calibration")
+      .setDesc("Restore the balanced default response.")
+      .addButton((button) => button.setButtonText("Reset").onClick(async () => {
+        Object.assign(calibration, DEFAULT_SETTINGS.pressureCalibration);
+        await this.persistPatch({ pressureCalibration: { ...calibration } });
+        syncControls.forEach((sync) => sync());
+      }));
   }
 
   private addDelayInput(
@@ -368,6 +476,27 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             : folder;
           if (input) input.value = selected;
           void options.persist(selected);
+        }).open();
+      })
+    );
+  }
+
+  private addPdfPathInput(
+    setting: Setting,
+    options: { value: string; persist: (value: string) => Promise<void> }
+  ): void {
+    let input: HTMLInputElement | null = null;
+    setting.addText((text) => {
+      input = text.inputEl;
+      text.setPlaceholder("Blank us letter paper").setValue(options.value).onChange(async (value) => {
+        await options.persist(value.trim());
+      });
+    });
+    setting.addExtraButton((button) =>
+      button.setIcon("search").setTooltip("Choose vault PDF").onClick(() => {
+        new PdfPicker(this.app, (file) => {
+          if (input) input.value = file.path;
+          void options.persist(file.path);
         }).open();
       })
     );

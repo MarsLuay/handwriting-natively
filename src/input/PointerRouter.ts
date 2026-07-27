@@ -35,8 +35,6 @@ interface PanGesture {
 export interface PointerRouterCallbacks {
   activeTool(): ToolId;
   drawingEnabled(): boolean;
-  /** When false/omitted, fingers stay native even if draw mode is on. */
-  fingerDrawEnabled?(): boolean;
   rightMouseEraserEnabled?(): boolean;
   onStylusEraserStart?(): void;
   onStylusEraserEnd?(): void;
@@ -50,6 +48,17 @@ export interface PointerRouterCallbacks {
   onEnd?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
   onCancel?(route: "draw" | "edit" | "text", event: PointerEvent): void;
   onRoute?(route: PointerRoute, event: PointerEvent): void;
+  /** Native terminal events can land outside a virtualized PDF page. */
+  onTouchLifecycle?(
+    phase: "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture",
+    event: PointerEvent,
+    details: {
+      trackedBefore: number;
+      trackedAfter: number;
+      route?: "draw" | "edit" | "text";
+      completion?: "document-end" | "document-cancel";
+    }
+  ): void;
   onMousePan?(phase: "start" | "activate" | "move" | "end" | "abort", event: PointerEvent, details: Record<string, unknown>): void;
 }
 
@@ -93,8 +102,14 @@ export class PointerRouter {
     element.addEventListener("pointermove", this.handleMove, options);
     element.addEventListener("pointerup", this.handleEnd, options);
     element.addEventListener("pointercancel", this.handleCancel, options);
+    element.addEventListener("lostpointercapture", this.handleLostPointerCapture, options);
     element.addEventListener("contextmenu", this.suppressRightMouseEraserMenu, options);
     element.addEventListener("pointerleave", this.hideCustomCursors, options);
+    // Native PDF scrolling can deliver a terminal event to another virtualized
+    // page (or directly to document). Do not retain it as a phantom pinch.
+    element.ownerDocument.addEventListener("pointerup", this.clearEndedTouch, options);
+    element.ownerDocument.addEventListener("pointercancel", this.clearEndedTouch, options);
+    element.ownerDocument.addEventListener("lostpointercapture", this.clearEndedTouch, options);
   }
 
   classify(event: PointerEvent): PointerRoute {
@@ -103,8 +118,8 @@ export class PointerRouter {
       if (this.palmPolicy.shouldIgnore(event)) return "ignored";
       const multi = this.touches.size + (this.touches.has(event.pointerId) ? 0 : 1) >= 2;
       if (multi) return "touch-zoom-pan";
-      // Opt-in: finger inks when draw mode is on. Default leaves scroll/pinch native.
-      if (this.callbacks.drawingEnabled() && (this.callbacks.fingerDrawEnabled?.() ?? false)) {
+      // Draw is the explicit editing mode. It owns a one-finger gesture.
+      if (this.callbacks.drawingEnabled()) {
         if (tool === "text") return "text";
         if (tool === "eraser" || tool === "lasso") return "edit";
         if (isInkDrawTool(tool)) return "draw";
@@ -129,6 +144,12 @@ export class PointerRouter {
   private readonly handleDown = (event: PointerEvent): void => {
     if (isAnnotationChromeTarget(event.target)) return;
     this.paintCustomCursorsNow(event);
+    if (event.pointerType === "touch" && event.isPrimary && this.touches.size > 0) {
+      const trackedBefore = this.touches.size;
+      this.touches.clear();
+      this.palmPolicy.reset();
+      this.callbacks.onTouchLifecycle?.("primary-reset", event, { trackedBefore, trackedAfter: 0 });
+    }
     this.palmPolicy.pointerDown(event);
     if (isStylusEraserInput(event) && this.callbacks.drawingEnabled()) {
       this.stylusErasers.add(event.pointerId);
@@ -187,6 +208,9 @@ export class PointerRouter {
     if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
     this.touches.delete(event.pointerId);
     this.palmPolicy.pointerUp(event);
+    // The custom cursor is a live pointer affordance, never a mark left after
+    // drawing. Hover movement paints it again when the mouse/pen is active.
+    this.hideCustomCursors();
   };
 
   private readonly handleCancel = (event: PointerEvent): void => {
@@ -203,6 +227,47 @@ export class PointerRouter {
     this.touches.delete(event.pointerId);
     this.palmPolicy.pointerUp(event);
     this.hideCustomCursors();
+  };
+
+  private readonly handleLostPointerCapture = (event: PointerEvent): void => {
+    if (event.pointerType === "mouse" || event.pointerType === "pen") this.hideCustomCursors();
+  };
+
+  private readonly clearEndedTouch = (event: PointerEvent): void => {
+    if (event.pointerType !== "touch") return;
+    const route = this.routed.get(event.pointerId);
+    const endedOnThisPage = event.target instanceof Node && this.element.contains(event.target);
+    let completion: "document-end" | "document-cancel" | undefined;
+    // The source PDF page can be virtualized before its terminal event arrives.
+    // Finish a still-routed line here rather than letting its draft vanish when
+    // the page router is torn down. Local pointerup/cancel still use the page
+    // handlers below, preserving normal cancellation semantics.
+    if (route && (event.type === "lostpointercapture" || !endedOnThisPage)) {
+      if (event.type === "pointercancel") {
+        this.callbacks.onCancel?.(route, event);
+        completion = "document-cancel";
+      } else {
+        this.callbacks.onEnd?.(PointerCapabilities.samples(event), route, event);
+        completion = "document-end";
+      }
+      if (this.element.hasPointerCapture?.(event.pointerId)) this.element.releasePointerCapture?.(event.pointerId);
+      this.routed.delete(event.pointerId);
+    }
+    const trackedBefore = this.touches.size;
+    const removed = this.touches.delete(event.pointerId);
+    this.palmPolicy.pointerUp(event);
+    if (!removed && !completion) return;
+    const phase = event.type === "pointerup"
+      ? "pointerup"
+      : event.type === "pointercancel"
+        ? "pointercancel"
+        : "lostpointercapture";
+    this.callbacks.onTouchLifecycle?.(phase, event, {
+      trackedBefore,
+      trackedAfter: this.touches.size,
+      ...(route ? { route } : {}),
+      ...(completion ? { completion } : {})
+    });
   };
 
   syncToolState(): void {

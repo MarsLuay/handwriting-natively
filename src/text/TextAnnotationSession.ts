@@ -35,4 +35,6 @@ export class TextAnnotationSession {
   all(): PdfTextAnnotation[] {
     return [...this.byPage.values()].flat();
   }
+
+  clear(): void { this.byPage.clear(); }
 }

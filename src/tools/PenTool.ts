@@ -13,11 +13,14 @@ export interface PenStrokeOptions {
   opacity: number;
   pressureSensitivity: boolean;
   thinning: number;
+  /** Viewport coordinates per PDF-space unit for zoom-stable geometry floors. */
+  coordinateScale?: number;
 }
 
-export function penSampleWidth(preferences: DrawingToolPreferences, point: PdfPoint): number {
-  const pressure = preferences.pressureSensitivity ? Math.max(0.15, point.pressure) : 0.5;
-  return Math.max(0.35, preferences.width * (1 - preferences.thinning + preferences.thinning * pressure * 2));
+export function penSampleWidth(preferences: DrawingToolPreferences, point: PdfPoint, coordinateScale = 1): number {
+  const pressure = preferences.pressureSensitivity ? Math.min(1, Math.max(0, point.pressure)) : 0.5;
+  const scale = normalizedCoordinateScale(coordinateScale);
+  return Math.max(0.35 * scale, preferences.width * (1 - preferences.thinning + preferences.thinning * pressure * 2));
 }
 
 function widthAt(options: PenStrokeOptions, point: PenPoint): number {
@@ -33,8 +36,13 @@ function widthAt(options: PenStrokeOptions, point: PenPoint): number {
       tiltSensitivity: false,
       simulateMousePressure: true
     },
-    { x: point.x, y: point.y, pressure: point.pressure, time: 0 }
+    { x: point.x, y: point.y, pressure: point.pressure, time: 0 },
+    options.coordinateScale
   );
+}
+
+function normalizedCoordinateScale(value: number | undefined): number {
+  return Number.isFinite(value) && value! > 0 ? value! : 1;
 }
 
 /** Variable-width pen: round stamps / segments so Thinning + Pressure affect the stroke. */
@@ -44,6 +52,7 @@ export function drawPenStroke(
   options: PenStrokeOptions
 ): void {
   if (!points.length) return;
+  const coordinateScale = normalizedCoordinateScale(options.coordinateScale);
   context.save();
   context.globalAlpha = options.opacity;
   context.fillStyle = options.color;
@@ -75,14 +84,14 @@ export function drawPenStroke(
       continue;
     }
     const avg = (wa + wb) / 2;
-    const steps = Math.max(1, Math.ceil(segment / Math.max(0.4, avg * 0.35)));
+    const steps = Math.max(1, Math.ceil(segment / Math.max(0.4 * coordinateScale, avg * 0.35)));
     for (let step = 0; step <= steps; step += 1) {
       const t = step / steps;
       const x = a.x + dx * t;
       const y = a.y + dy * t;
       const w = wa + (wb - wa) * t;
       context.beginPath();
-      context.arc(x, y, Math.max(0.2, w / 2), 0, Math.PI * 2);
+      context.arc(x, y, Math.max(0.2 * coordinateScale, w / 2), 0, Math.PI * 2);
       context.fill();
     }
   }

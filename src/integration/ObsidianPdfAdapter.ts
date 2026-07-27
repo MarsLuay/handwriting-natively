@@ -29,6 +29,8 @@ export interface ObsidianPdfAdapter {
   page(pageNumber: number): PdfPageInfo | undefined;
   getViewState(): PdfViewState;
   restoreViewState(state: PdfViewState): void;
+  /** Brings one native PDF.js page into view without restoring an old scroll offset. */
+  focusPage(pageNumber: number): boolean;
   scrollElement(): HTMLElement;
   mountOverlay(pageNumber: number): HTMLElement;
   mountToolbar(toolbar: HTMLElement, placement?: ToolbarPlacement): void;

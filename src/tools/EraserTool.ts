@@ -9,6 +9,8 @@ export interface SegmentEraserOptions {
   scale?: number;
   now?: () => string;
   createFragmentId?: (stroke: InkStroke, fragmentIndex: number) => string;
+  /** Spatial-index candidates. Non-candidates are kept without geometric work. */
+  candidateIds?: ReadonlySet<string>;
 }
 
 export interface SegmentEraseResult {
@@ -197,6 +199,10 @@ export function eraseStrokeSegments(strokes: readonly InkStroke[], path: readonl
   const erased: InkStroke[] = [];
   const fragments: InkStroke[] = [];
   for (const stroke of strokes) {
+    if (options.candidateIds && !options.candidateIds.has(stroke.id)) {
+      kept.push(stroke);
+      continue;
+    }
     const replacementPoints = pathBounds
       ? eraseStroke(stroke, path, eraserRadius + stroke.width / 2, pathBounds)
       : null;
@@ -259,7 +265,8 @@ export function eraseWholeStrokes(strokes: readonly InkStroke[], path: readonly 
   const eraserRadius = size / (2 * scale);
   const pathBounds = path.length ? boundsOfPath(path) : undefined;
   const erased = pathBounds
-    ? strokes.filter((stroke) => strokeIntersectsEraserPath(stroke, path, eraserRadius + stroke.width / 2, pathBounds))
+    ? strokes.filter((stroke) => (!options.candidateIds || options.candidateIds.has(stroke.id))
+      && strokeIntersectsEraserPath(stroke, path, eraserRadius + stroke.width / 2, pathBounds))
     : [];
   const erasedIds = new Set(erased.map((stroke) => stroke.id));
   return {

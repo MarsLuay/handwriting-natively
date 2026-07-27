@@ -105,6 +105,13 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     scroller.scrollTop = denominator * Math.max(0, Math.min(1, state.scrollFraction));
   }
 
+  focusPage(pageNumber: number): boolean {
+    const page = this.locator.page(pageNumber);
+    if (!page) return false;
+    page.element.scrollIntoView?.({ block: "start" });
+    return true;
+  }
+
   scrollElement(): HTMLElement {
     return resolvePdfScrollRoot(this.root, this.compatibility.privateViewer, this.host);
   }

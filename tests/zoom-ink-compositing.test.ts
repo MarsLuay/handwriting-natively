@@ -7,7 +7,7 @@
  * - Prefer: scheduleZoomRepaint / beginZoomCompositing calls syncOverlayLayout
  *   (after refreshing surface.page from adapter.pages()) without renderPage paint.
  * - Settle (~120ms): endZoomCompositing + repaintSurfaces. Canvas resize snapshots
- *   prior ink, blits scaled bitmap, rebuilds inkLayer at new size (valid again).
+ *   prior ink into a canonical full-quality inkLayer before release.
  * - Strokes stay PDF-space; viewport projection uses mapper at display scale.
  *
  * Temporary white-box: `surfaces` Map on session (inkLayerValid). Prefer a public
@@ -136,6 +136,7 @@ class ZoomAdapter implements ObsidianPdfAdapter {
   }
 
   restoreViewState(): void {}
+  focusPage(pageNumber: number): boolean { return Boolean(this.page(pageNumber)); }
   scrollElement(): HTMLElement {
     return this.root;
   }
@@ -295,6 +296,7 @@ describe("zoom ink compositing", () => {
     context.stroke.mockClear();
     const stampsBeforeBurst = paintStampCalls(context);
 
+    context.drawImage.mockClear();
     vi.useFakeTimers();
     adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
@@ -310,11 +312,11 @@ describe("zoom ink compositing", () => {
 
     await vi.advanceTimersByTimeAsync(120);
 
-    // Keep the composited bitmap through one presented frame while the resized
-    // canvas and text DOM are reconciled, then release it cleanly.
+    // Settle directly to canonical ink while the compositing layer still holds
+    // the native PDF transition, so resting ink is crisp at every zoom level.
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
-    // Settle blits scaled ink — no graphite stamp rebuild on the settle tick.
-    expect(paintStampCalls(context)).toBe(stampsBeforeBurst);
+    expect(paintStampCalls(context)).toBeGreaterThan(stampsBeforeBurst);
+    const stampsAtSettle = paintStampCalls(context);
     expect(context.drawImage).toHaveBeenCalled();
 
     const repaints = debugCalls("ink zoom repaint");
@@ -322,13 +324,19 @@ describe("zoom ink compositing", () => {
     expect(repaints.at(-1)?.[2]).toMatchObject({
       reason: expect.stringContaining("scalechanging"),
       pagesRepainted: 1,
-      strokesRedrawn: 0,
+      strokesRedrawn: 1,
       burstTicks: expect.any(Number)
     });
+    expect(debugCalls("ink renderer").at(-1)?.[2]).toMatchObject({
+      phase: "zoom-settle-canonical",
+      renderer: "canonical-pdf-space",
+      coordinateSpace: "pdf",
+      strokeCount: 1
+    });
 
-    // HQ rebuild must wait until CSS handoff releases (not mid-hold at 280ms).
+    // Canonical paint is complete before handoff; no delayed redraw is allowed.
     await vi.advanceTimersByTimeAsync(280);
-    expect(paintStampCalls(context)).toBe(stampsBeforeBurst);
+    expect(paintStampCalls(context)).toBe(stampsAtSettle);
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
 
     // Settle path reattaches + syncs layout even if burst sync is missing.
@@ -340,9 +348,9 @@ describe("zoom ink compositing", () => {
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(32);
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
-    // Drain queued after release (0ms timeout).
     await vi.advanceTimersByTimeAsync(0);
-    expect(paintStampCalls(context)).toBeGreaterThan(stampsBeforeBurst);
+    expect(paintStampCalls(context)).toBe(stampsAtSettle);
+    expect(debugCalls("ink renderer").some((call) => (call[2] as { phase?: string }).phase === "zoom-canonical-upgrade")).toBe(false);
 
     await session.destroy();
   });
@@ -363,6 +371,37 @@ describe("zoom ink compositing", () => {
     expect(overlay.style.top).toBe("20px");
     expect(overlay.style.width).toBe("900px");
     expect(overlay.style.height).toBe("1200px");
+
+    await session.destroy();
+  });
+
+  it("keeps stored ink anchors exact when PDF canvas axes round to different zoom scales", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const internal = session as unknown as {
+      ink: { page(page: number): readonly { points: readonly { x: number; y: number }[] }[] };
+      mapper(surface: SurfaceProbe): PdfCoordinateMapper;
+    };
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 480, 720));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 500, 700));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 520, 680));
+    const anchor = internal.ink.page(1)[0]?.points[0];
+    if (!anchor) throw new Error("expected stored ink anchor");
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 0.25, top: 0.75, width: 900.3, height: 1200.7 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(120);
+
+    const mapped = internal.mapper(probeSurface(session)).toViewport(anchor);
+    expect(mapped.x / adapter.contentBox.width).toBeCloseTo(0.8, 10);
+    expect(mapped.y / adapter.contentBox.height).toBeCloseTo(0.9, 10);
+    expect(debugCalls("ink zoom layout").at(-1)?.[2]).toMatchObject({
+      phase: "settle",
+      anchor: { errorX: 0, errorY: 0, deltaFromBurstX: 0, deltaFromBurstY: 0 }
+    });
 
     await session.destroy();
   });
@@ -389,6 +428,49 @@ describe("zoom ink compositing", () => {
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
     expect(debugCalls("ink zoom composite").map((call) => (call[2] as { phase: string }).phase))
       .toContain("native-content");
+    await session.destroy();
+  });
+
+  it("defers post-native resize paint to one final handoff rebase", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const internal = session as unknown as { handleRootResize(): void };
+    const overlay = overlayOf(adapter);
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
+
+    context.arc.mockClear();
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(120);
+    const stampsAtFirstSettle = paintStampCalls(context);
+
+    // PDF.js finishes after the initial settle with a slightly different
+    // canvas box. It must only update CSS layout until release.
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 899, height: 1199 });
+    session.onPdfPageContentMutation(1);
+    internal.handleRootResize();
+    expect(overlay.style.width).toBe("899px");
+    expect(overlay.style.height).toBe("1199px");
+    expect(paintStampCalls(context)).toBe(stampsAtFirstSettle);
+    expect(debugCalls("ink zoom tick").some((call) => (call[2] as { reason?: string }).reason === "resize")).toBe(false);
+    expect(debugCalls("ink zoom repaint").some((call) => (call[2] as { reason?: string }).reason === "resize")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+    expect(paintStampCalls(context)).toBeGreaterThan(stampsAtFirstSettle);
+    expect(debugCalls("ink zoom composite").some((call) => (call[2] as { phase?: string }).phase === "final-canonical")).toBe(true);
+    expect(debugCalls("ink zoom layout").at(-1)?.[2]).toMatchObject({
+      phase: "handoff-final",
+      content: { width: 899, height: 1199 },
+      anchor: { errorX: 0, errorY: 0, deltaFromBurstX: 0, deltaFromBurstY: 0 }
+    });
+
     await session.destroy();
   });
 
@@ -518,7 +600,7 @@ describe("zoom ink compositing", () => {
     await session.destroy();
   });
 
-  it("resizes inkLayer on settle, keeps live draw off the warm cache, then rebuilds it", async () => {
+  it("rebuilds canonical backing pixels at settle and keeps them stable after release", async () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
 
@@ -528,13 +610,15 @@ describe("zoom ink compositing", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerup", 140, 150));
 
     context.drawImage.mockClear();
+    context.arc.mockClear();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 160, 170));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 190, 200));
     await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
     // Active ink is on the disposable draft canvas; it must not re-blit the
-    // committed cache for every pointer event.
+    // committed cache for every pointer event, but it must use the same
+    // stamp-based pen renderer as a committed stroke.
     expect(context.drawImage).not.toHaveBeenCalled();
-    expect(context.lineTo).toHaveBeenCalled();
+    expect(context.arc).toHaveBeenCalled();
     expect(probeSurface(session).inkLayerValid).toBe(true);
     expect(probeSurface(session).inkLayer).not.toBeNull();
     adapter.pageElement.dispatchEvent(pointer("pointerup", 190, 200));
@@ -552,29 +636,32 @@ describe("zoom ink compositing", () => {
     expect(surface.overlay.style.width).toBe("1200px");
     expect(surface.overlay.style.height).toBe("1600px");
     expect(surface.canvas.width).not.toBe(canvasBefore);
-    // Resize seeds layer from scaled blit (no stroke rebuild on settle); still valid for live draw.
+    // The cached bitmap is replaced synchronously with canonical ink before
+    // release, so the resting zoom surface is crisp rather than raster-soft.
     expect(surface.inkLayer).not.toBeNull();
     expect(surface.inkLayer!.width).not.toBe(layerBefore);
     expect(surface.inkLayer!.width).toBe(surface.canvas.width);
     expect(surface.inkLayerValid).toBe(true);
     expect(context.drawImage).toHaveBeenCalled();
-    expect(debugCalls("ink zoom repaint").at(-1)?.[2]).toMatchObject({ canvasesResized: 1, strokesRedrawn: 0 });
+    expect(debugCalls("ink zoom repaint").at(-1)?.[2]).toMatchObject({ canvasesResized: 1 });
+    expect((debugCalls("ink zoom repaint").at(-1)?.[2] as { strokesRedrawn: number }).strokesRedrawn).toBeGreaterThan(0);
 
-    // HQ upgrade stays queued through the CSS handoff.
+    // No post-release upgrade may replace the canonical settle surface.
     await vi.advanceTimersByTimeAsync(280);
     expect(probeSurface(session).inkLayerValid).toBe(true);
 
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(32);
     await vi.advanceTimersByTimeAsync(0);
-    expect(logCalls("session refresh").some((call) => (call[2] as { reason?: string }).reason === "ink-upgrade")).toBe(true);
+    expect(logCalls("session refresh").some((call) => (call[2] as { reason?: string }).reason === "ink-upgrade")).toBe(false);
 
     context.drawImage.mockClear();
+    context.arc.mockClear();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 200, 220));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 230, 250));
     await vi.advanceTimersByTimeAsync(16);
     expect(context.drawImage).not.toHaveBeenCalled();
-    expect(context.lineTo).toHaveBeenCalled();
+    expect(context.arc).toHaveBeenCalled();
     expect(probeSurface(session).inkLayerValid).toBe(true);
 
     await session.destroy();
@@ -593,18 +680,17 @@ describe("zoom ink compositing", () => {
     context.arc.mockClear();
     context.fill.mockClear();
     context.stroke.mockClear();
-    const stampsAtSettle = paintStampCalls(context);
-
     vi.useFakeTimers();
     adapter.zoomTo(1.4, { left: 10, top: 10, width: 800, height: 1100 });
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
     await vi.advanceTimersByTimeAsync(120);
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+    const stampsAtSettle = paintStampCalls(context);
 
     overlay.remove();
     session.onPdfPageContentMutation(1);
     expect(overlay.isConnected).toBe(true);
-    // Layout-only during handoff — no graphite rebuild (that was the flash).
+    // Layout-only reattach must not repaint over the canonical settle surface.
     expect(paintStampCalls(context)).toBe(stampsAtSettle);
     expect(logCalls("ink zoom flash proxy").some((call) => (call[2] as { proxy?: string }).proxy === "reattach-layout-only")).toBe(true);
     expect(logCalls("ink zoom flash proxy").some((call) => (call[2] as { proxy?: string }).proxy === "overlay-disconnected")).toBe(true);

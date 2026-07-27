@@ -27,8 +27,9 @@ class FakeAdapter implements ObsidianPdfAdapter {
   readonly kind = "direct" as const;
   readonly host = document.createElement("div");
   readonly root = document.createElement("div");
-  readonly pageElement = document.createElement("div");
+  pageElement = document.createElement("div");
   readonly toolbarHost = document.createElement("div");
+  readonly focusedPages: number[] = [];
   destroyed = false;
 
   constructor() {
@@ -49,6 +50,7 @@ class FakeAdapter implements ObsidianPdfAdapter {
   }
   getViewState(): PdfViewState { return { pageNumber: 1, scrollFraction: 0, scale: 1, rotation: 0 }; }
   restoreViewState(): void {}
+  focusPage(pageNumber: number): boolean { this.focusedPages.push(pageNumber); return Boolean(this.page(pageNumber)); }
   scrollElement(): HTMLElement { return this.root; }
   mountOverlay(pageNumber: number): HTMLElement {
     const overlay = document.createElement("div");
@@ -57,6 +59,18 @@ class FakeAdapter implements ObsidianPdfAdapter {
     this.pageElement.append(overlay);
     return overlay;
   }
+  replacePageElementKeepingOldPageConnected(): HTMLElement {
+    const previous = this.pageElement;
+    const replacement = document.createElement("div");
+    replacement.dataset.pageNumber = "1";
+    Object.defineProperty(replacement, "getBoundingClientRect", {
+      value: () => ({ left: 0, top: 0, right: 600, bottom: 800, width: 600, height: 800, x: 0, y: 0, toJSON: () => ({}) })
+    });
+    this.root.replaceChild(replacement, previous);
+    this.host.append(previous);
+    this.pageElement = replacement;
+    return replacement;
+  }
   mountToolbar(toolbar: HTMLElement): void { this.toolbarHost.append(toolbar); }
   compatibilityReport(): { errors: string[]; warnings: string[] } {
     return { errors: [], warnings: [] };
@@ -64,12 +78,17 @@ class FakeAdapter implements ObsidianPdfAdapter {
   destroy(): void { this.destroyed = true; this.root.remove(); }
 }
 
-function pointer(type: string, x: number, y: number): PointerEvent {
+function pointer(
+  type: string,
+  x: number,
+  y: number,
+  { pointerType = "pen", pointerId = 7, pressure = 0.6 }: { pointerType?: string; pointerId?: number; pressure?: number } = {}
+): PointerEvent {
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 });
   Object.defineProperties(event, {
-    pointerType: { value: "pen" },
-    pointerId: { value: 7 },
-    pressure: { value: 0.6 },
+    pointerType: { value: pointerType },
+    pointerId: { value: pointerId },
+    pressure: { value: pressure },
     tiltX: { value: 4 },
     tiltY: { value: 2 },
     width: { value: 1 },
@@ -85,12 +104,13 @@ describe("viewer runtime tracer", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       setTransform: vi.fn(), clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(),
       beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), moveTo: vi.fn(), closePath: vi.fn(),
-      lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(), rect: vi.fn(), ellipse: vi.fn()
+      lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(), rect: vi.fn(), ellipse: vi.fn(), drawImage: vi.fn()
     } as unknown as CanvasRenderingContext2D);
   });
 
   afterEach(() => {
     document.body.replaceChildren();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -101,6 +121,7 @@ describe("viewer runtime tracer", () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     let exported: Uint8Array | undefined;
+    let exportedSvg: { name: string; svg: string } | undefined;
     const settings = structuredClone(DEFAULT_SETTINGS);
     const session = await ViewerInkSession.create({
       adapter,
@@ -111,6 +132,7 @@ describe("viewer runtime tracer", () => {
       saveSettings: async () => undefined,
       readSourcePdf: async () => sourceBytes,
       writeExport: async (_name, bytes) => { exported = bytes; },
+      writeSvgExport: async (name, svg) => { exportedSvg = { name, svg }; return `Notes/${name}`; },
       notice: () => undefined
     });
 
@@ -195,10 +217,280 @@ describe("viewer runtime tracer", () => {
     await session.exportCopy();
     expect(exported).toBeDefined();
     await expect(PDFDocument.load(exported!)).resolves.toBeDefined();
+    session.applySelectionShortcut("selectAll");
+    expect(session.canExportSelectedInkSvg()).toBe(true);
+    await session.exportSelectedInkSvg();
+    expect(exportedSvg?.name).toBe("example_selected_ink.svg");
+    expect(exportedSvg?.svg).toContain("Selected PDF ink");
+    expect(exportedSvg?.svg).toContain("data-stroke-id=");
     expect([...sourceBytes]).toEqual([...await source.save()]);
 
     await expect(session.destroy()).resolves.toBe(true);
     expect(adapter.destroyed).toBe(true);
+  });
+
+  it("remounts a router when a replacement PDF page leaves its prior overlay connected", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, { overlay: HTMLElement }>;
+      reattachSurface(surface: { overlay: HTMLElement }, page: PdfPageInfo): boolean;
+      tryReattachDisconnectedSurfaces(pages: PdfPageInfo[]): boolean;
+    };
+
+    try {
+      adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+      const replacement = adapter.replacePageElementKeepingOldPageConnected();
+      const current = adapter.pages()[0]!;
+      const surface = internal.surfaces.get(1)!;
+
+      expect(internal.reattachSurface(surface, current)).toBe(false);
+      expect(internal.tryReattachDisconnectedSurfaces([current])).toBe(true);
+      expect(replacement.contains(surface.overlay)).toBe(true);
+
+      const nativeTextLayer = document.createElement("div");
+      nativeTextLayer.className = "textLayer";
+      replacement.append(nativeTextLayer);
+      const down = pointer("pointerdown", 100, 120);
+      nativeTextLayer.dispatchEvent(down);
+      nativeTextLayer.dispatchEvent(pointer("pointermove", 130, 150));
+      nativeTextLayer.dispatchEvent(pointer("pointerup", 160, 180));
+
+      expect(down.defaultPrevented).toBe(true);
+      await session.manualSave();
+      const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+      expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it("lets Draw mode own a finger and apply native touch policy", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    const drawingFinger = pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 22 });
+    adapter.pageElement.dispatchEvent(drawingFinger);
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "touch", pointerId: 22 }));
+    expect(drawingFinger.defaultPrevented).toBe(true);
+    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-touch-draw-page")).toBe(true);
+
+    await session.manualSave();
+    const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-touch-draw-page")).toBe(false);
+    await session.destroy();
+  });
+
+  it("commits an active finger line before a mobile page is virtualized", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 23 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 170, { pointerType: "touch", pointerId: 23 }));
+    vi.spyOn(adapter, "pages").mockReturnValue([]);
+    vi.spyOn(adapter, "page").mockReturnValue(undefined);
+    session.refresh("page-virtualized");
+
+    await session.manualSave();
+    const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    await session.destroy();
+  });
+
+  it("includes a held finger line in the emergency teardown snapshot", async () => {
+    const files = new MemoryFiles();
+    const emergencyFiles = new Map<string, string>();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 24 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 170, { pointerType: "touch", pointerId: 24 }));
+    session.emergencyPersist((path, contents) => emergencyFiles.set(path, contents), { force: true, reason: "test-teardown" });
+
+    const sidecar = [...emergencyFiles.entries()].find(([path]) => path.startsWith("annotations/"));
+    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    await session.destroy({ silent: true, alreadyPersisted: true });
+  });
+
+  it("captures a stable pressure profile for each new stroke", async () => {
+    const adapter = new FakeAdapter();
+    let profile: "auto" | "pen" | "mouse" = "auto";
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      pressureProfile: () => profile
+    });
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pressure: 0 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 150, { pressure: 0.8 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 140, 180, { pressure: 0.2 }));
+
+    profile = "mouse";
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 200, 220, { pointerType: "mouse", pointerId: 8, pressure: 1 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 230, 250, { pointerType: "mouse", pointerId: 8, pressure: 0 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 260, 280, { pointerType: "mouse", pointerId: 8, pressure: 1 }));
+
+    const strokes = (session as unknown as { ink: { all(): InkStroke[] } }).ink.all();
+    expect(strokes).toHaveLength(2);
+    expect(strokes[0]!.points[0]!.pressure).toBeCloseTo(0.08, 8);
+    expect(strokes[0]!.points[1]!.pressure).toBeGreaterThan(strokes[0]!.points[0]!.pressure);
+    expect(strokes[1]!.inputType).toBe("mouse");
+    expect(strokes[1]!.points.every((point) => point.pressure === 0.5)).toBe(true);
+    await session.destroy();
+  });
+
+  it("uses Cmd or Ctrl as a non-persistent temporary eraser", async () => {
+    const adapter = new FakeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "pen";
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    const internal = session as unknown as { activeTool(): string };
+    const down = new KeyboardEvent("keydown", { key: "Control", bubbles: true, cancelable: true });
+    expect(session.handleKeyDown(down)).toBe(true);
+    expect(down.defaultPrevented).toBe(false);
+    expect(internal.activeTool()).toBe("eraser");
+    expect(adapter.toolbarHost.querySelector(".native-pdf-handwriting-toolbar")?.classList.contains("native-pdf-handwriting-temporary-eraser")).toBe(true);
+
+    expect(session.handleKeyUp(new KeyboardEvent("keyup", { key: "Control", bubbles: true }))).toBe(true);
+    expect(internal.activeTool()).toBe("pen");
+    expect(settings.toolPreferences.activeTool).toBe("pen");
+    await session.destroy();
+  });
+
+  it("defers off-viewport page paint until the page approaches the PDF viewport", async () => {
+    const adapter = new FakeAdapter();
+    Object.defineProperty(adapter.root, "getBoundingClientRect", {
+      value: () => ({ left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, x: 0, y: 0, toJSON: () => ({}) })
+    });
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, { overlay: HTMLElement; viewportCullPending: boolean }>;
+      renderPage(page: number, stats?: undefined, reason?: string): void;
+    };
+    const surface = internal.surfaces.get(1)!;
+    Object.defineProperty(surface.overlay, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 1200, right: 600, bottom: 2000, width: 600, height: 800, x: 0, y: 1200, toJSON: () => ({}) })
+    });
+    internal.renderPage(1, undefined, "viewport-cull-test");
+    expect(surface.viewportCullPending).toBe(true);
+
+    Object.defineProperty(surface.overlay, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 100, right: 600, bottom: 900, width: 600, height: 800, x: 0, y: 100, toJSON: () => ({}) })
+    });
+    internal.renderPage(1, undefined, "viewport-enter-test");
+    expect(surface.viewportCullPending).toBe(false);
+    await session.destroy();
+  });
+
+  it("uses the committed pen renderer for the live draft", async () => {
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    const internal = session as unknown as {
+      surfaces: Map<number, { draftContext: CanvasRenderingContext2D }>;
+      renderLiveDrawPreview(surface: { draftContext: CanvasRenderingContext2D }): void;
+    };
+    const surface = internal.surfaces.get(1)!;
+    vi.clearAllMocks();
+
+    internal.renderLiveDrawPreview(surface);
+
+    // The old preview used one translucent `stroke()`. The committed pen is
+    // stamp-based, so matching it requires its `fill()` renderer here too.
+    expect(surface.draftContext.fill).toHaveBeenCalled();
+    expect(surface.draftContext.stroke).not.toHaveBeenCalled();
+    await session.destroy();
   });
 
   it("consumes an outside text-tool click to close the active editor before creating another box", async () => {
@@ -685,7 +977,7 @@ describe("viewer runtime tracer", () => {
     };
     const internal = session as unknown as {
       texts: { add(annotation: PdfTextAnnotation): void; all(): PdfTextAnnotation[] };
-      surfaces: Map<number, unknown>;
+      surfaces: Map<number, { context: CanvasRenderingContext2D }>;
       renderTextAnnotations(surface: unknown): void;
       resizeTextAnnotation(annotation: PdfTextAnnotation, handle: "se", point: { x: number; y: number }): PdfTextAnnotation;
     };
@@ -716,8 +1008,12 @@ describe("viewer runtime tracer", () => {
     document.dispatchEvent(pointer("pointermove", 400, 575));
     expect(movedBox?.style.transform).toBe("translate(80px, 50px)");
     expect(internal.texts.all()[0]).toMatchObject({ x: 100, y: 300, width: 220, height: 50 });
+    vi.mocked(internal.surfaces.get(1)!.context.rect).mockClear();
     document.dispatchEvent(pointer("pointerup", 400, 575));
     expect(internal.texts.all()[0]).toMatchObject({ x: 180, y: 250, width: 220, height: 50, text: "Resize me" });
+    // The canvas selection marquee must use the committed geometry, not leave
+    // a second outline at the text box's prior position.
+    expect(vi.mocked(internal.surfaces.get(1)!.context.rect).mock.calls.at(-1)).toEqual([180, 550, 220, 50]);
     await session.destroy();
   });
 
@@ -1462,6 +1758,102 @@ describe("viewer runtime tracer", () => {
     await session.manualSave();
     const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(JSON.parse(sidecar![1]).pages[0].strokes[0].points).toHaveLength(4);
+    await session.destroy();
+  });
+
+  it("keeps a captured PDF page visible through a delete reload until native render finishes", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const nativeCanvas = document.createElement("canvas");
+    nativeCanvas.className = "pdf-native-canvas";
+    Object.defineProperty(nativeCanvas, "getBoundingClientRect", {
+      value: () => ({ left: 0, top: 0, right: 600, bottom: 800, width: 600, height: 800, x: 0, y: 0, toJSON: () => ({}) })
+    });
+    adapter.pageElement.prepend(nativeCanvas);
+
+    let finishDelete: (() => void) | undefined;
+    const nativeDelete = new Promise<void>((resolve) => { finishDelete = resolve; });
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      onDeletePage: async () => nativeDelete,
+      notice: () => undefined
+    });
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    const internal = session as unknown as {
+      deletePage(pageNumber: number): Promise<void>;
+      onPagesChanged(reason: string): void;
+    };
+
+    const deleting = internal.deletePage(1);
+    await Promise.resolve();
+    expect(document.querySelectorAll(".native-pdf-handwriting-page-mutation-snapshot")).toHaveLength(1);
+    finishDelete?.();
+    await deleting;
+
+    internal.onPagesChanged("pages-settled");
+    // A rebuilt page tree is present before PDF.js has painted its canvas.
+    // Keep the captured page through that render window instead of exposing a
+    // white frame between the two trees.
+    expect(document.querySelectorAll(".native-pdf-handwriting-page-mutation-snapshot")).toHaveLength(1);
+    const firstRenderedShieldFrame = frames.at(-1);
+    expect(firstRenderedShieldFrame).toBeDefined();
+    firstRenderedShieldFrame?.(0);
+    expect(document.querySelectorAll(".native-pdf-handwriting-page-mutation-snapshot")).toHaveLength(1);
+    const secondRenderedShieldFrame = frames.at(-1);
+    expect(secondRenderedShieldFrame).toBeDefined();
+    secondRenderedShieldFrame?.(16);
+    expect(document.querySelectorAll(".native-pdf-handwriting-page-mutation-snapshot")).toHaveLength(0);
+
+    await session.destroy();
+  });
+
+  it("focuses the inserted native PDF page after its reload publishes the new count", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const nativeCanvas = document.createElement("canvas");
+    nativeCanvas.className = "pdf-native-canvas";
+    Object.defineProperty(nativeCanvas, "getBoundingClientRect", {
+      value: () => ({ left: 0, top: 0, right: 600, bottom: 800, width: 600, height: 800, x: 0, y: 0, toJSON: () => ({}) })
+    });
+    adapter.pageElement.prepend(nativeCanvas);
+    const page2 = document.createElement("div");
+    page2.dataset.pageNumber = "2";
+    adapter.root.append(page2);
+    const initialPages = adapter.pages.bind(adapter);
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      onInsertPage: async () => {
+        const pages = [...initialPages(), { pageNumber: 2, width: 600, height: 800, scale: 1, rotation: 0, element: page2 }];
+        vi.spyOn(adapter, "pages").mockReturnValue(pages);
+        vi.spyOn(adapter, "page").mockImplementation((pageNumber) => pages.find((page) => page.pageNumber === pageNumber));
+        return 2;
+      },
+      notice: () => undefined
+    });
+
+    await session.addPageAt(2);
+
+    expect(adapter.focusedPages).toEqual([2]);
+    expect(document.querySelectorAll(".native-pdf-handwriting-page-mutation-snapshot")).toHaveLength(1);
     await session.destroy();
   });
 });

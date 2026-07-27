@@ -23,6 +23,11 @@ export interface GraphiteStrokeOptions {
   /** Stable seed so redraws match (stroke id hash, etc.). */
   seed?: number;
   /**
+   * Viewport coordinates per PDF-space unit. Keep texture limits in document
+   * space so a canonical redraw has the same grain density after zooming.
+   */
+  coordinateScale?: number;
+  /**
    * `full` — final paint / export.
    * `draft` — live pointer preview (cheaper; still graphite, not pen).
    */
@@ -45,7 +50,7 @@ export interface GraphiteMark {
 }
 
 export function pencilSample(preferences: DrawingToolPreferences, point: PdfPoint): PencilSample {
-  const pressure = preferences.pressureSensitivity ? Math.max(0.1, point.pressure) : 0.5;
+  const pressure = preferences.pressureSensitivity ? Math.min(1, Math.max(0, point.pressure)) : 0.5;
   const tilt = preferences.tiltSensitivity
     ? Math.min(1, (Math.abs(point.tiltX ?? 0) + Math.abs(point.tiltY ?? 0)) / 120)
     : 0;
@@ -98,19 +103,26 @@ function clamp01(value: number): number {
 }
 
 /**
- * Along-path stamp pitch. Scales with tip width so displayScale zoom does not
- * multiply ellipse count (viewport width = pdfWidth × scale).
+ * Along-path stamp pitch. Scales with tip width and document-space floors so
+ * displayScale zoom preserves the same stamp sequence.
  */
-export function graphiteSpacing(width: number, texture: number, quality: "full" | "draft"): number {
+export function graphiteSpacing(
+  width: number,
+  texture: number,
+  quality: "full" | "draft",
+  coordinateScale = 1
+): number {
   const t = clamp01(texture);
+  const scale = normalizedCoordinateScale(coordinateScale);
   const draftBoost = quality === "draft" ? 1.55 : 1;
   // Slightly tighter pitch → denser graphite body without solid pen fill.
-  const pitch = Math.max(1.0, width * (0.14 + (1 - t) * 0.08));
+  const pitch = Math.max(1.0 * scale, width * (0.14 + (1 - t) * 0.08));
   return pitch * draftBoost;
 }
 
 /**
- * Flecks per sample. Almost flat vs tip half-width — zoom-in must not add grains.
+ * Flecks per sample. Almost flat vs document-space tip half-width — zoom-in
+ * must not add grains.
  */
 export function graphiteGrainCount(half: number, texture: number, quality: "full" | "draft"): number {
   const t = clamp01(texture);
@@ -121,16 +133,27 @@ export function graphiteGrainCount(half: number, texture: number, quality: "full
 }
 
 /** Visual fleck size — grows slowly with tip width, never giant discs. */
-export function graphiteGrainSize(half: number, noise: number, texture: number): { rx: number; ry: number } {
+export function graphiteGrainSize(
+  half: number,
+  noise: number,
+  texture: number,
+  coordinateScale = 1
+): { rx: number; ry: number } {
+  const scale = normalizedCoordinateScale(coordinateScale);
+  const documentHalf = half / scale;
   const t = clamp01(texture);
   // Heavier tooth so texture reads thick without blobbing into pen ink.
-  const major = Math.max(0.4, Math.min(1.7, 0.36 + half * (0.055 + t * 0.02) + noise * 0.34));
+  const major = Math.max(0.4, Math.min(1.7, 0.36 + documentHalf * (0.055 + t * 0.02) + noise * 0.34));
   const aspect = 1.85 + noise * (0.9 + t * 0.95);
-  const rx = Math.min(3.8, major * aspect);
+  const rx = Math.min(3.8, major * aspect) * scale;
   return {
     rx,
-    ry: Math.max(0.25, Math.min(major * 0.95, rx / (aspect * (0.85 + t * 0.18))))
+    ry: Math.max(0.25 * scale, Math.min(major * 0.95 * scale, rx / (aspect * (0.85 + t * 0.18))))
   };
+}
+
+function normalizedCoordinateScale(value: number | undefined): number {
+  return Number.isFinite(value) && value! > 0 ? value! : 1;
 }
 
 /**
@@ -149,6 +172,7 @@ export function graphiteMarks(
   const seed = options.seed ?? 1;
   const texture = clamp01(options.textureStrength);
   const quality = options.quality ?? "full";
+  const coordinateScale = normalizedCoordinateScale(options.coordinateScale);
 
   const stampAt = (
     point: GraphitePoint,
@@ -158,7 +182,8 @@ export function graphiteMarks(
     ny: number
   ) => {
     const { width, opacity, tilt } = sampleAt(options, point);
-    const half = Math.max(0.75, width / 2);
+    const half = Math.max(0.75 * coordinateScale, width / 2);
+    const documentHalf = half / coordinateScale;
     const tipWiden = 1 + tilt * 0.55;
 
     // Soft spine — denser body under grit (still not a solid pen tube).
@@ -174,7 +199,7 @@ export function graphiteMarks(
       });
     }
 
-    const grains = graphiteGrainCount(half, texture, quality);
+    const grains = graphiteGrainCount(documentHalf, texture, quality);
     for (let g = 0; g < grains; g += 1) {
       // Fill tip width; mild Gaussian bias to center.
       const raw = graphiteNoise(seed, index, g * 9 + 1) * 2 - 1;
@@ -192,7 +217,7 @@ export function graphiteMarks(
       const gy = point.y + ny * across + nx * along;
 
       const sizeNoise = graphiteNoise(seed, index, g * 9 + 5);
-      const { rx, ry } = graphiteGrainSize(half, sizeNoise, texture);
+      const { rx, ry } = graphiteGrainSize(half, sizeNoise, texture, coordinateScale);
       const grainA = Math.min(
         0.9,
         opacity
@@ -217,13 +242,19 @@ export function graphiteMarks(
     }
 
     if (quality === "full") {
-      const flecks = 2 + Math.floor(texture * 2) + Math.min(2, Math.floor(half / 4));
+      const flecks = 2 + Math.floor(texture * 2) + Math.min(2, Math.floor(documentHalf / 4));
       for (let f = 0; f < flecks; f += 1) {
         if (graphiteNoise(seed, index, f * 5 + 50) < 0.22 + texture * 0.16) continue;
         const acrossUnit = (graphiteNoise(seed, index, f * 5 + 51) * 2 - 1) * tipWiden;
         const along = (graphiteNoise(seed, index, f * 5 + 52) - 0.5) * half;
         const across = acrossUnit * half * (0.9 + texture * 0.15);
-        const size = Math.max(0.28, Math.min(1.05, 0.26 + half * 0.035 + graphiteNoise(seed, index, f * 5 + 53) * 0.25));
+        const size = Math.max(
+          0.28 * coordinateScale,
+          Math.min(
+            1.05 * coordinateScale,
+            (0.26 + documentHalf * 0.035 + graphiteNoise(seed, index, f * 5 + 53) * 0.25) * coordinateScale
+          )
+        );
         out.push({
           x: point.x + nx * across - ny * along,
           y: point.y + ny * across + nx * along,
@@ -257,7 +288,7 @@ export function graphiteMarks(
       tiltX: ((a.tiltX ?? 0) + (b.tiltX ?? 0)) / 2,
       tiltY: ((a.tiltY ?? 0) + (b.tiltY ?? 0)) / 2
     });
-    const spacing = graphiteSpacing(mid.width, texture, quality);
+    const spacing = graphiteSpacing(mid.width, texture, quality, coordinateScale);
     const steps = Math.max(1, Math.ceil(segment / spacing));
     const nx = -dy / segment;
     const ny = dx / segment;
@@ -289,6 +320,7 @@ function drawSoftRibbon(
   if (!points.length) return;
   const texture = clamp01(options.textureStrength);
   const seed = options.seed ?? 1;
+  const coordinateScale = normalizedCoordinateScale(options.coordinateScale);
   context.save();
   context.strokeStyle = options.color;
   context.lineCap = "round";
@@ -299,7 +331,7 @@ function drawSoftRibbon(
     context.globalAlpha = Math.min(0.38, sample.opacity * (0.28 + (1 - texture) * 0.16));
     context.fillStyle = options.color;
     context.beginPath();
-    context.arc(points[0]!.x, points[0]!.y, Math.max(0.65, sample.width * 0.38), 0, Math.PI * 2);
+    context.arc(points[0]!.x, points[0]!.y, Math.max(0.65 * coordinateScale, sample.width * 0.38), 0, Math.PI * 2);
     context.fill();
     context.restore();
     return;
@@ -320,14 +352,14 @@ function drawSoftRibbon(
     const haze = Math.min(0.28, mid.opacity * (0.16 + (1 - texture) * 0.14));
     const core = Math.min(0.34, mid.opacity * (0.18 + (1 - texture) * 0.14));
     context.globalAlpha = haze;
-    context.lineWidth = Math.max(0.85, mid.width * (0.98 + mid.tilt * 0.2));
+    context.lineWidth = Math.max(0.85 * coordinateScale, mid.width * (0.98 + mid.tilt * 0.2));
     context.beginPath();
     context.moveTo(a.x, a.y);
     context.lineTo(b.x, b.y);
     context.stroke();
     if (graphiteNoise(seed, i, 91) < 0.28 + texture * 0.32) continue;
     context.globalAlpha = core;
-    context.lineWidth = Math.max(0.6, mid.width * (0.62 + (1 - texture) * 0.14));
+    context.lineWidth = Math.max(0.6 * coordinateScale, mid.width * (0.62 + (1 - texture) * 0.14));
     context.beginPath();
     context.moveTo(a.x, a.y);
     context.lineTo(b.x, b.y);

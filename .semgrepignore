@@ -1,0 +1,5 @@
+# TypeScript sources are canonical. Do not scan accidental compiler emits.
+src/**/*.js
+tests/**/*.js
+scripts/**/*.js
+vitest.config.js

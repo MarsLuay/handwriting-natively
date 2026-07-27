@@ -1,0 +1,2 @@
+# The minified PDF serializer intentionally embeds spaces before line breaks.
+main.js whitespace=-trailing-space

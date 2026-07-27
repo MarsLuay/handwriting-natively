@@ -91,6 +91,25 @@ describe("circular segment eraser", () => {
     expect(createFragmentId).not.toHaveBeenCalled();
   });
 
+  it("keeps spatial-index non-candidates untouched while erasing indexed hits", () => {
+    const nonCandidate = stroke("non-candidate", [point(0, 0), point(10, 0)]);
+    const candidate = stroke("candidate", [point(20, 0), point(30, 0)]);
+    const path = [point(25, 0)];
+
+    const segments = eraseStrokeSegments([nonCandidate, candidate], path, 2, {
+      candidateIds: new Set([candidate.id])
+    });
+    expect(segments.erased).toEqual([candidate]);
+    expect(segments.kept[0]).toBe(nonCandidate);
+    expect(segments.fragments).toHaveLength(2);
+
+    const whole = eraseWholeStrokes([nonCandidate, candidate], path, 2, {
+      candidateIds: new Set([candidate.id])
+    });
+    expect(whole.erased).toEqual([candidate]);
+    expect(whole.kept).toEqual([nonCandidate]);
+  });
+
   it("does not split a stroke at exact tangency", () => {
     const original = stroke("line", [point(0, 0), point(10, 0)]);
     const result = eraseStrokeSegments([original], [point(5, 2)], 2);

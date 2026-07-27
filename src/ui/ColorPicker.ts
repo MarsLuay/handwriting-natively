@@ -3,12 +3,15 @@ import { setElementCssProps } from "../dom/typeGuards";
 import { resolveDrawingTool, type ToolPreferences } from "../model";
 import type { DropdownOption } from "./DropdownController";
 
-export function colorOptions(preferences: ToolPreferences, select: (color: string) => void): DropdownOption[] {
-  const tool = resolveDrawingTool(preferences.activeTool);
+export function colorOptions(
+  preferences: ToolPreferences,
+  select: (color: string) => void,
+  selectedColor = preferences[resolveDrawingTool(preferences.activeTool)].color
+): DropdownOption[] {
   return preferences.recentColors.map((color) => ({
     id: color,
     label: color,
-    active: preferences[tool].color.toLowerCase() === color.toLowerCase(),
+    active: selectedColor.toLowerCase() === color.toLowerCase(),
     render: (button) => {
       const swatch = createDetachedSpan(button.ownerDocument);
       swatch.className = "native-pdf-handwriting-color-swatch";

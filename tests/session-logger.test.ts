@@ -158,6 +158,57 @@ describe("SessionLogger", () => {
     ]));
   });
 
+  it("logs thumbnail page actions without annotation content", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
+    });
+
+    logger.pdfPageAction("insert-start", { requestedPageNumber: 2, dirty: true });
+    logger.pdfPageAction("insert-complete", { requestedPageNumber: 2, insertedPage: 2 });
+    logger.pdfPageAction("insert-focus", { pageNumber: 2, reason: "pages-dom" });
+    logger.pdfPageAction("page-shield-captured", { action: "delete", pageNumber: 3, capturedPages: 2 });
+    logger.pdfPageAction("page-shield-released", { action: "delete", pageNumber: 3, reason: "pages-settled" });
+
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "pdf page action", payload: expect.objectContaining({ phase: "insert-start", requestedPageNumber: 2 }) }),
+      expect.objectContaining({ event: "pdf page action", payload: expect.objectContaining({ phase: "insert-complete", insertedPage: 2 }) }),
+      expect.objectContaining({ event: "pdf page action", payload: expect.objectContaining({ phase: "insert-focus", pageNumber: 2 }) }),
+      expect.objectContaining({ event: "pdf page action", payload: expect.objectContaining({ phase: "page-shield-captured", action: "delete", pageNumber: 3, capturedPages: 2 }) }),
+      expect.objectContaining({ event: "pdf page action", payload: expect.objectContaining({ phase: "page-shield-released", action: "delete", reason: "pages-settled" }) })
+    ]));
+  });
+
+  it("logs whether a thumbnail action joined Obsidian's native menu", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
+    });
+
+    logger.thumbnailMenu("native-menu-appended", { kind: "delete", pageNumber: 3 });
+    logger.thumbnailMenu("native-menu-missing", { kind: "delete", pageNumber: 3 });
+
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "thumbnail menu", payload: expect.objectContaining({ phase: "native-menu-appended", pageNumber: 3 }) }),
+      expect.objectContaining({ event: "thumbnail menu", payload: expect.objectContaining({ phase: "native-menu-missing", kind: "delete" }) })
+    ]));
+  });
+
+  it("logs touch policy and terminal cleanup", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
+    });
+
+    logger.touchInput("policy", { enabled: true, surfaces: 2 });
+    logger.touchInput("pointercancel", { page: 1, pointerId: 7, trackedBefore: 1, trackedAfter: 0 });
+
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "touch input", payload: expect.objectContaining({ phase: "policy", enabled: true }) }),
+      expect.objectContaining({ event: "touch input", payload: expect.objectContaining({ phase: "pointercancel", pointerId: 7, trackedAfter: 0 }) })
+    ]));
+  });
+
   it("logs every pointer route and raw pointer seen types", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const logger = new SessionLogger("Notes/example.pdf");
@@ -170,6 +221,30 @@ describe("SessionLogger", () => {
     expect(debug.mock.calls.some((call) => call[1] === "pointer route" && (call[2] as { route: string }).route === "touch-pan")).toBe(true);
     expect(debug.mock.calls.some((call) => call[1] === "pointer seen" && (call[2] as { pointerType: string }).pointerType === "touch")).toBe(true);
     debug.mockRestore();
+  });
+
+  it("logs renderer parity when an ink stroke commits", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
+    });
+
+    logger.inkRenderer(1, {
+      tool: "pencil",
+      pointCount: 12,
+      previewRenderer: "tool-renderer",
+      committedRenderer: "tool-renderer"
+    });
+
+    expect(writes).toEqual([expect.objectContaining({
+      event: "ink renderer",
+      payload: expect.objectContaining({
+        page: 1,
+        tool: "pencil",
+        previewRenderer: "tool-renderer",
+        committedRenderer: "tool-renderer"
+      })
+    })]);
   });
 
   it("logs text-tool diagnostics without annotation contents", () => {

@@ -54,11 +54,24 @@ describe("safe defaults", () => {
     expect({ ...DEFAULT_SETTINGS, mouseDragScroll: false }.mouseDragScroll).toBe(false);
   });
 
-  it("keeps finger draw off by default and merges the opt-in", () => {
-    expect(DEFAULT_SETTINGS.fingerDraw).toBe(false);
-    expect(mergeSettings({}).fingerDraw).toBe(false);
-    expect(mergeSettings({ fingerDraw: true }).fingerDraw).toBe(true);
-    expect(mergeSettings({ fingerDraw: false }).fingerDraw).toBe(false);
+  it("drops the retired finger-draw preference so Draw remains the sole touch mode", () => {
+    const merged = mergeSettings({ fingerDraw: true } as Partial<typeof DEFAULT_SETTINGS> & Record<string, unknown>);
+    expect(merged).not.toHaveProperty("fingerDraw");
+  });
+
+  it("uses Auto input pressure unless a valid profile is saved", () => {
+    expect(DEFAULT_SETTINGS.pressureProfile).toBe("auto");
+    expect(mergeSettings({ pressureProfile: "pen" }).pressureProfile).toBe("pen");
+    expect(mergeSettings({ pressureProfile: "mouse" }).pressureProfile).toBe("mouse");
+    expect(mergeSettings({ pressureProfile: "not-a-profile" as "auto" }).pressureProfile).toBe("auto");
+  });
+
+  it("keeps pressure calibration bounded while preserving valid saved controls", () => {
+    expect(DEFAULT_SETTINGS.pressureCalibration).toEqual({ initialFloor: 0.08, gain: 1.15, smoothing: 0.78 });
+    expect(mergeSettings({ pressureCalibration: { initialFloor: -1, gain: 4, smoothing: 0.4 } }).pressureCalibration)
+      .toEqual({ initialFloor: 0, gain: 2, smoothing: 0.4 });
+    expect(mergeSettings({ pressureCalibration: { gain: 0.7 } as never }).pressureCalibration)
+      .toEqual({ initialFloor: 0.08, gain: 0.7, smoothing: 0.78 });
   });
 
   it("enables stroke simplification by default", () => {
@@ -84,6 +97,12 @@ describe("safe defaults", () => {
     expect(DEFAULT_SETTINGS.toolbarPlacement).toBe("main");
     expect(mergeSettings({ toolbarPlacement: "right" }).toolbarPlacement).toBe("right");
     expect(mergeSettings({ toolbarPlacement: "nope" as "main" }).toolbarPlacement).toBe("main");
+  });
+
+  it("uses blank Letter paper unless a PDF template path is configured", () => {
+    expect(DEFAULT_SETTINGS.pdfTemplatePath).toBe("");
+    expect(mergeSettings({ pdfTemplatePath: "Templates/ruled.pdf" }).pdfTemplatePath).toBe("Templates/ruled.pdf");
+    expect(mergeSettings({ pdfTemplatePath: 42 as never }).pdfTemplatePath).toBe("");
   });
 
   it("strips legacy YOLO Mode keys and unused lasso fields from saved settings", () => {

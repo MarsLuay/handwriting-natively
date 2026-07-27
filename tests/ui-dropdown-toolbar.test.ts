@@ -142,6 +142,19 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
+  it("does not put Add page in the annotation toolbar", () => {
+    const toolbar = new AnnotationToolbar({
+      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
+      autosave: true,
+      callbacks: { onPreferencesChange: vi.fn() },
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    const append = toolbar.element.querySelector<HTMLButtonElement>("[data-control='append-page']");
+    expect(append).toBeNull();
+    toolbar.destroy();
+  });
+
   it("reads the active toolbar placement each time More opens", () => {
     let placement: "main" | "left" | "right" = "main";
     const toolbar = new AnnotationToolbar({
@@ -191,6 +204,27 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
+  it("selects a tool programmatically through the toolbar change path", () => {
+    const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    const changed = vi.fn();
+    const toolbar = new AnnotationToolbar({
+      preferences,
+      autosave: true,
+      callbacks: { onPreferencesChange: changed },
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='laser']")?.click();
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='laser']")?.click();
+    expect(document.querySelector(".native-pdf-handwriting-dropdown")).not.toBeNull();
+    toolbar.selectTool("text");
+    expect(document.querySelector(".native-pdf-handwriting-dropdown")).toBeNull();
+    expect(preferences.activeTool).toBe("text");
+    expect(toolbar.element.querySelector("[data-control='text']")?.getAttribute("aria-pressed")).toBe("true");
+    expect(changed).toHaveBeenLastCalledWith(preferences, "tool");
+    toolbar.destroy();
+  });
+
   it("moves the laser width checkmark when another option is selected", () => {
     const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
     preferences.activeTool = "laser";
@@ -211,6 +245,31 @@ describe("AnnotationToolbar", () => {
     expect(preferences.laser.width).toBe(1);
     expect(fine?.getAttribute("aria-checked")).toBe("true");
     expect(standard?.getAttribute("aria-checked")).toBe("false");
+    toolbar.destroy();
+  });
+
+  it("keeps laser color controls in the shared Color menu", () => {
+    const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    preferences.activeTool = "laser";
+    const changed = vi.fn();
+    const toolbar = new AnnotationToolbar({
+      preferences,
+      autosave: true,
+      callbacks: { onPreferencesChange: changed },
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='laser']")?.click();
+    expect(document.querySelector(".native-pdf-handwriting-laser-menu input[type='color']")).toBeNull();
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='color']")?.click();
+    const custom = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-dropdown input[type='color']");
+    if (!custom) throw new Error("Shared custom color input missing");
+    expect(custom.value).toBe("#ff0000");
+    custom.value = "#22c55e";
+    custom.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(preferences.laser.color).toBe("#22c55e");
+    expect(preferences.activeTool).toBe("laser");
+    expect(changed).toHaveBeenCalledOnce();
     toolbar.destroy();
   });
 
