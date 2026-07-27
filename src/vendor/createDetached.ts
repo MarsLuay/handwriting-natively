@@ -1,32 +1,33 @@
 /**
- * Detached DOM nodes for Obsidian popouts / Document.createEl quirks.
- * Never call Obsidian `Document.createDiv` / `createEl` / `createSpan` when the
- * element must stay unattached — some hosts append to `document` and throw
- * HierarchyRequestError ("Only one element on document allowed").
- *
- * `obsidianmd/prefer-create-el` is off for this file in eslint.config.mts.
+ * Detached DOM nodes for Obsidian popouts. Document-level HTML helpers create
+ * nodes in the supplied owner document without attaching them. SVG creation
+ * uses the document's window helper because Document.createSvg may attach to
+ * the document in some Obsidian hosts.
  */
+type ObsidianWindow = Window & {
+  createSvg<K extends keyof SVGElementTagNameMap>(tag: K): SVGElementTagNameMap[K];
+};
+
 export function createDetachedEl<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
   tag: K
 ): HTMLElementTagNameMap[K] {
-  return doc.createElement(tag);
+  return doc.createEl(tag);
 }
 
 export function createDetachedDiv(doc: Document): HTMLDivElement {
-  return doc.createElement("div");
+  return doc.createDiv();
 }
 
 export function createDetachedSpan(doc: Document): HTMLSpanElement {
-  return doc.createElement("span");
+  return doc.createSpan();
 }
 
-/** Obsidian `Document.createSvg` appends to `document` — always use createElementNS. */
 export function createDetachedSvg(
   doc: Document,
   tag: keyof SVGElementTagNameMap
 ): SVGElement {
-  return doc.createElementNS("http://www.w3.org/2000/svg", tag);
+  return (doc.win as ObsidianWindow).createSvg(tag);
 }
 
 /** Prefer body; fall back to a connected host so attach cannot target `document`. */

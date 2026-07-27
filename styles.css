@@ -433,10 +433,10 @@
   pointer-events: none;
   position: fixed;
 }
-/* This class is on the real PDF.js page, an ancestor of its canvas/text layer.
-   It prevents browser direct manipulation from canceling an active finger line. */
-/* obsidian: allow css-important -- required to override PDF.js inline touch handling while Draw mode is active */
-.native-pdf-handwriting-touch-draw-page { touch-action: none !important; }
+/* The selector is more specific than PDF.js's page defaults. It prevents
+   direct manipulation from canceling an active finger line in Draw mode. */
+.pdf-viewer .native-pdf-handwriting-touch-draw-page,
+.pdfViewer .native-pdf-handwriting-touch-draw-page { touch-action: none; }
 .native-pdf-handwriting-canvas,
 .native-pdf-handwriting-draft-canvas { display: block; height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; z-index: 1; }
 .native-pdf-handwriting-canvas.is-selection-chrome-raised { z-index: 3; }

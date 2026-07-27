@@ -5,6 +5,12 @@ import { describe, expect, it } from "vitest";
 const styles = readFileSync("styles.css", "utf8");
 
 describe("text editor styles", () => {
+  it("uses a specific PDF viewer selector for touch drawing without !important", () => {
+    expect(styles).toContain(".pdf-viewer .native-pdf-handwriting-touch-draw-page");
+    expect(styles).toContain(".pdfViewer .native-pdf-handwriting-touch-draw-page");
+    expect(styles).toMatch(/native-pdf-handwriting-touch-draw-page[^}]*touch-action:\s*none;(?![^}]*!important)/s);
+  });
+
   it("keeps the active text editor transparent in every Obsidian theme", () => {
     const editorRules = [...styles.matchAll(/\.native-pdf-handwriting-text-input\s*\{(?<body>[^}]*)\}/gs)];
     const editorRule = editorRules.at(-1);

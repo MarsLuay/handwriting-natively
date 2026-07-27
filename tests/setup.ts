@@ -96,6 +96,22 @@ function installWindowCreateElHelpers(target: Window): void {
       return (this as Window & { createEl: (tag: string, options?: DomOptions) => HTMLElement }).createEl("div", o);
     }
   });
+  Object.defineProperty(target, "createSpan", {
+    configurable: true,
+    writable: true,
+    value(this: Window, o?: DomOptions) {
+      return (this as Window & { createEl: (tag: string, options?: DomOptions) => HTMLElement }).createEl("span", o);
+    }
+  });
+  Object.defineProperty(target, "createSvg", {
+    configurable: true,
+    writable: true,
+    value(this: Window, tag: string, o?: DomOptions) {
+      const el = this.document.createElementNS("http://www.w3.org/2000/svg", tag);
+      applyDomOptions(el, o);
+      return el;
+    }
+  });
 }
 
 installWindowCreateElHelpers(window);

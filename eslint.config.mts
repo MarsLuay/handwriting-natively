@@ -6,7 +6,6 @@ export default defineConfig([
     "node_modules",
     "dist",
     "main.js",
-    "src/vendor/**",
   ]),
   ...obsidianmd.configs.recommended,
   {
