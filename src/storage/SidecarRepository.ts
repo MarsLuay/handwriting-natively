@@ -9,10 +9,99 @@ export interface TextFileAdapter {
   remove?(path: string): Promise<void>;
 }
 
+export type AnnotationStoreKind = "sidecar" | "recovery";
+
+export interface QuarantinedAnnotationFile {
+  store: AnnotationStoreKind;
+  sourcePath: string;
+  quarantinePath: string;
+  error: string;
+}
+
+export interface AnnotationLoadResult<T> {
+  data: T | null;
+  quarantined: QuarantinedAnnotationFile | null;
+}
+
+export interface AnnotationLoadOptions {
+  store: AnnotationStoreKind;
+  now?: () => Date;
+}
+
+/**
+ * Read a canonical annotation file without ever silently replacing malformed
+ * user data. Parse failures move the exact original bytes aside first, then
+ * let the caller continue with an empty store.
+ */
+export async function loadAnnotationFileWithQuarantine<T>(
+  files: TextFileAdapter,
+  path: string,
+  parse: (contents: string) => T,
+  options: AnnotationLoadOptions
+): Promise<AnnotationLoadResult<T>> {
+  if (!await files.exists(path)) return { data: null, quarantined: null };
+  // Do not classify I/O failures as corruption: the source has not been read
+  // and must remain authoritative until the adapter error is resolved.
+  const contents = await files.read(path);
+  try {
+    return { data: parse(contents), quarantined: null };
+  } catch (error) {
+    const quarantinePath = await nextCorruptPath(files, path, options.now?.() ?? new Date());
+    await moveWithoutOverwrite(files, path, quarantinePath, contents);
+    return {
+      data: null,
+      quarantined: {
+        store: options.store,
+        sourcePath: path,
+        quarantinePath,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    };
+  }
+}
+
+function safeTimestamp(date: Date): string {
+  return date.toISOString().replace(/[-:.]/g, "");
+}
+
+async function nextCorruptPath(files: TextFileAdapter, path: string, now: Date): Promise<string> {
+  const base = `${path}.corrupt-${safeTimestamp(now)}`;
+  let candidate = base;
+  let suffix = 2;
+  while (await files.exists(candidate)) candidate = `${base}-${suffix++}`;
+  return candidate;
+}
+
+async function moveWithoutOverwrite(
+  files: TextFileAdapter,
+  sourcePath: string,
+  destinationPath: string,
+  contents: string
+): Promise<void> {
+  if (files.rename) {
+    await files.rename(sourcePath, destinationPath);
+    return;
+  }
+  if (!files.remove) {
+    throw new Error(`Cannot quarantine malformed annotation file: adapter cannot move ${sourcePath}`);
+  }
+  // Fallback preserves the source until the copy has been fully written.
+  await files.write(destinationPath, contents);
+  await files.remove(sourcePath);
+}
+
+export interface SidecarRepositoryOptions {
+  now?: () => Date;
+}
+
 export class SidecarRepository {
   private readonly migration = new MigrationManager();
 
-  constructor(private readonly files: TextFileAdapter, private readonly folder: string) {}
+  constructor(
+    private readonly files: TextFileAdapter,
+    private readonly folder: string,
+    private readonly options: SidecarRepositoryOptions = {}
+  ) {}
 
   pathFor(documentId: string): string {
     const safe = documentId.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -20,9 +109,17 @@ export class SidecarRepository {
   }
 
   async load(documentId: string): Promise<SidecarSchemaV1 | null> {
+    return (await this.loadWithStatus(documentId)).data;
+  }
+
+  async loadWithStatus(documentId: string): Promise<AnnotationLoadResult<SidecarSchemaV1>> {
     const path = this.pathFor(documentId);
-    if (!await this.files.exists(path)) return null;
-    return this.migration.migrate(await this.files.read(path));
+    return loadAnnotationFileWithQuarantine(
+      this.files,
+      path,
+      (contents) => this.migration.migrate(contents),
+      { store: "sidecar", ...(this.options.now ? { now: this.options.now } : {}) }
+    );
   }
 
   async save(sidecar: SidecarSchemaV1): Promise<void> {

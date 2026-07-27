@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { InkStroke, PdfTextAnnotation } from "../src/model";
 import { createDocumentIdentity } from "../src/storage/DocumentIdentity";
 import { MigrationManager } from "../src/storage/MigrationManager";
+import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
 import { parseSidecar, pickNewerSidecar, serializeSidecar, type SidecarSchemaV1 } from "../src/storage/SidecarSchema";
 
@@ -131,5 +132,59 @@ describe("sidecar storage", () => {
     await expect(repository.save(changed)).rejects.toThrow("write failed");
     expect(await files.read("annotations/doc.json")).toBe(original);
     expect(files.data.has("annotations/doc.json.tmp")).toBe(false);
+  });
+
+  it.each([
+    ["sidecar", "{"],
+    ["sidecar", "{}"],
+    ["recovery", "{"]
+  ] as const)("quarantines malformed %s JSON before returning an empty store", async (store, contents) => {
+    const files = new MemoryFiles();
+    const now = () => new Date("2026-02-01T03:04:05.678Z");
+    const repository = store === "sidecar"
+      ? new SidecarRepository(files, "annotations", { now })
+      : new RecoveryRepository(files, "annotations/recovery", { now });
+    const path = repository.pathFor("doc");
+    files.data.set(path, contents);
+
+    const result = await repository.loadWithStatus("doc");
+
+    const quarantinePath = `${path}.corrupt-20260201T030405678Z`;
+    expect(result.data).toBeNull();
+    expect(result.quarantined).toMatchObject({
+      store,
+      sourcePath: path,
+      quarantinePath,
+      error: expect.any(String)
+    });
+    expect(files.data.has(path)).toBe(false);
+    expect(await files.read(quarantinePath)).toBe(contents);
+  });
+
+  it("never overwrites an earlier corrupt-sidecar quarantine", async () => {
+    const files = new MemoryFiles();
+    const now = () => new Date("2026-02-01T03:04:05.678Z");
+    const repository = new SidecarRepository(files, "annotations", { now });
+    const path = repository.pathFor("doc");
+    const baseQuarantinePath = `${path}.corrupt-20260201T030405678Z`;
+    files.data.set(path, "{");
+    files.data.set(baseQuarantinePath, "earlier corrupt bytes");
+
+    const result = await repository.loadWithStatus("doc");
+
+    expect(result.quarantined?.quarantinePath).toBe(`${baseQuarantinePath}-2`);
+    expect(await files.read(baseQuarantinePath)).toBe("earlier corrupt bytes");
+    expect(await files.read(`${baseQuarantinePath}-2`)).toBe("{");
+  });
+
+  it("does not enter empty mode when malformed data cannot be quarantined", async () => {
+    const files = new MemoryFiles();
+    const repository = new SidecarRepository(files, "annotations");
+    const path = repository.pathFor("doc");
+    files.data.set(path, "{");
+    files.failRename = true;
+
+    await expect(repository.loadWithStatus("doc")).rejects.toThrow("rename failed");
+    expect(await files.read(path)).toBe("{");
   });
 });

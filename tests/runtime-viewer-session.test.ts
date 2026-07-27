@@ -229,6 +229,53 @@ describe("viewer runtime tracer", () => {
     expect(adapter.destroyed).toBe(true);
   });
 
+  it("opens with empty annotations after quarantining malformed sidecar JSON", async () => {
+    const source = await PDFDocument.create();
+    source.addPage([600, 800]);
+    const sourceBytes = await source.save();
+    const files = new MemoryFiles();
+    const sidecars = new SidecarRepository(files, "annotations", {
+      now: () => new Date("2026-02-01T03:04:05.678Z")
+    });
+    const documentId = createDocumentIdentity({ vaultPath: "Notes/example.pdf" }).id;
+    const sourcePath = sidecars.pathFor(documentId);
+    files.values.set(sourcePath, "{");
+    const notices: string[] = [];
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+
+    const session = await ViewerInkSession.create({
+      adapter: new FakeAdapter(),
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars,
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => sourceBytes,
+      writeExport: async () => undefined,
+      notice: (message) => notices.push(message),
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+
+    const quarantinePath = `${sourcePath}.corrupt-20260201T030405678Z`;
+    expect(notices).toEqual([`Malformed annotation data moved to ${quarantinePath}. Opened with empty annotations.`]);
+    expect(await files.read(quarantinePath)).toBe("{");
+    expect(files.values.has(sourcePath)).toBe(false);
+    expect(logs).toContainEqual({
+      event: "sidecar quarantined",
+      payload: expect.objectContaining({
+        documentId,
+        store: "sidecar",
+        sourcePath,
+        quarantinePath,
+        error: expect.any(String)
+      })
+    });
+    await session.destroy({ silent: true });
+  });
+
   it("remounts a router when a replacement PDF page leaves its prior overlay connected", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
