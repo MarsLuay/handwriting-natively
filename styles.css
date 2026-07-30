@@ -348,18 +348,78 @@
 }
 .native-pdf-handwriting-advanced { border-top: 1px solid var(--background-modifier-border, #d1d5db); padding: 8px; }
 .native-pdf-handwriting-advanced label { align-items: center; display: flex; gap: 8px; justify-content: space-between; min-height: 36px; }
-.native-pdf-handwriting-advanced-settings-dropdown { display: block; padding: 0; }
-.native-pdf-handwriting-advanced-settings-details {
-  border-top: 1px solid var(--background-modifier-border, #d1d5db);
-  padding: 12px 0 0;
+/* Collapsible settings: override Obsidian's flex setting-item so <details> is full width. */
+.setting-item.native-pdf-handwriting-settings-details-host {
+  align-items: stretch;
+  display: block;
+  flex-direction: column;
+  padding-bottom: 0.25em;
+  padding-top: 0.25em;
 }
-.native-pdf-handwriting-advanced-settings-details > summary {
+.setting-item.native-pdf-handwriting-settings-details-host > details {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+}
+.native-pdf-handwriting-advanced-settings-details,
+.native-pdf-handwriting-pressure-calibration {
+  border-top: none;
+  box-sizing: border-box;
+  display: block;
+  padding: 0.5em 0;
+  width: 100%;
+}
+.native-pdf-handwriting-advanced-settings-details > summary,
+.native-pdf-handwriting-pressure-calibration > summary {
+  align-items: center;
   color: var(--text-normal);
   cursor: pointer;
+  display: flex;
   font-size: var(--font-ui-medium);
   font-weight: var(--font-semibold);
+  gap: 0.5em;
+  line-height: var(--line-height-tight, 1.3);
+  list-style: none;
+  user-select: none;
 }
-.native-pdf-handwriting-advanced-settings-contents { margin-top: 8px; }
+.native-pdf-handwriting-advanced-settings-details > summary::-webkit-details-marker,
+.native-pdf-handwriting-pressure-calibration > summary::-webkit-details-marker {
+  display: none;
+}
+.native-pdf-handwriting-advanced-settings-details > summary::before,
+.native-pdf-handwriting-pressure-calibration > summary::before {
+  border-color: transparent transparent transparent var(--text-muted);
+  border-style: solid;
+  border-width: 0.28em 0 0.28em 0.4em;
+  content: "";
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 0;
+  transform: translateY(0.02em);
+  transition: transform 0.12s ease;
+  width: 0;
+}
+.native-pdf-handwriting-advanced-settings-details[open] > summary::before,
+.native-pdf-handwriting-pressure-calibration[open] > summary::before {
+  transform: translateY(0.02em) rotate(90deg);
+}
+.native-pdf-handwriting-advanced-settings-contents,
+.native-pdf-handwriting-pressure-calibration-contents {
+  display: block;
+  margin-top: 0.5em;
+  width: 100%;
+}
+.native-pdf-handwriting-advanced-settings-contents > .setting-item,
+.native-pdf-handwriting-pressure-calibration-contents > .setting-item {
+  padding-left: 0;
+  padding-right: 0;
+}
+.native-pdf-handwriting-settings-details-desc {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: var(--line-height-tight, 1.3);
+  margin: 0 0 0.75em;
+}
 
 .native-pdf-handwriting-save-status {
   align-items: center;
