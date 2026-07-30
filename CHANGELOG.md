@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.26 — 2026-07-29
+
+- Add **Create notebook** (`create-notebook`): a fresh blank PDF at GoodNotes Standard paper size (~6.32 × 8.17 in).
+- Add folder right-click **New PDF** that creates that GoodNotes-sized blank PDF in the selected folder.
+
 ## 0.1.25 — 2026-07-27
 
 - Restore genuinely detached DOM creation for PDF toolbar rails so the sidebar mounts reliably in host and popout documents.

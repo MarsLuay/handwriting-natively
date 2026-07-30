@@ -1,6 +1,14 @@
 import { PDFDocument, degrees } from "pdf-lib";
 import { describe, expect, it } from "vitest";
-import { appendMatchingBlankPage, createPdfFromTemplate, deletePdfPage, insertMatchingBlankPage, US_LETTER_PAGE_SIZE } from "../src/pdf/PdfNoteService";
+import {
+  appendMatchingBlankPage,
+  createGoodNotesNotebook,
+  createPdfFromTemplate,
+  deletePdfPage,
+  GOODNOTES_STANDARD_PAGE_SIZE,
+  insertMatchingBlankPage,
+  US_LETTER_PAGE_SIZE
+} from "../src/pdf/PdfNoteService";
 
 async function createPdf(pageSizes: readonly (readonly [number, number])[]): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
@@ -34,6 +42,14 @@ describe("PDF note service", () => {
     const created = await createPdfFromTemplate();
 
     expect(await sizes(created)).toEqual([{ width: US_LETTER_PAGE_SIZE[0], height: US_LETTER_PAGE_SIZE[1] }]);
+  });
+
+  it("creates a blank GoodNotes Standard notebook page", async () => {
+    const created = await createGoodNotesNotebook();
+
+    expect(await sizes(created)).toEqual([
+      { width: GOODNOTES_STANDARD_PAGE_SIZE[0], height: GOODNOTES_STANDARD_PAGE_SIZE[1] }
+    ]);
   });
 
   it("carries the previous page rotation onto the added page", async () => {

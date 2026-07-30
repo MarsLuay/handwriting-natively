@@ -3,6 +3,12 @@ import { PDFDocument } from "pdf-lib";
 /** PDF points for a blank US Letter page (8.5 × 11 inches). */
 export const US_LETTER_PAGE_SIZE: readonly [number, number] = [612, 792];
 
+/**
+ * GoodNotes “Standard” portrait paper size in PDF points (~6.32 × 8.17 in).
+ * Matches the default notebook page GoodNotes uses for on-screen notes.
+ */
+export const GOODNOTES_STANDARD_PAGE_SIZE: readonly [number, number] = [455.04, 588.41];
+
 async function appendFirstTemplatePage(pdfDocument: PDFDocument, templateBytes?: Uint8Array): Promise<void> {
   if (!templateBytes) {
     pdfDocument.addPage([...US_LETTER_PAGE_SIZE]);
@@ -18,6 +24,13 @@ async function appendFirstTemplatePage(pdfDocument: PDFDocument, templateBytes?:
 export async function createPdfFromTemplate(templateBytes?: Uint8Array): Promise<Uint8Array> {
   const pdfDocument = await PDFDocument.create();
   await appendFirstTemplatePage(pdfDocument, templateBytes);
+  return pdfDocument.save();
+}
+
+/** Creates a fresh one-page blank PDF at GoodNotes Standard paper size. */
+export async function createGoodNotesNotebook(): Promise<Uint8Array> {
+  const pdfDocument = await PDFDocument.create();
+  pdfDocument.addPage([...GOODNOTES_STANDARD_PAGE_SIZE]);
   return pdfDocument.save();
 }
 
