@@ -6,6 +6,7 @@ import {
   Platform,
   Plugin,
   TFile,
+  TFolder,
   apiVersion,
   normalizePath,
   type WorkspaceLeaf
@@ -22,7 +23,12 @@ import { ViewerInkSession } from "./runtime/ViewerInkSession";
 import { AttachRetryPolicy } from "./runtime/AttachRetryPolicy";
 import { ScanDebounce } from "./runtime/ScanDebounce";
 import { VaultDebugLog } from "./logging/VaultDebugLog";
-import { createPdfFromTemplate, deletePdfPage, insertMatchingBlankPage } from "./pdf/PdfNoteService";
+import {
+  createGoodNotesNotebook,
+  createPdfFromTemplate,
+  deletePdfPage,
+  insertMatchingBlankPage
+} from "./pdf/PdfNoteService";
 import { mergeSettings, NativePdfInkSettingTab } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
 import { createDocumentIdentity } from "./storage/DocumentIdentity";
@@ -163,6 +169,12 @@ export default class NativePdfInkPlugin extends Plugin {
       name: "Create handwritten PDF from template",
       callback: () => void this.createPdfNote()
     });
+    this.addCommand({
+      id: "create-notebook",
+      name: "Create notebook",
+      callback: () => void this.createNotebook()
+    });
+    this.registerFolderCreatePdfMenu();
     this.addCommand({
       id: "add-page-to-active-pdf",
       name: "Add page at end of active PDF",
@@ -923,6 +935,21 @@ export default class NativePdfInkPlugin extends Plugin {
     }
   }
 
+  /** Folder context menu: create a GoodNotes-sized blank PDF in that folder. */
+  private registerFolderCreatePdfMenu(): void {
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        if (!(file instanceof TFolder)) return;
+        menu.addItem((item) => {
+          item
+            .setTitle("New PDF")
+            .setIcon("file-plus-2")
+            .onClick(() => void this.createNotebook(file.path));
+        });
+      })
+    );
+  }
+
   private async createPdfNote(): Promise<void> {
     const template = this.templateLogValue();
     try {
@@ -947,10 +974,45 @@ export default class NativePdfInkPlugin extends Plugin {
     }
   }
 
+  /**
+   * Blank one-page PDF at GoodNotes Standard size (~6.32 × 8.17 in).
+   * Optional `folderPath` targets a file-explorer folder (context menu).
+   */
+  private async createNotebook(folderPath?: string): Promise<void> {
+    try {
+      await this.vaultDebugLog.writeUrgent("info", "notebook-create-start", {
+        pageSize: "goodnotes-standard",
+        folder: folderPath ?? null
+      });
+      const bytes = await createGoodNotesNotebook();
+      const folder =
+        folderPath ?? this.app.workspace.getActiveFile()?.parent?.path ?? "";
+      const created = await this.createUniquePdf(folder, this.notebookPdfName(), bytes);
+      await this.openPdfInNewTab(created);
+      await this.vaultDebugLog.writeUrgent("info", "notebook-create-complete", {
+        document: created.path,
+        resultBytes: bytes.byteLength
+      });
+      new Notice("New notebook created.");
+    } catch (error) {
+      console.error("[Handwriting Natively] create notebook failed", error);
+      await this.vaultDebugLog.writeUrgent("error", "notebook-create-failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      new Notice(`Could not create notebook: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private handwrittenPdfName(): string {
     const now = new Date();
     const pad = (value: number) => String(value).padStart(2, "0");
     return `Handwritten note ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.pdf`;
+  }
+
+  private notebookPdfName(): string {
+    const now = new Date();
+    const pad = (value: number) => String(value).padStart(2, "0");
+    return `Notebook ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.pdf`;
   }
 
   private async createUniquePdf(folder: string, name: string, bytes: Uint8Array): Promise<TFile> {
