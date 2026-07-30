@@ -206,7 +206,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
           },
           {
             name: "Pressure calibration",
-            desc: "Tune how new Pen and Auto strokes start and respond. Mouse profile remains steady.",
+            searchable: false,
             render: (setting: Setting) => this.renderPressureCalibration(setting)
           },
           {
@@ -312,13 +312,11 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
   }
 
   private renderAdvancedSettingsDropdown(setting: Setting): void {
-    setting.settingEl.empty();
-    setting.settingEl.addClass("native-pdf-handwriting-advanced-settings-dropdown");
-    const details = setting.settingEl.createEl("details", {
-      cls: "native-pdf-handwriting-advanced-settings-details"
+    const contents = this.replaceSettingWithDetails(setting, {
+      summary: "Advanced settings",
+      detailsClass: "native-pdf-handwriting-advanced-settings-details",
+      contentsClass: "native-pdf-handwriting-advanced-settings-contents"
     });
-    details.createEl("summary", { text: "Advanced settings" });
-    const contents = details.createDiv({ cls: "native-pdf-handwriting-advanced-settings-contents" });
 
     new Setting(contents)
       .setName("Allow 25× PDF zoom")
@@ -378,13 +376,14 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
   }
 
   private renderPressureCalibration(setting: Setting): void {
-    setting.settingEl.empty();
-    setting.settingEl.addClass("native-pdf-handwriting-pressure-calibration");
-    const details = setting.settingEl.createEl("details");
-    details.createEl("summary", { text: "Pressure calibration" });
-    const contents = details.createDiv();
+    const contents = this.replaceSettingWithDetails(setting, {
+      summary: "Pressure calibration",
+      detailsClass: "native-pdf-handwriting-pressure-calibration",
+      contentsClass: "native-pdf-handwriting-pressure-calibration-contents"
+    });
     contents.createEl("p", {
-      text: "Draw a few strokes in the PDF after changing a control. Settings affect only strokes started afterwards."
+      cls: "native-pdf-handwriting-settings-details-desc",
+      text: "Tune how new Pen and Auto strokes start and respond. Mouse profile remains steady. Draw a few strokes after changing a control; only strokes started afterwards are affected."
     });
     const calibration = { ...this.host.inkSettings.pressureCalibration };
     const syncControls: Array<() => void> = [];
@@ -422,6 +421,28 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         await this.persistPatch({ pressureCalibration: { ...calibration } });
         syncControls.forEach((sync) => sync());
       }));
+  }
+
+  /**
+   * Obsidian Setting rows are flex (info | control). Collapsible sections need a
+   * full-width block host — gutting the row without resetting layout compresses
+   * the summary and nested settings.
+   */
+  private replaceSettingWithDetails(
+    setting: Setting,
+    options: {
+      summary: string;
+      detailsClass: string;
+      contentsClass: string;
+    }
+  ): HTMLElement {
+    setting.settingEl.empty();
+    setting.settingEl.addClass("native-pdf-handwriting-settings-details-host");
+    const details = setting.settingEl.createEl("details", {
+      cls: options.detailsClass
+    });
+    details.createEl("summary", { text: options.summary });
+    return details.createDiv({ cls: options.contentsClass });
   }
 
   private addDelayInput(
