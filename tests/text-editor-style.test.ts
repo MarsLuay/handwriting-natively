@@ -11,6 +11,8 @@ describe("text editor styles", () => {
     expect(styles).not.toMatch(/native-pdf-handwriting-draw-hit-page[^}]*touch-action:\s*none/);
     // Legacy finger-draw class must not force touch-action:none anymore.
     expect(styles).toMatch(/native-pdf-handwriting-touch-draw-page[^}]*touch-action:\s*auto/);
+    // Stylus-down lock is a separate class so fingers still scroll when no pen is active.
+    expect(styles).toMatch(/native-pdf-handwriting-pen-capturing[^}]*touch-action:\s*none/);
   });
 
   it("disables native textLayer hits while Draw mode owns the page", () => {

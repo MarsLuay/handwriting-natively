@@ -106,8 +106,69 @@ describe("PointerRouter", () => {
     expect(routes.at(-1)).toBe("touch-pan");
     expect(finger.defaultPrevented).toBe(false);
     expect(starts).not.toHaveBeenCalled();
+    expect(element.classList.contains("native-pdf-handwriting-pen-capturing")).toBe(false);
 
     element.dispatchEvent(pointer("touch", 21, { type: "pointerup" }));
+    router.destroy();
+    element.remove();
+  });
+
+  it("blocks companion touch scroll while a stylus stroke is active", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const routes: string[] = [];
+    const lifecycle = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onRoute: (route) => routes.push(route),
+      onTouchLifecycle: lifecycle
+    });
+
+    const stylus = pointer("pen", 50, { pressure: 0.7 });
+    element.dispatchEvent(stylus);
+    expect(routes.at(-1)).toBe("draw");
+    expect(element.classList.contains("native-pdf-handwriting-pen-capturing")).toBe(true);
+
+    const palm = pointer("touch", 51, { width: 64, height: 64, pressure: 0.6 });
+    element.dispatchEvent(palm);
+    expect(routes.at(-1)).toBe("ignored");
+    expect(palm.defaultPrevented).toBe(true);
+    expect(lifecycle).toHaveBeenCalledWith(
+      "scroll-block",
+      palm,
+      expect.objectContaining({ reason: "ignored-pointer", activePens: true })
+    );
+
+    const touchStart = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
+    Object.defineProperty(touchStart, "touches", {
+      value: [{ identifier: 50, clientX: 10, clientY: 20 }]
+    });
+    Object.defineProperty(touchStart, "changedTouches", {
+      value: [{ identifier: 50, clientX: 10, clientY: 20 }]
+    });
+    element.dispatchEvent(touchStart);
+    expect(touchStart.defaultPrevented).toBe(true);
+    expect(lifecycle).toHaveBeenCalledWith(
+      "scroll-block",
+      touchStart,
+      expect.objectContaining({ reason: "touch-while-pen", activePens: true })
+    );
+
+    element.dispatchEvent(pointer("pen", 50, { eventType: "pointerup", pressure: 0 }));
+    expect(element.classList.contains("native-pdf-handwriting-pen-capturing")).toBe(false);
+
+    const fingerScroll = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
+    Object.defineProperty(fingerScroll, "touches", { value: [{ identifier: 99 }] });
+    Object.defineProperty(fingerScroll, "changedTouches", { value: [{ identifier: 99 }] });
+    element.dispatchEvent(fingerScroll);
+    expect(fingerScroll.defaultPrevented).toBe(false);
+
     router.destroy();
     element.remove();
   });

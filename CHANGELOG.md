@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.42 — 2026-07-31
+
+- iPad: while Apple Pencil tip is down, cancel companion TouchEvents and set transient `touch-action: none` so the PDF does not pan under the stylus. Finger scroll unchanged when no pen is active.
+
 ## 0.1.41 — 2026-07-31
 
 - Highlighter erase punches holes in place (destination-out masks). No more split into two round-cap circles. Pen/pencil unchanged.

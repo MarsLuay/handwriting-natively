@@ -386,7 +386,7 @@ export class SessionLogger {
 
   /** A finger route must either finish or leave a terminal breadcrumb. */
   touchInput(
-    phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture",
+    phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block",
     details: Record<string, unknown> = {}
   ): void {
     this.emit("info", "touch input", {

@@ -27,6 +27,11 @@ export class PalmRejectionPolicy {
     return Math.max(event.width || 0, event.height || 0) >= this.palmWidthThreshold && event.pressure > 0.5;
   }
 
+  /** True while at least one stylus tip is down (for scroll-lock / TouchEvent cancel). */
+  hasActivePen(): boolean {
+    return this.activePens.size > 0;
+  }
+
   reset(): void {
     this.activePens.clear();
   }
