@@ -5,18 +5,20 @@ import { describe, expect, it } from "vitest";
 const styles = readFileSync("styles.css", "utf8");
 
 describe("text editor styles", () => {
-  it("uses a specific PDF viewer selector for touch drawing without !important", () => {
-    expect(styles).toContain(".pdf-viewer .native-pdf-handwriting-touch-draw-page");
-    expect(styles).toContain(".pdfViewer .native-pdf-handwriting-touch-draw-page");
-    expect(styles).toMatch(/native-pdf-handwriting-touch-draw-page[^}]*touch-action:\s*none;(?![^}]*!important)/s);
+  it("keeps Draw-mode hit policy without blocking native finger scroll", () => {
+    expect(styles).toContain(".pdf-viewer .native-pdf-handwriting-draw-hit-page");
+    expect(styles).toContain(".pdfViewer .native-pdf-handwriting-draw-hit-page");
+    expect(styles).not.toMatch(/native-pdf-handwriting-draw-hit-page[^}]*touch-action:\s*none/);
+    // Legacy finger-draw class must not force touch-action:none anymore.
+    expect(styles).toMatch(/native-pdf-handwriting-touch-draw-page[^}]*touch-action:\s*auto/);
   });
 
   it("disables native textLayer hits while Draw mode owns the page", () => {
     expect(styles).toMatch(
-      /\.native-pdf-handwriting-touch-draw-page\s*>\s*\.textLayer[\s\S]*?pointer-events:\s*none(?!\s*!important)/
+      /\.native-pdf-handwriting-draw-hit-page\s*>\s*\.textLayer[\s\S]*?pointer-events:\s*none(?!\s*!important)/
     );
     expect(styles).not.toMatch(
-      /\.native-pdf-handwriting-touch-draw-page\s*>\s*\.textLayer[\s\S]*?pointer-events:\s*none\s*!important/
+      /\.native-pdf-handwriting-draw-hit-page\s*>\s*\.textLayer[\s\S]*?pointer-events:\s*none\s*!important/
     );
   });
 

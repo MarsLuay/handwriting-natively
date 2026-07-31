@@ -54,7 +54,7 @@ describe("safe defaults", () => {
     expect({ ...DEFAULT_SETTINGS, mouseDragScroll: false }.mouseDragScroll).toBe(false);
   });
 
-  it("drops the retired finger-draw preference so Draw remains the sole touch mode", () => {
+  it("drops the retired finger-draw preference (Draw mode is mouse/stylus ink; fingers scroll)", () => {
     const merged = mergeSettings({ fingerDraw: true } as Partial<typeof DEFAULT_SETTINGS> & Record<string, unknown>);
     expect(merged).not.toHaveProperty("fingerDraw");
   });

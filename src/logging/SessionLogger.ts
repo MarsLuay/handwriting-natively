@@ -299,6 +299,21 @@ export class SessionLogger {
     });
   }
 
+  /**
+   * Page-bound PointerRouter health. Distinguishes healthy skip vs rebind after
+   * zoom recycle / aborted listeners (zero `pointer route` while probe still fires).
+   */
+  pageRouter(
+    phase: "rebind" | "unavailable",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit("info", "page router", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   /** Raw pointer/touch probe — every type (mouse/pen/touch/…) for diagnosis. */
   pointerSeen(details: Record<string, unknown>): void {
     this.emit("info", "pointer seen", {

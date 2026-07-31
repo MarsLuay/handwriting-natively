@@ -54,8 +54,20 @@ export interface InkStroke {
   opacity: number;
   inputType: "pen" | "mouse" | "touch";
   points: PdfPoint[];
+  /**
+   * Highlighter-only subtractive eraser paths (PDF space).
+   * Rendered with destination-out so erase punches holes without splitting the stroke.
+   */
+  eraseMasks?: InkEraseMask[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** Circular eraser capsule stored on a highlighter stroke. */
+export interface InkEraseMask {
+  points: Array<Pick<PdfPoint, "x" | "y">>;
+  /** Eraser radius in PDF units. */
+  radius: number;
 }
 
 /** Editable text placed by the Text tool; source PDF content is never changed. */
@@ -257,7 +269,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
 export const DEFAULT_SETTINGS: PluginSettings = createDefaultSettings("config");
 
 const LEGACY_SETTING_KEYS = [
-  // Draw mode is now the single source of truth for one-finger editing.
+  // Draw mode is mouse/stylus ink; fingers keep native scroll (legacy fingerDraw removed).
   "fingerDraw",
   "yoloMode",
   "yoloConfirmed",

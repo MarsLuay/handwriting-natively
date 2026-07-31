@@ -185,9 +185,116 @@ function eraseStroke(stroke: InkStroke, path: readonly Point[], radius: number, 
   return changed ? fragments.map((points) => points.filter((item, index) => index === 0 || !samePoint(item, points[index - 1]!))) : null;
 }
 
+function distancePointToSegment(point: Point, start: Point, end: Point): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared <= EPSILON) return Math.hypot(point.x - start.x, point.y - start.y);
+  const t = clampUnit(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared);
+  return Math.hypot(point.x - (start.x + dx * t), point.y - (start.y + dy * t));
+}
+
+function pointHitsEraserPath(point: Point, path: readonly Point[], radius: number): boolean {
+  if (path.length === 1) return Math.hypot(point.x - path[0]!.x, point.y - path[0]!.y) <= radius;
+  for (let index = 1; index < path.length; index += 1) {
+    if (distancePointToSegment(point, path[index - 1]!, path[index]!) <= radius) return true;
+  }
+  return false;
+}
+
+function distanceToStrokeCenterline(point: Point, points: readonly Point[]): number {
+  if (points.length === 0) return Number.POSITIVE_INFINITY;
+  if (points.length === 1) return Math.hypot(point.x - points[0]!.x, point.y - points[0]!.y);
+  let best = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < points.length; index += 1) {
+    best = Math.min(best, distancePointToSegment(point, points[index - 1]!, points[index]!));
+  }
+  return best;
+}
+
+function expandBounds(bounds: Bounds, padding: number): Bounds {
+  return {
+    minX: bounds.minX - padding,
+    minY: bounds.minY - padding,
+    maxX: bounds.maxX + padding,
+    maxY: bounds.maxY + padding
+  };
+}
+
+function boundsOverlap(a: Bounds, b: Bounds): boolean {
+  return a.maxX >= b.minX && a.minX <= b.maxX && a.maxY >= b.minY && a.minY <= b.maxY;
+}
+
+interface HighlighterErasePlan {
+  /** null = untouched; empty = fully erased; otherwise one updated stroke (same geometry + masks). */
+  fragments: InkStroke[] | null;
+}
+
+function pointHitsEraseMasks(point: Point, masks: readonly { points: readonly Point[]; radius: number }[]): boolean {
+  return masks.some((mask) => pointHitsEraserPath(point, mask.points, mask.radius));
+}
+
+/**
+ * Highlighter-only erase: append a subtractive erase mask. Stroke stays one object —
+ * no centerline split into two round-cap circles. Render punches holes with destination-out.
+ */
+function eraseHighlighterStroke(
+  stroke: InkStroke,
+  path: readonly Point[],
+  eraserRadius: number,
+  pathBounds: Bounds,
+  options: SegmentEraserOptions
+): HighlighterErasePlan {
+  if (stroke.points.length === 0 || path.length === 0) return { fragments: null };
+  const width = Math.max(stroke.width, EPSILON);
+  const paintRadius = width / 2;
+  const paintBounds = expandBounds(boundsOfPath(stroke.points), paintRadius);
+  const eraserBounds = expandBounds(pathBounds, eraserRadius);
+  if (!boundsOverlap(paintBounds, eraserBounds)) return { fragments: null };
+
+  let step = Math.max(0.75, Math.min(width, Math.max(eraserRadius, width * 0.25)) * 0.4);
+  const area = Math.max(width * width, (paintBounds.maxX - paintBounds.minX) * (paintBounds.maxY - paintBounds.minY));
+  step = Math.max(step, Math.sqrt(area / 4000));
+
+  let sawPaintUnderEraser = false;
+  let sawKeptPaint = false;
+  const existingMasks = stroke.eraseMasks ?? [];
+  const nextMask = {
+    points: path.map((point) => ({ x: point.x, y: point.y })),
+    radius: eraserRadius
+  };
+  const allMasks = [...existingMasks, nextMask];
+
+  for (let y = paintBounds.minY; y <= paintBounds.maxY + EPSILON; y += step) {
+    for (let x = paintBounds.minX; x <= paintBounds.maxX + EPSILON; x += step) {
+      if (distanceToStrokeCenterline({ x, y }, stroke.points) > paintRadius + EPSILON) continue;
+      if (pointHitsEraserPath({ x, y }, path, eraserRadius)) {
+        sawPaintUnderEraser = true;
+        continue;
+      }
+      if (pointHitsEraseMasks({ x, y }, existingMasks)) continue;
+      sawKeptPaint = true;
+    }
+  }
+
+  if (!sawPaintUnderEraser) return { fragments: null };
+  if (!sawKeptPaint) return { fragments: [] };
+
+  const updatedAt = options.now?.() ?? new Date().toISOString();
+  return {
+    fragments: [{
+      ...stroke,
+      id: options.createFragmentId?.(stroke, 0) ?? stroke.id,
+      eraseMasks: allMasks,
+      updatedAt
+    }]
+  };
+}
+
 /**
  * Default eraser: remove only stroke portions touched by the swept circular path.
  * `size` is the eraser diameter; stroke thickness participates in collision.
+ * Highlighter keeps one stroke and stores erase masks (hole punch, no split).
  */
 export function eraseStrokeSegments(strokes: readonly InkStroke[], path: readonly Point[], size: number, options: SegmentEraserOptions = {}): SegmentEraseResult {
   const scale = options.scale ?? 1;
@@ -203,9 +310,26 @@ export function eraseStrokeSegments(strokes: readonly InkStroke[], path: readonl
       kept.push(stroke);
       continue;
     }
-    const replacementPoints = pathBounds
-      ? eraseStroke(stroke, path, eraserRadius + stroke.width / 2, pathBounds)
-      : null;
+    if (!pathBounds) {
+      kept.push(stroke);
+      continue;
+    }
+
+    if (stroke.tool === "highlighter") {
+      const plan = eraseHighlighterStroke(stroke, path, eraserRadius, pathBounds, options);
+      if (plan.fragments === null) {
+        kept.push(stroke);
+        continue;
+      }
+      erased.push(stroke);
+      plan.fragments.forEach((fragment) => {
+        fragments.push(fragment);
+        kept.push(fragment);
+      });
+      continue;
+    }
+
+    const replacementPoints = eraseStroke(stroke, path, eraserRadius + stroke.width / 2, pathBounds);
     if (replacementPoints === null) { kept.push(stroke); continue; }
     erased.push(stroke);
     const updatedAt = options.now?.() ?? new Date().toISOString();

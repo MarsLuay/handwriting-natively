@@ -1,5 +1,10 @@
 import type { PdfJsViewerLike } from "./PdfViewerCompatibility";
-import { queryPdfPageNodes } from "./pdfPageSelectors";
+import {
+  ensurePdfPageNumbers,
+  isHandwritingPageChrome,
+  looksLikePdfPage,
+  queryPdfPageNodes
+} from "./pdfPageSelectors";
 import { pdfRenderCanvas } from "../pdf/PageCoordinateLayout";
 
 export interface PdfPageInfo {
@@ -29,10 +34,18 @@ export class PdfPageLocator {
   }
 
   page(pageNumber: number): PdfPageInfo | undefined {
-    const element = this.viewerRoot.querySelector<HTMLElement>(
-      `.page[data-page-number="${pageNumber}"], .pdf-page-view[data-page-number="${pageNumber}"], [data-page-number="${pageNumber}"]`
+    // Stamp missing numbers on `.page` shells before the bare `[data-page-number]`
+    // fallback can resolve HN overlays that carry the same attribute.
+    ensurePdfPageNumbers(this.viewerRoot);
+    const canonical = this.viewerRoot.querySelector<HTMLElement>(
+      `.page[data-page-number="${pageNumber}"], .pdf-page-view[data-page-number="${pageNumber}"]`
     );
-    return element ? this.info(element) : undefined;
+    if (canonical && !isHandwritingPageChrome(canonical)) return this.info(canonical);
+    for (const element of this.viewerRoot.querySelectorAll<HTMLElement>(`[data-page-number="${pageNumber}"]`)) {
+      if (isHandwritingPageChrome(element) || !looksLikePdfPage(element)) continue;
+      return this.info(element);
+    }
+    return undefined;
   }
 
   pageAt(clientX: number, clientY: number): PdfPageInfo | undefined {

@@ -85,7 +85,7 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
-  it("routes a finger to Draw without a second hidden preference", () => {
+  it("leaves one finger to native scroll even when Draw mode is on", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -103,15 +103,42 @@ describe("PointerRouter", () => {
     });
     const finger = pointer("touch", 21);
     element.dispatchEvent(finger);
-    expect(routes.at(-1)).toBe("draw");
-    expect(finger.defaultPrevented).toBe(true);
-    expect(starts).toHaveBeenCalledOnce();
+    expect(routes.at(-1)).toBe("touch-pan");
+    expect(finger.defaultPrevented).toBe(false);
+    expect(starts).not.toHaveBeenCalled();
 
-    const stylus = pointer("pen", 23, { pressure: 0.7 });
-    element.dispatchEvent(stylus);
-    expect(routes.at(-1)).toBe("draw");
-    expect(stylus.defaultPrevented).toBe(true);
+    element.dispatchEvent(pointer("touch", 21, { type: "pointerup" }));
+    router.destroy();
+    element.remove();
+  });
+
+  it("routes mouse and stylus to Draw when Draw mode is on", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const routes: string[] = [];
+    const starts = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onStart: starts,
+      onRoute: (route) => routes.push(route)
+    });
+    const mouse = pointer("mouse", 31);
+    const pen = pointer("pen", 32);
+    element.dispatchEvent(mouse);
+    element.dispatchEvent(pen);
+    expect(routes).toEqual(["draw", "draw"]);
+    expect(mouse.defaultPrevented).toBe(true);
+    expect(pen.defaultPrevented).toBe(true);
     expect(starts).toHaveBeenCalledTimes(2);
+
+    element.dispatchEvent(pointer("mouse", 31, { type: "pointerup" }));
+    element.dispatchEvent(pointer("pen", 32, { type: "pointerup" }));
     router.destroy();
     element.remove();
   });
@@ -134,9 +161,9 @@ describe("PointerRouter", () => {
     });
     const finger = pointer("touch", 21);
     element.dispatchEvent(finger);
-    expect(routes.at(-1)).toBe("draw");
-    expect(finger.defaultPrevented).toBe(true);
-    expect(starts).toHaveBeenCalledOnce();
+    expect(routes.at(-1)).toBe("touch-pan");
+    expect(finger.defaultPrevented).toBe(false);
+    expect(starts).not.toHaveBeenCalled();
     const second = pointer("touch", 22, { isPrimary: false });
     element.dispatchEvent(second);
     expect(routes.at(-1)).toBe("touch-zoom-pan");
@@ -169,13 +196,13 @@ describe("PointerRouter", () => {
     drawingEnabled = true;
     element.dispatchEvent(pointer("touch", 41));
 
-    expect(routes.at(-1)).toBe("draw");
+    expect(routes.at(-1)).toBe("touch-pan");
     expect(lifecycle).toHaveBeenCalledWith("pointerup", expect.any(Event), { trackedBefore: 1, trackedAfter: 0 });
     router.destroy();
     element.remove();
   });
 
-  it("finishes a routed touch whose pointerup lands outside a virtualized page", () => {
+  it("does not finish a finger scroll as a draw when pointerup lands outside the page", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -195,12 +222,10 @@ describe("PointerRouter", () => {
     element.dispatchEvent(pointer("touch", 42));
     document.dispatchEvent(pointer("touch", 42, { eventType: "pointerup" }));
 
-    expect(onEnd).toHaveBeenCalledWith(expect.any(Array), "draw", expect.any(Event));
+    expect(onEnd).not.toHaveBeenCalled();
     expect(lifecycle).toHaveBeenCalledWith("pointerup", expect.any(Event), {
       trackedBefore: 1,
-      trackedAfter: 0,
-      route: "draw",
-      completion: "document-end"
+      trackedAfter: 0
     });
     router.destroy();
     element.remove();

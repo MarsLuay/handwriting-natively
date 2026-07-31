@@ -323,7 +323,56 @@ describe("viewer runtime tracer", () => {
     }
   });
 
-  it("lets Draw mode own a finger and apply native touch policy", async () => {
+  it("rebinds page router when listeners were aborted but bindsTo still matches", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const canvas = document.createElement("canvas");
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    wrap.append(canvas);
+    adapter.pageElement.append(wrap);
+
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, {
+        overlay: HTMLElement;
+        page: PdfPageInfo;
+        router: { destroy(): void; bindsTo(el: HTMLElement): boolean; isAlive(): boolean } | null;
+      }>;
+      ensurePageRouter(surface: unknown, options?: { force?: boolean; reason?: string }): void;
+    };
+
+    try {
+      const surface = internal.surfaces.get(1)!;
+      surface.router!.destroy();
+      expect(surface.router!.bindsTo(adapter.pageElement)).toBe(true);
+      expect(surface.router!.isAlive()).toBe(false);
+
+      internal.ensurePageRouter(surface, { reason: "test-zombie" });
+      expect(surface.router!.isAlive()).toBe(true);
+      expect(surface.router!.bindsTo(adapter.pageElement)).toBe(true);
+
+      adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 91 });
+      canvas.dispatchEvent(down);
+      canvas.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 91 }));
+      expect(down.defaultPrevented).toBe(true);
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it("lets Draw mode ink with mouse while fingers keep native scroll policy", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
@@ -339,21 +388,28 @@ describe("viewer runtime tracer", () => {
     });
 
     adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
-    const drawingFinger = pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 22 });
-    adapter.pageElement.dispatchEvent(drawingFinger);
+    const finger = pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 22 });
+    adapter.pageElement.dispatchEvent(finger);
     adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "touch", pointerId: 22 }));
-    expect(drawingFinger.defaultPrevented).toBe(true);
-    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-touch-draw-page")).toBe(true);
+    expect(finger.defaultPrevented).toBe(false);
+    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-draw-hit-page")).toBe(true);
+    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-touch-draw-page")).toBe(false);
+
+    const mouse = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 7 });
+    adapter.pageElement.dispatchEvent(mouse);
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 7 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 7 }));
+    expect(mouse.defaultPrevented).toBe(true);
 
     await session.manualSave();
     const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
     adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
-    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-touch-draw-page")).toBe(false);
+    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-draw-hit-page")).toBe(false);
     await session.destroy();
   });
 
-  it("commits an active finger line before a mobile page is virtualized", async () => {
+  it("commits an active stylus line before a mobile page is virtualized", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
@@ -369,8 +425,8 @@ describe("viewer runtime tracer", () => {
     });
 
     adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 23 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 170, { pointerType: "touch", pointerId: 23 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 23 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 170, { pointerType: "pen", pointerId: 23 }));
     vi.spyOn(adapter, "pages").mockReturnValue([]);
     vi.spyOn(adapter, "page").mockReturnValue(undefined);
     session.refresh("page-virtualized");
@@ -381,7 +437,7 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
-  it("includes a held finger line in the emergency teardown snapshot", async () => {
+  it("includes a held stylus line in the emergency teardown snapshot", async () => {
     const files = new MemoryFiles();
     const emergencyFiles = new Map<string, string>();
     const adapter = new FakeAdapter();
@@ -398,8 +454,8 @@ describe("viewer runtime tracer", () => {
     });
 
     adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 24 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 170, { pointerType: "touch", pointerId: 24 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 24 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 170, { pointerType: "pen", pointerId: 24 }));
     session.emergencyPersist((path, contents) => emergencyFiles.set(path, contents), { force: true, reason: "test-teardown" });
 
     const sidecar = [...emergencyFiles.entries()].find(([path]) => path.startsWith("annotations/"));

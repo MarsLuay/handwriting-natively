@@ -264,7 +264,8 @@ function ribbonNormal(
 }
 
 /**
- * One continuous ribbon: sharp tip → fixed taper → full body (no tip/body seam).
+ * One continuous ribbon: sharp fade tip → full body → round head (release end).
+ * Head bulge is polyline points on the outer boundary (same path/fill — no arc holes).
  */
 function paintLaserTrail(
   context: CanvasRenderingContext2D,
@@ -298,12 +299,38 @@ function paintLaserTrail(
     right.push({ x: point.x - nx * half, y: point.y - ny * half });
   }
 
+  const head = path[n - 1]!;
+  const headLeft = left[n - 1]!;
+  const headRight = right[n - 1]!;
+  const headHalf = Math.hypot(headLeft.x - head.x, headLeft.y - head.y);
+  const prev = path[n - 2]!;
+  let fdx = head.x - prev.x;
+  let fdy = head.y - prev.y;
+  const flen = Math.hypot(fdx, fdy) || 1;
+  fdx /= flen;
+  fdy /= flen;
+
   context.fillStyle = color;
   context.globalAlpha = Math.min(1, alpha);
   context.beginPath();
   context.moveTo(left[0]!.x, left[0]!.y);
   for (let i = 1; i < n; i += 1) context.lineTo(left[i]!.x, left[i]!.y);
-  for (let i = n - 1; i >= 0; i -= 1) context.lineTo(right[i]!.x, right[i]!.y);
+  if (headHalf > 0.05) {
+    // θ: +π/2 (left) → 0 (forward bulge) → -π/2 (right). Explicit outer edge.
+    const nx = (headLeft.x - head.x) / headHalf;
+    const ny = (headLeft.y - head.y) / headHalf;
+    const steps = Math.max(6, Math.ceil(headHalf));
+    for (let step = 1; step <= steps; step += 1) {
+      const theta = Math.PI / 2 - (step / steps) * Math.PI;
+      context.lineTo(
+        head.x + fdx * headHalf * Math.cos(theta) + nx * headHalf * Math.sin(theta),
+        head.y + fdy * headHalf * Math.cos(theta) + ny * headHalf * Math.sin(theta)
+      );
+    }
+  } else {
+    context.lineTo(headRight.x, headRight.y);
+  }
+  for (let i = n - 2; i >= 0; i -= 1) context.lineTo(right[i]!.x, right[i]!.y);
   context.closePath();
   context.fill();
 }

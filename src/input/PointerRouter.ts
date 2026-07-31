@@ -118,12 +118,7 @@ export class PointerRouter {
       if (this.palmPolicy.shouldIgnore(event)) return "ignored";
       const multi = this.touches.size + (this.touches.has(event.pointerId) ? 0 : 1) >= 2;
       if (multi) return "touch-zoom-pan";
-      // Draw is the explicit editing mode. It owns a one-finger gesture.
-      if (this.callbacks.drawingEnabled()) {
-        if (tool === "text") return "text";
-        if (tool === "eraser" || tool === "lasso") return "edit";
-        if (isInkDrawTool(tool)) return "draw";
-      }
+      // Fingers always leave native scroll/pinch. Draw mode is mouse + stylus only.
       return "touch-pan";
     }
     if (!this.callbacks.drawingEnabled()) {
@@ -298,6 +293,11 @@ export class PointerRouter {
   /** True when this router is still listening on the given page node. */
   bindsTo(element: HTMLElement): boolean {
     return this.element === element;
+  }
+
+  /** Listeners survive only while the abort signal is live and the page is in the document. */
+  isAlive(): boolean {
+    return !this.abort.signal.aborted && this.element.isConnected;
   }
 
   destroy(): void {

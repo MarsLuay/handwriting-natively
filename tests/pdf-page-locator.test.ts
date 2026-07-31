@@ -98,4 +98,31 @@ describe("PdfPageLocator", () => {
     expect(info.width).toBeGreaterThan(900);
     expect(info.width).toBeLessThan(1100);
   });
+
+  it("does not resolve HN overlay when .page lacks data-page-number", () => {
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const page = document.createElement("div");
+    page.className = "page";
+    Object.defineProperty(page, "getBoundingClientRect", {
+      value: () => ({ width: 600, height: 800, top: 0, left: 0, right: 600, bottom: 800, x: 0, y: 0, toJSON: () => ({}) })
+    });
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    wrap.append(document.createElement("canvas"));
+    const overlay = document.createElement("div");
+    overlay.className = "native-pdf-handwriting-page-overlay";
+    overlay.dataset.pageNumber = "1";
+    const ink = document.createElement("canvas");
+    ink.className = "native-pdf-handwriting-canvas";
+    overlay.append(ink);
+    page.append(wrap, overlay);
+    viewer.append(page);
+    document.body.append(viewer);
+
+    const locator = new PdfPageLocator(viewer);
+    const info = locator.page(1);
+    expect(info?.element).toBe(page);
+    expect(info?.element.classList.contains("native-pdf-handwriting-page-overlay")).toBe(false);
+  });
 });
