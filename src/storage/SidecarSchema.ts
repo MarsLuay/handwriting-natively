@@ -35,6 +35,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
+const isEraseMask = (value: unknown): boolean =>
+  isRecord(value) && isFiniteNumber(value.radius) && value.radius > 0 &&
+  Array.isArray(value.points) && value.points.length > 0 &&
+  value.points.every((point) => isRecord(point) && isFiniteNumber(point.x) && isFiniteNumber(point.y));
+
 const isStroke = (value: unknown): value is InkStroke => {
   if (!isRecord(value) || !Array.isArray(value.points)) return false;
   return typeof value.id === "string" && Number.isInteger(value.page) &&
@@ -43,6 +48,7 @@ const isStroke = (value: unknown): value is InkStroke => {
     isFiniteNumber(value.opacity) && value.opacity >= 0 && value.opacity <= 1 &&
     (value.inputType === "pen" || value.inputType === "mouse" || value.inputType === "touch") &&
     typeof value.createdAt === "string" && typeof value.updatedAt === "string" &&
+    (value.eraseMasks === undefined || (Array.isArray(value.eraseMasks) && value.eraseMasks.every(isEraseMask))) &&
     value.points.every((point) => isRecord(point) && isFiniteNumber(point.x) &&
       isFiniteNumber(point.y) && isFiniteNumber(point.pressure) &&
       isFiniteNumber(point.time));

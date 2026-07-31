@@ -56,6 +56,19 @@ describe("sidecar storage", () => {
     expect(parseSidecar(serializeSidecar(doc)).pages[0]?.strokes[0]?.tool).toBe("highlighter");
   });
 
+  it("round-trips highlighter erase masks", () => {
+    const highlight: InkStroke = {
+      ...stroke,
+      id: "hl-mask",
+      tool: "highlighter",
+      width: 40,
+      eraseMasks: [{ points: [{ x: 5, y: 5 }], radius: 8 }]
+    };
+    const doc = sidecar();
+    doc.pages[0]!.strokes = [highlight];
+    expect(parseSidecar(serializeSidecar(doc)).pages[0]?.strokes[0]?.eraseMasks).toEqual(highlight.eraseMasks);
+  });
+
   it("round-trips editable text annotations and normalizes PR-era text geometry", () => {
     const document = sidecar();
     document.pages[0]!.texts = [text];

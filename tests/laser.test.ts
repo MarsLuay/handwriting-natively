@@ -124,6 +124,8 @@ describe("LaserTool", () => {
 
     expect(context.fill).toHaveBeenCalledTimes(1);
     expect(context.closePath).toHaveBeenCalled();
+    expect(context.arc).not.toHaveBeenCalled();
+    expect(context.lineTo).toHaveBeenCalled();
     expect(context.stroke).not.toHaveBeenCalled();
     expect(alphas.every((alpha) => alpha === 1)).toBe(true);
     expect(context.restore).toHaveBeenCalled();

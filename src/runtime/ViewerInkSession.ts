@@ -28,7 +28,7 @@ import { CommandHistory, type Command } from "../history/CommandHistory";
 import { eraseStrokes, eraseWholeStrokes } from "../tools/EraserTool";
 import { recognizeHeldShape, resizeShapePoints, shapeResizeAnchor, shapeResizeHandle, SHAPE_RECOGNITION_HOLD_MS, type ShapeRecognition } from "../tools/ShapeRecognizer";
 import { boundingShapeFromSelection, filterSelectableStrokes, selectStrokes, selectionShapeArea, shapeBounds, shapeContainsPoint, translateShape, type SelectionShape } from "../tools/LassoTool";
-import { drawHighlighterStroke } from "../tools/HighlighterTool";
+import { drawHighlighterStroke, drawHighlighterStrokeWithMasks } from "../tools/HighlighterTool";
 import {
   drawLaserStroke,
   laserTrailStillVisible,
@@ -2620,7 +2620,9 @@ export class ViewerInkSession {
   }
 
   private applyTouchDrawPolicy(pageElement: HTMLElement, enabled = this.drawEnabled): void {
-    pageElement.classList.toggle("native-pdf-handwriting-touch-draw-page", enabled);
+    // Draw mode uses mouse/stylus hit class. Never enable legacy finger-draw class.
+    pageElement.classList.toggle("native-pdf-handwriting-draw-hit-page", enabled);
+    pageElement.classList.remove("native-pdf-handwriting-touch-draw-page");
     // PDF.js may stamp inline pointer-events on text/annotation layers — set via
     // setCssProps so Draw mode hits reach the ink overlay without CSS !important.
     const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
@@ -2633,7 +2635,7 @@ export class ViewerInkSession {
     // A newly attached session may claim the page while an old one is still
     // tearing down. Only the active owner may remove its touch policy.
     if (inputOwners(pageElement).get(pageElement) !== this) return;
-    pageElement.classList.remove("native-pdf-handwriting-touch-draw-page");
+    pageElement.classList.remove("native-pdf-handwriting-draw-hit-page", "native-pdf-handwriting-touch-draw-page");
     const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
     for (const layer of layers) {
       setElementCssProps(layer, { pointerEvents: "" });
@@ -2843,10 +2845,11 @@ export class ViewerInkSession {
    * Zoom / PDF.js page recycling can move the overlay onto a live page node
    * while PointerRouter is still bound to a detached or recycled predecessor.
    * Without a rebind, Draw mode sees no pointer route events.
+   * Also rebinds when listeners were aborted but the element reference still matches.
    */
-  private ensurePageRouter(surface: PageSurface): void {
+  private ensurePageRouter(surface: PageSurface, _options?: { force?: boolean; reason?: string }): void {
     const pageElement = surface.page.element;
-    if (surface.router?.bindsTo(pageElement)) return;
+    if (surface.router?.bindsTo(pageElement) && surface.router.isAlive()) return;
     surface.router?.destroy();
     if (!pageElement.isConnected) {
       surface.router = null;
@@ -2856,7 +2859,7 @@ export class ViewerInkSession {
     surface.router = this.createPageRouter(surface);
     this.logger.inputOwner("claim", {
       page: surface.page.pageNumber,
-      reason: "ensure-page-router",
+      reason: _options?.reason ?? "ensure-page-router",
       rebound: true
     });
   }
@@ -5289,7 +5292,9 @@ export class ViewerInkSession {
       stroke.tool,
       selected,
       stroke.id,
-      graphiteQuality
+      graphiteQuality,
+      surface.context,
+      stroke.eraseMasks
     );
   }
 
@@ -5303,7 +5308,8 @@ export class ViewerInkSession {
     selected = false,
     strokeId?: string,
     graphiteQuality: "full" | "draft" = "full",
-    context: CanvasRenderingContext2D = surface.context
+    context: CanvasRenderingContext2D = surface.context,
+    eraseMasks?: InkStroke["eraseMasks"]
   ): void {
     if (!points.length) return;
     const mapper = this.mapper(surface);
@@ -5339,14 +5345,30 @@ export class ViewerInkSession {
         const view = mapper.toViewport(point);
         return { x: view.x, y: view.y, pressure: point.pressure };
       });
-      drawHighlighterStroke(context, viewPoints, {
+      const highlighterOptions = {
         color,
         width: Math.max(2 * scale, width * scale),
         opacity,
         pressureSensitivity: prefs.pressureSensitivity,
         thinning: prefs.thinning,
         coordinateScale: scale
-      });
+      };
+      if (eraseMasks?.length) {
+        drawHighlighterStrokeWithMasks(
+          context,
+          viewPoints,
+          highlighterOptions,
+          eraseMasks.map((mask) => ({
+            radius: Math.max(0.5, mask.radius * scale),
+            points: mask.points.map((point) => {
+              const view = mapper.toViewport(point);
+              return { x: view.x, y: view.y };
+            })
+          }))
+        );
+      } else {
+        drawHighlighterStroke(context, viewPoints, highlighterOptions);
+      }
     } else {
       const prefs = this.options.settings.toolPreferences.pen;
       const viewPoints = points.map((point) => {

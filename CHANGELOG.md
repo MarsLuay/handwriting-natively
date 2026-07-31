@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.1.41 — 2026-07-31
+
+- Highlighter erase punches holes in place (destination-out masks). No more split into two round-cap circles. Pen/pencil unchanged.
+- Draw mode uses `draw-hit-page` (not legacy `touch-draw-page`); rebind dead page routers when `bindsTo` still matches.
+
+## 0.1.40 — 2026-07-31
+
+- Highlighter erase hole-punches painted area (small eraser in middle of filled circle leaves outer ring). Pen/pencil unchanged.
+
+## 0.1.39 — 2026-07-31
+
+- Highlighter erase densifies paint into stamps so partial erase leaves remaining highlight (dabs no longer vanish as whole circles). Pen/pencil erase unchanged.
+
+## 0.1.38 — 2026-07-31
+
+- (reverted) Viewport-scale erase wiring; highlighter-only stamp erase ships in 0.1.39 instead.
+
+## 0.1.37 — 2026-07-31
+
+- Laser release head uses an outward polyline bulge in the ribbon outline (fixes white arc hole).
+
+## 0.1.36 — 2026-07-31
+
+- Laser release head is an outward semicircle in the same ribbon path (one fill, not a separate disc).
+
+## 0.1.35 — 2026-07-31
+
+- Fix laser release-head round cap punching a white hole through the trail body.
+
+## 0.1.34 — 2026-07-31
+
+- Round the laser trail head where the pointer lifts (fade tip stays sharp).
+
+## 0.1.33 — 2026-07-31
+
+- Restore prior laser trail tip rendering.
+
+## 0.1.32 — 2026-07-31
+
+- Restore prior highlighter stroke rendering (laser tip rounding only).
+
+## 0.1.31 — 2026-07-31
+
+- Round laser trail start/head (no sharp/flat tip).
+
+## 0.1.30 — 2026-07-31
+
+- Highlighter stroke start and end use round tip discs (no flat chisel start).
+
+## 0.1.29 — 2026-07-31
+
+- Fix empty ink surfaces after sidebar chrome mount: page discovery no longer treats descendants of `.native-pdf-handwriting-chrome` as plugin chrome (that wrapper owns the real PDF viewer).
+
+## 0.1.28 — 2026-07-31
+
+- Draw mode: mouse and stylus ink; fingers always keep native scroll/pinch (no finger ink).
+- Disable PDF text/annotation layer hits while Draw is on so mouse reaches the page router; do not set `touch-action: none`.
+- Rebuild/rebinding breadcrumbs (`page router`) so a stale router after zoom cannot swallow all `pointer route` events.
+
 ## 0.1.27 — 2026-07-31
 
 - Typed text annotations appear in Obsidian’s native PDF find bar (Cmd/Ctrl+F); freehand ink stays non-searchable.

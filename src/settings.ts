@@ -184,7 +184,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         items: [
           {
             name: "Touch drawing",
-            desc: "With Draw on, one finger draws, erases, lassos, or places text. Turn Draw off to scroll or pinch the PDF."
+            desc: "Draw mode uses mouse and stylus for ink. Fingers still scroll and pinch the PDF. Turn Draw off for mouse drag-scroll when that setting is on."
           },
           {
             name: "Input pressure profile",

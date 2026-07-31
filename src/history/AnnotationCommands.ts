@@ -78,5 +78,17 @@ export class ReplaceAnnotationSelectionCommand implements Command {
 }
 
 export function translateStrokes(strokes: readonly InkStroke[], dx: number, dy: number, now = new Date().toISOString()): InkStroke[] {
-  return strokes.map((stroke) => ({ ...stroke, updatedAt: now, points: stroke.points.map((point) => ({ ...point, x: point.x + dx, y: point.y + dy })) }));
+  return strokes.map((stroke) => ({
+    ...stroke,
+    updatedAt: now,
+    points: stroke.points.map((point) => ({ ...point, x: point.x + dx, y: point.y + dy })),
+    ...(stroke.eraseMasks
+      ? {
+          eraseMasks: stroke.eraseMasks.map((mask) => ({
+            radius: mask.radius,
+            points: mask.points.map((point) => ({ x: point.x + dx, y: point.y + dy }))
+          }))
+        }
+      : {})
+  }));
 }
