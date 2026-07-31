@@ -494,7 +494,8 @@
   position: fixed;
 }
 /* Draw mode: native text/annotation layers must not steal mouse/stylus hits.
-   Fingers keep native scroll — do not set touch-action:none here. */
+   Fingers keep native scroll — do not set touch-action:none on draw-hit alone.
+   Pen-down adds .native-pdf-handwriting-pen-capturing (see PointerRouter). */
 .pdf-viewer .native-pdf-handwriting-draw-hit-page > .textLayer,
 .pdf-viewer .native-pdf-handwriting-draw-hit-page > .textLayer *,
 .pdf-viewer .native-pdf-handwriting-draw-hit-page > .annotationLayer,
@@ -504,6 +505,13 @@
 .pdfViewer .native-pdf-handwriting-draw-hit-page > .annotationLayer,
 .pdfViewer .native-pdf-handwriting-draw-hit-page > .annotationLayer * {
   pointer-events: none;
+}
+/* Stylus tip down: block WebKit pan; remove on pointerup so fingers scroll again. */
+.pdf-viewer .page.native-pdf-handwriting-pen-capturing,
+.pdfViewer .page.native-pdf-handwriting-pen-capturing,
+.pdf-viewer .pdf-page-view.native-pdf-handwriting-pen-capturing,
+.pdfViewer .pdf-page-view.native-pdf-handwriting-pen-capturing {
+  touch-action: none;
 }
 /* Legacy finger-draw class (pre-0.1.28). Kept inert so old sessions clear cleanly. */
 .pdf-viewer .native-pdf-handwriting-touch-draw-page,

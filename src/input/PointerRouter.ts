@@ -50,13 +50,16 @@ export interface PointerRouterCallbacks {
   onRoute?(route: PointerRoute, event: PointerEvent): void;
   /** Native terminal events can land outside a virtualized PDF page. */
   onTouchLifecycle?(
-    phase: "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture",
-    event: PointerEvent,
+    phase: "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block",
+    event: PointerEvent | TouchEvent,
     details: {
-      trackedBefore: number;
-      trackedAfter: number;
+      trackedBefore?: number;
+      trackedAfter?: number;
       route?: "draw" | "edit" | "text";
       completion?: "document-end" | "document-cancel";
+      reason?: string;
+      touchCount?: number;
+      activePens?: boolean;
     }
   ): void;
   onMousePan?(phase: "start" | "activate" | "move" | "end" | "abort", event: PointerEvent, details: Record<string, unknown>): void;
@@ -105,6 +108,11 @@ export class PointerRouter {
     element.addEventListener("lostpointercapture", this.handleLostPointerCapture, options);
     element.addEventListener("contextmenu", this.suppressRightMouseEraserMenu, options);
     element.addEventListener("pointerleave", this.hideCustomCursors, options);
+    // iPad Pencil emits companion TouchEvents after pen pointerdown. Without a
+    // non-passive cancel, WebKit still pans the PDF scroll root (touch-action
+    // stays auto so fingers can scroll when no pen is down).
+    element.addEventListener("touchstart", this.blockTouchScrollWhilePen, { ...options, passive: false });
+    element.addEventListener("touchmove", this.blockTouchScrollWhilePen, { ...options, passive: false });
     // Native PDF scrolling can deliver a terminal event to another virtualized
     // page (or directly to document). Do not retain it as a phantom pinch.
     element.ownerDocument.addEventListener("pointerup", this.clearEndedTouch, options);
@@ -142,7 +150,8 @@ export class PointerRouter {
     if (event.pointerType === "touch" && event.isPrimary && this.touches.size > 0) {
       const trackedBefore = this.touches.size;
       this.touches.clear();
-      this.palmPolicy.reset();
+      // Keep active pens — a stale finger ID must not unlock Pencil scroll lock.
+      if (!this.palmPolicy.hasActivePen()) this.palmPolicy.reset();
       this.callbacks.onTouchLifecycle?.("primary-reset", event, { trackedBefore, trackedAfter: 0 });
     }
     this.palmPolicy.pointerDown(event);
@@ -168,13 +177,46 @@ export class PointerRouter {
       });
       return;
     }
+    // Palm / Pencil companion touch while a stylus is down: block native scroll.
+    if (route === "ignored") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.syncPenScrollLock();
+      this.callbacks.onTouchLifecycle?.("scroll-block", event, {
+        reason: "ignored-pointer",
+        activePens: this.palmPolicy.hasActivePen(),
+        touchCount: this.touches.size
+      });
+      return;
+    }
     if (route !== "draw" && route !== "edit" && route !== "text") return;
     this.routed.set(event.pointerId, route);
     event.preventDefault();
     event.stopImmediatePropagation();
     this.element.setPointerCapture?.(event.pointerId);
+    this.syncPenScrollLock();
     this.callbacks.onStart?.(PointerCapabilities.samples(event), route, event);
   };
+
+  /** Cancel companion TouchEvents while stylus is down (iPad WebKit scroll path). */
+  private readonly blockTouchScrollWhilePen = (event: TouchEvent): void => {
+    if (!this.palmPolicy.hasActivePen()) return;
+    if (!event.cancelable) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.type === "touchstart") {
+      this.callbacks.onTouchLifecycle?.("scroll-block", event, {
+        reason: "touch-while-pen",
+        activePens: true,
+        touchCount: event.touches.length
+      });
+    }
+  };
+
+  /** WebKit needs touch-action:none during pen capture; fingers keep auto otherwise. */
+  private syncPenScrollLock(): void {
+    this.element.classList.toggle("native-pdf-handwriting-pen-capturing", this.palmPolicy.hasActivePen());
+  }
 
   private readonly handleMove = (event: PointerEvent): void => {
     this.scheduleCustomCursorUpdate(event);
@@ -203,6 +245,7 @@ export class PointerRouter {
     if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
     this.touches.delete(event.pointerId);
     this.palmPolicy.pointerUp(event);
+    this.syncPenScrollLock();
     // The custom cursor is a live pointer affordance, never a mark left after
     // drawing. Hover movement paints it again when the mouse/pen is active.
     this.hideCustomCursors();
@@ -221,6 +264,7 @@ export class PointerRouter {
     if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
     this.touches.delete(event.pointerId);
     this.palmPolicy.pointerUp(event);
+    this.syncPenScrollLock();
     this.hideCustomCursors();
   };
 
@@ -311,7 +355,12 @@ export class PointerRouter {
     this.touches.clear();
     this.palmPolicy.reset();
     this.abort.abort();
-    this.element.classList.remove("native-pdf-handwriting-has-eraser-cursor", "native-pdf-handwriting-has-draw-cursor", "native-pdf-handwriting-panning");
+    this.element.classList.remove(
+      "native-pdf-handwriting-has-eraser-cursor",
+      "native-pdf-handwriting-has-draw-cursor",
+      "native-pdf-handwriting-panning",
+      "native-pdf-handwriting-pen-capturing"
+    );
     this.eraserCursor.remove();
     this.drawCursor.remove();
   }
