@@ -553,6 +553,8 @@ describe("PointerRouter", () => {
     });
     element.dispatchEvent(pointer("mouse", 14));
     expect(routes.at(-1)).toBe("native");
+    expect(router.bindsTo(element)).toBe(true);
+    expect(router.bindsTo(document.createElement("div"))).toBe(false);
     router.destroy();
   });
 });

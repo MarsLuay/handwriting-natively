@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { ViewerMousePan, type MousePanPhase } from "../src/input/ViewerMousePan";
 
-function pointer(type: string, target: EventTarget, x: number, y: number, pointerId = 4, pointerType: "mouse" | "pen" | "touch" = "mouse"): PointerEvent {
+function pointer(type: string, target: EventTarget, x: number, y: number, pointerId = 4, pointerType: "mouse" | "pen" | "touch" = "mouse", isPrimary = true): PointerEvent {
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 });
   Object.defineProperties(event, {
     pointerType: { value: pointerType },
     pointerId: { value: pointerId },
+    isPrimary: { value: isPrimary },
     buttons: { value: type === "pointerup" ? 0 : 1 }
   });
   return event as unknown as PointerEvent;
@@ -350,14 +351,54 @@ describe("viewer mouse pan", () => {
       onPan: (phase) => { phases.push(phase); }
     });
 
-    canvas.dispatchEvent(pointer("pointerdown", canvas, 40, 100, 1, "touch"));
-    canvas.dispatchEvent(pointer("pointermove", canvas, 40, 140, 1, "touch"));
+    canvas.dispatchEvent(pointer("pointerdown", canvas, 40, 100, 1, "touch", true));
+    canvas.dispatchEvent(pointer("pointermove", canvas, 40, 140, 1, "touch", true));
     expect(scrollTop).toBe(60);
-    canvas.dispatchEvent(pointer("pointerdown", canvas, 80, 100, 2, "touch"));
+    canvas.dispatchEvent(pointer("pointerdown", canvas, 80, 100, 2, "touch", false));
     expect(phases).toContain("abort");
     const after = scrollTop;
-    canvas.dispatchEvent(pointer("pointermove", canvas, 40, 180, 1, "touch"));
+    canvas.dispatchEvent(pointer("pointermove", canvas, 40, 180, 1, "touch", true));
     expect(scrollTop).toBe(after);
+    pan.destroy();
+    scroller.remove();
+  });
+
+  it("recovers from a stale touch id so a new primary finger is not treated as multi-touch", () => {
+    let scrollTop = 100;
+    const phases: MousePanPhase[] = [];
+    const reasons: string[] = [];
+    const scroller = document.createElement("div");
+    Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(scroller, "scrollTop", {
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = value; }
+    });
+    const canvas = document.createElement("canvas");
+    scroller.append(canvas);
+    document.body.append(scroller);
+    Object.assign(canvas, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
+
+    const pan = new ViewerMousePan(document, {
+      enabled: () => false,
+      touchPanEnabled: () => true,
+      scrollRoot: () => scroller,
+      withinTarget: (target) => target instanceof Node && scroller.contains(target),
+      captureElement: () => scroller,
+      onPan: (phase, _event, details) => {
+        phases.push(phase);
+        if (phase === "skip" && typeof details.reason === "string") reasons.push(details.reason);
+      }
+    });
+
+    // Simulate a dropped terminal event that left a stale touch id behind.
+    canvas.dispatchEvent(pointer("pointerdown", canvas, 40, 100, 9, "touch", true));
+    // No pointerup for id 9.
+    canvas.dispatchEvent(pointer("pointerdown", canvas, 40, 100, 10, "touch", true));
+    canvas.dispatchEvent(pointer("pointermove", canvas, 40, 140, 10, "touch", true));
+    expect(reasons).not.toContain("multi-touch");
+    expect(scrollTop).toBe(60);
+    expect(phases).toContain("start");
     pan.destroy();
     scroller.remove();
   });

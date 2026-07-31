@@ -80,6 +80,11 @@ export class PdfThumbnailSidebarActions {
   private mountFrame: number | null = null;
   /** Restores the one active Electron facade before another thumbnail menu opens. */
   private restoreTemplateIntercept: (() => void) | null = null;
+  /**
+   * Armed after pointer interaction inside the thumbnail sidebar so Backspace /
+   * Delete remove the selected page — not while drawing in the document.
+   */
+  private keyboardDeleteArmed = false;
 
   constructor(
     private readonly host: HTMLElement,
@@ -89,6 +94,10 @@ export class PdfThumbnailSidebarActions {
     // capture is the only stable phase before it, including after a reload.
     const contextRoot = host.ownerDocument.defaultView ?? host;
     contextRoot.addEventListener("contextmenu", (event) => this.show(event as MouseEvent), {
+      capture: true,
+      signal: this.abort.signal
+    });
+    contextRoot.addEventListener("pointerdown", (event) => this.onPointerDown(event as PointerEvent), {
       capture: true,
       signal: this.abort.signal
     });
@@ -106,6 +115,44 @@ export class PdfThumbnailSidebarActions {
     if (this.mountFrame !== null) this.host.ownerDocument.defaultView?.cancelAnimationFrame(this.mountFrame);
     this.addButton?.remove();
     this.addButton = null;
+    this.keyboardDeleteArmed = false;
+  }
+
+  /**
+   * Backspace / Delete on the selected thumbnail page.
+   * Returns true when the event was claimed (caller should preventDefault).
+   */
+  handleKeyDown(event: KeyboardEvent): boolean {
+    if (!this.keyboardDeleteArmed) return false;
+    if (event.altKey || event.ctrlKey || event.metaKey) return false;
+    const isDelete = event.key === "Delete" || event.key === "Backspace"
+      || event.code === "Delete" || event.code === "Backspace";
+    if (!isDelete) return false;
+    if (shouldIgnoreThumbnailPageDeleteTarget(event.target)) return false;
+    const pageNumber = selectedThumbnailPageNumber(this.host);
+    if (pageNumber === null) return false;
+    this.callbacks.onMenuEvent?.("context-seen", {
+      kind: "delete",
+      pageNumber,
+      via: "keyboard"
+    });
+    void this.callbacks.onDeletePage(pageNumber);
+    return true;
+  }
+
+  private onPointerDown(event: PointerEvent): void {
+    const thumbnailView = findThumbnailView(this.host);
+    if (!thumbnailView) {
+      this.keyboardDeleteArmed = false;
+      return;
+    }
+    const target = event.target;
+    if (target instanceof Node && thumbnailView.contains(target)) {
+      this.keyboardDeleteArmed = true;
+      return;
+    }
+    // Any other click inside this PDF (or elsewhere) disarms page-delete keys.
+    this.keyboardDeleteArmed = false;
   }
 
   private show = (event: MouseEvent): void => {
@@ -502,6 +549,19 @@ export function thumbnailPageNumber(host: HTMLElement, target: EventTarget | nul
   return Number.isInteger(pageNumber) && pageNumber >= 1 ? pageNumber : null;
 }
 
+/**
+ * Page marked `.thumbnail.selected` in this PDF's sidebar (current / clicked page).
+ * Returns null when the thumbnail pane is missing or nothing is selected.
+ */
+export function selectedThumbnailPageNumber(host: HTMLElement): number | null {
+  const thumbnailView = findThumbnailView(host);
+  if (!thumbnailView) return null;
+  const selected = thumbnailView.querySelector<HTMLElement>(".thumbnail.selected, [data-page-number].selected");
+  if (!selected || !thumbnailView.contains(selected)) return null;
+  const pageNumber = Number(selected.dataset.pageNumber);
+  return Number.isInteger(pageNumber) && pageNumber >= 1 ? pageNumber : null;
+}
+
 export function thumbnailActionAtPoint(
   host: HTMLElement,
   target: EventTarget | null,
@@ -527,6 +587,13 @@ function findThumbnailView(host: HTMLElement): HTMLElement | null {
   const root = host.querySelector<HTMLElement>(THUMBNAIL_VIEW_SELECTOR);
   if (!root) return null;
   return root.querySelector<HTMLElement>("#thumbnailView") ?? root;
+}
+
+/** Do not steal Backspace from real text fields / contenteditables. */
+function shouldIgnoreThumbnailPageDeleteTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest("input, textarea, select, [contenteditable='true']")) return true;
+  return Boolean((target as HTMLElement).isContentEditable);
 }
 
 function thumbnails(root: HTMLElement): HTMLElement[] {

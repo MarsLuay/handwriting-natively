@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.27 — 2026-07-31
+
+- Typed text annotations appear in Obsidian’s native PDF find bar (Cmd/Ctrl+F); freehand ink stays non-searchable.
+- Fix PDF find missing Handwriting Natively text on first search (patch after lazy extract), dropping suffix hits (`_pageDiffs`), rematch storms on scroll, and short scroll-to-match for overlay boxes.
+- Pull past the bottom of a PDF (trackpad, wheel, or grab-pan) to rubber-band, fill a progress ring, and snap in a new blank page (GoodNotes-style).
+- Harden Draw-mode pointer routing after zoom/overlay reattach; ignore native textLayer hits while drawing; clear stale multi-touch IDs.
 
 ## 0.1.26 — 2026-07-29
 

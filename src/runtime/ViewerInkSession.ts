@@ -2,11 +2,13 @@ import type { DrawingTool, InkStroke, PdfPoint, PdfTextAnnotation, PdfTextRun, P
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
 import type { ObsidianPdfAdapter } from "../integration/ObsidianPdfAdapter";
 import type { PdfPageInfo } from "../integration/PdfPageLocator";
+import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { PointerRouter } from "../input/PointerRouter";
 import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
+import { PullToAddPageGesture } from "../input/PullToAddPageGesture";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
@@ -323,7 +325,9 @@ export class ViewerInkSession {
   private readonly resizeObserver: ResizeObserver | null;
   private readonly logger: SessionLogger;
   private readonly viewerMousePan: ViewerMousePan;
+  private readonly pullToAddPage: PullToAddPageGesture | null;
   private readonly thumbnailSidebarActions: PdfThumbnailSidebarActions | null;
+  private readonly findBridge: AnnotationFindBridge;
   /** Last applied browser direct-manipulation policy for mounted PDF pages. */
   private touchDrawPolicyEnabled: boolean | null = null;
   private readonly pointerProbeAbort = new AbortController();
@@ -491,8 +495,29 @@ export class ViewerInkSession {
         return adapter.root.contains(target);
       },
       captureElement: () => adapter.root,
-      onPan: (phase, event, details) => this.logMousePan(phase, event, details)
+      onPan: (phase, event, details) => {
+        this.logMousePan(phase, event, details);
+        this.feedPullToAddFromPan(phase, details);
+      }
     });
+    this.pullToAddPage = options.onInsertPage
+      ? new PullToAddPageGesture(adapter.host.ownerDocument, {
+        enabled: () => !this.destroyed && typeof this.options.onInsertPage === "function",
+        isBusy: () => Boolean(this.pageMutationShield) || this.pendingInsertedPageFocus !== null,
+        isDrawing: () => this.drawEnabled,
+        scrollRoot: () => adapter.scrollElement(),
+        host: () => adapter.root,
+        withinTarget: (target) => {
+          if (!(target instanceof Element)) return false;
+          if (target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown, .native-pdf-handwriting-selection-toolbar")) {
+            return false;
+          }
+          return adapter.root.contains(target);
+        },
+        onCommit: () => this.addPageAt(Number.MAX_SAFE_INTEGER),
+        onLog: (phase, details) => this.logger.pullToAdd(phase, details)
+      })
+      : null;
     this.thumbnailSidebarActions = options.onDeletePage && options.onInsertPage
       ? new PdfThumbnailSidebarActions(adapter.host, {
         onAddPage: (pageNumber) => this.addPageAt(pageNumber),
@@ -500,6 +525,27 @@ export class ViewerInkSession {
         onMenuEvent: (phase, details) => this.logger.thumbnailMenu(phase, details)
       })
       : null;
+    this.findBridge = new AnnotationFindBridge({
+      getFindController: () => adapter.findController?.() ?? null,
+      getEventBus: () => adapter.eventBus?.() ?? null,
+      getPageElement: (pageNumber) => adapter.page(pageNumber)?.element ?? null,
+      getNativeTextLayer: (pageNumber) => adapter.nativeTextLayer?.(pageNumber) ?? null,
+      textsForPage: (pageNumber) => this.texts.page(pageNumber),
+      annotatedPageNumbers: () => {
+        const pages = new Set<number>();
+        for (const annotation of this.texts.all()) pages.add(annotation.page);
+        return [...pages].sort((a, b) => a - b);
+      },
+      layoutForAnnotation: (pageNumber, annotation) => this.findLayoutForAnnotation(pageNumber, annotation),
+      onWarning: (message) => {
+        console.warn(`[Handwriting Natively] ${message}`);
+        this.options.vaultLog?.write("warn", message);
+      },
+      onDebug: (phase, details) => {
+        if (!(this.options.debugEnabled?.() ?? false)) return;
+        this.options.vaultLog?.write("info", `find-bridge:${phase}`, details);
+      }
+    });
     this.installPointerProbe(adapter);
   }
 
@@ -1012,7 +1058,16 @@ export class ViewerInkSession {
     for (const [pageNumber, surface] of this.surfaces) {
       const current = byNumber.get(pageNumber);
       if (!current) continue;
-      if (!this.reattachSurface(surface, current)) continue;
+      if (!this.reattachSurface(surface, current)) {
+        // Page node replaced while the overlay stayed on the old node — move
+        // both overlay and page-bound PointerRouter onto the live page.
+        if (current.element.isConnected) {
+          this.remountSurfaceOnPageReplacement(surface, current);
+        } else {
+          continue;
+        }
+      }
+      this.ensurePageRouter(surface);
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
       this.syncOverlayLayout(surface);
       this.syncTextLayoutDuringZoom(surface);
@@ -1312,6 +1367,7 @@ export class ViewerInkSession {
         if (!surface) continue;
         surface.page = page;
         this.syncOverlayLayout(surface);
+        this.ensurePageRouter(surface);
       }
       this.logger.refresh(`${reason}-skip-unchanged`, {
         selected: this.selected.length,
@@ -1858,6 +1914,7 @@ export class ViewerInkSession {
       this.rememberPageMetrics(page);
       this.applyTouchDrawPolicy(page.element);
       this.syncOverlayLayout(surface);
+      this.ensurePageRouter(surface);
       return true;
     }
     this.ensurePagePositioning(page.element);
@@ -1865,6 +1922,7 @@ export class ViewerInkSession {
     this.rememberPageMetrics(page);
     this.applyTouchDrawPolicy(page.element);
     this.syncOverlayLayout(surface);
+    this.ensurePageRouter(surface);
     return true;
   }
 
@@ -2180,6 +2238,22 @@ export class ViewerInkSession {
       return true;
     }
     const action = parseSelectionShortcut(event);
+    if (action === "delete") {
+      this.reconcileSelection();
+      if (this.selected.length > 0 || this.selectedTexts.length > 0) {
+        this.applySelectionShortcut(action);
+        event.preventDefault();
+        event.stopPropagation();
+        return true;
+      }
+      // Thumbnail sidebar: Backspace/Delete removes the selected PDF page.
+      if (this.thumbnailSidebarActions?.handleKeyDown(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return true;
+      }
+      return false;
+    }
     if (!action || !this.canSelectionShortcut(action)) return false;
     this.applySelectionShortcut(action);
     event.preventDefault();
@@ -2516,7 +2590,9 @@ export class ViewerInkSession {
     this.surfaces.clear();
     this.selectionToolbar.destroy();
     this.viewerMousePan.destroy();
+    this.pullToAddPage?.destroy();
     this.thumbnailSidebarActions?.destroy();
+    this.findBridge.destroy();
     this.pointerProbeAbort.abort();
     this.toolbar.destroy();
     this.options.adapter.destroy();
@@ -2534,7 +2610,10 @@ export class ViewerInkSession {
   /** Apply direct-manipulation policy to the actual PDF.js page, not our overlay. */
   private syncTouchDrawPolicy(reason: string): void {
     const enabled = this.drawEnabled;
-    for (const surface of this.surfaces.values()) this.applyTouchDrawPolicy(surface.page.element, enabled);
+    for (const surface of this.surfaces.values()) {
+      this.applyTouchDrawPolicy(surface.page.element, enabled);
+      if (enabled) this.ensurePageRouter(surface);
+    }
     if (this.touchDrawPolicyEnabled === enabled) return;
     this.touchDrawPolicyEnabled = enabled;
     this.logger.touchInput("policy", { enabled, reason, surfaces: this.surfaces.size });
@@ -2542,6 +2621,12 @@ export class ViewerInkSession {
 
   private applyTouchDrawPolicy(pageElement: HTMLElement, enabled = this.drawEnabled): void {
     pageElement.classList.toggle("native-pdf-handwriting-touch-draw-page", enabled);
+    // PDF.js may stamp inline pointer-events on text/annotation layers — set via
+    // setCssProps so Draw mode hits reach the ink overlay without CSS !important.
+    const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
+    for (const layer of layers) {
+      setElementCssProps(layer, { pointerEvents: enabled ? "none" : "" });
+    }
   }
 
   private clearTouchDrawPolicy(pageElement: HTMLElement): void {
@@ -2549,6 +2634,10 @@ export class ViewerInkSession {
     // tearing down. Only the active owner may remove its touch policy.
     if (inputOwners(pageElement).get(pageElement) !== this) return;
     pageElement.classList.remove("native-pdf-handwriting-touch-draw-page");
+    const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
+    for (const layer of layers) {
+      setElementCssProps(layer, { pointerEvents: "" });
+    }
   }
 
   /** Physical eraser tips temporarily route as Eraser without changing saved tool choice. */
@@ -2586,6 +2675,21 @@ export class ViewerInkSession {
       pressure: event.pressure,
       ...details
     });
+  }
+
+  /** Grab-pan at the bottom edge feeds the GoodNotes-style pull-to-add-page gesture. */
+  private feedPullToAddFromPan(phase: MousePanPhase, details: Record<string, unknown>): void {
+    const gesture = this.pullToAddPage;
+    if (!gesture) return;
+    if (phase === "move") {
+      const deltaY = typeof details.deltaY === "number" ? details.deltaY : 0;
+      const changed = details.changed === true;
+      gesture.feedScrollAttempt(deltaY, changed);
+      return;
+    }
+    if (phase === "end" || phase === "cancel" || phase === "abort") {
+      gesture.feedScrollEnd();
+    }
   }
 
   private mousePanContext(reason?: string): Record<string, unknown> {
@@ -2732,6 +2836,28 @@ export class ViewerInkSession {
         ...details
       }),
       onMousePan: (phase, _event, details) => this.logger.mousePan(phase, { page: surface.page.pageNumber, ...details })
+    });
+  }
+
+  /**
+   * Zoom / PDF.js page recycling can move the overlay onto a live page node
+   * while PointerRouter is still bound to a detached or recycled predecessor.
+   * Without a rebind, Draw mode sees no pointer route events.
+   */
+  private ensurePageRouter(surface: PageSurface): void {
+    const pageElement = surface.page.element;
+    if (surface.router?.bindsTo(pageElement)) return;
+    surface.router?.destroy();
+    if (!pageElement.isConnected) {
+      surface.router = null;
+      return;
+    }
+    this.claimInputOwner(pageElement, surface.page.pageNumber);
+    surface.router = this.createPageRouter(surface);
+    this.logger.inputOwner("claim", {
+      page: surface.page.pageNumber,
+      reason: "ensure-page-router",
+      rebound: true
     });
   }
 
@@ -4012,7 +4138,10 @@ export class ViewerInkSession {
       && !preview
       && !selectionPreviews?.size
       && !surface.textLayer.childElementCount
-    ) return;
+    ) {
+      this.syncFindBridgePage(surface.page.pageNumber);
+      return;
+    }
     const selected = new Set(this.selectedTexts.map((text) => text.id));
     if (this.syncCurrentTextBoxes(surface, annotations, selected)) return;
     const boxes = annotations.map((annotation) => {
@@ -4038,6 +4167,7 @@ export class ViewerInkSession {
       selectedCount: selected.size,
       previewAnnotationId: preview?.id ?? null
     });
+    this.syncFindBridgePage(surface.page.pageNumber);
   }
 
   /** Reuse unchanged text DOM so zoom settles do not remove/reinsert visible words. */
@@ -4061,6 +4191,7 @@ export class ViewerInkSession {
       const outline = box.querySelector<HTMLElement>(".native-pdf-handwriting-text-selection-frame");
       if (outline) this.layoutTextBoxOutline(surface, outline, annotation, annotation);
     }
+    this.syncFindBridgePage(surface.page.pageNumber);
     return true;
   }
 
@@ -5361,6 +5492,7 @@ export class ViewerInkSession {
     if (overlay.parentElement !== surface.page.element) {
       this.ensurePagePositioning(surface.page.element);
       surface.page.element.append(overlay);
+      this.ensurePageRouter(surface);
     }
     setElementCssProps(overlay, {
       left: `${layout.offsetX}px`,
@@ -5438,6 +5570,29 @@ export class ViewerInkSession {
     if (normalized && phase === "burst") {
       this.zoomInkAnchorByPage.set(surface.page.pageNumber, { normalizedX: normalized.x, normalizedY: normalized.y });
     }
+  }
+
+  private syncFindBridgePage(pageNumber: number): void {
+    if (this.destroyed) return;
+    this.findBridge.syncPage(pageNumber, this.texts.page(pageNumber));
+  }
+
+  private findLayoutForAnnotation(
+    pageNumber: number,
+    annotation: PdfTextAnnotation
+  ): AnnotationFindPageLayout | null {
+    const surface = this.surfaces.get(pageNumber);
+    if (!surface) return null;
+    const origin = this.mapper(surface).toViewport({ x: annotation.x, y: annotation.y });
+    const scale = this.displayScale(surface);
+    return {
+      left: origin.x,
+      top: origin.y,
+      width: Math.max(24, annotation.width * scale),
+      height: Math.max(annotation.fontSize * scale * 1.4, annotation.height * scale),
+      fontSize: annotation.fontSize * scale,
+      fontFamily: annotation.fontFamily
+    };
   }
 
   private expectedAnchorNormalized(point: PdfPoint, metrics: { width: number; height: number }, rotation: PageRotation): { x: number; y: number } {

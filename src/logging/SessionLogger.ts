@@ -360,6 +360,15 @@ export class SessionLogger {
     });
   }
 
+  /** GoodNotes-style pull-past-bottom → new page gesture. */
+  pullToAdd(phase: string, details: Record<string, unknown> = {}): void {
+    this.emit("info", "pull to add page", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   /** A finger route must either finish or leave a terminal breadcrumb. */
   touchInput(
     phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture",

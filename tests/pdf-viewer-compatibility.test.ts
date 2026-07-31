@@ -37,4 +37,20 @@ describe("PdfViewerCompatibility private viewer", () => {
     const bound = await PdfViewerCompatibility.resolvePrivateViewerFromPdfView(view);
     expect(bound?.currentScale).toBe(2);
   });
+
+  it("resolves findController from the viewer graph when present", async () => {
+    const findController = { _pageContents: ["x"], eventBus: { on: vi.fn(), off: vi.fn() } };
+    const nested = { currentScale: 1.1, updateScale: vi.fn() };
+    const view = {
+      viewer: {
+        child: {
+          findController,
+          pdfViewer: { pdfViewer: nested, eventBus: {} }
+        }
+      }
+    };
+    const graph = await PdfViewerCompatibility.resolveViewerGraphFromPdfView(view);
+    expect(graph.findController).toBe(findController);
+    expect(graph.privateViewer?.currentScale).toBe(1.1);
+  });
 });

@@ -49,6 +49,7 @@ vi.mock("obsidian", () => {
 import { Menu } from "obsidian";
 import {
   PdfThumbnailSidebarActions,
+  selectedThumbnailPageNumber,
   thumbnailActionAtPoint,
   thumbnailPageNumber
 } from "../src/integration/PdfThumbnailDeleteMenu";
@@ -83,7 +84,7 @@ function thumbnailHost(): {
   const thumbnailView = document.createElement("div");
   thumbnailView.id = "thumbnailView";
   const thumbnail = document.createElement("div");
-  thumbnail.className = "thumbnail";
+  thumbnail.className = "thumbnail selected";
   thumbnail.dataset.pageNumber = "3";
   thumbnail.getBoundingClientRect = () => rect(100);
   const page = document.createElement("span");
@@ -388,5 +389,46 @@ describe("PDF thumbnail sidebar actions", () => {
     host.append(documentPage);
     expect(thumbnailPageNumber(host, documentPage)).toBeNull();
     expect(thumbnailActionAtPoint(host, documentPage, 30)).toBeNull();
+  });
+
+  it("resolves the selected thumbnail page number", () => {
+    const { host, thumbnail } = thumbnailHost();
+    expect(selectedThumbnailPageNumber(host)).toBe(3);
+    thumbnail.classList.remove("selected");
+    expect(selectedThumbnailPageNumber(host)).toBeNull();
+  });
+
+  it("deletes the selected thumbnail page on Backspace after a sidebar click", () => {
+    const { host, thumbnail } = thumbnailHost();
+    const deleted = vi.fn();
+    const actions = new PdfThumbnailSidebarActions(host, { onAddPage: vi.fn(), onDeletePage: deleted });
+
+    expect(actions.handleKeyDown(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }))).toBe(false);
+    expect(deleted).not.toHaveBeenCalled();
+
+    thumbnail.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    expect(actions.handleKeyDown(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }))).toBe(true);
+    expect(deleted).toHaveBeenCalledWith(3);
+
+    deleted.mockClear();
+    host.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    expect(actions.handleKeyDown(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }))).toBe(false);
+    expect(deleted).not.toHaveBeenCalled();
+    actions.destroy();
+  });
+
+  it("does not steal Backspace from text fields even when armed", () => {
+    const { host, thumbnail } = thumbnailHost();
+    const deleted = vi.fn();
+    const actions = new PdfThumbnailSidebarActions(host, { onAddPage: vi.fn(), onDeletePage: deleted });
+    thumbnail.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+
+    const input = document.createElement("input");
+    document.body.append(input);
+    const event = new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true });
+    Object.defineProperty(event, "target", { value: input });
+    expect(actions.handleKeyDown(event)).toBe(false);
+    expect(deleted).not.toHaveBeenCalled();
+    actions.destroy();
   });
 });

@@ -9,6 +9,7 @@ First pass proves architecture and direct-view annotation path. Runtime compatib
 - Highlighter is a wide translucent flat marker (alpha overlay). Not multiply-blend or text-region fill.
 - Lasso resize and clipboard behavior are initial implementations and need large-document profiling.
 - OCR and handwriting recognition are intentionally absent.
+- Typed text annotations are searchable in Obsidian’s native PDF find bar (Cmd/Ctrl+F) via a viewer-only bridge; freehand ink is not searchable.
 - Shape recognition is on by default in each drawing tool's Advanced settings. Holding a stroke still for 0.5 seconds recognises confident lines, arrows, ellipses, rectangles, triangles, diamonds, stars, and hearts; ambiguous writing remains ink. This is intentionally not claimed as an exact clone of another app's shape set.
 - MacBook Force Touch trackpad pressure is not available in Obsidian (Electron); stylus pressure works when the OS exposes it.
 - Source PDFs are never modified; annotated copies are export-only.

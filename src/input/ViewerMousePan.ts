@@ -53,6 +53,7 @@ export class ViewerMousePan {
     this.listenerRoot.addEventListener("pointermove", onMove, options);
     this.listenerRoot.addEventListener("pointerup", onEnd, options);
     this.listenerRoot.addEventListener("pointercancel", onEnd, options);
+    this.listenerRoot.addEventListener("lostpointercapture", onEnd, options);
   }
 
   destroy(): void {
@@ -108,6 +109,12 @@ export class ViewerMousePan {
     if (event.pointerType === "touch") {
       this.activeTouches.add(event.pointerId);
       // Second finger → release one-finger pan so native pinch/zoom can run.
+      // Primary down clears stale IDs left when terminal events were dropped
+      // (common on iPad after pinch / drawer / modal transitions).
+      if (event.isPrimary && this.activeTouches.size > 1) {
+        this.activeTouches.clear();
+        this.activeTouches.add(event.pointerId);
+      }
       if (this.activeTouches.size >= 2) {
         this.abortTouchPans(event, "multi-touch");
         this.callbacks.onPan?.("skip", event, {
