@@ -15,8 +15,15 @@ export class EmbeddedPdfAdapter extends BasePdfAdapter {
     return [...found];
   }
 
-  static attach(host: HTMLElement, callbacks: PdfAdapterCallbacks = {}): EmbeddedPdfAdapter {
-    const compatibility = PdfViewerCompatibility.embedded(host);
+  static attach(
+    host: HTMLElement,
+    callbacks: PdfAdapterCallbacks = {},
+    options: {
+      privateViewer?: import("./PdfViewerCompatibility").PdfJsViewerLike;
+      findController?: import("./PdfViewerCompatibility").PdfFindControllerLike;
+    } = {}
+  ): EmbeddedPdfAdapter {
+    const compatibility = PdfViewerCompatibility.embedded(host, options.privateViewer, options.findController);
     if (!compatibility.compatible) throw new PdfAdapterCompatibilityError("embedded", compatibility.errors);
     return new EmbeddedPdfAdapter(compatibility, host, callbacks);
   }

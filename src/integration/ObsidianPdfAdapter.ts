@@ -36,6 +36,14 @@ export interface ObsidianPdfAdapter {
   mountToolbar(toolbar: HTMLElement, placement?: ToolbarPlacement): void;
   /** Advanced opt-in only; normal PDF zoom stays under Obsidian's default cap. */
   setBoostedZoom?(enabled: boolean): void;
+  /** Native PDF.js `.textLayer` for a page (find-bar bridge); null when missing. */
+  nativeTextLayer?(pageNumber: number): HTMLElement | null;
+  /** Private find controller when Obsidian exposes it (capability-checked). */
+  findController?(): import("./PdfViewerCompatibility").PdfFindControllerLike | null;
+  /** PDF.js / Obsidian viewer event bus when available. */
+  eventBus?(): import("./PdfViewerCompatibility").PdfJsEventBus | null;
+  /** Subscribe to PDF.js events used by the annotation find bridge. */
+  onPdfEvent?(name: string, handler: (event: unknown) => void): () => void;
   compatibilityReport(): { errors: string[]; warnings: string[] };
   destroy(): void;
 }

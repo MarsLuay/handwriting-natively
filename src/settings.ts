@@ -383,7 +383,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
     });
     contents.createEl("p", {
       cls: "native-pdf-handwriting-settings-details-desc",
-      text: "Tune how new Pen and Auto strokes start and respond. Mouse profile remains steady. Draw a few strokes after changing a control; only strokes started afterwards are affected."
+      text: "Tune how new pen and auto strokes start and respond. Mouse profile remains steady. Draw a few strokes after changing a control; only strokes started afterwards are affected."
     });
     const calibration = { ...this.host.inkSettings.pressureCalibration };
     const syncControls: Array<() => void> = [];

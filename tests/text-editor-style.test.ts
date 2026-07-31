@@ -11,6 +11,15 @@ describe("text editor styles", () => {
     expect(styles).toMatch(/native-pdf-handwriting-touch-draw-page[^}]*touch-action:\s*none;(?![^}]*!important)/s);
   });
 
+  it("disables native textLayer hits while Draw mode owns the page", () => {
+    expect(styles).toMatch(
+      /\.native-pdf-handwriting-touch-draw-page\s*>\s*\.textLayer[\s\S]*?pointer-events:\s*none(?!\s*!important)/
+    );
+    expect(styles).not.toMatch(
+      /\.native-pdf-handwriting-touch-draw-page\s*>\s*\.textLayer[\s\S]*?pointer-events:\s*none\s*!important/
+    );
+  });
+
   it("keeps the active text editor transparent in every Obsidian theme", () => {
     const editorRules = [...styles.matchAll(/\.native-pdf-handwriting-text-input\s*\{(?<body>[^}]*)\}/gs)];
     const editorRule = editorRules.at(-1);

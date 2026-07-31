@@ -295,6 +295,11 @@ export class PointerRouter {
     return this.callbacks.projectCursor?.(clientX, clientY) ?? { x: clientX, y: clientY };
   }
 
+  /** True when this router is still listening on the given page node. */
+  bindsTo(element: HTMLElement): boolean {
+    return this.element === element;
+  }
+
   destroy(): void {
     this.cancelScheduledCursorUpdate();
     for (const pointerId of this.routed.keys()) {

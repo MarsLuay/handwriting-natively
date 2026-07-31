@@ -116,6 +116,36 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     return resolvePdfScrollRoot(this.root, this.compatibility.privateViewer, this.host);
   }
 
+  nativeTextLayer(pageNumber: number): HTMLElement | null {
+    const page = this.locator.page(pageNumber);
+    if (!page) return null;
+    return page.element.querySelector<HTMLElement>(":scope > .textLayer, :scope > .textLayer.rich")
+      ?? page.element.querySelector<HTMLElement>(".textLayer");
+  }
+
+  findController(): import("./PdfViewerCompatibility").PdfFindControllerLike | null {
+    return this.compatibility.findController
+      ?? this.compatibility.privateViewer?.findController
+      ?? null;
+  }
+
+  eventBus(): import("./PdfViewerCompatibility").PdfJsEventBus | null {
+    const controller = this.findController();
+    return this.compatibility.privateViewer?.eventBus
+      ?? controller?.eventBus
+      ?? controller?._eventBus
+      ?? null;
+  }
+
+  onPdfEvent(name: string, handler: (event: unknown) => void): () => void {
+    const bus = this.eventBus();
+    if (!bus?.on || !bus.off) return () => undefined;
+    bus.on(name, handler);
+    const off = (): void => bus.off?.(name, handler);
+    this.registerCleanup(off);
+    return off;
+  }
+
   mountOverlay(pageNumber: number): HTMLElement {
     const page = this.locator.page(pageNumber);
     if (!page) throw new Error(`Cannot mount annotation overlay: PDF page ${pageNumber} is unavailable`);

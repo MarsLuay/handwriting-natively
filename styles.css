@@ -497,6 +497,18 @@
    direct manipulation from canceling an active finger line in Draw mode. */
 .pdf-viewer .native-pdf-handwriting-touch-draw-page,
 .pdfViewer .native-pdf-handwriting-touch-draw-page { touch-action: none; }
+/* Native PDF.js text/annotation layers sit above the ink overlay hit path.
+   In Draw mode they must not steal stylus/finger hits (mobile especially). */
+.pdf-viewer .native-pdf-handwriting-touch-draw-page > .textLayer,
+.pdf-viewer .native-pdf-handwriting-touch-draw-page > .textLayer *,
+.pdf-viewer .native-pdf-handwriting-touch-draw-page > .annotationLayer,
+.pdf-viewer .native-pdf-handwriting-touch-draw-page > .annotationLayer *,
+.pdfViewer .native-pdf-handwriting-touch-draw-page > .textLayer,
+.pdfViewer .native-pdf-handwriting-touch-draw-page > .textLayer *,
+.pdfViewer .native-pdf-handwriting-touch-draw-page > .annotationLayer,
+.pdfViewer .native-pdf-handwriting-touch-draw-page > .annotationLayer * {
+  pointer-events: none;
+}
 .native-pdf-handwriting-canvas,
 .native-pdf-handwriting-draft-canvas { display: block; height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; z-index: 1; }
 .native-pdf-handwriting-canvas.is-selection-chrome-raised { z-index: 3; }
@@ -515,6 +527,17 @@
 .native-pdf-handwriting-text-box.is-selected {
   background: transparent;
   box-shadow: none;
+}
+/* Mirror PDF.js find highlights onto HN boxes (overlay sits above native .textLayer). */
+.native-pdf-handwriting-text-box.is-find-hit {
+  background: rgba(255, 255, 0, 0.35);
+}
+.native-pdf-handwriting-text-box.is-find-selected {
+  background: rgba(255, 150, 50, 0.55);
+}
+.native-pdf-handwriting-find-ghost {
+  pointer-events: none;
+  user-select: none;
 }
 .native-pdf-handwriting-text-selection-frame {
   /* Per-box frame for hover/selected/resize handles. The shared lasso/selection
@@ -657,6 +680,86 @@
 }
 .native-pdf-handwriting-panning { cursor: grabbing; }
 .native-pdf-handwriting-panning * { cursor: grabbing; }
+
+/* GoodNotes-style pull past bottom → new page */
+/* Stretch/height/ring are driven every frame by JS — no CSS transitions on those
+   (double-smoothing made the rubber-band feel laggy). Color/opacity only. */
+.native-pdf-handwriting-pull-stretch {
+  transform: translate3d(0, calc(-1 * var(--pull-stretch, 0px)), 0);
+  will-change: transform;
+}
+
+.native-pdf-handwriting-pull-add-page {
+  align-items: center;
+  box-sizing: border-box;
+  color: var(--text-muted, #6b7280);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 6px;
+  justify-content: center;
+  margin: 0 auto;
+  max-width: 100%;
+  min-height: 72px;
+  opacity: 1;
+  overflow: visible;
+  padding: 8px 0 12px;
+  pointer-events: none;
+  position: relative;
+  transition: color 180ms ease;
+  width: 100%;
+  z-index: 2;
+}
+
+.native-pdf-handwriting-pull-add-page.is-armed {
+  color: var(--color-purple, #7c3aed);
+}
+
+.native-pdf-handwriting-pull-add-page.is-snap .native-pdf-handwriting-pull-add-page-ring {
+  animation: native-pdf-handwriting-pull-snap 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.native-pdf-handwriting-pull-add-page-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  opacity: calc(0.28 + (var(--pull-progress, 0) * 0.72));
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.native-pdf-handwriting-pull-add-page-ring {
+  display: block;
+  height: 36px;
+  overflow: visible;
+  width: 36px;
+}
+
+.native-pdf-handwriting-pull-add-page-ring circle {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 2.5;
+  transform: rotate(-90deg);
+  transform-origin: 18px 18px;
+}
+
+.native-pdf-handwriting-pull-add-page-ring circle.is-track {
+  opacity: 0.28;
+  stroke: currentColor;
+}
+
+.native-pdf-handwriting-pull-add-page-ring circle.is-progress {
+  stroke: currentColor;
+  stroke-dashoffset: calc(var(--ring-circ, 75.4) * (1 - var(--pull-progress, 0)));
+}
+
+@keyframes native-pdf-handwriting-pull-snap {
+  0% { transform: scale(1); opacity: 1; }
+  40% { transform: scale(1.14); opacity: 1; }
+  100% { transform: scale(0.96); opacity: 0.4; }
+}
+
 .native-pdf-handwriting-draw-cursor {
   background: var(--text-normal, #111827);
   border-radius: 50%;

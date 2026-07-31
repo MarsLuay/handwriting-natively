@@ -499,7 +499,8 @@ export default class NativePdfInkPlugin extends Plugin {
         await this.vaultDebugLog.writeUrgent("info", "session attach resolve-viewer", {
           document: file.path
         });
-        const privateViewer = await PdfViewerCompatibility.resolvePrivateViewerFromPdfView(view);
+        const graph = await PdfViewerCompatibility.resolveViewerGraphFromPdfView(view);
+        const privateViewer = graph.privateViewer;
         // Large textbooks on phone need a longer first paint before page nodes exist.
         const pageWaitMs = Platform.isMobile ? 12_000 : 5_000;
         await this.vaultDebugLog.writeUrgent("info", "session attach begin", {
@@ -507,12 +508,20 @@ export default class NativePdfInkPlugin extends Plugin {
           mobile: Platform.isMobile,
           phone: Platform.isPhone,
           pageWaitMs,
-          hasPrivateViewer: Boolean(privateViewer)
+          hasPrivateViewer: Boolean(privateViewer),
+          hasFindController: Boolean(graph.findController)
         });
+        const attachOptions: {
+          privateViewer?: import("./integration/PdfViewerCompatibility").PdfJsViewerLike;
+          findController?: import("./integration/PdfViewerCompatibility").PdfFindControllerLike;
+          pageWaitMs: number;
+        } = { pageWaitMs };
+        if (privateViewer) attachOptions.privateViewer = privateViewer;
+        if (graph.findController) attachOptions.findController = graph.findController;
         const adapter = await NativePdfViewAdapter.attach(
           view.containerEl,
           this.sessionAdapterCallbacks(() => session),
-          privateViewer ? { privateViewer, pageWaitMs } : { pageWaitMs }
+          attachOptions
         );
         await this.vaultDebugLog.writeUrgent("info", "session attach adapter-ok", {
           document: file.path,
