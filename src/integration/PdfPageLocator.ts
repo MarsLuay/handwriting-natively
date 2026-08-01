@@ -70,6 +70,9 @@ export class PdfPageLocator {
    * Prefer the shell that still hosts a native PDF canvas. After pinch zoom the
    * first `querySelector` hit can be a connected predecessor while hits land on
    * a later sibling — PointerRouter on the predecessor never sees pen events.
+   *
+   * When multiple shells keep a canvas, prefer the one whose canvas is topmost
+   * under `elementFromPoint` (paint order), not merely last in DOM order.
    */
   private preferLivePageElement(...candidates: HTMLElement[]): HTMLElement {
     if (candidates.length <= 1) return candidates[0]!;
@@ -77,7 +80,35 @@ export class PdfPageLocator {
     const pool = connected.length > 0 ? connected : candidates;
     const withCanvas = pool.filter((element) => Boolean(pdfRenderCanvas(element)));
     const ranked = withCanvas.length > 0 ? withCanvas : pool;
+    if (ranked.length === 1) return ranked[0]!;
+    const hitReceiving = this.pickHitReceivingShell(ranked);
+    if (hitReceiving) return hitReceiving;
+    const withOverlay = ranked.find((element) =>
+      Boolean(element.querySelector(":scope > .native-pdf-handwriting-page-overlay"))
+    );
+    if (withOverlay) return withOverlay;
     return ranked[ranked.length - 1]!;
+  }
+
+  /** Pick the shell whose PDF canvas is the topmost hit at its visual center. */
+  private pickHitReceivingShell(candidates: HTMLElement[]): HTMLElement | null {
+    const doc = candidates[0]?.ownerDocument;
+    if (!doc?.elementFromPoint) return null;
+    // Walk last→first so a covering later sibling is checked before an underlayer.
+    for (let i = candidates.length - 1; i >= 0; i -= 1) {
+      const element = candidates[i]!;
+      const canvas = pdfRenderCanvas(element);
+      if (!canvas) continue;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width < 8 || rect.height < 8) continue;
+      const top = doc.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      if (!(top instanceof Element)) continue;
+      if (top === canvas || canvas.contains(top) || element.contains(top)) {
+        const hitPage = top.closest(".page, .pdf-page-view");
+        if (hitPage === element || element.contains(top)) return element;
+      }
+    }
+    return null;
   }
 
   pageAt(clientX: number, clientY: number): PdfPageInfo | undefined {

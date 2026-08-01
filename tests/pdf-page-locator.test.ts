@@ -149,4 +149,55 @@ describe("PdfPageLocator", () => {
     expect(locator.pages()).toHaveLength(1);
     expect(locator.pages()[0]?.element).toBe(live);
   });
+
+  it("prefers the hit-receiving duplicate shell when both keep a PDF canvas", () => {
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const first = pageElement({
+      scale: "1",
+      rect: { width: 600, height: 800 },
+      canvas: { width: 600, height: 800 }
+    });
+    first.className = "page";
+    const firstWrap = document.createElement("div");
+    firstWrap.className = "canvasWrapper";
+    const firstCanvas = first.querySelector("canvas")!;
+    firstWrap.append(firstCanvas);
+    first.append(firstWrap);
+    firstCanvas.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 800, width: 600, height: 800, toJSON: () => ({})
+    });
+
+    const second = pageElement({
+      scale: "2",
+      rect: { width: 1200, height: 1600 },
+      canvas: { width: 1200, height: 1600 }
+    });
+    second.className = "page";
+    const secondWrap = document.createElement("div");
+    secondWrap.className = "canvasWrapper";
+    const secondCanvas = second.querySelector("canvas")!;
+    secondWrap.append(secondCanvas);
+    second.append(secondWrap);
+    secondCanvas.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 1200, bottom: 1600, width: 1200, height: 1600, toJSON: () => ({})
+    });
+
+    viewer.append(first, second);
+    document.body.append(viewer);
+    // Paint order: first shell's canvas is topmost despite second being DOM-last.
+    const original = document.elementFromPoint;
+    document.elementFromPoint = ((x: number, y: number) => {
+      if (x >= 0 && x <= 600 && y >= 0 && y <= 800) return firstCanvas;
+      return original?.call(document, x, y) ?? null;
+    }) as typeof document.elementFromPoint;
+
+    try {
+      const locator = new PdfPageLocator(viewer, { currentScale: 2 });
+      expect(locator.page(1)?.element).toBe(first);
+      expect(locator.pages()[0]?.element).toBe(first);
+    } finally {
+      document.elementFromPoint = original ?? (() => null);
+    }
+  });
 });

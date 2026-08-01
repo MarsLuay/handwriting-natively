@@ -48,6 +48,12 @@ export interface PointerRouterCallbacks {
   onEnd?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
   onCancel?(route: "draw" | "edit" | "text", event: PointerEvent): void;
   onRoute?(route: PointerRoute, event: PointerEvent): void;
+  /** Fired as soon as this router's pointerdown listener runs (before classify). */
+  onRouterReceived?(event: PointerEvent, generation: number): void;
+  /** True when document fallback / a prior accept already owns this pointerId. */
+  isPointerHandled?(pointerId: number): boolean;
+  /** Mark pointerId so document fallback does not start a duplicate stroke. */
+  onPointerHandled?(pointerId: number): void;
   /** Native terminal events can land outside a virtualized PDF page. */
   onTouchLifecycle?(
     phase: "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block",
@@ -67,7 +73,10 @@ export interface PointerRouterCallbacks {
 
 export class PointerRouter {
   private static readonly DRAW_CURSOR_SIZE_PX = 6;
+  private static nextGeneration = 1;
 
+  /** Monotonic id for this listener generation (fresh AbortController per instance). */
+  readonly generation: number;
   private readonly routed = new Map<number, "draw" | "edit" | "text">();
   private readonly stylusErasers = new Set<number>();
   private readonly panning = new Map<number, PanGesture>();
@@ -85,6 +94,7 @@ export class PointerRouter {
     private readonly callbacks: PointerRouterCallbacks,
     palmPolicy = new PalmRejectionPolicy()
   ) {
+    this.generation = PointerRouter.nextGeneration++;
     this.palmPolicy = palmPolicy;
     this.eraserCursor = createDetachedSpan(element.ownerDocument);
     this.eraserCursor.className = "native-pdf-handwriting-eraser-cursor";
@@ -144,8 +154,16 @@ export class PointerRouter {
     return "native";
   }
 
+  /** Document fallback / sync repair entry — same path as the page capture listener. */
+  acceptPointerDown(event: PointerEvent): void {
+    this.handleDown(event);
+  }
+
   private readonly handleDown = (event: PointerEvent): void => {
     if (isAnnotationChromeTarget(event.target)) return;
+    if (this.callbacks.isPointerHandled?.(event.pointerId)) return;
+    this.callbacks.onRouterReceived?.(event, this.generation);
+    this.callbacks.onPointerHandled?.(event.pointerId);
     this.paintCustomCursorsNow(event);
     if (event.pointerType === "touch" && event.isPrimary && this.touches.size > 0) {
       const trackedBefore = this.touches.size;
