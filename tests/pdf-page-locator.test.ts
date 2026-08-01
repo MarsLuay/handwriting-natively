@@ -125,4 +125,28 @@ describe("PdfPageLocator", () => {
     expect(info?.element).toBe(page);
     expect(info?.element.classList.contains("native-pdf-handwriting-page-overlay")).toBe(false);
   });
+
+  it("prefers the later duplicate page shell that still hosts a PDF canvas", () => {
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const stale = pageElement({ scale: "1", rect: { width: 600, height: 800 } });
+    stale.className = "page";
+    const live = pageElement({
+      scale: "2",
+      rect: { width: 1200, height: 1600 },
+      canvas: { width: 1200, height: 1600 }
+    });
+    live.className = "page";
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    wrap.append(live.querySelector("canvas")!);
+    live.append(wrap);
+    viewer.append(stale, live);
+    document.body.append(viewer);
+
+    const locator = new PdfPageLocator(viewer, { currentScale: 2 });
+    expect(locator.page(1)?.element).toBe(live);
+    expect(locator.pages()).toHaveLength(1);
+    expect(locator.pages()[0]?.element).toBe(live);
+  });
 });

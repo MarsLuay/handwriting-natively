@@ -30,22 +30,54 @@ export class PdfPageLocator {
   constructor(private readonly viewerRoot: HTMLElement, private readonly privateViewer?: PdfJsViewerLike) {}
 
   pages(): PdfPageInfo[] {
-    return queryPdfPageNodes(this.viewerRoot).map((element) => this.info(element));
+    // PDF.js / Obsidian Mobile can leave duplicate `.page[data-page-number=N]`
+    // shells after pinch zoom. Keep one live shell per number so zoom Maps and
+    // mobile `page(N)` agree (last connected shell with a PDF canvas wins).
+    const byNumber = new Map<number, PdfPageInfo>();
+    for (const element of queryPdfPageNodes(this.viewerRoot)) {
+      const info = this.info(element);
+      const previous = byNumber.get(info.pageNumber);
+      byNumber.set(
+        info.pageNumber,
+        previous ? this.info(this.preferLivePageElement(previous.element, element)) : info
+      );
+    }
+    return [...byNumber.values()].sort((a, b) => a.pageNumber - b.pageNumber);
   }
 
   page(pageNumber: number): PdfPageInfo | undefined {
     // Stamp missing numbers on `.page` shells before the bare `[data-page-number]`
     // fallback can resolve HN overlays that carry the same attribute.
     ensurePdfPageNumbers(this.viewerRoot);
-    const canonical = this.viewerRoot.querySelector<HTMLElement>(
-      `.page[data-page-number="${pageNumber}"], .pdf-page-view[data-page-number="${pageNumber}"]`
-    );
-    if (canonical && !isHandwritingPageChrome(canonical)) return this.info(canonical);
+    const numbered = Array.from(
+      this.viewerRoot.querySelectorAll<HTMLElement>(
+        `.page[data-page-number="${pageNumber}"], .pdf-page-view[data-page-number="${pageNumber}"]`
+      )
+    ).filter((element) => !isHandwritingPageChrome(element));
+    if (numbered.length > 0) {
+      return this.info(this.preferLivePageElement(...numbered));
+    }
+    const fallback: HTMLElement[] = [];
     for (const element of this.viewerRoot.querySelectorAll<HTMLElement>(`[data-page-number="${pageNumber}"]`)) {
       if (isHandwritingPageChrome(element) || !looksLikePdfPage(element)) continue;
-      return this.info(element);
+      fallback.push(element);
     }
-    return undefined;
+    if (fallback.length === 0) return undefined;
+    return this.info(this.preferLivePageElement(...fallback));
+  }
+
+  /**
+   * Prefer the shell that still hosts a native PDF canvas. After pinch zoom the
+   * first `querySelector` hit can be a connected predecessor while hits land on
+   * a later sibling — PointerRouter on the predecessor never sees pen events.
+   */
+  private preferLivePageElement(...candidates: HTMLElement[]): HTMLElement {
+    if (candidates.length <= 1) return candidates[0]!;
+    const connected = candidates.filter((element) => element.isConnected);
+    const pool = connected.length > 0 ? connected : candidates;
+    const withCanvas = pool.filter((element) => Boolean(pdfRenderCanvas(element)));
+    const ranked = withCanvas.length > 0 ? withCanvas : pool;
+    return ranked[ranked.length - 1]!;
   }
 
   pageAt(clientX: number, clientY: number): PdfPageInfo | undefined {

@@ -372,6 +372,105 @@ describe("viewer runtime tracer", () => {
     }
   });
 
+  it("remounts overlay+router on content mutation when live page element drifts", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    wrap.append(document.createElement("canvas"));
+    adapter.pageElement.append(wrap);
+
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, {
+        overlay: HTMLElement;
+        page: PdfPageInfo;
+        router: { bindsTo(el: HTMLElement): boolean; isAlive(): boolean } | null;
+      }>;
+      onPdfPageContentMutation(recordCount: number): void;
+    };
+
+    try {
+      adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+      const previous = adapter.pageElement;
+      const replacement = adapter.replacePageElementKeepingOldPageConnected();
+      const liveWrap = document.createElement("div");
+      liveWrap.className = "canvasWrapper";
+      const liveCanvas = document.createElement("canvas");
+      liveWrap.append(liveCanvas);
+      replacement.append(liveWrap);
+
+      // Overlay still connected under the predecessor — mutation must remount.
+      expect(previous.contains(internal.surfaces.get(1)!.overlay)).toBe(true);
+      session.onPdfPageContentMutation(1);
+
+      const surface = internal.surfaces.get(1)!;
+      expect(surface.page.element).toBe(replacement);
+      expect(replacement.contains(surface.overlay)).toBe(true);
+      expect(surface.router?.bindsTo(replacement)).toBe(true);
+      expect(surface.router?.isAlive()).toBe(true);
+
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 44 });
+      liveCanvas.dispatchEvent(down);
+      liveCanvas.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 44 }));
+      expect(down.defaultPrevented).toBe(true);
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it("force-rebinds page router after zoom settle even when bindsTo+isAlive match", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    wrap.append(document.createElement("canvas"));
+    adapter.pageElement.append(wrap);
+
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, {
+        page: PdfPageInfo;
+        router: { bindsTo(el: HTMLElement): boolean; isAlive(): boolean } | null;
+      }>;
+      ensurePageRouter(surface: unknown, options?: { force?: boolean; reason?: string }): void;
+    };
+
+    try {
+      const surface = internal.surfaces.get(1)!;
+      const before = surface.router;
+      expect(before?.bindsTo(adapter.pageElement)).toBe(true);
+      expect(before?.isAlive()).toBe(true);
+
+      internal.ensurePageRouter(surface, { force: true, reason: "test-zoom-force" });
+      expect(surface.router).not.toBe(before);
+      expect(surface.router?.bindsTo(adapter.pageElement)).toBe(true);
+      expect(surface.router?.isAlive()).toBe(true);
+    } finally {
+      await session.destroy();
+    }
+  });
+
   it("lets Draw mode ink with mouse while fingers keep native scroll policy", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();

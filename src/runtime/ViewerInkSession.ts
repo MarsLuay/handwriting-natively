@@ -925,6 +925,15 @@ export class ViewerInkSession {
     const detachedOverlayPages = [...this.surfaces.entries()]
       .filter(([pageNumber, surface]) => !surface.overlay.isConnected && pages.some((page) => page.pageNumber === pageNumber && page.element.isConnected))
       .map(([pageNumber]) => pageNumber);
+    // Pinch zoom can replace the live `.page` while the predecessor + overlay
+    // stay connected. Remount before PointerRouter is left listening on a shell
+    // that no longer receives canvas hits.
+    const driftedPageElements = [...this.surfaces.entries()]
+      .filter(([pageNumber, surface]) => {
+        const live = pages.find((page) => page.pageNumber === pageNumber);
+        return Boolean(live && live.element !== surface.page.element && live.element.isConnected);
+      })
+      .map(([pageNumber]) => pageNumber);
     if (detachedOverlayPages.length > 0) {
       this.logger.zoomFlashProxy("overlay-disconnected", {
         pages: detachedOverlayPages,
@@ -932,9 +941,28 @@ export class ViewerInkSession {
         handoff: this.isZoomHandoffActive()
       });
     }
-    const reattached = detachedOverlayPages.length > 0 && this.tryReattachDisconnectedSurfaces(pages);
+    if (driftedPageElements.length > 0) {
+      this.logger.zoomFlashProxy("page-element-drifted", {
+        pages: driftedPageElements,
+        zoomCompositing: this.zoomCompositing,
+        handoff: this.isZoomHandoffActive()
+      });
+    }
+    const needsReattach = detachedOverlayPages.length > 0 || driftedPageElements.length > 0;
+    const reattachCandidates = [...new Set([...detachedOverlayPages, ...driftedPageElements])];
+    const reattached = needsReattach && this.tryReattachDisconnectedSurfaces(pages);
     const reattachedOverlayPages = reattached
-      ? detachedOverlayPages.filter((pageNumber) => this.surfaces.get(pageNumber)?.overlay.isConnected)
+      ? reattachCandidates.filter((pageNumber) => {
+        const surface = this.surfaces.get(pageNumber);
+        const live = pages.find((page) => page.pageNumber === pageNumber);
+        return Boolean(
+          surface
+          && live
+          && surface.page.element === live.element
+          && surface.overlay.isConnected
+          && live.element.contains(surface.overlay)
+        );
+      })
       : [];
     const releasePending = this.zoomCompositing
       || this.zoomCompositeReleaseTimer !== null
@@ -1088,10 +1116,19 @@ export class ViewerInkSession {
     const pages = new Map(this.options.adapter.pages().map((page) => [page.pageNumber, page]));
     for (const [pageNumber, surface] of this.surfaces) {
       const current = pages.get(pageNumber);
-      if (!current || !this.reattachSurface(surface, current)) {
+      if (!current) {
         stats.skippedDisconnected += 1;
         continue;
       }
+      if (!this.reattachSurface(surface, current)) {
+        if (current.element.isConnected) {
+          this.remountSurfaceOnPageReplacement(surface, current);
+        } else {
+          stats.skippedDisconnected += 1;
+          continue;
+        }
+      }
+      this.ensurePageRouter(surface, { force: true, reason: "zoom-handoff-final" });
       // A capped backing canvas can keep the same pixel dimensions while its
       // CSS geometry changes. Invalidating forces a canonical PDF-space paint
       // at the final scale in either case.
@@ -1139,8 +1176,15 @@ export class ViewerInkSession {
         continue;
       }
       if (!this.reattachSurface(surface, current)) {
-        stats.skippedDisconnected += 1;
-        continue;
+        if (current.element.isConnected) {
+          this.remountSurfaceOnPageReplacement(surface, current);
+        } else {
+          stats.skippedDisconnected += 1;
+          continue;
+        }
+      }
+      if (ViewerInkSession.isZoomPaintReason(reason)) {
+        this.ensurePageRouter(surface, { force: true, reason });
       }
       this.renderPage(pageNumber, stats, reason);
       if (ViewerInkSession.isZoomPaintReason(reason)) this.logZoomInkLayout(surface, "settle");
@@ -1365,9 +1409,13 @@ export class ViewerInkSession {
       for (const page of pages) {
         const surface = this.surfaces.get(page.pageNumber);
         if (!surface) continue;
+        if (surface.page.element !== page.element) {
+          this.remountSurfaceOnPageReplacement(surface, page);
+          continue;
+        }
         surface.page = page;
         this.syncOverlayLayout(surface);
-        this.ensurePageRouter(surface);
+        this.ensurePageRouter(surface, { reason: `${reason}-skip-unchanged` });
       }
       this.logger.refresh(`${reason}-skip-unchanged`, {
         selected: this.selected.length,
@@ -2848,19 +2896,44 @@ export class ViewerInkSession {
    * Without a rebind, Draw mode sees no pointer route events.
    * Also rebinds when listeners were aborted but the element reference still matches.
    */
-  private ensurePageRouter(surface: PageSurface, _options?: { force?: boolean; reason?: string }): void {
+  private ensurePageRouter(surface: PageSurface, options?: { force?: boolean; reason?: string }): void {
     const pageElement = surface.page.element;
-    if (surface.router?.bindsTo(pageElement) && surface.router.isAlive()) return;
+    const reason = options?.reason ?? "ensure-page-router";
+    const force = options?.force === true;
+    const binds = Boolean(surface.router?.bindsTo(pageElement));
+    const alive = Boolean(surface.router?.isAlive());
+    const hasPdfCanvas = Boolean(pdfRenderCanvas(pageElement));
+    // Early PDF.js paints may lack a canvas briefly; do not thrash routers on that.
+    // Callers pass force after zoom handoff / page remount when rebinding is required.
+    if (!force && binds && alive) return;
     surface.router?.destroy();
     if (!pageElement.isConnected) {
       surface.router = null;
+      this.logger.pageRouter("unavailable", {
+        page: surface.page.pageNumber,
+        reason,
+        force,
+        binds,
+        alive,
+        hasPdfCanvas,
+        connected: false
+      });
       return;
     }
     this.claimInputOwner(pageElement, surface.page.pageNumber);
     surface.router = this.createPageRouter(surface);
+    this.logger.pageRouter("rebind", {
+      page: surface.page.pageNumber,
+      reason,
+      force,
+      binds,
+      alive,
+      hasPdfCanvas,
+      rebound: true
+    });
     this.logger.inputOwner("claim", {
       page: surface.page.pageNumber,
-      reason: _options?.reason ?? "ensure-page-router",
+      reason,
       rebound: true
     });
   }

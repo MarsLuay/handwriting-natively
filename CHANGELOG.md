@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.43 — 2026-08-01
+
+- After pinch zoom, remount ink + PointerRouter onto the live PDF page shell (duplicate/stale `.page` nodes no longer leave Draw mode deaf while the document probe still sees pen events). Locator prefers the shell that still hosts a PDF canvas.
+
 ## 0.1.42 — 2026-07-31
 
 - iPad: while Apple Pencil tip is down, cancel companion TouchEvents and set transient `touch-action: none` so the PDF does not pan under the stylus. Finger scroll unchanged when no pen is active.
