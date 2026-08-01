@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.44 — 2026-08-01
+
+- After pinch zoom, prefer the hit-receiving PDF page shell (elementFromPoint), not merely the DOM-last shell with a canvas. Document capture remounts PointerRouter onto the hit `.page` when rebind health was a false positive; bubble fallback owns pen strokes the page listener missed. Fresh listener generation + node-id rebind logs.
+
 ## 0.1.43 — 2026-08-01
 
 - After pinch zoom, remount ink + PointerRouter onto the live PDF page shell (duplicate/stale `.page` nodes no longer leave Draw mode deaf while the document probe still sees pen events). Locator prefers the shell that still hosts a PDF canvas.

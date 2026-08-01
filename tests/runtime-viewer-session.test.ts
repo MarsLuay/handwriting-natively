@@ -471,6 +471,74 @@ describe("viewer runtime tracer", () => {
     }
   });
 
+  it("document capture remounts router onto the hit page shell when duplicates diverge", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    adapter.pageElement.className = "page";
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    wrap.append(document.createElement("canvas"));
+    adapter.pageElement.append(wrap);
+
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, {
+        overlay: HTMLElement;
+        page: PdfPageInfo;
+        router: {
+          bindsTo(el: HTMLElement): boolean;
+          isAlive(): boolean;
+          generation: number;
+        } | null;
+      }>;
+    };
+
+    try {
+      adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+      const bound = adapter.pageElement;
+      const hitShell = document.createElement("div");
+      hitShell.className = "page";
+      hitShell.dataset.pageNumber = "1";
+      Object.defineProperty(hitShell, "getBoundingClientRect", {
+        value: () => ({ left: 0, top: 0, right: 600, bottom: 800, width: 600, height: 800, x: 0, y: 0, toJSON: () => ({}) })
+      });
+      const hitWrap = document.createElement("div");
+      hitWrap.className = "canvasWrapper";
+      const hitCanvas = document.createElement("canvas");
+      hitWrap.append(hitCanvas);
+      hitShell.append(hitWrap);
+      // Keep the locator/adapter bound shell, but put the hittable duplicate under host.
+      adapter.host.append(hitShell);
+
+      const before = internal.surfaces.get(1)!.router;
+      expect(before?.bindsTo(bound)).toBe(true);
+
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 77 });
+      hitCanvas.dispatchEvent(down);
+
+      const surface = internal.surfaces.get(1)!;
+      expect(surface.page.element).toBe(hitShell);
+      expect(surface.router?.bindsTo(hitShell)).toBe(true);
+      expect(surface.router?.isAlive()).toBe(true);
+      expect(surface.router).not.toBe(before);
+      expect(down.defaultPrevented).toBe(true);
+      expect(hitShell.contains(surface.overlay)).toBe(true);
+    } finally {
+      await session.destroy();
+    }
+  });
+
+
   it("lets Draw mode ink with mouse while fingers keep native scroll policy", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();

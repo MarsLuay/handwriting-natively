@@ -643,4 +643,42 @@ describe("PointerRouter", () => {
     expect(router.bindsTo(document.createElement("div"))).toBe(false);
     router.destroy();
   });
+
+  it("acceptPointerDown uses a fresh listener generation and marks handle path", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const received: number[] = [];
+    const handled: number[] = [];
+    const routes: string[] = [];
+    const first = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onRouterReceived: (_event, generation) => received.push(generation),
+      onPointerHandled: (pointerId) => handled.push(pointerId),
+      onRoute: (route) => routes.push(route)
+    });
+    const gen1 = first.generation;
+    first.destroy();
+    const second = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onRouterReceived: (_event, generation) => received.push(generation),
+      onPointerHandled: (pointerId) => handled.push(pointerId),
+      onRoute: (route) => routes.push(route)
+    });
+    expect(second.generation).toBeGreaterThan(gen1);
+    const down = pointer("pen", 99);
+    second.acceptPointerDown(down);
+    expect(received.at(-1)).toBe(second.generation);
+    expect(handled).toContain(99);
+    expect(routes.at(-1)).toBe("draw");
+    expect(down.defaultPrevented).toBe(true);
+    second.destroy();
+  });
+
 });
