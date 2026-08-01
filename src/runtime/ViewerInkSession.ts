@@ -22,7 +22,7 @@ import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type P
 import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { getDebugNodeId } from "../dom/debugNodeId";
 import { isElement, isElementInDocument, isHTMLElement, setElementCssProps } from "../dom/typeGuards";
-import { isHandwritingPageChrome } from "../integration/pdfPageSelectors";
+import { ensurePdfPageNumbers, isHandwritingPageChrome } from "../integration/pdfPageSelectors";
 import { PdfExportService, annotatedFilename, editableAnnotatedFilename } from "../pdf/PdfExportService";
 import { exportInkStrokesToSvg } from "../pdf/SvgInkExportService";
 import { AddStrokeCommand, ReplaceAnnotationSelectionCommand, ReplacePageStrokesCommand, translateStrokes } from "../history/AnnotationCommands";
@@ -570,6 +570,7 @@ export class ViewerInkSession {
       return classes ? `${tag}.${classes}` : tag;
     };
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
+      const hitPage = this.closestPdfPageElement(e.target);
       this.logger.pointerSeen({
         source: "pointerdown",
         pointerType: e.pointerType || "(empty)",
@@ -587,10 +588,14 @@ export class ViewerInkSession {
         within: within(e.target),
         target: targetLabel(e.target),
         targetId: getDebugNodeId(e.target),
-        hitPageId: getDebugNodeId(this.closestPdfPageElement(e.target))
+        hitPageId: getDebugNodeId(hitPage),
+        hasDataPageNumber: Boolean(hitPage?.hasAttribute("data-page-number")),
+        dataPageNumber: hitPage?.dataset.pageNumber ?? null,
+        drawEnabled: this.drawEnabled
       });
-      // Capture: repair wrong-shell bind before the event descends — microtask
-      // is too late for preventDefault / iPad scroll lock.
+      // Capture: own pen/mouse draw sync here. Page capture can stay deaf after
+      // zoom while binds/alive still look healthy; bubble never runs if something
+      // stops the event mid-descent. Microtask is too late for preventDefault.
       this.captureDrawPointerFallback(e, within);
     }, { ...options, passive: false });
     // Bubble: if the page router never marked the pointer, own the stroke here.
@@ -2956,6 +2961,38 @@ export class ViewerInkSession {
     return event.pointerType === "mouse" && event.button === 0;
   }
 
+  /**
+   * Resolve PDF page index for a hit shell. Mobile often mounts `.page` before
+   * `data-page-number` is stamped; fall back to surface identity + ensure stamp.
+   */
+  private resolveHitPageNumber(hitPage: HTMLElement): number | null {
+    const stamped = Number(hitPage.dataset.pageNumber);
+    if (Number.isFinite(stamped) && stamped >= 1) return stamped;
+    for (const [pageNumber, surface] of this.surfaces) {
+      if (surface.page.element === hitPage) return pageNumber;
+    }
+    ensurePdfPageNumbers(this.options.adapter.root);
+    const after = Number(hitPage.dataset.pageNumber);
+    if (Number.isFinite(after) && after >= 1) return after;
+    return null;
+  }
+
+  private logFallbackSkip(
+    reason: string,
+    event: PointerEvent,
+    extra: Record<string, unknown> = {}
+  ): void {
+    this.logger.pageRouter("fallback", {
+      phase: "skip",
+      reason,
+      pointerId: event.pointerId,
+      pointerType: event.pointerType || "(empty)",
+      targetId: getDebugNodeId(event.target),
+      drawEnabled: this.drawEnabled,
+      ...extra
+    });
+  }
+
   private pageInfoForHitElement(hitPage: HTMLElement, pageNumber: number, surface: PageSurface): PdfPageInfo {
     const fromAdapter = this.options.adapter.page(pageNumber);
     if (fromAdapter && fromAdapter.element === hitPage) return fromAdapter;
@@ -2971,8 +3008,8 @@ export class ViewerInkSession {
   }
 
   /**
-   * Document capture: if the hit `.page` is not the bound router shell, remount
-   * and accept the pointer before the event finishes descending.
+   * Document capture: route pen/mouse draw here. Do not trust binds/alive alone —
+   * page capture can stay silent after zoom while health checks still pass.
    */
   private captureDrawPointerFallback(
     event: PointerEvent,
@@ -2985,26 +3022,46 @@ export class ViewerInkSession {
     )) return;
     const hitPage = this.closestPdfPageElement(event.target);
     if (!hitPage) return;
-    const pageNumber = Number(hitPage.dataset.pageNumber);
-    if (!Number.isFinite(pageNumber) || pageNumber < 1) return;
+    const pageNumber = this.resolveHitPageNumber(hitPage);
+    if (pageNumber === null) {
+      this.logFallbackSkip("missing-page-number", event, {
+        hitPageId: getDebugNodeId(hitPage),
+        hasDataPageNumber: hitPage.hasAttribute("data-page-number"),
+        dataPageNumber: hitPage.dataset.pageNumber ?? null
+      });
+      return;
+    }
     const surface = this.surfaces.get(pageNumber);
-    if (!surface) return;
-    const boundOk = Boolean(surface.router?.bindsTo(hitPage) && surface.router.isAlive());
-    if (boundOk) return;
-    const info = this.pageInfoForHitElement(hitPage, pageNumber, surface);
-    if (surface.page.element !== hitPage) {
-      this.remountSurfaceOnPageReplacement(surface, info);
-    } else {
-      this.ensurePageRouter(surface, { force: true, reason: "document-hit-mismatch" });
+    if (!surface) {
+      this.logFallbackSkip("no-surface", event, {
+        page: pageNumber,
+        hitPageId: getDebugNodeId(hitPage)
+      });
+      return;
+    }
+    const binds = Boolean(surface.router?.bindsTo(hitPage));
+    const alive = Boolean(surface.router?.isAlive());
+    const boundOk = binds && alive;
+    let fallbackPhase: "capture-sync" | "capture-repair" = "capture-sync";
+    if (!boundOk || surface.page.element !== hitPage) {
+      fallbackPhase = "capture-repair";
+      const info = this.pageInfoForHitElement(hitPage, pageNumber, surface);
+      if (surface.page.element !== hitPage) {
+        this.remountSurfaceOnPageReplacement(surface, info);
+      } else {
+        this.ensurePageRouter(surface, { force: true, reason: "document-hit-mismatch" });
+      }
     }
     this.logger.pageRouter("fallback", {
-      phase: "capture-repair",
+      phase: fallbackPhase,
       page: pageNumber,
       pointerId: event.pointerId,
       pointerType: event.pointerType || "(empty)",
       hitPageId: getDebugNodeId(hitPage),
       boundPageId: getDebugNodeId(surface.page.element),
       targetId: getDebugNodeId(event.target),
+      binds,
+      alive,
       listenerGeneration: surface.router?.generation ?? null
     });
     surface.router?.acceptPointerDown(event);
@@ -3026,10 +3083,25 @@ export class ViewerInkSession {
     )) return;
     const hitPage = this.closestPdfPageElement(event.target);
     if (!hitPage) return;
-    const pageNumber = Number(hitPage.dataset.pageNumber);
-    if (!Number.isFinite(pageNumber) || pageNumber < 1) return;
+    const pageNumber = this.resolveHitPageNumber(hitPage);
+    if (pageNumber === null) {
+      this.logFallbackSkip("missing-page-number", event, {
+        via: "bubble",
+        hitPageId: getDebugNodeId(hitPage),
+        hasDataPageNumber: hitPage.hasAttribute("data-page-number"),
+        dataPageNumber: hitPage.dataset.pageNumber ?? null
+      });
+      return;
+    }
     const surface = this.surfaces.get(pageNumber);
-    if (!surface) return;
+    if (!surface) {
+      this.logFallbackSkip("no-surface", event, {
+        via: "bubble",
+        page: pageNumber,
+        hitPageId: getDebugNodeId(hitPage)
+      });
+      return;
+    }
     if (!(surface.router?.bindsTo(hitPage) && surface.router.isAlive())) {
       const info = this.pageInfoForHitElement(hitPage, pageNumber, surface);
       if (surface.page.element !== hitPage) {
@@ -3089,6 +3161,8 @@ export class ViewerInkSession {
       alive,
       hasPdfCanvas,
       rebound: true,
+      postBindAlive: surface.router.isAlive(),
+      connected: pageElement.isConnected,
       listenerGeneration: surface.router.generation,
       pageId: getDebugNodeId(pageElement),
       pdfCanvasId: getDebugNodeId(pdfCanvas),

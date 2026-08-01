@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.45 — 2026-08-01
+
+- Draw mode: document capture sync-routes pen/mouse onto the page router even when binds/alive look healthy (page capture can stay deaf after zoom). Resolve hit page number via surface identity / ensure stamp when `data-page-number` is missing (loading shells). Fallback skip logs for missing page number / no surface.
+
 ## 0.1.44 — 2026-08-01
 
 - After pinch zoom, prefer the hit-receiving PDF page shell (elementFromPoint), not merely the DOM-last shell with a canvas. Document capture remounts PointerRouter onto the hit `.page` when rebind health was a false positive; bubble fallback owns pen strokes the page listener missed. Fresh listener generation + node-id rebind logs.
