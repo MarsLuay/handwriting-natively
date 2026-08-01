@@ -538,6 +538,107 @@ describe("viewer runtime tracer", () => {
     }
   });
 
+  it("document capture sync-routes pen when page capture is blocked but binds/alive look healthy", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    adapter.pageElement.className = "page";
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    const canvas = document.createElement("canvas");
+    wrap.append(canvas);
+    adapter.pageElement.append(wrap);
+
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, {
+        page: PdfPageInfo;
+        router: { destroy(): void; bindsTo(el: HTMLElement): boolean; isAlive(): boolean } | null;
+      }>;
+      ensurePageRouter(surface: unknown, options?: { force?: boolean; reason?: string }): void;
+    };
+
+    try {
+      adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+      const surface = internal.surfaces.get(1)!;
+      // Kill current listeners, install a capture stopper, then rebind so the
+      // page router registers AFTER the stopper (descent never reaches it).
+      surface.router!.destroy();
+      surface.router = null;
+      adapter.pageElement.addEventListener("pointerdown", (event) => {
+        event.stopImmediatePropagation();
+      }, { capture: true });
+      internal.ensurePageRouter(surface, { force: true, reason: "test-blocked-page-capture" });
+      const rebound = internal.surfaces.get(1)!;
+      expect(rebound.router?.bindsTo(adapter.pageElement)).toBe(true);
+      expect(rebound.router?.isAlive()).toBe(true);
+
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 88 });
+      canvas.dispatchEvent(down);
+      canvas.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 88 }));
+      expect(down.defaultPrevented).toBe(true);
+
+      await session.manualSave();
+      const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+      expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it("document capture routes pen when hit page lacks data-page-number but matches surface shell", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    adapter.pageElement.className = "page";
+    delete adapter.pageElement.dataset.pageNumber;
+    adapter.pageElement.removeAttribute("data-page-number");
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    const canvas = document.createElement("canvas");
+    wrap.append(canvas);
+    adapter.pageElement.append(wrap);
+
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    try {
+      adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+      // Simulate loadingIcon shell: attribute stripped after surface mount.
+      delete adapter.pageElement.dataset.pageNumber;
+      adapter.pageElement.removeAttribute("data-page-number");
+      adapter.pageElement.classList.add("loadingIcon");
+
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 89 });
+      canvas.dispatchEvent(down);
+      canvas.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 89 }));
+      expect(down.defaultPrevented).toBe(true);
+
+      await session.manualSave();
+      const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+      expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    } finally {
+      await session.destroy();
+    }
+  });
+
 
   it("lets Draw mode ink with mouse while fingers keep native scroll policy", async () => {
     const files = new MemoryFiles();
