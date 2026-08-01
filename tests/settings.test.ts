@@ -67,11 +67,11 @@ describe("safe defaults", () => {
   });
 
   it("keeps pressure calibration bounded while preserving valid saved controls", () => {
-    expect(DEFAULT_SETTINGS.pressureCalibration).toEqual({ initialFloor: 0.08, gain: 1.15, smoothing: 0.78 });
+    expect(DEFAULT_SETTINGS.pressureCalibration).toEqual({ initialFloor: 0.15, gain: 1.15, smoothing: 0.78 });
     expect(mergeSettings({ pressureCalibration: { initialFloor: -1, gain: 4, smoothing: 0.4 } }).pressureCalibration)
       .toEqual({ initialFloor: 0, gain: 2, smoothing: 0.4 });
     expect(mergeSettings({ pressureCalibration: { gain: 0.7 } as never }).pressureCalibration)
-      .toEqual({ initialFloor: 0.08, gain: 0.7, smoothing: 0.78 });
+      .toEqual({ initialFloor: 0.15, gain: 0.7, smoothing: 0.78 });
   });
 
   it("enables stroke simplification by default", () => {

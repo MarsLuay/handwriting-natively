@@ -11,7 +11,10 @@ describe("text editor styles", () => {
     expect(styles).not.toMatch(/native-pdf-handwriting-draw-hit-page[^}]*touch-action:\s*none/);
     // Legacy finger-draw class must not force touch-action:none anymore.
     expect(styles).toMatch(/native-pdf-handwriting-touch-draw-page[^}]*touch-action:\s*auto/);
-    // Stylus-down lock is a separate class so fingers still scroll when no pen is active.
+    // Stylus tip down: touch-none. Draw on + tip up: touch-pan-xy (see PointerRouter).
+    expect(styles).toMatch(/native-pdf-handwriting-touch-none[^}]*touch-action:\s*none/);
+    expect(styles).toMatch(/native-pdf-handwriting-touch-pan-xy[^}]*touch-action:\s*pan-x\s+pan-y/);
+    // Legacy alias still maps to none for older in-memory sessions.
     expect(styles).toMatch(/native-pdf-handwriting-pen-capturing[^}]*touch-action:\s*none/);
   });
 

@@ -38,7 +38,7 @@ export interface PullToAddPageCallbacks {
   enabled(): boolean;
   /** Block while drawing ink, saving, or inserting. */
   isBusy?(): boolean;
-  /** True while Draw mode is using the stylus for ink (fingers may still pull). */
+  /** True while Draw mode is on — ink pointers (pen/mouse) must not start pull. */
   isDrawing?: () => boolean;
   scrollRoot(): HTMLElement;
   /** Overlay mounts relative to this host (PDF leaf / adapter root). */
@@ -417,8 +417,12 @@ export class PullToAddPageGesture {
     if (event.target instanceof Element && event.target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown")) {
       return;
     }
-    // Stylus ink owns the gesture in Draw mode; fingers / mouse still overscroll.
-    if (event.pointerType === "pen" && this.callbacks.isDrawing?.()) return;
+    // Ink pointers (pen + mouse) own the gesture in Draw mode. Fingers may still
+    // overscroll/pull — mouse is an ink device here (see debug: draw+pull overlap).
+    if (this.shouldYieldToInk(event)) {
+      this.log("blocked", { reason: "draw-mode-ink-pointer", pointerType: event.pointerType }, true);
+      return;
+    }
 
     const root = this.callbacks.scrollRoot();
     if (!isScrollAtBottom(root)) return;
@@ -440,6 +444,10 @@ export class PullToAddPageGesture {
       return;
     }
     if (this.activePointerId !== event.pointerId || !this.live()) return;
+    if (this.shouldYieldToInk(event)) {
+      this.abortActivePointer("draw-mode-ink-pointer");
+      return;
+    }
 
     const deltaY = event.clientY - this.lastClientY;
     this.lastClientY = event.clientY;
@@ -543,10 +551,18 @@ export class PullToAddPageGesture {
   }
 
   private abortActivePointer(reason: string): void {
-    void reason;
+    if (this.activePointerId !== null || this.rawPull > 0 || this.displayPull > 0) {
+      this.log("blocked", { reason, hadPointer: this.activePointerId !== null, rawPull: this.rawPull }, true);
+    }
     this.activePointerId = null;
     this.claimed = false;
     if (this.rawPull > 0 || this.displayPull > 0 || this.displayStretch > 0) this.animateRelease();
+  }
+
+  /** Pen and mouse ink in Draw mode; touch may still pull/overscroll. */
+  private shouldYieldToInk(event: PointerEvent): boolean {
+    if (!this.callbacks.isDrawing?.()) return false;
+    return event.pointerType === "pen" || event.pointerType === "mouse";
   }
 
   private setRawPull(next: number): void {

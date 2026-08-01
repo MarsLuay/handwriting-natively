@@ -494,8 +494,12 @@
   position: fixed;
 }
 /* Draw mode: native text/annotation layers must not steal mouse/stylus hits.
-   Fingers keep native scroll — do not set touch-action:none on draw-hit alone.
-   Pen-down adds .native-pdf-handwriting-pen-capturing (see PointerRouter). */
+   Touch-action modes (Ink-style) live on the page shell via PointerRouter:
+   - .touch-pan-xy while Draw is on and tip is up (fingers may scroll/pinch)
+   - .touch-none while Pencil tip is down, or single-finger vertical axis lock
+   - neither class when Draw is off (PDF.js default)
+   Single-finger Draw scroll: after 4px, axis lock — vertical drives PDF scroll;
+   horizontal leaves native (avoids fighty diagonal pan next to writing). */
 .pdf-viewer .native-pdf-handwriting-draw-hit-page > .textLayer,
 .pdf-viewer .native-pdf-handwriting-draw-hit-page > .textLayer *,
 .pdf-viewer .native-pdf-handwriting-draw-hit-page > .annotationLayer,
@@ -506,12 +510,22 @@
 .pdfViewer .native-pdf-handwriting-draw-hit-page > .annotationLayer * {
   pointer-events: none;
 }
-/* Stylus tip down: block WebKit pan; remove on pointerup so fingers scroll again. */
+.pdf-viewer .page.native-pdf-handwriting-touch-none,
+.pdfViewer .page.native-pdf-handwriting-touch-none,
+.pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-none,
+.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-none,
+/* Legacy 0.1.42–0.1.45 alias */
 .pdf-viewer .page.native-pdf-handwriting-pen-capturing,
 .pdfViewer .page.native-pdf-handwriting-pen-capturing,
 .pdf-viewer .pdf-page-view.native-pdf-handwriting-pen-capturing,
 .pdfViewer .pdf-page-view.native-pdf-handwriting-pen-capturing {
   touch-action: none;
+}
+.pdf-viewer .page.native-pdf-handwriting-touch-pan-xy,
+.pdfViewer .page.native-pdf-handwriting-touch-pan-xy,
+.pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-pan-xy,
+.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-pan-xy {
+  touch-action: pan-x pan-y;
 }
 /* Legacy finger-draw class (pre-0.1.28). Kept inert so old sessions clear cleanly. */
 .pdf-viewer .native-pdf-handwriting-touch-draw-page,

@@ -377,4 +377,61 @@ describe("PullToAddPageGesture", () => {
     expect(logs.some((entry) => entry.phase === "lockout")).toBe(false);
     gesture.destroy();
   });
+
+  function pointer(
+    type: string,
+    pointerId: number,
+    extra: Record<string, unknown> = {}
+  ): PointerEvent {
+    const event = new Event((extra.eventType as string) || "pointerdown", {
+      bubbles: true,
+      cancelable: true
+    }) as PointerEvent;
+    Object.defineProperties(event, {
+      pointerType: { value: type },
+      pointerId: { value: pointerId },
+      button: { value: extra.button ?? 0 },
+      buttons: { value: extra.buttons ?? 1 },
+      isPrimary: { value: extra.isPrimary ?? true },
+      clientX: { value: extra.clientX ?? 100 },
+      clientY: { value: extra.clientY ?? 400 },
+      target: { value: extra.target ?? document.body }
+    });
+    return event;
+  }
+
+  it("blocks mouse and pen pull starts in Draw mode but still allows finger pull", () => {
+    const root = mountScrollRoot(true);
+    const canvas = root.querySelector("canvas")!;
+    const logs: Array<{ phase: string; details: Record<string, unknown> }> = [];
+    let drawing = true;
+    const gesture = new PullToAddPageGesture(document, {
+      enabled: () => true,
+      isDrawing: () => drawing,
+      scrollRoot: () => root,
+      host: () => root,
+      withinTarget: () => true,
+      onCommit: async () => undefined,
+      onLog: (phase, details) => logs.push({ phase, details })
+    });
+
+    document.dispatchEvent(pointer("mouse", 11, { target: canvas, clientY: 500 }));
+    expect(logs.some((e) => e.phase === "pointer-start")).toBe(false);
+    expect(logs.some((e) => e.phase === "blocked" && e.details.reason === "draw-mode-ink-pointer")).toBe(true);
+
+    logs.length = 0;
+    document.dispatchEvent(pointer("pen", 12, { target: canvas, clientY: 500 }));
+    expect(logs.some((e) => e.phase === "pointer-start")).toBe(false);
+    expect(logs.some((e) => e.details.reason === "draw-mode-ink-pointer")).toBe(true);
+
+    logs.length = 0;
+    document.dispatchEvent(pointer("touch", 13, { target: canvas, clientY: 500 }));
+    expect(logs.some((e) => e.phase === "pointer-start")).toBe(true);
+
+    drawing = false;
+    logs.length = 0;
+    document.dispatchEvent(pointer("mouse", 14, { target: canvas, clientY: 500 }));
+    expect(logs.some((e) => e.phase === "pointer-start")).toBe(true);
+    gesture.destroy();
+  });
 });

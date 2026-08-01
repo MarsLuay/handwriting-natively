@@ -9,6 +9,12 @@ export type { PressureProfile } from "../model";
  */
 export type ResolvedPressureProfile = Exclude<PressureProfile, "auto">;
 
+/** Minimum stored pressure while path length is within the early-stroke window (Ink). */
+export const PEN_MIN_START_PRESSURE = 0.15;
+
+/** Apply early floor until path length exceeds `strokeSize *` this factor (Ink). */
+export const PEN_EARLY_STROKE_FLOOR_LENGTH_MULTIPLIER = 1;
+
 export interface PressureSample {
   /** PointerEvent.pointerType, when the browser supplied one. */
   pointerType?: string | null;
@@ -22,8 +28,15 @@ export interface PressureSample {
 }
 
 export interface PressureConditionerOptions {
-  /** Initial pressure used only when a pen stroke starts nearly weightless. */
+  /**
+   * Floor while the stroke is still within ~1× brush length (Ink PEN_MIN_START_PRESSURE).
+   * Settings map this from pressureCalibration.initialFloor.
+   */
   initialFloor?: number;
+  /** Stroke width in the same space as sample distances (PDF / page units). */
+  strokeSize?: number;
+  /** Keep {@link initialFloor} until path length ≥ strokeSize × this (Ink default 1). */
+  earlyFloorLengthMultiplier?: number;
   /** Multiplier applied before the response curve. */
   gain?: number;
   /** Response exponent; below one makes low real pen pressure usable. */
@@ -43,7 +56,9 @@ export interface PressureConditionerOptions {
 }
 
 const DEFAULTS: Required<PressureConditionerOptions> = {
-  initialFloor: 0.08,
+  initialFloor: PEN_MIN_START_PRESSURE,
+  strokeSize: 0,
+  earlyFloorLengthMultiplier: PEN_EARLY_STROKE_FLOOR_LENGTH_MULTIPLIER,
   gain: 1.15,
   curve: 0.75,
   stationaryEma: 0.22,
@@ -54,6 +69,24 @@ const DEFAULTS: Required<PressureConditionerOptions> = {
   maximumSlew: 0.5,
   mousePressure: 0.5
 };
+
+/**
+ * Keep a visible tip while the path is still shorter than ~1× brush size (Ink).
+ * When strokeSize ≤ 0, the floor applies for the whole stroke (Ink fallback).
+ */
+export function applyPenEarlyStrokePressureFloor(
+  scaledPressure: number,
+  strokePathLength: number,
+  strokeSize: number,
+  floor: number = PEN_MIN_START_PRESSURE,
+  lengthMultiplier: number = PEN_EARLY_STROKE_FLOOR_LENGTH_MULTIPLIER
+): number {
+  if (!(floor > 0)) return scaledPressure;
+  if (!(strokeSize > 0) || strokePathLength < strokeSize * lengthMultiplier) {
+    return Math.max(floor, scaledPressure);
+  }
+  return scaledPressure;
+}
 
 /** Map the three user-facing calibration controls onto safe conditioner values. */
 export function pressureConditionerOptionsForCalibration(
@@ -96,15 +129,18 @@ export function resolvePressureProfile(
  * Converts PointerEvent pressure into stable, normalized ink pressure.
  *
  * A conditioner is scoped to one active stroke. `reset()` must be called
- * before reusing it for a later stroke so the first-sample floor stays local.
+ * before reusing it for a later stroke so the early-stroke floor stays local.
  */
 export class PressureConditioner {
   private readonly options: Required<PressureConditionerOptions>;
   private previousPenPressure: number | undefined;
+  private pathLength = 0;
 
   constructor(private readonly profile: PressureProfile = "auto", options: PressureConditionerOptions = {}) {
     this.options = {
       initialFloor: clampUnit(finite(options.initialFloor, DEFAULTS.initialFloor)),
+      strokeSize: Math.max(0, finite(options.strokeSize, DEFAULTS.strokeSize)),
+      earlyFloorLengthMultiplier: Math.max(0, finite(options.earlyFloorLengthMultiplier, DEFAULTS.earlyFloorLengthMultiplier)),
       gain: Math.max(0, finite(options.gain, DEFAULTS.gain)),
       curve: Math.max(0.05, finite(options.curve, DEFAULTS.curve)),
       stationaryEma: clampUnit(finite(options.stationaryEma, DEFAULTS.stationaryEma)),
@@ -119,6 +155,7 @@ export class PressureConditioner {
 
   reset(): void {
     this.previousPenPressure = undefined;
+    this.pathLength = 0;
   }
 
   condition(sample: PressureSample): number {
@@ -127,24 +164,33 @@ export class PressureConditioner {
       return this.options.mousePressure;
     }
 
+    const distance = this.sampleDistance(sample);
+    if (this.previousPenPressure !== undefined) this.pathLength += distance;
+
     const target = this.penTarget(sample.pressure);
+    let next: number;
     if (this.previousPenPressure === undefined) {
-      const initial = Math.max(this.options.initialFloor, target);
-      this.previousPenPressure = initial;
-      return initial;
+      next = target;
+    } else {
+      const previous = this.previousPenPressure;
+      const distanceWeight = clampUnit(distance / this.options.distanceForFullResponse);
+      const ema = this.options.stationaryEma
+        + (this.options.movingEma - this.options.stationaryEma) * distanceWeight;
+      const smoothed = previous + (target - previous) * ema;
+      const maximumChange = Math.min(
+        this.options.maximumSlew,
+        this.options.minimumSlew + distance * this.options.slewPerDistance
+      );
+      next = clampUnit(previous + Math.max(-maximumChange, Math.min(maximumChange, smoothed - previous)));
     }
 
-    const previous = this.previousPenPressure;
-    const distance = this.sampleDistance(sample);
-    const distanceWeight = clampUnit(distance / this.options.distanceForFullResponse);
-    const ema = this.options.stationaryEma
-      + (this.options.movingEma - this.options.stationaryEma) * distanceWeight;
-    const smoothed = previous + (target - previous) * ema;
-    const maximumChange = Math.min(
-      this.options.maximumSlew,
-      this.options.minimumSlew + distance * this.options.slewPerDistance
+    next = applyPenEarlyStrokePressureFloor(
+      next,
+      this.pathLength,
+      this.options.strokeSize,
+      this.options.initialFloor,
+      this.options.earlyFloorLengthMultiplier
     );
-    const next = clampUnit(previous + Math.max(-maximumChange, Math.min(maximumChange, smoothed - previous)));
     this.previousPenPressure = next;
     return next;
   }

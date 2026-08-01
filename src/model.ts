@@ -200,7 +200,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   pdfTemplatePath: "",
   mouseDragScroll: true,
   pressureProfile: "auto",
-  pressureCalibration: { initialFloor: 0.08, gain: 1.15, smoothing: 0.78 },
+  pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
   simplifyStrokes: true,
   boostedPdfZoom: false,
   hideStylusAnnotationLabel: false,

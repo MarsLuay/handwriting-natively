@@ -759,7 +759,7 @@ describe("viewer runtime tracer", () => {
 
     const strokes = (session as unknown as { ink: { all(): InkStroke[] } }).ink.all();
     expect(strokes).toHaveLength(2);
-    expect(strokes[0]!.points[0]!.pressure).toBeCloseTo(0.08, 8);
+    expect(strokes[0]!.points[0]!.pressure).toBeCloseTo(0.15, 8);
     expect(strokes[0]!.points[1]!.pressure).toBeGreaterThan(strokes[0]!.points[0]!.pressure);
     expect(strokes[1]!.inputType).toBe("mouse");
     expect(strokes[1]!.points.every((point) => point.pressure === 0.5)).toBe(true);
@@ -832,6 +832,72 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("uses strict viewport cull on zoom settle reasons and blit-only when backing is unchanged", async () => {
+    const adapter = new FakeAdapter();
+    Object.defineProperty(adapter.root, "getBoundingClientRect", {
+      value: () => ({ left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, x: 0, y: 0, toJSON: () => ({}) })
+    });
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, {
+        overlay: HTMLElement;
+        viewportCullPending: boolean;
+        canvas: HTMLCanvasElement;
+        inkLayer: HTMLCanvasElement | null;
+        inkLayerValid: boolean;
+        inkLayerBackingScale: number | null;
+        inkLayerBurstCapture: boolean;
+      }>;
+      renderPage(
+        page: number,
+        stats?: { canvasesResized: number; strokesRedrawn: number; skippedBlitOnly?: number },
+        reason?: string
+      ): boolean;
+      repaintSurfaces(reason: string): void;
+      resolveInkBacking(width: number, height: number): { pixelWidth: number; pixelHeight: number; backingScale: number };
+    };
+    const surface = internal.surfaces.get(1)!;
+
+    // Just outside the root, but inside the idle prefetch pad (~0.75×).
+    Object.defineProperty(surface.overlay, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 420, right: 600, bottom: 1220, width: 600, height: 800, x: 0, y: 420, toJSON: () => ({}) })
+    });
+    expect(internal.renderPage(1, undefined, "idle-near-pad")).toBe(true);
+    expect(surface.viewportCullPending).toBe(false);
+
+    expect(internal.renderPage(1, undefined, "view-scalechanging")).toBe(false);
+    expect(surface.viewportCullPending).toBe(true);
+
+    // Bring back on-screen and seed a canonical ink layer matching current backing.
+    Object.defineProperty(surface.overlay, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 40, right: 600, bottom: 840, width: 600, height: 800, x: 0, y: 40, toJSON: () => ({}) })
+    });
+    expect(internal.renderPage(1, undefined, "view-scalechanging")).toBe(true);
+    expect(surface.inkLayerValid).toBe(true);
+    expect(surface.inkLayerBurstCapture).toBe(false);
+    expect(surface.inkLayerBackingScale).not.toBeNull();
+
+    const stats = { canvasesResized: 0, strokesRedrawn: 0, skippedBlitOnly: 0 };
+    expect(internal.renderPage(1, stats, "view-scalechanging")).toBe(true);
+    expect(stats.canvasesResized).toBe(0);
+    expect(stats.strokesRedrawn).toBe(0);
+    expect(stats.skippedBlitOnly).toBe(1);
+
+    await session.destroy();
+  });
+
   it("uses the committed pen renderer for the live draft", async () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
@@ -849,18 +915,41 @@ describe("viewer runtime tracer", () => {
     adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     const internal = session as unknown as {
-      surfaces: Map<number, { draftContext: CanvasRenderingContext2D }>;
-      renderLiveDrawPreview(surface: { draftContext: CanvasRenderingContext2D }): void;
+      surfaces: Map<number, {
+        draftContext: CanvasRenderingContext2D;
+        draftCanvas: HTMLCanvasElement;
+        liveDrawPaintedPoints: number;
+        builder?: { add(point: { x: number; y: number; pressure: number; time: number }): void };
+      }>;
+      renderLiveDrawPreview(surface: {
+        draftContext: CanvasRenderingContext2D;
+        draftCanvas: HTMLCanvasElement;
+        liveDrawPaintedPoints: number;
+      }): { draftPoints: number; incremental: boolean };
     };
     const surface = internal.surfaces.get(1)!;
     vi.clearAllMocks();
 
-    internal.renderLiveDrawPreview(surface);
-
-    // The old preview used one translucent `stroke()`. The committed pen is
-    // stamp-based, so matching it requires its `fill()` renderer here too.
+    const first = internal.renderLiveDrawPreview(surface);
+    expect(first.incremental).toBe(false);
     expect(surface.draftContext.fill).toHaveBeenCalled();
     expect(surface.draftContext.stroke).not.toHaveBeenCalled();
+
+    const draftContext = surface.draftContext as unknown as {
+      clearRect: { mock: { calls: unknown[] } };
+      fill: { mock: { calls: unknown[] } };
+    };
+    const clearsAfterFirst = draftContext.clearRect.mock.calls.length;
+    const fillsAfterFirst = draftContext.fill.mock.calls.length;
+    surface.builder?.add({ x: 110, y: 130, pressure: 0.5, time: 2 });
+    surface.builder?.add({ x: 120, y: 140, pressure: 0.5, time: 3 });
+    const second = internal.renderLiveDrawPreview(surface);
+    expect(second.incremental).toBe(true);
+    expect(second.draftPoints).toBeGreaterThan(first.draftPoints);
+    // Incremental frames must not wipe the whole draft backing.
+    expect(draftContext.clearRect.mock.calls.length).toBe(clearsAfterFirst);
+    expect(draftContext.fill.mock.calls.length).toBeGreaterThan(fillsAfterFirst);
+
     await session.destroy();
   });
 
