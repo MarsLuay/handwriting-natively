@@ -388,7 +388,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
     const calibration = { ...this.host.inkSettings.pressureCalibration };
     const syncControls: Array<() => void> = [];
     const fields = [
-      ["Start pressure", "Keeps the beginning of a light pen stroke visible.", "initialFloor", 0, 0.3, 0.01, (value: number) => `${Math.round(value * 100)}%`],
+      ["Start pressure", "Keeps the first ~1× brush length of a light pen stroke visible.", "initialFloor", 0, 0.3, 0.01, (value: number) => `${Math.round(value * 100)}%`],
       ["Response", "Raises or lowers the pen-pressure response.", "gain", 0.4, 2, 0.05, (value: number) => `${value.toFixed(2)}×`],
       ["Smoothing", "Higher values remove small pressure flicker.", "smoothing", 0, 1, 0.01, (value: number) => `${Math.round(value * 100)}%`]
     ] as const;

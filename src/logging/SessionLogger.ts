@@ -56,6 +56,8 @@ export interface ZoomRepaintLog {
   canvasesResized: number;
   strokesRedrawn: number;
   skippedDisconnected: number;
+  skippedCulled?: number;
+  skippedBlitOnly?: number;
   msSinceLastRepaint?: number | null;
   burstTicks?: number;
   burstDurationMs?: number;
@@ -262,14 +264,22 @@ export class SessionLogger {
   }
 
   /** Slow live input frames are actionable; normal frames remain silent. */
-  inputPaint(page: number, durationMs: number, kind: "draw" | "edit", sampleCount: number): void {
+  inputPaint(
+    page: number,
+    durationMs: number,
+    kind: "draw" | "edit",
+    sampleCount: number,
+    details: { draftPoints?: number; incremental?: boolean } = {}
+  ): void {
     if (!this.isEnabled() || durationMs < 8) return;
     this.emit(durationMs >= 16 ? "warn" : "info", "ink input paint", {
       document: this.documentPath,
       page,
       kind,
       durationMs: round(durationMs),
-      sampleCount
+      sampleCount,
+      ...(details.draftPoints !== undefined ? { draftPoints: details.draftPoints } : {}),
+      ...(details.incremental !== undefined ? { incremental: details.incremental } : {})
     });
   }
 
@@ -386,7 +396,7 @@ export class SessionLogger {
 
   /** A finger route must either finish or leave a terminal breadcrumb. */
   touchInput(
-    phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block",
+    phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block" | "pen-state" | "touchend" | "touchcancel" | "axis-lock",
     details: Record<string, unknown> = {}
   ): void {
     this.emit("info", "touch input", {
@@ -577,7 +587,14 @@ export class SessionLogger {
 
   /** Tracks the compositor handoff around a zoom-settle repaint. */
   zoomComposite(
-    phase: "begin" | "settle-paint" | "native-content" | "release-scheduled" | "final-canonical" | "release",
+    phase:
+      | "begin"
+      | "settle-paint"
+      | "settle-deferred"
+      | "native-content"
+      | "release-scheduled"
+      | "final-canonical"
+      | "release",
     details: Record<string, unknown> = {}
   ): void {
     this.emit("info", "ink zoom composite", {

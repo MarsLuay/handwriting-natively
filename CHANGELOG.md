@@ -1,3 +1,21 @@
+## 0.1.46 — 2026-08-01
+
+- Defer zoom settle while a live stroke/edit is active (`settle-deferred`); keep CSS compositing and do not clear the draft or force-rebind routers mid-drag.
+- Zoom settle: strict viewport cull (root intersection only) so off-screen pages skip HQ stamp/resize; `viewportCullPending` + idle prefetch after handoff. Log `skippedCulled` / fix `pagesRepainted` to count real paints only.
+- Zoom settle blit-only when backing size + `backingScale` unchanged and ink layer is canonical (not burst-captured). Log `skippedBlitOnly`.
+- Live freehand draft paints incrementally (new segments only). Stops long strokes from clearing+re-stamping the full path on a huge draft canvas every frame (~10ms→45ms climb in logs).
+- Coalesce zoom settle: wait ~560ms after the last scale tick before HQ ink resize/redraw (was 120ms). Stops stepped trackpad/wheel zoom paying repeated 300–800ms full paints mid-gesture.
+- Clear Pencil contact on document pointerup/cancel/lostpointercapture, lost capture, stale-touch reconcile, and inactivity timeout (Ink finger-blocker pattern). Stops touch-while-pen locking fingers after tip lift.
+- Document `touchend`/`touchcancel` as gesture-end (Touch Events ignore pointer capture): clear finger bookkeeping; unlock only stale pens after the grace window.
+- Draw-mode single-finger axis lock after 4px (Ink): vertical claims PDF scroll; horizontal leaves native; second finger aborts for pinch.
+- Skip Pencil move samples with pressure ≤ 0.01 (Ink `PEN_HOVER_PRESSURE_EPSILON`) to avoid hover dots / zero-pressure glitches; pointerdown/up still kept.
+- Disable coalesced pointer intermediates by default (Ink): one sample per `pointermove` to avoid positional jitter → xor-fill notches; flag to re-enable later with path smoothing.
+- Early-stroke pressure floor 0.15 for ~1× brush length (Ink `PEN_MIN_START_PRESSURE`); settings Start pressure still controls the floor value.
+- Pull-to-add: do not track mouse/pen pointers while Draw is on (finger pull unchanged). Stops rubber-band / new-page cue stealing ink strokes at the bottom edge.
+- Raise ink canvas backing budget (2048 → 4096 edge) so moderate zoom stays sharp instead of CSS-stretching a soft bitmap.
+- Raise desktop ink backing further (8192 edge / ~50MP, mobile stays 4096); disable bitmap smoothing on ink blits so zoomed strokes stay solid.
+- Touch-action modes on the PDF page shell: `touch-none` while tip down, `touch-pan-xy` while Draw is on and tip is up, default when Draw is off (replaces binary `pen-capturing`).
+
 # Changelog
 
 ## 0.1.45 — 2026-08-01

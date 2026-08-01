@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { isStylusEraserInput, PointerRouter } from "../src/input/PointerRouter";
+import { PalmRejectionPolicy } from "../src/input/PalmRejectionPolicy";
 import type { ToolId } from "../src/model";
 
 function pointer(type: string, pointerId: number, extra: Record<string, unknown> = {}): PointerEvent {
@@ -21,6 +22,27 @@ async function nextAnimationFrame(): Promise<void> {
 }
 
 describe("PointerRouter", () => {
+  it("uses touch-pan-xy in Draw mode until a stylus tip goes down", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true
+    });
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    element.dispatchEvent(pointer("pen", 90, { pressure: 0.5 }));
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
+    router.destroy();
+    element.remove();
+  });
+
   it("preserves native touch/mouse defaults and captures only routed ink", () => {
     const element = document.createElement("div");
     document.body.append(element);
@@ -106,7 +128,7 @@ describe("PointerRouter", () => {
     expect(routes.at(-1)).toBe("touch-pan");
     expect(finger.defaultPrevented).toBe(false);
     expect(starts).not.toHaveBeenCalled();
-    expect(element.classList.contains("native-pdf-handwriting-pen-capturing")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
 
     element.dispatchEvent(pointer("touch", 21, { type: "pointerup" }));
     router.destroy();
@@ -133,7 +155,8 @@ describe("PointerRouter", () => {
     const stylus = pointer("pen", 50, { pressure: 0.7 });
     element.dispatchEvent(stylus);
     expect(routes.at(-1)).toBe("draw");
-    expect(element.classList.contains("native-pdf-handwriting-pen-capturing")).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
 
     const palm = pointer("touch", 51, { width: 64, height: 64, pressure: 0.6 });
     element.dispatchEvent(palm);
@@ -161,7 +184,8 @@ describe("PointerRouter", () => {
     );
 
     element.dispatchEvent(pointer("pen", 50, { eventType: "pointerup", pressure: 0 }));
-    expect(element.classList.contains("native-pdf-handwriting-pen-capturing")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
 
     const fingerScroll = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
     Object.defineProperty(fingerScroll, "touches", { value: [{ identifier: 99 }] });
@@ -169,6 +193,305 @@ describe("PointerRouter", () => {
     element.dispatchEvent(fingerScroll);
     expect(fingerScroll.defaultPrevented).toBe(false);
 
+    router.destroy();
+    element.remove();
+  });
+
+  it("clears stale pen lock via document pointerup when page capture never ends the tip", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const ends = vi.fn();
+    const lifecycle = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onEnd: ends,
+      onTouchLifecycle: lifecycle
+    });
+
+    element.dispatchEvent(pointer("pen", 61, { pressure: 0.7 }));
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+
+    // Simulate WebKit omitting the page listener: only document sees the terminal event.
+    document.dispatchEvent(pointer("pen", 61, { eventType: "pointerup", pressure: 0, buttons: 0 }));
+    expect(ends).toHaveBeenCalledTimes(1);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    expect(lifecycle).toHaveBeenCalledWith(
+      "pen-state",
+      expect.anything(),
+      expect.objectContaining({ reason: "pointerup", activePens: false })
+    );
+
+    const fingerScroll = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
+    Object.defineProperty(fingerScroll, "touches", { value: [{ identifier: 100 }] });
+    Object.defineProperty(fingerScroll, "changedTouches", { value: [{ identifier: 100 }] });
+    element.dispatchEvent(fingerScroll);
+    expect(fingerScroll.defaultPrevented).toBe(false);
+
+    router.destroy();
+    element.remove();
+  });
+
+  it("locks Draw-mode single-finger vertical pans to the PDF scroll root", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const scrollRoot = document.createElement("div");
+    Object.defineProperty(scrollRoot, "scrollTop", { value: 40, writable: true });
+    Object.defineProperty(scrollRoot, "scrollHeight", { value: 400 });
+    Object.defineProperty(scrollRoot, "clientHeight", { value: 100 });
+    const lifecycle = vi.fn();
+    const pans = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      scrollRoot: () => scrollRoot,
+      onTouchLifecycle: lifecycle,
+      onMousePan: pans
+    });
+
+    element.dispatchEvent(pointer("touch", 120, { clientX: 10, clientY: 20 }));
+    element.dispatchEvent(pointer("touch", 120, {
+      eventType: "pointermove",
+      clientX: 10,
+      clientY: 28,
+      buttons: 1
+    }));
+    expect(lifecycle).toHaveBeenCalledWith(
+      "axis-lock",
+      expect.any(Event),
+      expect.objectContaining({ reason: "lock-vertical", axisLock: "vertical" })
+    );
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    expect(pans).toHaveBeenCalledWith(
+      "move",
+      expect.any(Event),
+      expect.objectContaining({ reason: "touch-axis-vertical", deltaY: -8 })
+    );
+
+    router.destroy();
+    element.remove();
+  });
+
+  it("leaves horizontal single-finger Draw pans to native and aborts on second finger", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const scrollRoot = document.createElement("div");
+    Object.defineProperty(scrollRoot, "scrollTop", { value: 0, writable: true });
+    const lifecycle = vi.fn();
+    const pans = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      scrollRoot: () => scrollRoot,
+      onTouchLifecycle: lifecycle,
+      onMousePan: pans
+    });
+
+    element.dispatchEvent(pointer("touch", 121, { clientX: 10, clientY: 20 }));
+    const horizontal = pointer("touch", 121, {
+      eventType: "pointermove",
+      clientX: 22,
+      clientY: 21,
+      buttons: 1
+    });
+    element.dispatchEvent(horizontal);
+    expect(lifecycle).toHaveBeenCalledWith(
+      "axis-lock",
+      expect.any(Event),
+      expect.objectContaining({ reason: "lock-horizontal", axisLock: "horizontal" })
+    );
+    expect(horizontal.defaultPrevented).toBe(false);
+    expect(pans).not.toHaveBeenCalled();
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+
+    element.dispatchEvent(pointer("touch", 122, { isPrimary: false, clientX: 40, clientY: 40 }));
+    expect(lifecycle).toHaveBeenCalledWith(
+      "axis-lock",
+      expect.any(Event),
+      expect.objectContaining({ reason: "clear:multi-finger", axisLock: "none" })
+    );
+
+    router.destroy();
+    element.remove();
+  });
+
+  it("clears tracked fingers on document touchend when pointerup was stolen by capture", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const routes: string[] = [];
+    const lifecycle = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onRoute: (route) => routes.push(route),
+      onTouchLifecycle: lifecycle
+    });
+
+    element.dispatchEvent(pointer("touch", 80));
+    expect(routes.at(-1)).toBe("touch-pan");
+    element.dispatchEvent(pointer("touch", 81, { isPrimary: false }));
+    expect(routes.at(-1)).toBe("touch-zoom-pan");
+
+    const touchEnd = new Event("touchend", { bubbles: true, cancelable: true }) as TouchEvent;
+    Object.defineProperty(touchEnd, "touches", { value: [] });
+    Object.defineProperty(touchEnd, "changedTouches", {
+      value: [{ identifier: 80 }, { identifier: 81 }]
+    });
+    document.dispatchEvent(touchEnd);
+
+    expect(lifecycle).toHaveBeenCalledWith(
+      "touchend",
+      touchEnd,
+      expect.objectContaining({
+        reason: "touchend-all-clear",
+        trackedBefore: 2,
+        trackedAfter: 0,
+        touchCount: 0,
+        stalePenCleared: false
+      })
+    );
+
+    element.dispatchEvent(pointer("touch", 82));
+    expect(routes.at(-1)).toBe("touch-pan");
+
+    router.destroy();
+    element.remove();
+  });
+
+  it("clears stale pen via document touchend after grace, not within grace", () => {
+    let now = 0;
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const palm = new PalmRejectionPolicy({
+      now: () => now,
+      setTimeout: () => 1,
+      clearTimeout: () => undefined,
+      stalePenTouchMs: 150,
+      penInactivityMs: 10_000
+    });
+    const lifecycle = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onTouchLifecycle: lifecycle
+    }, palm);
+
+    element.dispatchEvent(pointer("pen", 91, { pressure: 0.7 }));
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+
+    now = 4;
+    const earlyEnd = new Event("touchend", { bubbles: true, cancelable: true }) as TouchEvent;
+    Object.defineProperty(earlyEnd, "touches", { value: [] });
+    Object.defineProperty(earlyEnd, "changedTouches", { value: [{ identifier: 500 }] });
+    document.dispatchEvent(earlyEnd);
+    expect(palm.hasActivePen()).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    expect(lifecycle).toHaveBeenCalledWith(
+      "touchend",
+      earlyEnd,
+      expect.objectContaining({ reason: "touchend-all-clear", stalePenCleared: false, activePens: true })
+    );
+
+    now = 200;
+    const lateCancel = new Event("touchcancel", { bubbles: true, cancelable: true }) as TouchEvent;
+    Object.defineProperty(lateCancel, "touches", { value: [] });
+    Object.defineProperty(lateCancel, "changedTouches", { value: [{ identifier: 501 }] });
+    document.dispatchEvent(lateCancel);
+    expect(palm.hasActivePen()).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    expect(lifecycle).toHaveBeenCalledWith(
+      "touchcancel",
+      lateCancel,
+      expect.objectContaining({
+        reason: "touchcancel-all-clear",
+        stalePenCleared: true,
+        activePens: false
+      })
+    );
+    expect(lifecycle).toHaveBeenCalledWith(
+      "pen-state",
+      expect.anything(),
+      expect.objectContaining({ reason: "touch-after-stale-pen", activePens: false })
+    );
+
+    router.destroy();
+    element.remove();
+  });
+
+  it("clears pen lock on lostpointercapture", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true
+    });
+    element.dispatchEvent(pointer("pen", 71, { pressure: 0.7 }));
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    element.dispatchEvent(pointer("pen", 71, { eventType: "lostpointercapture", pressure: 0, buttons: 0 }));
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    router.destroy();
+    element.remove();
+  });
+
+  it("reconciles stale pen before blocking a later finger touchstart", () => {
+    let now = 0;
+    const policy = new PalmRejectionPolicy({
+      now: () => now,
+      setTimeout: () => 1,
+      clearTimeout: () => undefined,
+      stalePenTouchMs: 150,
+      penInactivityMs: 10_000
+    });
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true
+    }, policy);
+    element.dispatchEvent(pointer("pen", 81, { pressure: 0.7 }));
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    now = 200;
+    const fingerScroll = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
+    Object.defineProperty(fingerScroll, "touches", { value: [{ identifier: 101 }] });
+    Object.defineProperty(fingerScroll, "changedTouches", { value: [{ identifier: 101 }] });
+    element.dispatchEvent(fingerScroll);
+    expect(fingerScroll.defaultPrevented).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
     router.destroy();
     element.remove();
   });
@@ -342,7 +665,7 @@ describe("PointerRouter", () => {
     expect(isStylusEraserInput({ pointerType: "mouse", button: 5, buttons: 32 })).toBe(false);
   });
 
-  it("delivers coalesced samples", () => {
+  it("uses one sample per pointermove when coalesced is off", () => {
     const element = document.createElement("div");
     Object.assign(element, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
     const onMove = vi.fn();
@@ -350,9 +673,40 @@ describe("PointerRouter", () => {
     element.dispatchEvent(pointer("pen", 4));
     const a = pointer("pen", 4, { pressure: 0.2 });
     const b = pointer("pen", 4, { pressure: 0.9 });
-    const move = pointer("pen", 4, { eventType: "pointermove", getCoalescedEvents: () => [a, b] });
+    const move = pointer("pen", 4, { eventType: "pointermove", pressure: 0.9, getCoalescedEvents: () => [a, b] });
     element.dispatchEvent(move);
-    expect(onMove.mock.calls[0]?.[0].map((sample: { pressure: number }) => sample.pressure)).toEqual([0.2, 0.9]);
+    // Coalesced intermediates are off by default (xor-fill / positional jitter).
+    expect(onMove.mock.calls[0]?.[0].map((sample: { pressure: number }) => sample.pressure)).toEqual([0.9]);
+    router.destroy();
+  });
+
+  it("skips near-zero Pencil hover samples on move but keeps tip-up", () => {
+    const element = document.createElement("div");
+    Object.assign(element, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
+    const onMove = vi.fn();
+    const onEnd = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onMove,
+      onEnd
+    });
+    element.dispatchEvent(pointer("pen", 44, { pressure: 0.5 }));
+    element.dispatchEvent(pointer("pen", 44, {
+      eventType: "pointermove",
+      pressure: 0.005
+    }));
+    expect(onMove).not.toHaveBeenCalled();
+
+    element.dispatchEvent(pointer("pen", 44, {
+      eventType: "pointermove",
+      pressure: 0.55
+    }));
+    expect(onMove.mock.calls[0]?.[0].map((sample: { pressure: number }) => sample.pressure)).toEqual([0.55]);
+
+    element.dispatchEvent(pointer("pen", 44, { eventType: "pointerup", pressure: 0, buttons: 0 }));
+    expect(onEnd).toHaveBeenCalledOnce();
+    expect(onEnd.mock.calls[0]?.[0][0]).toMatchObject({ pressure: 0, pointerType: "pen" });
     router.destroy();
   });
 

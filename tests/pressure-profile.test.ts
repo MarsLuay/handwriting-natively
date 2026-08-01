@@ -1,16 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   PressureConditioner,
+  applyPenEarlyStrokePressureFloor,
   createPressureConditioner,
   pressureConditionerOptionsForCalibration,
   resolvePressureProfile,
+  PEN_MIN_START_PRESSURE,
   type PressureProfile
 } from "../src/input/PressureProfile";
 
 describe("pressure profiles", () => {
   it("maps the compact calibration controls to a safe responsive conditioner", () => {
-    const calibrated = pressureConditionerOptionsForCalibration({ initialFloor: 0.08, gain: 1.15, smoothing: 0.78 });
-    expect(calibrated.initialFloor).toBeCloseTo(0.08, 8);
+    const calibrated = pressureConditionerOptionsForCalibration({ initialFloor: 0.15, gain: 1.15, smoothing: 0.78 });
+    expect(calibrated.initialFloor).toBeCloseTo(0.15, 8);
     expect(calibrated.gain).toBeCloseTo(1.15, 8);
     expect(calibrated.stationaryEma).toBeCloseTo(0.22, 8);
     expect(calibrated.movingEma).toBeCloseTo(0.805, 8);
@@ -30,14 +32,21 @@ describe("pressure profiles", () => {
     expect(resolvePressureProfile("mouse", "pen")).toBe("mouse");
   });
 
-  it("starts a light pen stroke visibly without pinning later light samples to that floor", () => {
-    const conditioner = new PressureConditioner("pen");
+  it("applies Ink early-stroke floor for ~1× brush length then allows taper", () => {
+    expect(applyPenEarlyStrokePressureFloor(0.02, 0, 2)).toBe(PEN_MIN_START_PRESSURE);
+    expect(applyPenEarlyStrokePressureFloor(0.02, 1.9, 2)).toBe(PEN_MIN_START_PRESSURE);
+    expect(applyPenEarlyStrokePressureFloor(0.02, 2, 2)).toBe(0.02);
+    expect(PEN_MIN_START_PRESSURE).toBe(0.15);
+
+    const conditioner = new PressureConditioner("pen", { strokeSize: 2 });
     const initial = conditioner.condition({ pointerType: "pen", pressure: 0, distance: 0 });
-    const later = conditioner.condition({ pointerType: "pen", pressure: 0, distance: 4 });
+    const stillEarly = conditioner.condition({ pointerType: "pen", pressure: 0, distance: 1 });
+    const later = conditioner.condition({ pointerType: "pen", pressure: 0, distance: 2 });
     const heavier = conditioner.condition({ pointerType: "pen", pressure: 0.7, distance: 8 });
 
-    expect(initial).toBeCloseTo(0.08, 8);
-    expect(later).toBeLessThan(initial);
+    expect(initial).toBeCloseTo(0.15, 8);
+    expect(stillEarly).toBeCloseTo(0.15, 8);
+    expect(later).toBeLessThan(stillEarly);
     expect(later).toBeGreaterThanOrEqual(0);
     expect(heavier).toBeGreaterThan(later);
   });
@@ -89,7 +98,7 @@ describe("pressure profiles", () => {
     expect(pen).toBe(1);
     expect(mouseLight).toBe(0.5);
     expect(mouseHeavy).toBe(0.5);
-    expect(restartedPen).toBeCloseTo(0.08, 8);
+    expect(restartedPen).toBeCloseTo(0.15, 8);
   });
 
   it("clamps malformed values and is deterministic", () => {
