@@ -900,10 +900,12 @@ describe("viewer runtime tracer", () => {
 
   it("uses the committed pen renderer for the live draft", async () => {
     const adapter = new FakeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.pen.stabilization = "off";
     const session = await ViewerInkSession.create({
       adapter,
       pdfPath: "Notes/example.pdf",
-      settings: structuredClone(DEFAULT_SETTINGS),
+      settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
       saveSettings: async () => undefined,
@@ -925,13 +927,14 @@ describe("viewer runtime tracer", () => {
         draftContext: CanvasRenderingContext2D;
         draftCanvas: HTMLCanvasElement;
         liveDrawPaintedPoints: number;
-      }): { draftPoints: number; incremental: boolean };
+      }): { draftPoints: number; incremental: boolean; stabilization: string };
     };
     const surface = internal.surfaces.get(1)!;
     vi.clearAllMocks();
 
     const first = internal.renderLiveDrawPreview(surface);
     expect(first.incremental).toBe(false);
+    expect(first.stabilization).toBe("off");
     expect(surface.draftContext.fill).toHaveBeenCalled();
     expect(surface.draftContext.stroke).not.toHaveBeenCalled();
 
@@ -949,6 +952,51 @@ describe("viewer runtime tracer", () => {
     // Incremental frames must not wipe the whole draft backing.
     expect(draftContext.clearRect.mock.calls.length).toBe(clearsAfterFirst);
     expect(draftContext.fill.mock.calls.length).toBeGreaterThan(fillsAfterFirst);
+
+    await session.destroy();
+  });
+
+  it("keeps incremental live draft under medium stabilization (causal preview)", async () => {
+    const adapter = new FakeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.pen.stabilization = "medium";
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    const internal = session as unknown as {
+      surfaces: Map<number, {
+        draftContext: CanvasRenderingContext2D;
+        builder?: { add(point: { x: number; y: number; pressure: number; time: number }): void };
+      }>;
+      renderLiveDrawPreview(surface: {
+        draftContext: CanvasRenderingContext2D;
+      }): { draftPoints: number; incremental: boolean; stabilization: string };
+    };
+    const surface = internal.surfaces.get(1)!;
+    vi.clearAllMocks();
+
+    internal.renderLiveDrawPreview(surface);
+    const draftContext = surface.draftContext as unknown as {
+      clearRect: { mock: { calls: unknown[] } };
+    };
+    const clearsAfterFirst = draftContext.clearRect.mock.calls.length;
+    surface.builder?.add({ x: 110, y: 130, pressure: 0.5, time: 2 });
+    surface.builder?.add({ x: 120, y: 140, pressure: 0.5, time: 3 });
+    const second = internal.renderLiveDrawPreview(surface);
+    expect(second.stabilization).toBe("medium");
+    expect(second.incremental).toBe(true);
+    expect(draftContext.clearRect.mock.calls.length).toBe(clearsAfterFirst);
 
     await session.destroy();
   });

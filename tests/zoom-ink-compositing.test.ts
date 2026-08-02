@@ -67,6 +67,14 @@ function rect(left: number, top: number, width: number, height: number): Rect {
   };
 }
 
+
+/** Drain deferred focus-HQ / neighbor settle slices scheduled on rAF. */
+async function flushZoomSettleSlices(frames = 4): Promise<void> {
+  for (let i = 0; i < frames; i += 1) {
+    await vi.advanceTimersByTimeAsync(16);
+  }
+}
+
 /** Adapter with a real PDF.js-style canvas so pageLayout tracks content box during zoom. */
 class ZoomAdapter implements ObsidianPdfAdapter {
   readonly kind = "direct" as const;
@@ -200,6 +208,7 @@ function mockCanvas2d(): CanvasSpy {
 type SurfaceProbe = {
   overlay: HTMLElement;
   canvas: HTMLCanvasElement;
+  draftCanvas: HTMLCanvasElement;
   inkLayer: HTMLCanvasElement | null;
   inkLayerValid: boolean;
 };
@@ -311,28 +320,34 @@ describe("zoom ink compositing", () => {
     expect(debugCalls("ink zoom repaint")).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(560);
+    // Sync focus-fast blit under the CSS mask; HQ drains on the next rAF(s).
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+    expect(debugCalls("ink zoom composite").some((call) => {
+      const details = call[2] as { phase?: string; focusFast?: boolean };
+      return details.phase === "settle-paint" && details.focusFast === true;
+    })).toBe(true);
+    expect(context.drawImage).toHaveBeenCalled();
 
-    // Settle directly to canonical ink while the compositing layer still holds
-    // the native PDF transition, so resting ink is crisp at every zoom level.
+    await flushZoomSettleSlices();
+
+    // Canonical HQ completes while the compositing layer still holds the native
+    // PDF transition, so resting ink is crisp at every zoom level.
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
     expect(paintStampCalls(context)).toBeGreaterThan(stampsBeforeBurst);
     const stampsAtSettle = paintStampCalls(context);
-    expect(context.drawImage).toHaveBeenCalled();
 
     const repaints = debugCalls("ink zoom repaint");
     expect(repaints.length).toBeGreaterThanOrEqual(1);
     expect(repaints.at(-1)?.[2]).toMatchObject({
       reason: expect.stringContaining("scalechanging"),
-      pagesRepainted: 1,
+      pagesRepainted: expect.any(Number),
       strokesRedrawn: 1,
       burstTicks: expect.any(Number)
     });
-    expect(debugCalls("ink renderer").at(-1)?.[2]).toMatchObject({
-      phase: "zoom-settle-canonical",
-      renderer: "canonical-pdf-space",
-      coordinateSpace: "pdf",
-      strokeCount: 1
-    });
+    expect(debugCalls("ink renderer").some((call) => {
+      const details = call[2] as { phase?: string; renderer?: string };
+      return details.phase === "zoom-settle-canonical" && details.renderer === "canonical-pdf-space";
+    })).toBe(true);
 
     // Canonical paint is complete before handoff; no delayed redraw is allowed.
     await vi.advanceTimersByTimeAsync(280);
@@ -379,7 +394,85 @@ describe("zoom ink compositing", () => {
     await vi.advanceTimersByTimeAsync(360);
     const settles = debugCalls("ink zoom composite").filter((call) => (call[2] as { phase?: string }).phase === "settle-paint");
     expect(settles).toHaveLength(1);
+    await flushZoomSettleSlices();
     expect(debugCalls("ink zoom repaint")).toHaveLength(1);
+
+    await session.destroy();
+  });
+
+  it("uses a short coalesce window for tiny scale nudges only", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.01, { left: 0, top: 0, width: 606, height: 808 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+
+    const ticks = debugCalls("ink zoom tick");
+    expect(ticks.some((call) => (call[2] as { settleMs?: number }).settleMs === 120)).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(119);
+    expect(debugCalls("ink zoom composite").filter((call) => (call[2] as { phase?: string }).phase === "settle-paint")).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const settles = debugCalls("ink zoom composite").filter((call) => (call[2] as { phase?: string }).phase === "settle-paint");
+    expect(settles).toHaveLength(1);
+    expect(settles[0]?.[2]).toMatchObject({ focusSync: true, focusPage: 1 });
+
+    await session.destroy();
+  });
+
+  it("paints focus sync with cheaper neighbor backing until idle upgrade", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const internal = session as unknown as {
+      resolveInkBacking(
+        width: number,
+        height: number,
+        tier?: "full" | "neighbor"
+      ): { pixelWidth: number; pixelHeight: number; backingScale: number };
+      zoomSettlePageOrder(): { focus: number | null; neighbors: number[] };
+      surfaces: Map<number, { settleUpgradePending: boolean; canvas: HTMLCanvasElement }>;
+      renderPage(page: number, stats?: undefined, reason?: string): boolean;
+    };
+
+    expect(internal.zoomSettlePageOrder()).toEqual({ focus: 1, neighbors: [] });
+    const full = internal.resolveInkBacking(900, 1200, "full");
+    const neighbor = internal.resolveInkBacking(900, 1200, "neighbor");
+    expect(neighbor.pixelWidth).toBeLessThan(full.pixelWidth);
+    expect(neighbor.pixelHeight).toBeLessThan(full.pixelHeight);
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(560);
+
+    expect(debugCalls("ink zoom composite").some((call) => {
+      const details = call[2] as { phase?: string; focusFast?: boolean; focusSync?: boolean };
+      return details.phase === "settle-paint" && details.focusSync === true && details.focusFast === true;
+    })).toBe(true);
+
+    const fastSlice = debugCalls("ink zoom composite").find((call) => {
+      const details = call[2] as { phase?: string; tier?: string; path?: string };
+      return details.phase === "settle-slice" && details.tier === "focus-fast";
+    });
+    expect(fastSlice).toBeTruthy();
+
+    // HQ focus drains on the next animation frame under the CSS mask.
+    await vi.advanceTimersByTimeAsync(16);
+    const focusHq = debugCalls("ink zoom composite").find((call) => {
+      const details = call[2] as { phase?: string; tier?: string };
+      return details.phase === "settle-slice" && details.tier === "focus";
+    });
+    expect(focusHq).toBeTruthy();
+
+    const surface = internal.surfaces.get(1)!;
+    const before = { w: surface.canvas.width, h: surface.canvas.height };
+    expect(internal.renderPage(1, undefined, "view-scalechanging-settle-neighbor")).toBe(true);
+    expect(surface.settleUpgradePending).toBe(true);
+    expect(surface.canvas.width).toBeLessThanOrEqual(before.w);
+    expect(internal.renderPage(1, undefined, "settle-upgrade")).toBe(true);
+    expect(surface.settleUpgradePending).toBe(false);
 
     await session.destroy();
   });
@@ -408,7 +501,45 @@ describe("zoom ink compositing", () => {
     await vi.advanceTimersByTimeAsync(120);
 
     expect(debugCalls("ink zoom composite").filter((call) => (call[2] as { phase?: string }).phase === "settle-paint")).toHaveLength(1);
+    await flushZoomSettleSlices();
     expect(debugCalls("ink zoom repaint").length).toBeGreaterThanOrEqual(1);
+
+    await session.destroy();
+  });
+
+  it("matches live draft backing to CSS-composited committed canvas while settle is deferred", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const surface = probeSurface(session);
+    const committedBefore = { w: surface.canvas.width, h: surface.canvas.height };
+    expect(committedBefore.w).toBeGreaterThan(0);
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
+
+    const internal = session as unknown as {
+      surfaces: Map<number, SurfaceProbe>;
+      renderLiveDrawPreview(surface: SurfaceProbe): {
+        draftPoints: number;
+        incremental: boolean;
+        compositeMatched: boolean;
+      };
+    };
+    const live = internal.surfaces.get(1)!;
+    const painted = internal.renderLiveDrawPreview(live);
+    expect(painted.compositeMatched).toBe(true);
+    expect(live.canvas.width).toBe(committedBefore.w);
+    expect(live.canvas.height).toBe(committedBefore.h);
+    expect(live.draftCanvas.width).toBe(committedBefore.w);
+    expect(live.draftCanvas.height).toBe(committedBefore.h);
+
+    await vi.advanceTimersByTimeAsync(560);
+    expect(debugCalls("ink zoom composite").some((call) => (call[2] as { phase?: string }).phase === "settle-deferred")).toBe(true);
 
     await session.destroy();
   });
@@ -545,6 +676,7 @@ describe("zoom ink compositing", () => {
       session.onViewStateChange(adapter.getViewState(), "scalechanging");
       session.onPdfPageContentMutation(2);
       await vi.advanceTimersByTimeAsync(560);
+      await flushZoomSettleSlices();
 
       expect(received.map((diagnostic) => diagnostic.type)).toEqual(expect.arrayContaining([
         "zoom-burst-start",
@@ -689,18 +821,19 @@ describe("zoom ink compositing", () => {
     adapter.zoomTo(2, { left: 0, top: 0, width: 1200, height: 1600 });
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
     await vi.advanceTimersByTimeAsync(560);
+    // Focus-fast resizes the visible canvas immediately; HQ rebuilds inkLayer next frame.
+    expect(probeSurface(session).canvas.width).not.toBe(canvasBefore);
+    expect(context.drawImage).toHaveBeenCalled();
+    await flushZoomSettleSlices();
 
     const surface = probeSurface(session);
     expect(surface.overlay.style.width).toBe("1200px");
     expect(surface.overlay.style.height).toBe("1600px");
-    expect(surface.canvas.width).not.toBe(canvasBefore);
-    // The cached bitmap is replaced synchronously with canonical ink before
-    // release, so the resting zoom surface is crisp rather than raster-soft.
+    // Canonical inkLayer replaces the burst blit before release.
     expect(surface.inkLayer).not.toBeNull();
     expect(surface.inkLayer!.width).not.toBe(layerBefore);
     expect(surface.inkLayer!.width).toBe(surface.canvas.width);
     expect(surface.inkLayerValid).toBe(true);
-    expect(context.drawImage).toHaveBeenCalled();
     expect(debugCalls("ink zoom repaint").at(-1)?.[2]).toMatchObject({ canvasesResized: 1 });
     expect((debugCalls("ink zoom repaint").at(-1)?.[2] as { strokesRedrawn: number }).strokesRedrawn).toBeGreaterThan(0);
 

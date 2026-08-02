@@ -1,3 +1,33 @@
+## 0.1.51 — 2026-08-01
+
+- Zoom settle focus: sync **blit-stretch** at full backing (no 58-stroke vector wall); defer focus HQ to the first settle rAF under the CSS mask, then cheap neighbors.
+- Skip draft-canvas warm alloc on cheap settle resizes; HQ warms draft when it runs.
+- Native remounts during deferred HQ stay layout-only (`handoffGuard` / settle-slice pending) — do not arm CSS release early.
+- `settle-slice` logs `path` (`blit-stretch` / `canonical-vector` / …) plus per-slice stroke/resize counts.
+
+## 0.1.50 — 2026-08-01
+
+- Zoom settle: paint the focused page HQ synchronously; defer neighbors under the CSS compositing mask (rAF cheap slices).
+- Neighbor settle uses lower backing + blit-stretch; `settleUpgradePending` upgrades to full HQ after handoff via idle viewport paint.
+- Shorter coalesce (120ms) only when burst scale delta is tiny (<0.02 abs and <1.5% relative); stepped trackpad bursts keep 560ms. Logs `settleMs`, `focusSync`, `tier`.
+
+## 0.1.49 — 2026-08-01
+
+- Causal stroke stabilization for live preview: prior smoothed points never move, so incremental draft stamps work with medium/high stab (no fast-draw spikes, no full-canvas redraw every frame).
+- Warm draft canvas when committed canvas resizes; skip redundant `clearRect` after draft alloc (stroke-start hitch on ~45MP backings).
+- Zoom settle paints one page per animation frame (largest visible first); hold CSS compositing until the queue finishes. Logs `settle-slice` + `sliced` on repaint/spike.
+- Skip discarded bitmap snapshot on canonical zoom settle resize (was alloc+copy then thrown away).
+
+## 0.1.48 — 2026-08-01
+
+- Live freehand draft: skip incremental stamps when stabilization is on (`low`/`medium`/`high`). `stabilizePoints` moves earlier preview coords each frame; tail-only stamps left stale spikes on fast strokes. Full clear+redraw while stabilized; incremental kept for `off`. Log `stabilization` on `ink input paint`.
+
+## 0.1.47 — 2026-08-01
+
+- While zoom CSS compositing is held (including live-ink `settle-deferred`), paint the live draft into the committed canvas backing so tip ink and soft committed ink share one CSS stretch (fixes residual mid-drag dual-scale glitch).
+- Clear the live draft only after committed paint finishes — keeps tip ink visible through settle resize/restamp (no blank flash between tip-up and settle-paint).
+- Log `compositeMatched` on `ink input paint` when draft matches the composited backing.
+
 ## 0.1.46 — 2026-08-01
 
 - Defer zoom settle while a live stroke/edit is active (`settle-deferred`); keep CSS compositing and do not clear the draft or force-rebind routers mid-drag.

@@ -155,6 +155,8 @@ interface PageSurface {
   inkLayerBurstCapture: boolean;
   /** Off-viewport page skipped a canonical paint and must redraw before display. */
   viewportCullPending: boolean;
+  /** Neighbor zoom settle used blit-stretch / lower backing; needs idle HQ upgrade. */
+  settleUpgradePending: boolean;
   router: PointerRouter | null;
   livePaintFrame: number | null;
   pendingLivePaint: { kind: "draw" | "edit"; syncText: boolean; sampleCount: number; event?: PointerEvent } | null;
@@ -296,6 +298,8 @@ export class ViewerInkSession {
   private zoomTickCount = 0;
   private zoomBurstScaleStart: number | null = null;
   private zoomBurstScaleEnd: number | null = null;
+  /** Last observed PDF.js scale — burst baseline for single-tick delta coalesce. */
+  private lastKnownViewScale: number | null = null;
   private zoomBurstReason = "view-scalechanging";
   /** Delayed release avoids exposing an ink redraw before PDF.js finishes its own render. */
   private zoomCompositeReleaseFrame: number | null = null;
@@ -319,12 +323,37 @@ export class ViewerInkSession {
   private static readonly MAX_LASER_DRAFT_POINTS = 1024;
   private lastZoomSignalAt = 0;
   private zoomCompositing = false;
+  /** Visible pages still needing settle paint (one page per rAF). */
+  private zoomSettleQueue: Array<{ page: number; tier: "focus" | "neighbor" }> = [];
+  private zoomSettleSliceFrame: number | null = null;
+  private zoomSettleSliceStartedAt = 0;
+  private zoomSettleBurst: {
+    reason: string;
+    burstTicks: number;
+    burstDurationMs: number;
+    scaleStart?: number;
+    scaleEnd?: number;
+  } | null = null;
+  private zoomSettleStats = {
+    pagesRepainted: 0,
+    canvasesResized: 0,
+    strokesRedrawn: 0,
+    skippedDisconnected: 0,
+    skippedCulled: 0,
+    skippedBlitOnly: 0
+  };
   /**
    * Quiet ms after last scale tick before HQ settle paint (resize + stroke redraw).
    * Live stepped trackpad/wheel left ~500ms gaps between micro-bursts; 120ms settled
    * mid-gesture and paid 300–800ms full paints repeatedly (canvasesResized×pages).
    */
   private static readonly ZOOM_SETTLE_MS = 560;
+  /** Tiny pinch/nudge only — still above the old mid-gesture thrash floor. */
+  private static readonly ZOOM_SETTLE_TINY_MS = 120;
+  /** Absolute PDF.js scale delta treated as a micro-nudge (below ~one wheel notch). */
+  private static readonly ZOOM_SETTLE_TINY_SCALE_DELTA = 0.02;
+  /** Relative scale delta gate paired with {@link ZOOM_SETTLE_TINY_SCALE_DELTA}. */
+  private static readonly ZOOM_SETTLE_TINY_RELATIVE = 0.015;
   /** Must cover ZOOM_SETTLE_MS so gesture-active / handoff guards hold through coalesce. */
   private static readonly ZOOM_ACTIVE_MS = 600;
   /** Retry settle while a live stroke/edit is in progress (avoid wiping draft mid-drag). */
@@ -680,7 +709,7 @@ export class ViewerInkSession {
   }
 
 
-  /** Paint pages deferred by viewport culling once they approach the PDF viewport. */
+  /** Paint pages deferred by viewport culling / cheap neighbor settle once handoff ends. */
   private scheduleViewportPaint(): void {
     if (this.destroyed || this.viewportPaintFrame !== null || this.isZoomHandoffActive()) return;
     const view = this.options.adapter.host.ownerDocument.defaultView;
@@ -689,8 +718,12 @@ export class ViewerInkSession {
       this.viewportPaintFrame = null;
       if (this.destroyed || this.isZoomHandoffActive()) return;
       for (const surface of this.surfaces.values()) {
-        if (!surface.viewportCullPending || !this.surfaceNearViewport(surface)) continue;
-        this.renderPage(surface.page.pageNumber, undefined, "viewport-enter");
+        const needsUpgrade = surface.viewportCullPending || surface.settleUpgradePending;
+        if (!needsUpgrade || !this.surfaceNearViewport(surface)) continue;
+        const reason = surface.settleUpgradePending && !surface.viewportCullPending
+          ? "settle-upgrade"
+          : "viewport-enter";
+        this.renderPage(surface.page.pageNumber, undefined, reason);
       }
     });
   }
@@ -801,7 +834,8 @@ export class ViewerInkSession {
     if (!this.zoomBurstStartedAt || now - this.zoomBurstStartedAt > ViewerInkSession.ZOOM_ACTIVE_MS) {
       this.zoomBurstStartedAt = now;
       this.zoomTickCount = 0;
-      this.zoomBurstScaleStart = scale ?? null;
+      // Prefer pre-burst scale so a single large jump is not treated as delta=0.
+      this.zoomBurstScaleStart = this.lastKnownViewScale ?? scale ?? null;
       this.zoomTextLayoutLoggedPages.clear();
       this.zoomInkLayoutLoggedPhases.clear();
       this.zoomInkAnchorByPage.clear();
@@ -824,17 +858,43 @@ export class ViewerInkSession {
     if (scale !== undefined) {
       if (this.zoomBurstScaleStart === null) this.zoomBurstScaleStart = scale;
       this.zoomBurstScaleEnd = scale;
+      this.lastKnownViewScale = scale;
     }
+    const settleMs = this.zoomSettleCoalesceMs(scale);
     this.logger.zoomTick({
       reason,
       tick: this.zoomTickCount,
+      settleMs,
       ...(scale !== undefined ? { scale: Number(scale.toFixed(4)) } : {})
     });
     if (this.zoomSettleTimer !== null) window.clearTimeout(this.zoomSettleTimer);
     this.zoomSettleTimer = window.setTimeout(() => {
       this.zoomSettleTimer = null;
       this.runZoomSettlePaint();
-    }, ViewerInkSession.ZOOM_SETTLE_MS);
+    }, settleMs);
+  }
+
+  /**
+   * Long coalesce covers stepped trackpad gaps (~200–500ms). Tiny absolute+relative
+   * scale deltas use the short quiet window so micro-nudges feel instant.
+   * Baseline is the pre-burst scale (`zoomBurstScaleStart`), never the first tick
+   * alone (that would make every single-tick jump look like delta 0).
+   */
+  private zoomSettleCoalesceMs(scale?: number): number {
+    if (scale === undefined || this.zoomBurstScaleStart === null) {
+      return ViewerInkSession.ZOOM_SETTLE_MS;
+    }
+    const start = this.zoomBurstScaleStart;
+    const delta = Math.abs(scale - start);
+    const relative = delta / Math.max(Math.abs(start), 1e-6);
+    if (
+      delta > 1e-6
+      && delta < ViewerInkSession.ZOOM_SETTLE_TINY_SCALE_DELTA
+      && relative < ViewerInkSession.ZOOM_SETTLE_TINY_RELATIVE
+    ) {
+      return ViewerInkSession.ZOOM_SETTLE_TINY_MS;
+    }
+    return ViewerInkSession.ZOOM_SETTLE_MS;
   }
 
   /** True while freehand/laser draft or live eraser/lasso path owns the pointer. */
@@ -877,14 +937,48 @@ export class ViewerInkSession {
     this.zoomBurstScaleStart = null;
     this.zoomBurstScaleEnd = null;
     this.lastZoomSignalAt = 0;
+    this.cancelZoomSettleSlice();
     this.endZoomCompositing();
     this.zoomCompositeSettledAt = performance.now();
-    this.logger.zoomComposite("settle-paint", { pages: this.surfaces.size, burstTicks });
-    this.repaintSurfaces(this.zoomBurstReason, {
+    this.zoomSettleSliceStartedAt = this.zoomCompositeSettledAt;
+    this.zoomSettleBurst = {
+      reason: this.zoomBurstReason,
       burstTicks,
       burstDurationMs,
       ...(scaleStart !== null ? { scaleStart } : {}),
       ...(scaleEnd !== null ? { scaleEnd } : {})
+    };
+    this.zoomSettleStats = {
+      pagesRepainted: 0,
+      canvasesResized: 0,
+      strokesRedrawn: 0,
+      skippedDisconnected: 0,
+      skippedCulled: 0,
+      skippedBlitOnly: 0
+    };
+    const order = this.zoomSettlePageOrder();
+    // Sync: focus gets a cheap full-backing blit-stretch so geometry matches under the
+    // CSS mask without a 58-stroke vector wall. HQ focus + cheap neighbors drain on rAF.
+    this.zoomSettleQueue = [];
+    if (order.focus !== null) {
+      this.paintOneZoomSettlePage(order.focus, "focus-fast");
+      const focusSurface = this.surfaces.get(order.focus);
+      if (focusSurface?.settleUpgradePending) {
+        this.zoomSettleQueue.push({ page: order.focus, tier: "focus" });
+      }
+    }
+    for (const page of order.neighbors) {
+      this.zoomSettleQueue.push({ page, tier: "neighbor" });
+    }
+    this.logger.zoomComposite("settle-paint", {
+      pages: (order.focus !== null ? 1 : 0) + order.neighbors.length,
+      focusPage: order.focus,
+      neighborPages: order.neighbors.length,
+      focusHqQueued: this.zoomSettleQueue.some((item) => item.tier === "focus"),
+      burstTicks,
+      sliced: true,
+      focusSync: true,
+      focusFast: true
     });
     this.reportDevProbe("zoom-settled", {
       reason: this.zoomBurstReason,
@@ -892,9 +986,236 @@ export class ViewerInkSession {
       durationMs: burstDurationMs,
       scaleStart,
       scaleEnd,
-      surfaces: this.surfaces.size
+      surfaces: this.surfaces.size,
+      sliced: true,
+      focusPage: order.focus,
+      neighborPages: order.neighbors.length
     });
+    if (this.zoomSettleQueue.length === 0) {
+      this.finishZoomSettleSlices();
+      return;
+    }
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) {
+      while (this.zoomSettleQueue.length > 0) {
+        const item = this.zoomSettleQueue.shift()!;
+        this.paintOneZoomSettlePage(item.page, item.tier);
+      }
+      this.finishZoomSettleSlices();
+      return;
+    }
+    this.zoomSettleSliceFrame = view.requestAnimationFrame(() => {
+      this.zoomSettleSliceFrame = null;
+      this.paintZoomSettleSlice();
+    });
+  }
+
+  /**
+   * Pin the adapter's current page (else largest visible intersection) for sync HQ.
+   * Remaining surfaces settle as cheap neighbors under the CSS mask.
+   */
+  private zoomSettlePageOrder(): { focus: number | null; neighbors: number[] } {
+    const currentPage = this.options.adapter.getViewState().pageNumber;
+    const ranked = [...this.surfaces.entries()].map(([pageNumber, surface]) => ({
+      pageNumber,
+      area: this.surfaceViewportIntersectionArea(surface)
+    }));
+    ranked.sort((a, b) => b.area - a.area);
+
+    let focus: number | null = null;
+    if (this.surfaces.has(currentPage)) {
+      focus = currentPage;
+    } else if (ranked[0] && ranked[0].area > 0) {
+      focus = ranked[0].pageNumber;
+    } else if (ranked[0]) {
+      focus = ranked[0].pageNumber;
+    }
+
+    const neighbors = ranked
+      .filter((entry) => entry.pageNumber !== focus)
+      .map((entry) => entry.pageNumber);
+    return { focus, neighbors };
+  }
+
+  private surfaceViewportIntersectionArea(surface: PageSurface): number {
+    const view = this.options.adapter.host.getBoundingClientRect();
+    const rect = surface.overlay.getBoundingClientRect();
+    const left = Math.max(view.left, rect.left);
+    const top = Math.max(view.top, rect.top);
+    const right = Math.min(view.right, rect.right);
+    const bottom = Math.min(view.bottom, rect.bottom);
+    return Math.max(0, right - left) * Math.max(0, bottom - top);
+  }
+
+  private paintZoomSettleSlice(): void {
+    if (this.destroyed) return;
+    if (this.hasAnyLiveInkInput()) {
+      this.logger.zoomComposite("settle-deferred", {
+        reason: "live-ink-slice",
+        remaining: this.zoomSettleQueue.length,
+        retryMs: ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS
+      });
+      this.zoomSettleTimer = window.setTimeout(() => {
+        this.zoomSettleTimer = null;
+        this.paintZoomSettleSlice();
+      }, ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS);
+      return;
+    }
+    if (this.zoomSettleQueue.length === 0) {
+      this.finishZoomSettleSlices();
+      return;
+    }
+
+    const item = this.zoomSettleQueue.shift()!;
+    this.paintOneZoomSettlePage(item.page, item.tier);
+
+    if (this.zoomSettleQueue.length === 0) {
+      this.finishZoomSettleSlices();
+      return;
+    }
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) {
+      while (this.zoomSettleQueue.length > 0) {
+        const next = this.zoomSettleQueue.shift()!;
+        this.paintOneZoomSettlePage(next.page, next.tier);
+      }
+      this.finishZoomSettleSlices();
+      return;
+    }
+    this.zoomSettleSliceFrame = view.requestAnimationFrame(() => {
+      this.zoomSettleSliceFrame = null;
+      this.paintZoomSettleSlice();
+    });
+  }
+
+  private paintOneZoomSettlePage(
+    pageNumber: number,
+    tier: "focus-fast" | "focus" | "neighbor"
+  ): void {
+    const reasonBase = this.zoomSettleBurst?.reason ?? this.zoomBurstReason;
+    const reason = tier === "focus-fast"
+      ? `${reasonBase}-settle-focus-fast`
+      : tier === "focus"
+        ? `${reasonBase}-settle-focus`
+        : `${reasonBase}-settle-neighbor`;
+    const surface = this.surfaces.get(pageNumber);
+    const started = performance.now();
+    const strokesBefore = this.zoomSettleStats.strokesRedrawn;
+    const resizedBefore = this.zoomSettleStats.canvasesResized;
+    const blitBefore = this.zoomSettleStats.skippedBlitOnly;
+    const pages = this.options.adapter.pages();
+    const current = pages.find((page) => page.pageNumber === pageNumber);
+    let paintPath: "disconnected" | "culled" | "blit-only" | "blit-stretch" | "canonical-vector" | "skip" = "skip";
+    if (!surface || !current) {
+      this.zoomSettleStats.skippedDisconnected += 1;
+      paintPath = "disconnected";
+    } else {
+      if (!this.reattachSurface(surface, current)) {
+        if (current.element.isConnected) this.remountSurfaceOnPageReplacement(surface, current);
+        else {
+          this.zoomSettleStats.skippedDisconnected += 1;
+          paintPath = "disconnected";
+        }
+      }
+      if (this.surfaces.get(pageNumber) && paintPath !== "disconnected") {
+        if (!this.surfaceHasLiveInkInput(surface)) {
+          this.ensurePageRouter(surface, { force: true, reason });
+        } else {
+          this.ensurePageRouter(surface, { reason: `${reason}-live-ink` });
+        }
+        const upgradeBefore = surface.settleUpgradePending;
+        const painted = this.renderPage(pageNumber, this.zoomSettleStats, reason);
+        this.logZoomInkLayout(surface, "settle");
+        if (painted) this.zoomSettleStats.pagesRepainted += 1;
+        else if (surface.viewportCullPending) {
+          this.zoomSettleStats.skippedCulled += 1;
+          paintPath = "culled";
+        }
+        if (paintPath !== "culled") {
+          if (this.zoomSettleStats.skippedBlitOnly > blitBefore) paintPath = "blit-only";
+          else if (surface.settleUpgradePending && (tier === "focus-fast" || tier === "neighbor")) {
+            paintPath = "blit-stretch";
+          } else if (this.zoomSettleStats.strokesRedrawn > strokesBefore) {
+            paintPath = "canonical-vector";
+          } else if (painted) {
+            paintPath = upgradeBefore && !surface.settleUpgradePending ? "canonical-vector" : "blit-stretch";
+          }
+        }
+      }
+    }
+    this.logger.zoomComposite("settle-slice", {
+      page: pageNumber,
+      tier,
+      path: paintPath,
+      durationMs: roundMs(performance.now() - started),
+      remaining: this.zoomSettleQueue.length,
+      pagesRepainted: this.zoomSettleStats.pagesRepainted,
+      strokesRedrawn: this.zoomSettleStats.strokesRedrawn - strokesBefore,
+      canvasesResized: this.zoomSettleStats.canvasesResized - resizedBefore,
+      skippedBlitOnly: this.zoomSettleStats.skippedBlitOnly - blitBefore
+    });
+  }
+
+  private finishZoomSettleSlices(): void {
+    const burst = this.zoomSettleBurst;
+    const stats = this.zoomSettleStats;
+    const durationMs = roundMs(performance.now() - this.zoomSettleSliceStartedAt);
+    this.ensureSelectionToolbar();
+    this.refreshSurfaceCursors();
+    const view = this.options.adapter.getViewState();
+    if (durationMs >= 16 && this.isZoomHandoffActive()) {
+      this.logger.zoomFlashProxy("paint-duration-spike", {
+        reason: burst?.reason ?? this.zoomBurstReason,
+        durationMs,
+        pagesRepainted: stats.pagesRepainted,
+        strokesRedrawn: stats.strokesRedrawn,
+        canvasesResized: stats.canvasesResized,
+        skippedCulled: stats.skippedCulled,
+        skippedBlitOnly: stats.skippedBlitOnly,
+        sliced: true
+      });
+    }
+    this.logger.zoomRepaint({
+      reason: burst?.reason ?? this.zoomBurstReason,
+      durationMs,
+      pagesRepainted: stats.pagesRepainted,
+      canvasesResized: stats.canvasesResized,
+      strokesRedrawn: stats.strokesRedrawn,
+      skippedDisconnected: stats.skippedDisconnected,
+      skippedCulled: stats.skippedCulled,
+      skippedBlitOnly: stats.skippedBlitOnly,
+      scale: Number(view.scale.toFixed(4)),
+      sliced: true,
+      ...(burst ? {
+        burstTicks: burst.burstTicks,
+        burstDurationMs: burst.burstDurationMs,
+        ...(burst.scaleStart !== undefined ? { scaleStart: burst.scaleStart } : {}),
+        ...(burst.scaleEnd !== undefined ? { scaleEnd: burst.scaleEnd } : {})
+      } : {})
+    });
+    this.reportDevProbe("zoom-repaint", {
+      reason: burst?.reason ?? this.zoomBurstReason,
+      durationMs,
+      pagesRepainted: stats.pagesRepainted,
+      canvasesResized: stats.canvasesResized,
+      strokesRedrawn: stats.strokesRedrawn,
+      skippedDisconnected: stats.skippedDisconnected,
+      skippedCulled: stats.skippedCulled,
+      skippedBlitOnly: stats.skippedBlitOnly,
+      scale: Number(view.scale.toFixed(4)),
+      sliced: true
+    });
+    this.zoomSettleBurst = null;
     this.releaseZoomCompositeAfterNativeRender();
+  }
+
+  private cancelZoomSettleSlice(): void {
+    if (this.zoomSettleSliceFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.zoomSettleSliceFrame);
+      this.zoomSettleSliceFrame = null;
+    }
+    this.zoomSettleQueue = [];
+    this.zoomSettleBurst = null;
   }
 
   private static isZoomRepaintSource(source: ViewStateSource): boolean {
@@ -916,6 +1237,7 @@ export class ViewerInkSession {
 
   private beginZoomCompositing(): void {
     this.cancelZoomCompositeRelease();
+    this.cancelZoomSettleSlice();
     this.zoomCompositeSettledAt = 0;
     this.zoomNativeContentMutations = 0;
     this.lastZoomNativeContentAt = 0;
@@ -1036,12 +1358,18 @@ export class ViewerInkSession {
         );
       })
       : [];
+    // Release timer is only armed after finishZoomSettleSlices. While focus-fast
+    // has painted and HQ/neighbor slices are still draining under the CSS mask,
+    // treat that window like handoff so native remounts stay layout-only.
+    const settleSlicesPending = this.zoomSettleSliceFrame !== null || this.zoomSettleQueue.length > 0;
     const releasePending = this.zoomCompositing
       || this.zoomCompositeReleaseTimer !== null
       || this.zoomCompositeReleaseFrame !== null;
+    const handoffGuard = releasePending || settleSlicesPending || this.hasZoomCompositingClass();
     this.reportDevProbe("host-page-content-mutation", {
       records: recordCount,
       releasePending,
+      settleSlicesPending,
       zoomCompositing: this.zoomCompositing,
       handoff: this.isZoomHandoffActive(),
       pageCount: pages.length,
@@ -1052,9 +1380,9 @@ export class ViewerInkSession {
     // A native redraw can remove our overlay even after the compositor's
     // handoff. Recover that rare case without treating every canvas/text-layer
     // update as a page remount (which was the source of zoom flashing).
-    if (!releasePending && !reattached) return;
+    if (!handoffGuard && !reattached) return;
     const now = performance.now();
-    if (releasePending) {
+    if (releasePending || settleSlicesPending) {
       this.zoomNativeContentMutations += recordCount;
       this.lastZoomNativeContentAt = now;
     }
@@ -1062,13 +1390,14 @@ export class ViewerInkSession {
       records: recordCount,
       nativeContentMutations: this.zoomNativeContentMutations,
       releasePending,
+      settleSlicesPending,
       pageCount: pages.length,
       detachedOverlayPages,
       reattachedOverlayPages,
       sinceSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null
     });
 
-    if (releasePending && this.isZoomHandoffActive()) {
+    if (handoffGuard && this.isZoomHandoffActive()) {
       // PDF.js may finish canvas/text replacement after the first zoom settle.
       // Follow that geometry immediately, but reserve the one canonical redraw
       // for the quiet handoff boundary instead of beginning another zoom burst.
@@ -1083,6 +1412,7 @@ export class ViewerInkSession {
     } else if (reattached) {
       this.repaintSurfaces("native-content-reattach");
     }
+    // Only arm release after settle slices finished (releasePending from finish).
     if (releasePending && !this.zoomCompositing) this.releaseZoomCompositeAfterNativeRender();
   }
 
@@ -1484,6 +1814,7 @@ export class ViewerInkSession {
       toolbarPlacement: session.currentToolbarPlacement(),
       mobile: platform.mobile
     });
+    session.lastKnownViewScale = options.adapter.getViewState().scale;
     return session;
   }
 
@@ -1730,6 +2061,7 @@ export class ViewerInkSession {
       // Mobile only mounts current±pad — debounce remount; never full-refresh mid-zoom.
       if (this.runtimePlatform().mobile) this.scheduleMobileScrollRefresh();
       else this.scheduleViewportPaint();
+      this.lastKnownViewScale = state.scale;
       return;
     }
     if (ViewerInkSession.isZoomRepaintSource(source)) {
@@ -1741,9 +2073,11 @@ export class ViewerInkSession {
     if (source === "pagechanging" && this.runtimePlatform().mobile) {
       if (this.selected.length) this.selectionToolbar.relayout();
       this.scheduleMobileScrollRefresh();
+      this.lastKnownViewScale = state.scale;
       return;
     }
     this.refresh(`view-${source}`);
+    this.lastKnownViewScale = state.scale;
   }
 
   onPagesChanged(reason: string): void {
@@ -2732,6 +3066,7 @@ export class ViewerInkSession {
       window.clearTimeout(this.zoomSettleTimer);
       this.zoomSettleTimer = null;
     }
+    this.cancelZoomSettleSlice();
     this.cancelZoomCompositeRelease();
     this.endZoomCompositing();
     this.releaseZoomCompositeLayers();
@@ -2904,6 +3239,7 @@ export class ViewerInkSession {
       inkLayerBackingScale: null,
       inkLayerBurstCapture: false,
       viewportCullPending: false,
+      settleUpgradePending: false,
       router: null,
       livePaintFrame: null,
       pendingLivePaint: null,
@@ -3309,15 +3645,24 @@ export class ViewerInkSession {
     const startedAt = performance.now();
     let draftPoints: number | undefined;
     let incremental: boolean | undefined;
+    let compositeMatched: boolean | undefined;
+    let stabilization: string | undefined;
+    let draftResized: boolean | undefined;
     if (pending.kind === "draw") {
       const painted = this.renderLiveDrawPreview(surface);
       draftPoints = painted.draftPoints;
       incremental = painted.incremental;
+      compositeMatched = painted.compositeMatched;
+      stabilization = painted.stabilization;
+      draftResized = painted.draftResized;
     } else if (surface.editTool === "eraser") this.renderLiveEraserPreview(surface);
     else this.renderPage(surface.page.pageNumber, undefined, "live-edit", pending.syncText);
     this.logger.inputPaint(surface.page.pageNumber, performance.now() - startedAt, pending.kind, pending.sampleCount, {
       ...(draftPoints !== undefined ? { draftPoints } : {}),
-      ...(incremental !== undefined ? { incremental } : {})
+      ...(incremental !== undefined ? { incremental } : {}),
+      ...(compositeMatched !== undefined ? { compositeMatched } : {}),
+      ...(stabilization !== undefined ? { stabilization } : {}),
+      ...(draftResized !== undefined ? { draftResized } : {})
     });
     if (pending.event && this.logger.isEnabled()) this.updateDebug(surface, pending.event);
   }
@@ -3364,19 +3709,45 @@ export class ViewerInkSession {
    * O(path)×huge draft backing and slows long strokes (~10ms→45ms in logs).
    * Shape preview still morphs as a whole, so it keeps the full redraw path.
    */
-  private renderLiveDrawPreview(surface: PageSurface): { draftPoints: number; incremental: boolean } {
+  private renderLiveDrawPreview(surface: PageSurface): {
+    draftPoints: number;
+    incremental: boolean;
+    compositeMatched: boolean;
+    stabilization: string;
+    draftResized: boolean;
+  } {
     const builder = surface.builder;
-    if (!builder || surface.laserDraft) return { draftPoints: 0, incremental: false };
+    if (!builder || surface.laserDraft) {
+      return {
+        draftPoints: 0,
+        incremental: false,
+        compositeMatched: false,
+        stabilization: "off",
+        draftResized: false
+      };
+    }
+    const stabilization = builder.stabilization;
     const layout = this.pageLayout(surface);
     const rect = surface.overlay.getBoundingClientRect();
     const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
     const height = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
-    const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
+    let { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
 
-    // A viewport change is uncommon while drawing. Let the canonical renderer
-    // rebuild committed ink once, then keep the active stroke isolated in its
-    // draft layer rather than painting it twice.
-    if (surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight) {
+    // While zoom CSS compositing holds the committed canvas at pre-burst pixels
+    // (renderPage gated), paint the draft into that same backing so tip ink and
+    // soft committed ink share one CSS stretch. New-res draft under stretched old
+    // canvas was the residual mid-drag dual-scale glitch after settle-defer.
+    const compositeMatched = this.zoomCompositing
+      && surface.canvas.width > 0
+      && surface.canvas.height > 0;
+    if (compositeMatched) {
+      pixelWidth = surface.canvas.width;
+      pixelHeight = surface.canvas.height;
+      backingScale = pixelWidth / width;
+    } else if (surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight) {
+      // A viewport change is uncommon while drawing. Let the canonical renderer
+      // rebuild committed ink once, then keep the active stroke isolated in its
+      // draft layer rather than painting it twice.
       this.renderPage(surface.page.pageNumber, undefined, "live-draw-rebase", false, false);
     }
     let draftResized = false;
@@ -3390,7 +3761,7 @@ export class ViewerInkSession {
     const points = surface.shapePreview ?? builder.preview(this.simplifyStrokesEnabled());
     if (!points.length) {
       surface.liveDrawPaintedPoints = 0;
-      return { draftPoints: 0, incremental: false };
+      return { draftPoints: 0, incremental: false, compositeMatched, stabilization, draftResized };
     }
     const style = builder.style;
     const context = surface.draftContext;
@@ -3414,16 +3785,18 @@ export class ViewerInkSession {
         context
       );
       surface.liveDrawPaintedPoints = 0;
-      return { draftPoints: points.length, incremental: false };
+      return { draftPoints: points.length, incremental: false, compositeMatched, stabilization, draftResized };
     }
 
+    // Causal preview (StrokeBuilder.smoothedPoints) keeps prior indices fixed —
+    // incremental stamps are safe even with medium/high stabilization.
     const canIncremental = !draftResized
       && surface.liveDrawPaintedPoints > 0
       && surface.liveDrawPaintedPoints <= points.length;
 
     if (canIncremental) {
       if (surface.liveDrawPaintedPoints === points.length) {
-        return { draftPoints: points.length, incremental: true };
+        return { draftPoints: points.length, incremental: true, compositeMatched, stabilization, draftResized };
       }
       // Overlap one prior point so stamp capsules join without a gap.
       const pending = points.slice(Math.max(0, surface.liveDrawPaintedPoints - 1));
@@ -3441,11 +3814,15 @@ export class ViewerInkSession {
         context
       );
       surface.liveDrawPaintedPoints = points.length;
-      return { draftPoints: points.length, incremental: true };
+      return { draftPoints: points.length, incremental: true, compositeMatched, stabilization, draftResized };
     }
 
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, pixelWidth, pixelHeight);
+    // Setting canvas width/height already clears pixels — skip redundant clearRect
+    // on the first frame after a huge backing alloc (stroke-start hitch).
+    if (!draftResized) {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, pixelWidth, pixelHeight);
+    }
     context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
     this.drawPoints(
       surface,
@@ -3460,7 +3837,7 @@ export class ViewerInkSession {
       context
     );
     surface.liveDrawPaintedPoints = points.length;
-    return { draftPoints: points.length, incremental: false };
+    return { draftPoints: points.length, incremental: false, compositeMatched, stabilization, draftResized };
   }
 
   /**
@@ -3476,8 +3853,12 @@ export class ViewerInkSession {
     const rect = surface.overlay.getBoundingClientRect();
     const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
     const height = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
-    const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
-    if (surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight) {
+    let { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
+    if (this.zoomCompositing && surface.canvas.width > 0 && surface.canvas.height > 0) {
+      pixelWidth = surface.canvas.width;
+      pixelHeight = surface.canvas.height;
+      backingScale = pixelWidth / width;
+    } else if (surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight) {
       this.renderPage(surface.page.pageNumber, undefined, "live-eraser-rebase", false, false);
       surface.liveEraserPaintedPoints = 0;
     }
@@ -5392,8 +5773,8 @@ export class ViewerInkSession {
     const surface = this.surfaces.get(pageNumber);
     if (!surface || this.zoomCompositing) return false;
     const preserveLiveDraft = this.surfaceHasLiveInkInput(surface);
-    // Wiping the draft mid-stroke is the drag glitch; committed paint must not clear it.
-    if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
+    // Keep tip draft visible through resize/paint — clearing first caused a blank
+    // flash between tip-up and settle-paint (draft gone, committed still building).
     const layout = this.pageLayout(surface);
     this.syncOverlayLayout(surface);
     const marginMode = ViewerInkSession.isZoomPaintReason(reason) ? "strict" : "idle";
@@ -5405,7 +5786,14 @@ export class ViewerInkSession {
     const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
     const height = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
     if (width < 2 || height < 2) return false;
-    const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
+    const settleNeighbor = reason.includes("settle-neighbor");
+    const settleFocusFast = reason.includes("settle-focus-fast");
+    const settleCheap = settleNeighbor || settleFocusFast;
+    const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(
+      width,
+      height,
+      settleNeighbor ? "neighbor" : "full"
+    );
     const needsResize = surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight;
     const canBlit = typeof surface.context.drawImage === "function";
     const zoomish = ViewerInkSession.isZoomPaintReason(reason);
@@ -5437,6 +5825,7 @@ export class ViewerInkSession {
     // Never for handoff-final or burst-captured raster layers (backingScale must match).
     const blitOnlySettle = zoomish
       && !reason.includes("handoff-final")
+      && !settleNeighbor
       && !needsResize
       && canBlit
       && surface.inkLayerValid
@@ -5454,6 +5843,7 @@ export class ViewerInkSession {
       this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
       this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
       surface.viewportCullPending = false;
+      surface.settleUpgradePending = false;
       if (stats && stats.skippedBlitOnly !== undefined) stats.skippedBlitOnly += 1;
       const drawingLasso = surface.editTool === "lasso" && surface.editPath.length > 0;
       const drawingSelection = Boolean(this.selectionShape && this.selectionPage === pageNumber) && !drawingLasso;
@@ -5464,6 +5854,25 @@ export class ViewerInkSession {
       }
       this.paintLaserTrails(surface, pageNumber);
       if (syncText) this.renderTextAnnotations(surface);
+      if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
+      return true;
+    }
+
+    // Focus-fast with unchanged backing but non-canonical layer: keep pixels, queue HQ.
+    if (
+      settleFocusFast
+      && !needsResize
+      && !erasingLive
+      && !movingSelection
+      && !livePreview
+    ) {
+      surface.settleUpgradePending = !surface.inkLayerValid || surface.inkLayerBurstCapture
+        || surface.inkLayerBackingScale === null
+        || Math.abs((surface.inkLayerBackingScale ?? 0) - backingScale) >= 1e-6;
+      this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
+      surface.viewportCullPending = false;
+      if (syncText) this.renderTextAnnotations(surface);
+      if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
       return true;
     }
 
@@ -5482,13 +5891,29 @@ export class ViewerInkSession {
     }
 
     let scaledBlit: HTMLCanvasElement | null = null;
-    if (needsResize && canBlit) {
+    // Focus HQ / handoff: vector-restamp. Focus-fast already resized the canvas, so HQ
+    // must still count as canonical even when needsResize is false on the deferred frame.
+    const settleFocusHq = reason.includes("settle-focus") && !settleFocusFast;
+    const canonicalZoomSettle = zoomish
+      && (needsResize || reason.includes("handoff-final") || settleFocusHq)
+      && !settleCheap;
+    if (needsResize && canBlit && !canonicalZoomSettle) {
       scaledBlit = this.snapshotCommittedBitmap(surface);
     }
 
     if (needsResize) {
       surface.canvas.width = pixelWidth;
       surface.canvas.height = pixelHeight;
+      // Cheap settle skips draft warm (~45MP alloc). HQ / normal paints warm it.
+      if (!settleCheap) {
+        if (surface.draftCanvas.width !== pixelWidth || surface.draftCanvas.height !== pixelHeight) {
+          surface.draftCanvas.width = pixelWidth;
+          surface.draftCanvas.height = pixelHeight;
+          surface.liveDrawPaintedPoints = 0;
+        }
+      } else {
+        surface.liveDrawPaintedPoints = 0;
+      }
       surface.inkLayerValid = false;
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = false;
@@ -5496,7 +5921,6 @@ export class ViewerInkSession {
     }
     surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
 
-    const canonicalZoomSettle = zoomish && (scaledBlit !== null || reason.includes("handoff-final"));
     // Non-zoom resize keeps a bitmap fallback. Zoom itself settles directly to
     // canonical ink: a scaled raster and a later vector upgrade visibly differ
     // in opacity, while this synchronous render is presented atomically.
@@ -5516,6 +5940,31 @@ export class ViewerInkSession {
         pixelHeight
       );
       surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+    }
+
+    // Cheap settle under CSS mask: keep blit-stretch only; HQ upgrades on later rAF/idle.
+    if (settleCheap && scaledBlit) {
+      surface.inkLayerValid = false;
+      surface.inkLayerBackingScale = null;
+      surface.inkLayerBurstCapture = true;
+      surface.settleUpgradePending = true;
+      this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
+      surface.viewportCullPending = false;
+      const drawingLassoNeighbor = surface.editTool === "lasso" && surface.editPath.length > 0;
+      const drawingSelectionNeighbor = Boolean(this.selectionShape && this.selectionPage === pageNumber)
+        && !drawingLassoNeighbor;
+      surface.canvas.classList.toggle(
+        "is-selection-chrome-raised",
+        drawingLassoNeighbor || drawingSelectionNeighbor
+      );
+      if (drawingLassoNeighbor) this.drawLassoPreview(surface);
+      else if (drawingSelectionNeighbor && this.selectionShape) {
+        this.drawSelectionShape(surface, this.moveShapePreview ?? this.selectionShape, { closeFreeform: true });
+      }
+      this.paintLaserTrails(surface, pageNumber);
+      if (syncText) this.renderTextAnnotations(surface);
+      if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
+      return true;
     }
 
     const storedStrokes = this.ink.pageIntersecting(pageNumber, this.pageInkBounds(surface));
@@ -5550,6 +5999,7 @@ export class ViewerInkSession {
 
     this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
     surface.viewportCullPending = false;
+    surface.settleUpgradePending = false;
 
     // Lasso/selection chrome is painted on the ink canvas (under the text layer
     // by default). Raise the canvas while that chrome is visible so text boxes
@@ -5599,6 +6049,7 @@ export class ViewerInkSession {
     }
     this.paintLaserTrails(surface, pageNumber);
     if (syncText) this.renderTextAnnotations(surface);
+    if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
     return true;
   }
 
@@ -6189,13 +6640,27 @@ export class ViewerInkSession {
     return this.pageLayout(surface).scale;
   }
 
-  /** Full css×dpr until the platform ink budget; avoids soft CSS stretch when zoomed. */
-  private resolveInkBacking(cssWidth: number, cssHeight: number): ReturnType<typeof inkBackingSize> {
+  /** Full css×dpr until the platform ink budget; neighbors settle cheaper until idle HQ. */
+  private resolveInkBacking(
+    cssWidth: number,
+    cssHeight: number,
+    tier: "full" | "neighbor" = "full"
+  ): ReturnType<typeof inkBackingSize> {
     const budget = inkBackingBudget(this.runtimePlatform().mobile);
+    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    if (tier === "neighbor") {
+      return inkBackingSize(
+        cssWidth,
+        cssHeight,
+        Math.max(0.5, dpr * 0.5),
+        Math.max(512, Math.floor(budget.maxEdge / 2)),
+        Math.max(512 * 512, Math.floor(budget.maxPixels / 4))
+      );
+    }
     return inkBackingSize(
       cssWidth,
       cssHeight,
-      typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1,
+      dpr,
       budget.maxEdge,
       budget.maxPixels
     );
