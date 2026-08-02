@@ -8,3 +8,7 @@
 - Use shared toolbar, tools, storage, and engine for direct and embedded PDF views.
 - No OCR. No whole-framework embedding. No in-place PDF writes.
 - Run `npm test` and `npm run build` before done.
+
+## Code analysis — wont-fix
+
+- `main.js` (`perf/bundle-size`): Soft warn above the pdf-lib 750KB monitor threshold (~823KB). Export/path tooling needs `pdf-lib` in the Obsidian single-file bundle; stays under the 1MB error budget and Sync Standard 5MB limit. Further shrink would drop export capability or require unsupported release sidecars.

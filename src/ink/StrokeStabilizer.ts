@@ -2,12 +2,23 @@ import type { PdfPoint } from "../model";
 
 export type StabilizationLevel = "off" | "low" | "medium" | "high";
 
-const smoothing: Record<StabilizationLevel, number> = { off: 1, low: 0.72, medium: 0.48, high: 0.28 };
+/** EMA blend toward the new raw sample (1 = raw / no smoothing). */
+export const STABILIZATION_ALPHA: Record<StabilizationLevel, number> = {
+  off: 1,
+  low: 0.72,
+  medium: 0.48,
+  high: 0.28
+};
 
+/**
+ * Batch re-stabilize from scratch. Tip is pinned to the last raw sample.
+ * Prefer {@link appendStabilizedPoint} for live preview — batch recomputation
+ * moves earlier points and breaks incremental draft stamps.
+ */
 export function stabilizePoints(points: readonly PdfPoint[], level: StabilizationLevel): PdfPoint[] {
   if (points.length < 2 || level === "off") return points.map((point) => ({ ...point }));
   const result: PdfPoint[] = [{ ...points[0]! }];
-  const alpha = smoothing[level];
+  const alpha = STABILIZATION_ALPHA[level];
   for (let index = 1; index < points.length; index += 1) {
     const point = points[index]!;
     const previous = result[index - 1]!;
@@ -20,6 +31,29 @@ export function stabilizePoints(points: readonly PdfPoint[], level: Stabilizatio
   }
   result[result.length - 1] = { ...points[points.length - 1]! };
   return result;
+}
+
+/**
+ * Causal EMA: append one smoothed point. Prior entries in `smoothed` never move,
+ * so incremental live draft stamps stay valid with stabilization on.
+ */
+export function appendStabilizedPoint(
+  smoothed: PdfPoint[],
+  raw: PdfPoint,
+  level: StabilizationLevel
+): void {
+  if (level === "off" || smoothed.length === 0) {
+    smoothed.push({ ...raw });
+    return;
+  }
+  const alpha = STABILIZATION_ALPHA[level];
+  const previous = smoothed[smoothed.length - 1]!;
+  smoothed.push({
+    ...raw,
+    x: previous.x + (raw.x - previous.x) * alpha,
+    y: previous.y + (raw.y - previous.y) * alpha,
+    pressure: previous.pressure + (raw.pressure - previous.pressure) * alpha
+  });
 }
 
 function perpendicularDistance(point: PdfPoint, start: PdfPoint, end: PdfPoint): number {
@@ -43,4 +77,3 @@ export function simplifyPoints(points: readonly PdfPoint[], tolerance = 0.35): P
   return [...simplifyPoints(points.slice(0, split + 1), tolerance).slice(0, -1),
     ...simplifyPoints(points.slice(split), tolerance)];
 }
-

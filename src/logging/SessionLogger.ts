@@ -64,6 +64,8 @@ export interface ZoomRepaintLog {
   scaleStart?: number;
   scaleEnd?: number;
   scale?: number;
+  /** True when HQ settle painted one page per frame. */
+  sliced?: boolean;
 }
 
 export interface ZoomTickLog {
@@ -71,6 +73,7 @@ export interface ZoomTickLog {
   tick: number;
   source?: string;
   scale?: number;
+  settleMs?: number;
   msSinceLastTick?: number | null;
 }
 
@@ -269,7 +272,13 @@ export class SessionLogger {
     durationMs: number,
     kind: "draw" | "edit",
     sampleCount: number,
-    details: { draftPoints?: number; incremental?: boolean } = {}
+    details: {
+      draftPoints?: number;
+      incremental?: boolean;
+      compositeMatched?: boolean;
+      stabilization?: string;
+      draftResized?: boolean;
+    } = {}
   ): void {
     if (!this.isEnabled() || durationMs < 8) return;
     this.emit(durationMs >= 16 ? "warn" : "info", "ink input paint", {
@@ -279,7 +288,10 @@ export class SessionLogger {
       durationMs: round(durationMs),
       sampleCount,
       ...(details.draftPoints !== undefined ? { draftPoints: details.draftPoints } : {}),
-      ...(details.incremental !== undefined ? { incremental: details.incremental } : {})
+      ...(details.incremental !== undefined ? { incremental: details.incremental } : {}),
+      ...(details.compositeMatched !== undefined ? { compositeMatched: details.compositeMatched } : {}),
+      ...(details.stabilization !== undefined ? { stabilization: details.stabilization } : {}),
+      ...(details.draftResized !== undefined ? { draftResized: details.draftResized } : {})
     });
   }
 
@@ -590,6 +602,7 @@ export class SessionLogger {
     phase:
       | "begin"
       | "settle-paint"
+      | "settle-slice"
       | "settle-deferred"
       | "native-content"
       | "release-scheduled"

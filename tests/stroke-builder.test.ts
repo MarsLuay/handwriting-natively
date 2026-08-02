@@ -71,6 +71,21 @@ describe("stroke builder", () => {
     expect(simplifyBuilder.finish(true).points.length).toBeLessThan(matched.length);
   });
 
+  it("keeps prior causal preview points fixed when new samples arrive", () => {
+    const builder = new StrokeBuilder({ ...base, stabilization: "medium" });
+    builder.add(point(0, 0));
+    builder.add(point(10, 10));
+    builder.add(point(20, 0));
+    const mid = builder.preview(true).map((p) => ({ x: p.x, y: p.y }));
+    builder.add(point(30, 10));
+    builder.add(point(40, 0));
+    const later = builder.preview(true);
+    expect(later[0]).toMatchObject(mid[0]!);
+    expect(later[1]).toMatchObject(mid[1]!);
+    expect(later[2]).toMatchObject(mid[2]!);
+    expect(later).toHaveLength(5);
+  });
+
   it("keeps one continuity anchor when discarding expired preview samples", () => {
     const builder = new StrokeBuilder(base);
     builder.add({ ...point(0, 0), time: 0 });

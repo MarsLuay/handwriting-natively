@@ -1,5 +1,10 @@
 import type { DrawingTool, InkStroke, PdfPoint } from "../model";
-import { simplifyPoints, stabilizePoints, type StabilizationLevel } from "./StrokeStabilizer";
+import {
+  appendStabilizedPoint,
+  simplifyPoints,
+  stabilizePoints,
+  type StabilizationLevel
+} from "./StrokeStabilizer";
 
 export interface StrokeBuilderOptions {
   id: string;
@@ -16,6 +21,8 @@ export interface StrokeBuilderOptions {
 
 export class StrokeBuilder {
   private readonly points: PdfPoint[] = [];
+  /** Causal preview path — indices never move after append (safe for incremental draft). */
+  private readonly smoothedPoints: PdfPoint[] = [];
   constructor(private readonly options: StrokeBuilderOptions) {}
 
   get id(): string {
@@ -32,9 +39,16 @@ export class StrokeBuilder {
     };
   }
 
+  /** Stabilization captured at stroke start. */
+  get stabilization(): StabilizationLevel {
+    return this.options.stabilization ?? "off";
+  }
+
   add(point: PdfPoint): void {
     if (![point.x, point.y, point.pressure, point.time].every(Number.isFinite)) throw new TypeError("Invalid stroke point");
-    this.points.push({ ...point, pressure: Math.max(0, Math.min(1, point.pressure)) });
+    const raw = { ...point, pressure: Math.max(0, Math.min(1, point.pressure)) };
+    this.points.push(raw);
+    appendStabilizedPoint(this.smoothedPoints, raw, this.stabilization);
   }
 
   /**
@@ -48,6 +62,7 @@ export class StrokeBuilder {
     if (firstVisible <= 1) return 0;
     const discarded = firstVisible - 1;
     this.points.splice(0, discarded);
+    this.smoothedPoints.splice(0, Math.min(discarded, this.smoothedPoints.length));
     return discarded;
   }
 
@@ -56,12 +71,14 @@ export class StrokeBuilder {
     if (!Number.isInteger(maxPoints) || maxPoints < 1 || this.points.length <= maxPoints) return 0;
     const discarded = this.points.length - maxPoints;
     this.points.splice(0, discarded);
+    this.smoothedPoints.splice(0, Math.min(discarded, this.smoothedPoints.length));
     return discarded;
   }
 
   preview(simplifyEnabled = true): readonly PdfPoint[] {
     if (!simplifyEnabled) return this.points.map((point) => ({ ...point }));
-    return stabilizePoints(this.points, this.options.stabilization ?? "off");
+    // Causal smoothed path (not batch stabilizePoints) — prior coords stay fixed.
+    return this.smoothedPoints.map((point) => ({ ...point }));
   }
 
   finish(simplifyEnabled = true): InkStroke {
