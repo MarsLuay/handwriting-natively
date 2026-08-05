@@ -84,12 +84,20 @@ describe("PointerRouter", () => {
     element.dispatchEvent(sidecarPencil);
     expect(sidecarPencil.defaultPrevented).toBe(true);
     expect(captures).toEqual([4]);
-    expect(starts.mock.calls[0]?.[0][0]).toMatchObject({ pressure: 0.8, tiltX: 12, pointerType: "mouse" });
+    // Pen was already seen above (even while draw was off) + digitizer pressure → remap.
+    expect(starts.mock.calls[0]?.[0][0]).toMatchObject({ pressure: 0.8, tiltX: 12, pointerType: "pen" });
 
     const stylus = pointer("pen", 5, { pressure: 0.7 });
     element.dispatchEvent(stylus);
     expect(stylus.defaultPrevented).toBe(true);
     expect(captures).toEqual([4, 5]);
+
+    // Plain mouse tip (pressure 0.5) after pen stays mouse.
+    starts.mockClear();
+    const plainMouse = pointer("mouse", 6, { pressure: 0.5, tiltX: 0 });
+    element.dispatchEvent(plainMouse);
+    expect(plainMouse.defaultPrevented).toBe(true);
+    expect(starts.mock.calls[0]?.[0][0]).toMatchObject({ pressure: 0.5, pointerType: "mouse" });
     router.destroy();
   });
 
@@ -662,7 +670,58 @@ describe("PointerRouter", () => {
   it("identifies physical stylus eraser tips", () => {
     expect(isStylusEraserInput({ pointerType: "pen", button: 5, buttons: 32 })).toBe(true);
     expect(isStylusEraserInput({ pointerType: "pen", button: 0, buttons: 32 })).toBe(true);
-    expect(isStylusEraserInput({ pointerType: "mouse", button: 5, buttons: 32 })).toBe(false);
+    expect(isStylusEraserInput({ pointerType: "mouse", button: 5, buttons: 32 })).toBe(true);
+  });
+
+  it("recovers a MockTab mouse-tip stroke and eraser when pointerdown is missing", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const captures: number[] = [];
+    Object.assign(element, {
+      setPointerCapture: (id: number) => captures.push(id),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const starts = vi.fn();
+    const eraserStart = vi.fn();
+    const eraserEnd = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onStart: starts,
+      onStylusEraserStart: eraserStart,
+      onStylusEraserEnd: eraserEnd
+    });
+
+    // Establish MockTab pen presence from hover; the next tip starts on move.
+    element.dispatchEvent(pointer("pen", 70, {
+      eventType: "pointermove", button: -1, buttons: 0, pressure: 0
+    }));
+    const tipMove = pointer("mouse", 71, {
+      eventType: "pointermove", button: -1, buttons: 1, pressure: 0.4
+    });
+    element.dispatchEvent(tipMove);
+    expect(tipMove.defaultPrevented).toBe(true);
+    expect(captures).toContain(71);
+    expect(starts.mock.calls[0]?.[1]).toBe("draw");
+    expect(starts.mock.calls[0]?.[0][0]).toMatchObject({ pointerType: "pen", pressure: 0.4 });
+
+    element.dispatchEvent(pointer("mouse", 71, {
+      eventType: "pointerup", button: -1, buttons: 0, pressure: 0
+    }));
+    const eraserMove = pointer("mouse", 72, {
+      eventType: "pointermove", button: -1, buttons: 32, pressure: 0
+    });
+    element.dispatchEvent(eraserMove);
+    expect(eraserMove.defaultPrevented).toBe(true);
+    expect(starts.mock.calls[1]?.[1]).toBe("edit");
+    expect(eraserStart).toHaveBeenCalledOnce();
+    element.dispatchEvent(pointer("mouse", 72, {
+      eventType: "pointerup", button: -1, buttons: 0, pressure: 0
+    }));
+    expect(eraserEnd).toHaveBeenCalledOnce();
+    router.destroy();
+    element.remove();
   });
 
   it("uses one sample per pointermove when coalesced is off", () => {
@@ -1033,6 +1092,25 @@ describe("PointerRouter", () => {
     expect(routes.at(-1)).toBe("draw");
     expect(down.defaultPrevented).toBe(true);
     second.destroy();
+  });
+
+  it("destroy swallows NotFoundError from releasePointerCapture during zoom settle", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn(() => {
+        throw new DOMException("No active pointer with the given id is found.", "NotFoundError");
+      })
+    });
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true
+    });
+    router.acceptPointerDown(pointer("pen", 42));
+    expect(() => router.destroy()).not.toThrow();
+    element.remove();
   });
 
 });

@@ -218,7 +218,10 @@ export class PdfPageLocator {
       const pageOk = this.isPlausibleWidth(pageWidth);
       const viewerOk = this.isPlausibleWidth(viewerWidth);
       if (viewerOk && !pageOk) return fromViewer;
-      if (pageOk && !viewerOk) return fromPage;
+      // Zoom-out lag: leftover large canvas still matches stale *high* data-scale while
+      // PDF.js currentScale already dropped. Never prefer that page scale.
+      if (pageOk && !viewerOk && fromPage <= fromViewer) return fromPage;
+      // Measurable canvas + disagreement → trust live viewer (not stale page shells).
       return fromViewer;
     }
     if (fromPage > 0) return fromPage;

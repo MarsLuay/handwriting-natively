@@ -1,3 +1,5 @@
+import { isEraserTip, isTipContact } from "./PenPresence";
+
 export interface PalmRejectionOptions {
   ignoreTouchWhilePenActive?: boolean;
   palmWidthThreshold?: number;
@@ -37,6 +39,8 @@ export class PalmRejectionPolicy {
   private lastPenEventAt = 0;
   private penResetTimer: number | undefined;
   private onReset: ((reason: PenStateResetReason, activePenIds: number[]) => void) | null = null;
+  /** True after any `pointerType=pen` sample (hover or tip) in this session. */
+  private penSeen = false;
 
   constructor(options: PalmRejectionOptions = {}) {
     this.ignoreTouchWhilePenActive = options.ignoreTouchWhilePenActive ?? true;
@@ -55,22 +59,54 @@ export class PalmRejectionPolicy {
     this.onReset = listener;
   }
 
+  /** Record pen hover/tip so later mouse tip (MockTab) counts as stylus. */
+  notePenPresence(event: Pick<PointerEvent, "pointerType">): void {
+    if (event.pointerType === "pen") this.penSeen = true;
+  }
+
+  hasPenSeen(): boolean {
+    return this.penSeen;
+  }
+
+  /**
+   * Mouse tip after pen was seen (MockTab tip-as-mouse). Requires non-default
+   * tip pressure so a normal mouse (0 / 0.5 / 1) after stylus use stays mouse.
+   */
+  shouldTreatMouseTipAsPen(event: PointerEvent): boolean {
+    if (event.pointerType !== "mouse") return false;
+    // `button=5` / bit 32 is an unambiguous physical eraser, even if its
+    // proximity hover was missed before the first contact frame.
+    if (isEraserTip(event)) return true;
+    if (!this.penSeen) return false;
+    if (!isTipContact(event)) return false;
+    const p = event.pressure;
+    // Typical mouse tips are 0, 0.5, or 1. Digitizer tips land elsewhere.
+    return p > 0 && p < 1 && Math.abs(p - 0.5) > 0.02;
+  }
+
+  private isPenLikeContact(event: PointerEvent): boolean {
+    return event.pointerType === "pen" || this.shouldTreatMouseTipAsPen(event);
+  }
+
   pointerDown(event: PointerEvent): void {
-    if (event.pointerType !== "pen") return;
+    this.notePenPresence(event);
+    if (!this.isPenLikeContact(event)) return;
     this.activePens.add(event.pointerId);
     this.markPenActivity();
   }
 
   /** Refresh inactivity timer while tip still reports contact. */
   notePenActivity(event: PointerEvent): void {
-    if (event.pointerType !== "pen") return;
+    this.notePenPresence(event);
     if (!this.activePens.has(event.pointerId)) return;
+    if (event.pointerType !== "pen" && event.pointerType !== "mouse") return;
     if (event.buttons === 0 && event.pressure <= 0) return;
     this.markPenActivity();
   }
 
   pointerUp(event: PointerEvent): boolean {
-    if (event.pointerType !== "pen") return false;
+    if (event.pointerType !== "pen" && event.pointerType !== "mouse") return false;
+    if (!this.activePens.has(event.pointerId) && event.pointerType !== "pen") return false;
     return this.clearPenPointer(event.pointerId, "pointerup");
   }
 

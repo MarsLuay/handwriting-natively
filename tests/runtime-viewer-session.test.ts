@@ -229,6 +229,69 @@ describe("viewer runtime tracer", () => {
     expect(adapter.destroyed).toBe(true);
   });
 
+  it("routes an in-view MockTab wheel pan to its PDF when another HN session claimed the document event", async () => {
+    const files = new MemoryFiles();
+    const inactiveAdapter = new FakeAdapter();
+    const inactiveSession = await ViewerInkSession.create({
+      adapter: inactiveAdapter,
+      pdfPath: "Notes/inactive.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const adapter = new FakeAdapter();
+    adapter.root.className = "pdf-viewer-container";
+    let scrollTop = 0;
+    Object.defineProperties(adapter.root, {
+      scrollHeight: { value: 2_000, configurable: true },
+      clientHeight: { value: 800, configurable: true },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value; },
+        configurable: true
+      }
+    });
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+
+    const wheel = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      deltaY: 24,
+      clientX: 100,
+      clientY: 120
+    });
+    adapter.pageElement.dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(true);
+    expect(scrollTop).toBe(24);
+    expect(logs).toContainEqual({
+      event: "pointer seen",
+      payload: expect.objectContaining({ source: "wheel-pan", phase: "in-view", deltaY: 24, changed: true })
+    });
+
+    await session.destroy();
+    await inactiveSession.destroy();
+  });
+
   it("opens with empty annotations after quarantining malformed sidecar JSON", async () => {
     const source = await PDFDocument.create();
     source.addPage([600, 800]);

@@ -53,7 +53,7 @@ import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
 import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../logging/SessionLogger";
 import type { VaultLogSink } from "../logging/VaultLogSink";
 import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
-import { describeScrollElement } from "../integration/PdfScrollRoot";
+import { describeScrollElement, scrollPdfByDetailed } from "../integration/PdfScrollRoot";
 import { TextAnnotationSession } from "../text/TextAnnotationSession";
 import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../text/TextAnnotationCommands";
 import type { TextStyleChange } from "../ui/TextDropdown";
@@ -68,6 +68,7 @@ import {
 
 const INPUT_OWNER_REGISTRY_KEY = "__nativePdfHandwritingInputOwners";
 const detachedInputOwners = new WeakMap<HTMLElement, ViewerInkSession>();
+const wheelPanReplayDepth = new WeakMap<Document, number>();
 
 function inputOwners(pageElement: HTMLElement): WeakMap<HTMLElement, ViewerInkSession> {
   // Page elements belong to a specific Obsidian window. Keep ownership there
@@ -78,6 +79,21 @@ function inputOwners(pageElement: HTMLElement): WeakMap<HTMLElement, ViewerInkSe
   if (!root) return detachedInputOwners;
   if (!root[INPUT_OWNER_REGISTRY_KEY]) root[INPUT_OWNER_REGISTRY_KEY] = new WeakMap<HTMLElement, ViewerInkSession>();
   return root[INPUT_OWNER_REGISTRY_KEY];
+}
+
+function isReplayingWheelPan(document: Document): boolean {
+  return (wheelPanReplayDepth.get(document) ?? 0) > 0;
+}
+
+function replayWheelPan<T>(document: Document, work: () => T): T {
+  const depth = wheelPanReplayDepth.get(document) ?? 0;
+  wheelPanReplayDepth.set(document, depth + 1);
+  try {
+    return work();
+  } finally {
+    if (depth === 0) wheelPanReplayDepth.delete(document);
+    else wheelPanReplayDepth.set(document, depth);
+  }
 }
 
 export interface SessionDiagnostics {
@@ -601,6 +617,8 @@ export class ViewerInkSession {
     const options = { capture: true, signal: this.pointerProbeAbort.signal };
     let wheelPinchCount = 0;
     let lastWheelLogAt = 0;
+    let wheelPanCount = 0;
+    let lastWheelPanLogAt = 0;
     const within = (target: EventTarget | null): boolean => {
       if (!(target instanceof Element)) return false;
       return adapter.host.contains(target) || adapter.root.contains(target);
@@ -611,6 +629,30 @@ export class ViewerInkSession {
       const tag = target.tagName.toLowerCase();
       const classes = [...target.classList].slice(0, 3).join(".");
       return classes ? `${tag}.${classes}` : tag;
+    };
+    const applyWheelPan = (root: HTMLElement, deltaX: number, deltaY: number, clientX: number, clientY: number): boolean => {
+      return replayWheelPan(doc, () => {
+        const vertical = deltaY === 0 ? false : scrollPdfByDetailed(root, deltaY, clientX, clientY).changed;
+        const beforeLeft = root.scrollLeft;
+        if (deltaX !== 0) root.scrollLeft += deltaX;
+        return vertical || root.scrollLeft !== beforeLeft;
+      });
+    };
+    const logWheelPan = (
+      phase: "in-view" | "off-host" | "no-scroll-root",
+      details: Record<string, unknown>
+    ): void => {
+      const now = performance.now();
+      wheelPanCount += 1;
+      if (wheelPanCount > 1 && now - lastWheelPanLogAt < 80) return;
+      lastWheelPanLogAt = now;
+      this.logger.pointerSeen({
+        source: "wheel-pan",
+        pointerType: "wheel",
+        phase,
+        ...details,
+        burstIndex: wheelPanCount
+      });
     };
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
       const hitPage = this.closestPdfPageElement(e.target);
@@ -670,28 +712,52 @@ export class ViewerInkSession {
       });
     }, { ...options, passive: true });
     // Mac trackpad pinch = wheel+ctrl in Chromium/Electron — not pointerType "touch".
+    // MockTab two-finger pan = plain continuous wheel. Own pixel-wheel scrolling
+    // within this PDF: other live HN sessions can prevent the shared document
+    // event before the active view's native PDF handler sees it.
     doc.addEventListener("wheel", (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
-      const now = performance.now();
-      wheelPinchCount += 1;
-      if (wheelPinchCount > 1 && now - lastWheelLogAt < 80) return;
-      lastWheelLogAt = now;
-      this.logger.pointerSeen({
-        source: "wheel-pinch",
-        pointerType: "wheel",
-        ctrlKey: e.ctrlKey,
-        metaKey: e.metaKey,
-        deltaX: e.deltaX,
-        deltaY: e.deltaY,
-        deltaZ: e.deltaZ,
-        deltaMode: e.deltaMode,
-        clientX: Math.round(e.clientX),
-        clientY: Math.round(e.clientY),
-        within: within(e.target),
-        target: targetLabel(e.target),
-        burstIndex: wheelPinchCount
-      });
-    }, { ...options, passive: true });
+      if (isReplayingWheelPan(doc)) return;
+      if (e.ctrlKey || e.metaKey) {
+        const now = performance.now();
+        wheelPinchCount += 1;
+        if (wheelPinchCount > 1 && now - lastWheelLogAt < 80) return;
+        lastWheelLogAt = now;
+        this.logger.pointerSeen({
+          source: "wheel-pinch",
+          pointerType: "wheel",
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          deltaZ: e.deltaZ,
+          deltaMode: e.deltaMode,
+          clientX: Math.round(e.clientX),
+          clientY: Math.round(e.clientY),
+          within: within(e.target),
+          target: targetLabel(e.target),
+          burstIndex: wheelPinchCount
+        });
+        return;
+      }
+      if (e.deltaX === 0 && e.deltaY === 0) return;
+      if (e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return;
+      const root = adapter.scrollElement();
+      const inViewer = within(e.target);
+      const target = targetLabel(e.target);
+      if (!root) {
+        logWheelPan("no-scroll-root", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
+        return;
+      }
+      if (inViewer) {
+        e.preventDefault();
+        const changed = applyWheelPan(root, e.deltaX, e.deltaY, e.clientX, e.clientY);
+        logWheelPan("in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
+        return;
+      }
+      e.preventDefault();
+      const changed = applyWheelPan(root, e.deltaX, e.deltaY, e.clientX, e.clientY);
+      logWheelPan("off-host", { deltaX: e.deltaX, deltaY: e.deltaY, within: false, target, changed });
+    }, { ...options, passive: false });
     // Safari / some WebKit builds expose gesture* for pinch.
     for (const name of ["gesturestart", "gesturechange", "gestureend"] as const) {
       doc.addEventListener(name, (event) => {
@@ -3946,7 +4012,7 @@ export class ViewerInkSession {
           color: laserPrefs.color,
           width: laserPrefs.width,
           opacity: laserPrefs.opacity,
-          inputType: inkInputType(event.pointerType),
+          inputType: inkInputType(samples[0]?.pointerType ?? event.pointerType),
           stabilization: "medium"
         });
         for (const point of this.toPdfPoints(surface, samples, false)) surface.builder.add(point);
@@ -3980,7 +4046,7 @@ export class ViewerInkSession {
           color: drawing.color,
           width: drawing.width,
           opacity: drawing.opacity,
-          inputType: inkInputType(event.pointerType),
+          inputType: inkInputType(samples[0]?.pointerType ?? event.pointerType),
           stabilization: drawing.stabilization
         });
         for (const point of this.toPdfPoints(surface, samples, surface.simulateMousePressure, surface.pressureConditioner)) surface.builder.add(point);
