@@ -89,10 +89,14 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     const page = this.locator.page(this.locator.currentPage()) ?? this.pages()[0];
     const scroller = this.scrollElement();
     const denominator = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
+    const viewerScale = this.compatibility.privateViewer?.currentScale;
+    const scale = typeof viewerScale === "number" && Number.isFinite(viewerScale) && viewerScale > 0
+      ? viewerScale
+      : (page?.scale ?? 1);
     return {
       pageNumber: page?.pageNumber ?? 1,
       scrollFraction: Math.max(0, Math.min(1, scroller.scrollTop / denominator)),
-      scale: page?.scale ?? 1,
+      scale,
       rotation: page?.rotation ?? 0
     };
   }

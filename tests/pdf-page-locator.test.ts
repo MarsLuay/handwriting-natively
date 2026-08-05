@@ -99,6 +99,30 @@ describe("PdfPageLocator", () => {
     expect(info.width).toBeLessThan(1100);
   });
 
+  it("prefers live viewer scale when stale high data-scale still matches leftover canvas", () => {
+    // Zoom-out lag: canvas + data-scale still at ~8.5 while PDF.js is already 0.75.
+    const page = pageElement({
+      scale: "8.5",
+      rect: { width: 5202, height: 6732 },
+      canvas: { width: 5202, height: 6732 }
+    });
+    Object.defineProperty(page.querySelector("canvas")!, "clientWidth", { value: 5202 });
+    Object.defineProperty(page.querySelector("canvas")!, "clientHeight", { value: 6732 });
+    page.querySelector("canvas")!.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 5202, bottom: 6732, width: 5202, height: 6732, toJSON: () => ({})
+    });
+    const wrapper = document.createElement("div");
+    wrapper.className = "canvasWrapper";
+    wrapper.append(page.querySelector("canvas")!);
+    page.append(wrapper);
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    viewer.append(page);
+    const locator = new PdfPageLocator(viewer, { currentScale: 0.75 });
+    const info = locator.pages()[0]!;
+    expect(info.scale).toBeCloseTo(0.75, 2);
+  });
+
   it("does not resolve HN overlay when .page lacks data-page-number", () => {
     const viewer = document.createElement("div");
     viewer.className = "pdf-viewer";

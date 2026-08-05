@@ -189,6 +189,8 @@ export class SessionLogger {
       pageNumber: state.pageNumber,
       previousScale,
       scale: state.scale,
+      scaleDelta: Number(delta.toFixed(4)),
+      largeJump: Math.abs(delta) > 1,
       rotation: state.rotation,
       scrollFraction: Number(state.scrollFraction.toFixed(4))
     });

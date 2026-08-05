@@ -4,6 +4,7 @@ import { isInkDrawTool, type ToolId } from "../model";
 import { scrollPdfBy } from "../integration/PdfScrollRoot";
 import { PalmRejectionPolicy, type PenStateResetReason } from "./PalmRejectionPolicy";
 import { PointerCapabilities, type PointerSample } from "./PointerCapabilities";
+import { isTipContact, remapMouseTipSamples } from "./PenPresence";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
 import {
   resolveTouchAxisLock,
@@ -27,7 +28,23 @@ export function isDragPanPointer(event: Pick<PointerEvent, "pointerType" | "butt
 
 /** W3C Pointer Events reports an eraser stylus tip as button 5 / buttons bit 32. */
 export function isStylusEraserInput(event: Pick<PointerEvent, "pointerType" | "button" | "buttons">): boolean {
-  return event.pointerType === "pen" && (event.button === 5 || (event.buttons & 32) !== 0);
+  return (event.pointerType === "pen" || event.pointerType === "mouse")
+    && (event.button === 5 || (event.buttons & 32) !== 0);
+}
+
+/**
+ * `hasPointerCapture` can still be true while `releasePointerCapture` throws
+ * NotFoundError (pointer already gone / capture transferred during zoom settle).
+ * Optional chaining does not catch DOMException.
+ */
+export function safeReleasePointerCapture(element: Element, pointerId: number): boolean {
+  try {
+    if (!element.hasPointerCapture?.(pointerId)) return false;
+    element.releasePointerCapture?.(pointerId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 interface PanGesture {
@@ -173,10 +190,14 @@ export class PointerRouter {
       }
       return "native";
     }
-    if (tool === "text" && (event.pointerType === "pen" || (event.pointerType === "mouse" && event.button === 0))) return "text";
+    // MockTab can expose a physical eraser as a mouse pointer with W3C's
+    // dedicated eraser button/bit. Route it before the active drawing tool.
+    if (isStylusEraserInput(event)) return "edit";
+    const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
+    if (tool === "text" && (penLike || (event.pointerType === "mouse" && event.button === 0))) return "text";
     const editing = tool === "eraser" || tool === "lasso";
     if (event.pointerType === "mouse" && event.button === 2 && this.callbacks.rightMouseEraserEnabled?.()) return "edit";
-    if (event.pointerType === "pen") return editing ? "edit" : "draw";
+    if (penLike) return editing ? "edit" : "draw";
     if (event.pointerType === "mouse" && event.button === 0 && isInkDrawTool(tool)) return "draw";
     if (event.pointerType === "mouse" && event.button === 0 && editing) return "edit";
     return "native";
@@ -205,11 +226,8 @@ export class PointerRouter {
       this.callbacks.onTouchLifecycle?.("primary-reset", event, { trackedBefore, trackedAfter: 0 });
     }
     this.palmPolicy.pointerDown(event);
-    if (event.pointerType === "pen") this.syncTouchActionMode();
-    if (isStylusEraserInput(event) && this.callbacks.drawingEnabled()) {
-      this.stylusErasers.add(event.pointerId);
-      this.callbacks.onStylusEraserStart?.();
-    }
+    if (this.palmPolicy.hasActivePen()) this.syncTouchActionMode();
+    this.beginStylusEraser(event);
     const route = this.classify(event);
     if (event.pointerType === "touch" && route !== "ignored") this.touches.add(event.pointerId);
     this.callbacks.onRoute?.(route, event);
@@ -251,8 +269,52 @@ export class PointerRouter {
     event.stopImmediatePropagation();
     this.element.setPointerCapture?.(event.pointerId);
     this.syncTouchActionMode();
-    this.callbacks.onStart?.(PointerCapabilities.samples(event), route, event);
+    this.callbacks.onStart?.(this.inkSamples(event), route, event);
   };
+
+  /** Samples with MockTab mouse-tip remapped to pen after pen was seen. */
+  private inkSamples(
+    event: PointerEvent,
+    options?: { skipPenHover?: boolean }
+  ): PointerSample[] {
+    this.palmPolicy.notePenPresence(event);
+    const samples = PointerCapabilities.samples(event, options);
+    return remapMouseTipSamples(
+      samples,
+      this.palmPolicy.hasPenSeen(),
+      this.palmPolicy.shouldTreatMouseTipAsPen(event)
+    );
+  }
+
+  /** Start temporary Eraser mode once for a physical eraser pointer. */
+  private beginStylusEraser(event: PointerEvent): void {
+    if (!this.callbacks.drawingEnabled() || !isStylusEraserInput(event)) return;
+    if (this.stylusErasers.has(event.pointerId)) return;
+    this.stylusErasers.add(event.pointerId);
+    this.callbacks.onStylusEraserStart?.();
+  }
+
+  /**
+   * Some mouse-emulated tablet stacks first expose tip contact on pointermove.
+   * Recover a routed ink start only for an actual pen or a MockTab-style
+   * pressure/eraser mouse tip; ordinary mouse movement stays native.
+   */
+  private recoverMissingPointerDown(event: PointerEvent): boolean {
+    if (!this.callbacks.drawingEnabled() || !isTipContact(event)) return false;
+    const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
+    if (!penLike) return false;
+    this.palmPolicy.pointerDown(event);
+    if (this.palmPolicy.hasActivePen()) this.syncTouchActionMode();
+    this.beginStylusEraser(event);
+    const route = this.classify(event);
+    if (route !== "draw" && route !== "edit" && route !== "text") return false;
+    this.routed.set(event.pointerId, route);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    this.element.setPointerCapture?.(event.pointerId);
+    this.callbacks.onStart?.(this.inkSamples(event), route, event);
+    return true;
+  }
 
   /** Cancel companion TouchEvents while stylus is down (iPad WebKit scroll path). */
   private readonly blockTouchScrollWhilePen = (event: TouchEvent): void => {
@@ -349,8 +411,8 @@ export class PointerRouter {
     const gesture = this.touchAxis;
     if (!gesture) return;
     this.touchAxis = null;
-    if (gesture.lock === "vertical" && this.element.hasPointerCapture?.(gesture.pointerId)) {
-      this.element.releasePointerCapture?.(gesture.pointerId);
+    if (gesture.lock === "vertical") {
+      safeReleasePointerCapture(this.element, gesture.pointerId);
     }
     if (gesture.lock !== "none") {
       this.callbacks.onTouchLifecycle?.("axis-lock", this.syntheticLifecycleEvent(), {
@@ -431,15 +493,16 @@ export class PointerRouter {
     if (phase === "pointercancel") {
       this.callbacks.onCancel?.(route, event);
     } else {
-      this.callbacks.onEnd?.(PointerCapabilities.samples(event), route, event);
+      this.callbacks.onEnd?.(this.inkSamples(event), route, event);
     }
-    if (this.element.hasPointerCapture?.(event.pointerId)) this.element.releasePointerCapture?.(event.pointerId);
+    safeReleasePointerCapture(this.element, event.pointerId);
     this.routed.delete(event.pointerId);
   }
 
   /** Clear stylus contact — Ink unlockScroll equivalent. */
   private releasePenContact(event: PointerEvent, reason: Extract<PenStateResetReason, "pointerup" | "pointercancel" | "lostpointercapture">): void {
-    if (event.pointerType !== "pen") return;
+    if (event.pointerType !== "pen" && event.pointerType !== "mouse") return;
+    if (event.pointerType === "mouse" && !this.palmPolicy.activePenIds().includes(event.pointerId)) return;
     if (reason === "lostpointercapture") {
       this.palmPolicy.clearAll("lostpointercapture");
       return;
@@ -459,13 +522,14 @@ export class PointerRouter {
       event.preventDefault();
       event.stopImmediatePropagation();
       // Ink: skip Pencil hover / near-zero pressure on move (keep down/up for floor + tip).
-      const samples = PointerCapabilities.samples(event, {
+      const samples = this.inkSamples(event, {
         skipPenHover: route === "draw" || route === "edit"
       });
       if (samples.length === 0) return;
       this.callbacks.onMove?.(samples, route, event);
       return;
     }
+    if (this.recoverMissingPointerDown(event)) return;
     const pan = this.panning.get(event.pointerId);
     if (pan) {
       this.updateMousePan(event, pan);
@@ -480,8 +544,8 @@ export class PointerRouter {
     if (route) {
       event.preventDefault();
       event.stopImmediatePropagation();
-      this.callbacks.onEnd?.(PointerCapabilities.samples(event), route, event);
-      if (this.element.hasPointerCapture?.(event.pointerId)) this.element.releasePointerCapture?.(event.pointerId);
+      this.callbacks.onEnd?.(this.inkSamples(event), route, event);
+      safeReleasePointerCapture(this.element, event.pointerId);
       this.routed.delete(event.pointerId);
     }
     this.finishMousePan(event);
@@ -501,7 +565,7 @@ export class PointerRouter {
       event.preventDefault();
       event.stopImmediatePropagation();
       this.callbacks.onCancel?.(route, event);
-      if (this.element.hasPointerCapture?.(event.pointerId)) this.element.releasePointerCapture?.(event.pointerId);
+      safeReleasePointerCapture(this.element, event.pointerId);
       this.routed.delete(event.pointerId);
     }
     this.finishMousePan(event);
@@ -517,6 +581,13 @@ export class PointerRouter {
     if (event.pointerType === "mouse" || event.pointerType === "pen") this.hideCustomCursors();
     // Capture can move to another node; pointerup may never hit this page listener.
     if (event.pointerType === "pen" && this.palmPolicy.hasActivePen()) {
+      this.finishRoutedPointer(event, "pointerup");
+      this.releasePenContact(event, "lostpointercapture");
+      this.syncTouchActionMode();
+      return;
+    }
+    // Mouse ink routes (including MockTab tip-as-mouse) need the same finish path.
+    if (event.pointerType === "mouse" && this.routed.has(event.pointerId)) {
       this.finishRoutedPointer(event, "pointerup");
       this.releasePenContact(event, "lostpointercapture");
       this.syncTouchActionMode();
@@ -571,10 +642,10 @@ export class PointerRouter {
         this.callbacks.onCancel?.(route, event);
         completion = "document-cancel";
       } else {
-        this.callbacks.onEnd?.(PointerCapabilities.samples(event), route, event);
+        this.callbacks.onEnd?.(this.inkSamples(event), route, event);
         completion = "document-end";
       }
-      if (this.element.hasPointerCapture?.(event.pointerId)) this.element.releasePointerCapture?.(event.pointerId);
+      safeReleasePointerCapture(this.element, event.pointerId);
       this.routed.delete(event.pointerId);
     }
     const trackedBefore = this.touches.size;
@@ -632,8 +703,13 @@ export class PointerRouter {
 
   destroy(): void {
     this.cancelScheduledCursorUpdate();
-    for (const pointerId of this.routed.keys()) {
-      if (this.element.hasPointerCapture?.(pointerId)) this.element.releasePointerCapture?.(pointerId);
+    const captureIds = new Set<number>([
+      ...this.routed.keys(),
+      ...this.panning.keys(),
+      ...(this.touchAxis ? [this.touchAxis.pointerId] : [])
+    ]);
+    for (const pointerId of captureIds) {
+      safeReleasePointerCapture(this.element, pointerId);
     }
     this.routed.clear();
     this.stylusErasers.clear();
@@ -706,7 +782,7 @@ export class PointerRouter {
       });
     }
     this.panning.delete(event.pointerId);
-    if (this.element.hasPointerCapture?.(event.pointerId)) this.element.releasePointerCapture?.(event.pointerId);
+    safeReleasePointerCapture(this.element, event.pointerId);
     if (!this.panning.size) this.element.classList.remove("native-pdf-handwriting-panning");
   }
 
