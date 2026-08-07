@@ -422,7 +422,7 @@ export class SessionLogger {
 
   /** Confirms whether a sidebar action augmented Obsidian's existing menu. */
   thumbnailMenu(
-    phase: "context-seen" | "context-ignored" | "menu-scan" | "native-template-armed" | "native-template-appended" | "native-template-unavailable" | "native-menu-appended" | "native-menu-missing" | "standalone-add",
+    phase: "context-seen" | "context-ignored" | "menu-scan" | "native-template-armed" | "native-template-appended" | "native-template-unavailable" | "native-menu-appended" | "native-menu-missing" | "standalone-add" | "range-selected" | "range-delete-requested" | "keyboard-delete-error",
     details: Record<string, unknown> = {}
   ): void {
     this.emit(phase === "native-menu-missing" ? "warn" : "info", "thumbnail menu", {
@@ -445,6 +445,7 @@ export class SessionLogger {
   pdfPageAction(
     phase:
       | "insert-start"
+      | "insert-cancel"
       | "insert-complete"
       | "insert-error"
       | "insert-focus"
@@ -452,6 +453,9 @@ export class SessionLogger {
       | "delete-cancel"
       | "delete-complete"
       | "delete-error"
+      | "delete-range-start"
+      | "delete-range-complete"
+      | "delete-range-error"
       | "page-shield-captured"
       | "page-shield-skipped"
       | "page-shield-window-captured"

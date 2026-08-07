@@ -5,6 +5,7 @@ import {
   createGoodNotesNotebook,
   createPdfFromTemplate,
   deletePdfPage,
+  deletePdfPages,
   GOODNOTES_STANDARD_PAGE_SIZE,
   insertMatchingBlankPage,
   US_LETTER_PAGE_SIZE
@@ -96,5 +97,23 @@ describe("PDF note service", () => {
     expect(await sizes(source)).toHaveLength(3);
     await expect(deletePdfPage(source, 4)).rejects.toThrow("does not exist");
     await expect(deletePdfPage(await createPdf([[400, 600]]), 1)).rejects.toThrow("at least one page");
+  });
+
+  it("deletes a unique set of original pages together and keeps one page", async () => {
+    const source = await createPdf([[100, 200], [200, 300], [300, 400], [400, 500], [500, 600]]);
+
+    const result = await deletePdfPages(source, [4, 2, 4]);
+
+    expect(result.pageNumbers).toEqual([4, 2]);
+    expect(result.pageCountBefore).toBe(5);
+    expect(result.pageCountAfter).toBe(3);
+    expect(await sizes(result.bytes)).toEqual([
+      { width: 100, height: 200 },
+      { width: 300, height: 400 },
+      { width: 500, height: 600 }
+    ]);
+    await expect(deletePdfPages(source, [])).rejects.toThrow("Select at least one");
+    await expect(deletePdfPages(source, [1, 2, 3, 4, 5])).rejects.toThrow("at least one page");
+    expect(await sizes(source)).toHaveLength(5);
   });
 });

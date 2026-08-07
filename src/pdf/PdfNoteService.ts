@@ -63,14 +63,39 @@ export async function appendMatchingBlankPage(sourceBytes: Uint8Array): Promise<
   return (await insertMatchingBlankPage(sourceBytes, Number.MAX_SAFE_INTEGER)).bytes;
 }
 
-/** Rewrites source PDF bytes with one selected page permanently removed. */
-export async function deletePdfPage(sourceBytes: Uint8Array, pageNumber: number): Promise<Uint8Array> {
+export interface DeletedPdfPages {
+  bytes: Uint8Array;
+  /** Canonical, descending one-indexed source page numbers. */
+  pageNumbers: number[];
+  pageCountBefore: number;
+  pageCountAfter: number;
+}
+
+/** Rewrites source PDF bytes with multiple selected source pages removed together. */
+export async function deletePdfPages(
+  sourceBytes: Uint8Array,
+  requestedPageNumbers: readonly number[]
+): Promise<DeletedPdfPages> {
   const source = await PDFDocument.load(sourceBytes);
   const count = source.getPageCount();
-  if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > count) {
-    throw new Error(`PDF page ${pageNumber} does not exist.`);
+  const pageNumbers = [...new Set(requestedPageNumbers)].sort((left, right) => right - left);
+  if (!pageNumbers.length) throw new Error("Select at least one PDF page.");
+  for (const pageNumber of pageNumbers) {
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > count) {
+      throw new Error(`PDF page ${pageNumber} does not exist.`);
+    }
   }
-  if (count <= 1) throw new Error("A PDF must keep at least one page.");
-  source.removePage(pageNumber - 1);
-  return source.save();
+  if (pageNumbers.length >= count) throw new Error("A PDF must keep at least one page.");
+  for (const pageNumber of pageNumbers) source.removePage(pageNumber - 1);
+  return {
+    bytes: await source.save(),
+    pageNumbers,
+    pageCountBefore: count,
+    pageCountAfter: count - pageNumbers.length
+  };
+}
+
+/** Rewrites source PDF bytes with one selected page permanently removed. */
+export async function deletePdfPage(sourceBytes: Uint8Array, pageNumber: number): Promise<Uint8Array> {
+  return (await deletePdfPages(sourceBytes, [pageNumber])).bytes;
 }

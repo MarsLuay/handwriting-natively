@@ -292,6 +292,60 @@ describe("viewer runtime tracer", () => {
     await inactiveSession.destroy();
   });
 
+  it("leaves a native PDF sidebar wheel event for the sidebar", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    adapter.root.className = "pdf-viewer-container";
+    let scrollTop = 0;
+    Object.defineProperties(adapter.root, {
+      scrollHeight: { value: 2_000, configurable: true },
+      clientHeight: { value: 800, configurable: true },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value; },
+        configurable: true
+      }
+    });
+    const sidebar = document.createElement("div");
+    sidebar.className = "pdf-sidebar-container";
+    adapter.root.append(sidebar);
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+
+    const wheel = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      deltaY: 24,
+      clientX: 20,
+      clientY: 120
+    });
+    sidebar.dispatchEvent(wheel);
+
+    expect(wheel.defaultPrevented).toBe(false);
+    expect(scrollTop).toBe(0);
+    expect(logs).toContainEqual({
+      event: "pointer seen",
+      payload: expect.objectContaining({ source: "wheel-pan", phase: "sidebar", deltaY: 24 })
+    });
+
+    await session.destroy();
+  });
+
   it("opens with empty annotations after quarantining malformed sidecar JSON", async () => {
     const source = await PDFDocument.create();
     source.addPage([600, 800]);

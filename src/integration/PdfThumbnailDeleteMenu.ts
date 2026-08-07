@@ -2,6 +2,7 @@ import { Menu } from "obsidian";
 import { isElement, isHTMLElement } from "../dom/typeGuards";
 
 const THUMBNAIL_VIEW_SELECTOR = ".pdf-thumbnail-view, #thumbnailView, .thumbnailView";
+const THUMBNAIL_RANGE_SELECTED_CLASS = "native-pdf-handwriting-thumbnail-range-selected";
 type ThumbnailAction = { kind: "delete" | "add"; pageNumber: number };
 export type ThumbnailMenuPhase =
   | "context-seen"
@@ -12,11 +13,16 @@ export type ThumbnailMenuPhase =
   | "native-template-unavailable"
   | "native-menu-appended"
   | "native-menu-missing"
-  | "standalone-add";
+  | "standalone-add"
+  | "range-selected"
+  | "range-delete-requested"
+  | "keyboard-delete-error";
 
 export interface PdfThumbnailSidebarActionsCallbacks {
   onAddPage(pageNumber: number): void | Promise<void>;
   onDeletePage(pageNumber: number): void | Promise<void>;
+  /** Removes selected source-PDF pages as one validated transaction. */
+  onDeletePages?(pageNumbers: readonly number[]): void | Promise<void>;
   /** Durable diagnostics for augmenting Obsidian's own thumbnail menu. */
   onMenuEvent?(phase: ThumbnailMenuPhase, details: Record<string, unknown>): void;
 }
@@ -85,6 +91,12 @@ export class PdfThumbnailSidebarActions {
    * Delete remove the selected page — not while drawing in the document.
    */
   private keyboardDeleteArmed = false;
+  /** First page in the current PowerPoint-style Shift-click selection. */
+  private rangeAnchorPage: number | null = null;
+  /** Most recently Shift-clicked page; lets selection survive PDF.js remounts. */
+  private rangeEndPage: number | null = null;
+  /** Prevent key-repeat from starting overlapping PDF mutations. */
+  private keyboardDeletePending = false;
 
   constructor(
     private readonly host: HTMLElement,
@@ -116,6 +128,9 @@ export class PdfThumbnailSidebarActions {
     this.addButton?.remove();
     this.addButton = null;
     this.keyboardDeleteArmed = false;
+    this.keyboardDeletePending = false;
+    this.rangeAnchorPage = null;
+    this.rangeEndPage = null;
   }
 
   /**
@@ -123,12 +138,31 @@ export class PdfThumbnailSidebarActions {
    * Returns true when the event was claimed (caller should preventDefault).
    */
   handleKeyDown(event: KeyboardEvent): boolean {
-    if (!this.keyboardDeleteArmed) return false;
     if (event.altKey || event.ctrlKey || event.metaKey) return false;
     const isDelete = event.key === "Delete" || event.key === "Backspace"
       || event.code === "Delete" || event.code === "Backspace";
     if (!isDelete) return false;
     if (shouldIgnoreThumbnailPageDeleteTarget(event.target)) return false;
+    if (this.keyboardDeletePending) return true;
+    if (!this.keyboardDeleteArmed) return false;
+    const rangePageNumbers = this.selectedRangePageNumbers();
+    if (rangePageNumbers.length > 1 && this.callbacks.onDeletePages) {
+      const firstPage = rangePageNumbers.at(-1)!;
+      const lastPage = rangePageNumbers[0]!;
+      this.keyboardDeleteArmed = false;
+      this.rangeAnchorPage = null;
+      this.rangeEndPage = null;
+      this.clearRangeSelection(findThumbnailView(this.host));
+      this.callbacks.onMenuEvent?.("range-delete-requested", {
+        via: "keyboard",
+        pageNumbers: rangePageNumbers,
+        firstPage,
+        lastPage,
+        count: rangePageNumbers.length
+      });
+      this.runKeyboardDelete(() => this.callbacks.onDeletePages!(rangePageNumbers));
+      return true;
+    }
     const pageNumber = selectedThumbnailPageNumber(this.host);
     if (pageNumber === null) return false;
     this.callbacks.onMenuEvent?.("context-seen", {
@@ -136,7 +170,7 @@ export class PdfThumbnailSidebarActions {
       pageNumber,
       via: "keyboard"
     });
-    void this.callbacks.onDeletePage(pageNumber);
+    this.runKeyboardDelete(() => this.callbacks.onDeletePage(pageNumber));
     return true;
   }
 
@@ -147,6 +181,28 @@ export class PdfThumbnailSidebarActions {
       return;
     }
     const target = event.target;
+    const pageNumber = thumbnailPageNumber(this.host, target);
+    if (pageNumber !== null && event.button === 0) {
+      this.keyboardDeleteArmed = true;
+      if (event.shiftKey && this.rangeAnchorPage !== null) {
+        this.rangeEndPage = pageNumber;
+        const count = this.applyRangeSelection(thumbnailView);
+        const firstPage = Math.min(this.rangeAnchorPage, pageNumber);
+        const lastPage = Math.max(this.rangeAnchorPage, pageNumber);
+        this.callbacks.onMenuEvent?.("range-selected", {
+          anchorPage: this.rangeAnchorPage,
+          pageNumber,
+          firstPage,
+          lastPage,
+          count
+        });
+      } else {
+        this.rangeAnchorPage = pageNumber;
+        this.rangeEndPage = null;
+        this.clearRangeSelection(thumbnailView);
+      }
+      return;
+    }
     if (target instanceof Node && thumbnailView.contains(target)) {
       this.keyboardDeleteArmed = true;
       return;
@@ -457,6 +513,62 @@ export class PdfThumbnailSidebarActions {
     }
     if (this.addButton.parentElement !== thumbnailView) thumbnailView.append(this.addButton);
     else if (thumbnailView.lastElementChild !== this.addButton) thumbnailView.append(this.addButton);
+    this.applyRangeSelection(thumbnailView);
+  }
+
+  /** Preserve transient range highlighting when PDF.js replaces thumbnail DOM. */
+  private applyRangeSelection(thumbnailView: HTMLElement): number {
+    this.clearRangeSelection(thumbnailView);
+    if (this.rangeAnchorPage === null || this.rangeEndPage === null) return 0;
+    const firstPage = Math.min(this.rangeAnchorPage, this.rangeEndPage);
+    const lastPage = Math.max(this.rangeAnchorPage, this.rangeEndPage);
+    const selected = thumbnails(thumbnailView).filter((thumbnail) => {
+      const pageNumber = Number(thumbnail.dataset.pageNumber);
+      return pageNumber >= firstPage && pageNumber <= lastPage;
+    });
+    for (const thumbnail of selected) thumbnail.classList.add(THUMBNAIL_RANGE_SELECTED_CLASS);
+    return selected.length;
+  }
+
+  private clearRangeSelection(thumbnailView: HTMLElement | null): void {
+    if (!thumbnailView) return;
+    thumbnailView.querySelectorAll(`.${THUMBNAIL_RANGE_SELECTED_CLASS}`)
+      .forEach((thumbnail) => thumbnail.classList.remove(THUMBNAIL_RANGE_SELECTED_CLASS));
+  }
+
+  /** Returns the current custom selection in descending source-page order. */
+  private selectedRangePageNumbers(): number[] {
+    const thumbnailView = findThumbnailView(this.host);
+    if (!thumbnailView || this.rangeAnchorPage === null || this.rangeEndPage === null) return [];
+    const firstPage = Math.min(this.rangeAnchorPage, this.rangeEndPage);
+    const lastPage = Math.max(this.rangeAnchorPage, this.rangeEndPage);
+    return thumbnails(thumbnailView)
+      .map((thumbnail) => Number(thumbnail.dataset.pageNumber))
+      .filter((pageNumber) => pageNumber >= firstPage && pageNumber <= lastPage)
+      .sort((left, right) => right - left);
+  }
+
+  private runKeyboardDelete(work: () => void | Promise<void>): void {
+    this.keyboardDeletePending = true;
+    try {
+      const result = work();
+      if (!result || typeof result.then !== "function") {
+        this.keyboardDeletePending = false;
+        return;
+      }
+      void result
+        .catch((error: unknown) => this.callbacks.onMenuEvent?.("keyboard-delete-error", {
+          via: "keyboard",
+          error: error instanceof Error ? error.message : String(error)
+        }))
+        .finally(() => { this.keyboardDeletePending = false; });
+    } catch (error) {
+      this.keyboardDeletePending = false;
+      this.callbacks.onMenuEvent?.("keyboard-delete-error", {
+        via: "keyboard",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 }
 

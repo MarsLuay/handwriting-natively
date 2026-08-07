@@ -314,6 +314,13 @@
   padding: 0;
   width: 30px;
 }
+
+/* PowerPoint-style Shift-click page range; native `.selected` remains intact. */
+.pdf-sidebar-container .thumbnail.native-pdf-handwriting-thumbnail-range-selected,
+.pdf-sidebar .thumbnail.native-pdf-handwriting-thumbnail-range-selected {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
 .native-pdf-handwriting-eraser-size-label {
   align-items: center;
   display: flex;
