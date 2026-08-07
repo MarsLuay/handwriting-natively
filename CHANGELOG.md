@@ -1,3 +1,9 @@
+## 0.1.52 — 2026-08-06
+
+- Improve stylus handling after pen hover and keep palm contacts from interrupting drawing or touch gestures.
+- Keep two-finger wheel panning in PDF content while native PDF sidebar scrolling stays native.
+- Shift-click PDF thumbnails to select a page range, then use Delete or Backspace to remove the selected pages together.
+
 ## 0.1.51 — 2026-08-01
 
 - Zoom settle focus: sync **blit-stretch** at full backing (no 58-stroke vector wall); defer focus HQ to the first settle rAF under the CSS mask, then cheap neighbors.
