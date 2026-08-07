@@ -81,18 +81,18 @@ function inputOwners(pageElement: HTMLElement): WeakMap<HTMLElement, ViewerInkSe
   return root[INPUT_OWNER_REGISTRY_KEY];
 }
 
-function isReplayingWheelPan(document: Document): boolean {
-  return (wheelPanReplayDepth.get(document) ?? 0) > 0;
+function isReplayingWheelPan(ownerDocument: Document): boolean {
+  return (wheelPanReplayDepth.get(ownerDocument) ?? 0) > 0;
 }
 
-function replayWheelPan<T>(document: Document, work: () => T): T {
-  const depth = wheelPanReplayDepth.get(document) ?? 0;
-  wheelPanReplayDepth.set(document, depth + 1);
+function replayWheelPan<T>(ownerDocument: Document, work: () => T): T {
+  const depth = wheelPanReplayDepth.get(ownerDocument) ?? 0;
+  wheelPanReplayDepth.set(ownerDocument, depth + 1);
   try {
     return work();
   } finally {
-    if (depth === 0) wheelPanReplayDepth.delete(document);
-    else wheelPanReplayDepth.set(document, depth);
+    if (depth === 0) wheelPanReplayDepth.delete(ownerDocument);
+    else wheelPanReplayDepth.set(ownerDocument, depth);
   }
 }
 
@@ -118,6 +118,8 @@ export interface ViewerInkSessionOptions {
   onInsertPage?(requestedPageNumber: number): Promise<number>;
   /** Removes one source-PDF page and remaps its persisted annotations. */
   onDeletePage?(pageNumber: number): Promise<void>;
+  /** Removes multiple source-PDF pages and remaps persisted annotations once. */
+  onDeletePages?(pageNumbers: readonly number[]): Promise<void>;
   notice(message: string): void;
   decideUnsaved?(): Promise<CloseChoice>;
   mouseDragScrollEnabled?(): boolean;
@@ -388,6 +390,7 @@ export class ViewerInkSession {
   private readonly viewerMousePan: ViewerMousePan;
   private readonly pullToAddPage: PullToAddPageGesture | null;
   private readonly thumbnailSidebarActions: PdfThumbnailSidebarActions | null;
+  private pageMutationInFlight = false;
   private readonly findBridge: AnnotationFindBridge;
   /** Last applied browser direct-manipulation policy for mounted PDF pages. */
   private touchDrawPolicyEnabled: boolean | null = null;
@@ -585,6 +588,9 @@ export class ViewerInkSession {
       ? new PdfThumbnailSidebarActions(adapter.host, {
         onAddPage: (pageNumber) => this.addPageAt(pageNumber),
         onDeletePage: (pageNumber) => this.deletePage(pageNumber),
+        ...(options.onDeletePages
+          ? { onDeletePages: (pageNumbers: readonly number[]) => this.deletePages(pageNumbers) }
+          : {}),
         onMenuEvent: (phase, details) => this.logger.thumbnailMenu(phase, details)
       })
       : null;
@@ -623,6 +629,12 @@ export class ViewerInkSession {
       if (!(target instanceof Element)) return false;
       return adapter.host.contains(target) || adapter.root.contains(target);
     };
+    const withinNativePdfSidebar = (target: EventTarget | null): boolean => {
+      if (!(target instanceof Element)) return false;
+      return Boolean(target.closest(
+        ".pdf-sidebar-container, .pdf-sidebar, .pdf-thumbnail-view, .pdf-outline-view"
+      ));
+    };
     const targetLabel = (target: EventTarget | null): string => {
       if (target === null) return "null";
       if (!(target instanceof Element)) return Object.prototype.toString.call(target);
@@ -639,7 +651,7 @@ export class ViewerInkSession {
       });
     };
     const logWheelPan = (
-      phase: "in-view" | "off-host" | "no-scroll-root",
+      phase: "in-view" | "sidebar" | "outside-viewer" | "no-scroll-root",
       details: Record<string, unknown>
     ): void => {
       const now = performance.now();
@@ -712,9 +724,9 @@ export class ViewerInkSession {
       });
     }, { ...options, passive: true });
     // Mac trackpad pinch = wheel+ctrl in Chromium/Electron — not pointerType "touch".
-    // MockTab two-finger pan = plain continuous wheel. Own pixel-wheel scrolling
-    // within this PDF: other live HN sessions can prevent the shared document
-    // event before the active view's native PDF handler sees it.
+    // MockTab two-finger pan = plain continuous wheel. This document-capture
+    // listener sees every Obsidian pane, so only own events in the PDF view;
+    // native thumbnail/outline sidebars must retain their own scrolling.
     doc.addEventListener("wheel", (e: WheelEvent) => {
       if (isReplayingWheelPan(doc)) return;
       if (e.ctrlKey || e.metaKey) {
@@ -744,19 +756,21 @@ export class ViewerInkSession {
       const root = adapter.scrollElement();
       const inViewer = within(e.target);
       const target = targetLabel(e.target);
+      if (withinNativePdfSidebar(e.target)) {
+        logWheelPan("sidebar", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
+        return;
+      }
+      if (!inViewer) {
+        logWheelPan("outside-viewer", { deltaX: e.deltaX, deltaY: e.deltaY, within: false, target });
+        return;
+      }
       if (!root) {
         logWheelPan("no-scroll-root", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
         return;
       }
-      if (inViewer) {
-        e.preventDefault();
-        const changed = applyWheelPan(root, e.deltaX, e.deltaY, e.clientX, e.clientY);
-        logWheelPan("in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
-        return;
-      }
       e.preventDefault();
       const changed = applyWheelPan(root, e.deltaX, e.deltaY, e.clientX, e.clientY);
-      logWheelPan("off-host", { deltaX: e.deltaX, deltaY: e.deltaY, within: false, target, changed });
+      logWheelPan("in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
     }, { ...options, passive: false });
     // Safari / some WebKit builds expose gesture* for pinch.
     for (const name of ["gesturestart", "gesturechange", "gestureend"] as const) {
@@ -2239,21 +2253,21 @@ export class ViewerInkSession {
    */
   private async armPageMutationShield(action: "delete" | "insert", pageNumber: number): Promise<void> {
     this.releasePageMutationShield("superseded");
-    const document = this.options.adapter.host.ownerDocument;
-    const view = document.defaultView;
-    if (!view || !document.body) {
+    const ownerDocument = this.options.adapter.host.ownerDocument;
+    const view = ownerDocument.defaultView;
+    if (!view || !ownerDocument.body) {
       this.logger.pdfPageAction("page-shield-skipped", { action, pageNumber, reason: "document-unavailable" });
       return;
     }
 
-    const shield = createDetachedDiv(document);
+    const shield = createDetachedDiv(ownerDocument);
     shield.className = "native-pdf-handwriting-page-mutation-shield";
     shield.dataset.pageAction = action;
     shield.dataset.pageNumber = String(pageNumber);
     const windowCapture = await captureNativePdfMutationScreenshot(this.options.adapter.host);
     if (windowCapture.kind === "captured") {
       const { screenshot } = windowCapture;
-      const snapshot = createDetachedEl(document, "img");
+      const snapshot = createDetachedEl(ownerDocument, "img");
       snapshot.className = "native-pdf-handwriting-page-mutation-window-snapshot";
       snapshot.src = screenshot.dataUrl;
       snapshot.alt = "";
@@ -2265,7 +2279,7 @@ export class ViewerInkSession {
         height: `${screenshot.height}px`
       });
       shield.append(snapshot);
-      document.body.append(shield);
+      ownerDocument.body.append(shield);
       this.pageMutationShield = {
         element: shield,
         action,
@@ -2304,7 +2318,7 @@ export class ViewerInkSession {
         || rect.top >= viewportHeight
       ) continue;
 
-      const snapshot = createDetachedEl(document, "canvas");
+      const snapshot = createDetachedEl(ownerDocument, "canvas");
       const context = snapshot.getContext("2d");
       if (!context) continue;
       const deviceScale = Number.isFinite(view.devicePixelRatio) && view.devicePixelRatio > 0 ? view.devicePixelRatio : 1;
@@ -2349,7 +2363,7 @@ export class ViewerInkSession {
       this.logger.pdfPageAction("page-shield-skipped", { action, pageNumber, reason: "no-visible-native-canvas" });
       return;
     }
-    document.body.append(shield);
+    ownerDocument.body.append(shield);
     this.pageMutationShield = {
       element: shield,
       action,
@@ -2555,6 +2569,11 @@ export class ViewerInkSession {
 
   async addPageAt(requestedPageNumber: number): Promise<void> {
     if (!this.options.onInsertPage) return;
+    if (this.pageMutationInFlight) {
+      this.logger.pdfPageAction("insert-cancel", { requestedPageNumber, reason: "page-mutation-in-flight" });
+      return;
+    }
+    this.pageMutationInFlight = true;
     this.logger.pdfPageAction("insert-start", { requestedPageNumber, dirty: this.isDirty() });
     try {
       // The source PDF is replaced in place. Flush first so its sidecar has
@@ -2580,6 +2599,8 @@ export class ViewerInkSession {
         error: this.errorMessage(error)
       });
       this.options.notice(`Could not add a page: ${this.errorMessage(error)}`);
+    } finally {
+      this.pageMutationInFlight = false;
     }
   }
 
@@ -2618,6 +2639,11 @@ export class ViewerInkSession {
 
   private async deletePage(pageNumber: number): Promise<void> {
     if (!this.options.onDeletePage) return;
+    if (this.pageMutationInFlight) {
+      this.logger.pdfPageAction("delete-cancel", { pageNumber, reason: "page-mutation-in-flight" });
+      return;
+    }
+    this.pageMutationInFlight = true;
     this.logger.pdfPageAction("delete-start", { pageNumber, dirty: this.isDirty() });
     try {
       // Make the persisted sidecar authoritative before main rewrites both the
@@ -2633,14 +2659,77 @@ export class ViewerInkSession {
       this.releasePageMutationShield("delete-error");
       this.logger.pdfPageAction("delete-error", { pageNumber, error: this.errorMessage(error) });
       this.options.notice(`Could not delete page ${pageNumber}: ${this.errorMessage(error)}`);
+    } finally {
+      this.pageMutationInFlight = false;
+    }
+  }
+
+  /** Deletes original page numbers together so PDF, sidecar, and live state stay aligned. */
+  private async deletePages(requestedPageNumbers: readonly number[]): Promise<void> {
+    if (!this.options.onDeletePages) return;
+    const pageNumbers = [...new Set(requestedPageNumbers)]
+      .filter((pageNumber) => Number.isInteger(pageNumber) && pageNumber >= 1)
+      .sort((left, right) => right - left);
+    if (pageNumbers.length <= 1) {
+      if (pageNumbers[0] !== undefined) await this.deletePage(pageNumbers[0]);
+      return;
+    }
+    if (this.pageMutationInFlight) {
+      this.logger.pdfPageAction("delete-cancel", {
+        pageNumbers,
+        count: pageNumbers.length,
+        reason: "page-mutation-in-flight"
+      });
+      return;
+    }
+    this.pageMutationInFlight = true;
+    const firstPage = pageNumbers.at(-1)!;
+    const lastPage = pageNumbers[0]!;
+    this.logger.pdfPageAction("delete-range-start", {
+      pageNumbers,
+      firstPage,
+      lastPage,
+      count: pageNumbers.length,
+      dirty: this.isDirty()
+    });
+    try {
+      if (this.isDirty()) await this.manualSave();
+      const before = this.snapshot();
+      await this.armPageMutationShield("delete", lastPage);
+      await this.options.onDeletePages(pageNumbers);
+      this.applyDeletedPagesToSession(before, pageNumbers);
+      this.logger.pdfPageAction("delete-range-complete", {
+        pageNumbers,
+        firstPage,
+        lastPage,
+        count: pageNumbers.length
+      });
+      this.options.notice(`Deleted ${pageNumbers.length} pages.`);
+    } catch (error) {
+      this.releasePageMutationShield("delete-range-error");
+      this.logger.pdfPageAction("delete-range-error", {
+        pageNumbers,
+        count: pageNumbers.length,
+        error: this.errorMessage(error)
+      });
+      this.options.notice(`Could not delete ${pageNumbers.length} pages: ${this.errorMessage(error)}`);
+    } finally {
+      this.pageMutationInFlight = false;
     }
   }
 
   /** Keep live ink/text state synchronized with the remapped on-disk sidecar. */
   private applyDeletedPageToSession(before: SidecarSchemaV1, deletedPage: number): void {
+    this.applyDeletedPagesToSession(before, [deletedPage]);
+  }
+
+  /** Applies a descending original-page deletion plan once to the live session. */
+  private applyDeletedPagesToSession(before: SidecarSchemaV1, deletedPageNumbers: readonly number[]): void {
     this.commitActiveTextEditor("page-delete");
     this.cancelTextBoxTransform("page-delete", false);
-    const remapped = removePageFromSidecar(before, deletedPage);
+    const deletedPages = [...new Set(deletedPageNumbers)].sort((left, right) => right - left);
+    let remapped = before;
+    for (const pageNumber of deletedPages) remapped = removePageFromSidecar(remapped, pageNumber);
     this.ink.clear();
     this.texts.clear();
     for (const page of remapped.pages) {
@@ -2650,7 +2739,9 @@ export class ViewerInkSession {
     const metrics = [...this.pageMetrics.entries()];
     this.pageMetrics.clear();
     for (const [page, value] of metrics) {
-      if (page !== deletedPage) this.pageMetrics.set(page > deletedPage ? page - 1 : page, value);
+      if (deletedPages.includes(page)) continue;
+      const removedBeforePage = deletedPages.filter((deletedPage) => deletedPage < page).length;
+      this.pageMetrics.set(page - removedBeforePage, value);
     }
     this.history.clear();
     this.historyDirtyPages.clear();
