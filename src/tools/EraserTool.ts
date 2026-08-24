@@ -25,7 +25,6 @@ export interface SegmentEraseResult {
 
 const EPSILON = 1e-9;
 
-
 function intersect(a: Interval | null, b: Interval | null): Interval | null {
   if (!a || !b) return null;
   const start = Math.max(a[0], b[0]);
