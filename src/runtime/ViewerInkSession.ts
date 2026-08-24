@@ -2738,9 +2738,17 @@ export class ViewerInkSession {
     }
     const metrics = [...this.pageMetrics.entries()];
     this.pageMetrics.clear();
+    const deletedSet = new Set(deletedPages);
     for (const [page, value] of metrics) {
-      if (deletedPages.includes(page)) continue;
-      const removedBeforePage = deletedPages.filter((deletedPage) => deletedPage < page).length;
+      if (deletedSet.has(page)) continue;
+      let removedBeforePage = 0;
+      for (let i = 0; i < deletedPages.length; i++) {
+        const dp = deletedPages[i];
+        if (dp !== undefined && dp < page) {
+          removedBeforePage = deletedPages.length - i;
+          break;
+        }
+      }
       this.pageMetrics.set(page - removedBeforePage, value);
     }
     this.history.clear();

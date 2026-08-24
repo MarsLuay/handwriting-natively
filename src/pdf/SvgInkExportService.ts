@@ -1,5 +1,5 @@
 import type { InkStroke, PdfPoint } from "../model";
-import { clamp01Safe } from "../util/math";
+import { escapeXml } from "../util/escapeXml";
 
 export interface SvgInkExportPageMetrics {
   page: number;
@@ -193,7 +193,7 @@ function validStroke(stroke: InkStroke, pressureAware: boolean): ValidStroke | n
 
 function strokeRadius(stroke: InkStroke, point: PdfPoint, width: number, pressureAware: boolean): number {
   if (!pressureAware || stroke.tool === "highlighter") return Math.max(0.125, width / 2);
-  const pressure = clamp01Safe(Number.isFinite(point.pressure) ? point.pressure : 0.5);
+  const pressure = clamp01(Number.isFinite(point.pressure) ? point.pressure : 0.5);
   const floor = stroke.tool === "pencil" ? 0.35 : 0.15;
   return Math.max(0.125, width * (floor + (1 - floor) * pressure) / 2);
 }
@@ -202,7 +202,7 @@ function strokeElement(stroke: ValidStroke, index: number, pressureAware: boolea
   const id = `ink-stroke-page-${formatNumber(stroke.page)}-${index + 1}`;
   const common = `id="${id}" data-stroke-id="${escapeXml(stroke.stroke.id)}" data-page="${formatNumber(stroke.page)}" data-tool="${escapeXml(stroke.stroke.tool)}" data-base-width="${formatNumber(normalizedWidth(stroke.stroke.width))}"`;
   const color = escapeXml(stroke.stroke.color || "#000000");
-  const opacity = formatNumber(clamp01Safe(stroke.stroke.opacity));
+  const opacity = formatNumber(clamp01(stroke.stroke.opacity));
   if (!pressureAware) {
     return `    <path ${common} d="${centerlinePath(stroke.points)}" fill="none" stroke="${color}" stroke-width="${formatNumber(normalizedWidth(stroke.stroke.width))}" stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}"/>`;
   }
@@ -296,18 +296,11 @@ function nonNegativeFinite(value: number | undefined, fallback: number): number 
   return value !== undefined && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 1));
+}
 
 function formatNumber(value: number): string {
   const normalized = Math.abs(value) < 0.0000005 ? 0 : Math.round(value * 1_000_000) / 1_000_000;
   return normalized.toFixed(6).replace(/(?:\.0+|(?<fraction>\.\d*?)0+)$/, "$1");
-}
-
-function escapeXml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&apos;"
-  })[character]!);
 }
