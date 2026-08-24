@@ -1,5 +1,6 @@
 import { appendToBodyOr, createDetachedDiv, createDetachedEl, createDetachedSpan } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
+import { clamp } from "../util/math";
 export interface SelectionToolbarCallbacks {
   onDelete(): void;
   onDuplicate(): void;
@@ -10,10 +11,6 @@ export interface SelectionToolbarCallbacks {
 export interface ViewportPoint {
   x: number;
   y: number;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(value, max));
 }
 
 export class SelectionToolbar {

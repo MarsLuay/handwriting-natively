@@ -1,4 +1,5 @@
 import type { InkStroke, PdfPoint } from "../model";
+import { clamp01 } from "../util/math";
 
 type Point = Pick<PdfPoint, "x" | "y">;
 type Interval = readonly [start: number, end: number];
@@ -24,13 +25,11 @@ export interface SegmentEraseResult {
 
 const EPSILON = 1e-9;
 
-function clampUnit(value: number): number { return Math.max(0, Math.min(1, value)); }
-
 function intersect(a: Interval | null, b: Interval | null): Interval | null {
   if (!a || !b) return null;
   const start = Math.max(a[0], b[0]);
   const end = Math.min(a[1], b[1]);
-  return end + EPSILON >= start ? [clampUnit(start), clampUnit(end)] : null;
+  return end + EPSILON >= start ? [clamp01(start), clamp01(end)] : null;
 }
 
 /** Values of t in [0,1] for which min <= origin + delta*t <= max. */
@@ -82,7 +81,7 @@ function capsuleIntervals(strokeStart: Point, strokeEnd: Point, eraserStart: Poi
 }
 
 function mergeIntervals(intervals: readonly Interval[]): Interval[] {
-  const sorted = intervals.map(([start, end]) => [clampUnit(start), clampUnit(end)] as Interval)
+  const sorted = intervals.map(([start, end]) => [clamp01(start), clamp01(end)] as Interval)
     .sort((a, b) => a[0] - b[0]);
   const merged: Array<[number, number]> = [];
   for (const interval of sorted) {
@@ -190,7 +189,7 @@ function distancePointToSegment(point: Point, start: Point, end: Point): number 
   const dy = end.y - start.y;
   const lengthSquared = dx * dx + dy * dy;
   if (lengthSquared <= EPSILON) return Math.hypot(point.x - start.x, point.y - start.y);
-  const t = clampUnit(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared);
+  const t = clamp01(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared);
   return Math.hypot(point.x - (start.x + dx * t), point.y - (start.y + dy * t));
 }
 
