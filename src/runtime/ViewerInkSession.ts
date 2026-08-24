@@ -3515,7 +3515,7 @@ export class ViewerInkSession {
           : {}),
         ...details
       }),
-      onMousePan: (phase, _event, details) => this.logger.mousePan(phase, { page: surface.page.pageNumber, ...details })
+      onTouchPan: (phase, _event, details) => this.logger.touchInput(phase, { page: surface.page.pageNumber, ...details })
     });
   }
 
