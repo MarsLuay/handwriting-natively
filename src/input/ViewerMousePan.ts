@@ -1,7 +1,7 @@
 import { isHTMLElement } from "../dom/typeGuards";
 import { scrollPdfByDetailed, describeScrollElement } from "../integration/PdfScrollRoot";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
-import { isAnnotationChromeTarget, isDragPanPointer } from "./PointerRouter";
+import { isAnnotationChromeTarget } from "./PointerRouter";
 
 interface PanGesture {
   startX: number;
@@ -19,7 +19,10 @@ interface PanGesture {
 
 export type MousePanPhase = "probe" | "start" | "pending" | "activate" | "move" | "end" | "cancel" | "abort" | "skip";
 
-export { isDragPanPointer };
+export function isDragPanPointer(event: Pick<PointerEvent, "pointerType" | "button">): boolean {
+  if (event.button !== 0) return false;
+  return event.pointerType === "mouse" || event.pointerType === "pen";
+}
 
 export function isFingerPanPointer(event: Pick<PointerEvent, "pointerType" | "button">): boolean {
   return event.pointerType === "touch" && event.button === 0;

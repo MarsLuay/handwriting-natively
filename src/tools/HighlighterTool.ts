@@ -1,4 +1,5 @@
 import type { DrawingToolPreferences, PdfPoint } from "../model";
+import { normalizedCoordinateScale } from "../util/math";
 
 export interface HighlighterPoint {
   x: number;
@@ -42,10 +43,6 @@ function widthAt(options: HighlighterStrokeOptions, point: HighlighterPoint): nu
     { x: point.x, y: point.y, pressure: point.pressure, time: 0 },
     options.coordinateScale
   );
-}
-
-function normalizedCoordinateScale(value: number | undefined): number {
-  return Number.isFinite(value) && value! > 0 ? value! : 1;
 }
 
 interface Vec2 {
