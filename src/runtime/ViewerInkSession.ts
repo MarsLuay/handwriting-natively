@@ -3051,8 +3051,12 @@ export class ViewerInkSession {
       pages = [...new Set(scope.filter((page) => Number.isFinite(page) && page >= 1))];
     }
 
-    const pageSet = new Set(pages);
-    const strokes = this.ink.all().filter((stroke) => pageSet.has(stroke.page));
+    const strokes: InkStroke[] = [];
+    for (const page of new Set(pages)) {
+      for (const stroke of this.ink.page(page)) {
+        strokes.push(stroke);
+      }
+    }
     if (strokes.length === 0) {
       this.logger.textTool("clear-freehand-skipped", {
         scope: scope === "all" || scope === "selected" ? scope : "pages",
