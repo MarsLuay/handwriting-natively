@@ -1,5 +1,5 @@
 import type { DrawingToolPreferences, PdfPoint } from "../model";
-import { clamp01 } from "../util/math";
+import { normalizedCoordinateScale } from "../util/math";
 
 export interface PencilSample { width: number; opacity: number; textureStrength: number }
 
@@ -99,6 +99,9 @@ function sampleAt(
   return { width: sample.width, opacity: sample.opacity, tilt };
 }
 
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
 
 /**
  * Along-path stamp pitch. Scales with tip width and document-space floors so
@@ -148,10 +151,6 @@ export function graphiteGrainSize(
     rx,
     ry: Math.max(0.25 * scale, Math.min(major * 0.95 * scale, rx / (aspect * (0.85 + t * 0.18))))
   };
-}
-
-function normalizedCoordinateScale(value: number | undefined): number {
-  return Number.isFinite(value) && value! > 0 ? value! : 1;
 }
 
 /**
