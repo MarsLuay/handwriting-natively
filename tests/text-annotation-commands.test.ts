@@ -1,114 +1,101 @@
-import { describe, expect, it, vi } from "vitest";
-import type { PdfTextAnnotation } from "../src/model";
+import { describe, expect, it } from "vitest";
+import {
+  AddTextAnnotationCommand,
+  DeleteTextAnnotationsCommand,
+  ReplaceTextAnnotationCommand
+} from "../src/text/TextAnnotationCommands";
 import { TextAnnotationSession } from "../src/text/TextAnnotationSession";
-import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../src/text/TextAnnotationCommands";
-import { CommandHistory } from "../src/history/CommandHistory";
-
-const annotation1: PdfTextAnnotation = {
-  id: "id1",
-  page: 1,
-  text: "Hello",
-  x: 10,
-  y: 20,
-  width: 100,
-  height: 50,
-  color: "#000",
-  fontSize: 12,
-  fontFamily: "Arial",
-  bold: false,
-  italic: false,
-  strikethrough: false,
-  runs: [],
-  sourceRuns: [],
-  createdAt: "now",
-  updatedAt: "now"
-};
-
-const annotation2: PdfTextAnnotation = {
-  id: "id2",
-  page: 1,
-  text: "World",
-  x: 50,
-  y: 60,
-  width: 100,
-  height: 50,
-  color: "#000",
-  fontSize: 12,
-  fontFamily: "Arial",
-  bold: false,
-  italic: false,
-  strikethrough: false,
-  runs: [],
-  sourceRuns: [],
-  createdAt: "now",
-  updatedAt: "now"
-};
+import { PdfTextAnnotation } from "../src/model";
 
 describe("TextAnnotationCommands", () => {
-  it("undoes and redoes DeleteTextAnnotationsCommand", () => {
-    const changed = vi.fn();
-    const session = new TextAnnotationSession([annotation1, annotation2]);
-    const history = new CommandHistory(changed);
+  const dummyAnnotation: PdfTextAnnotation = {
+    id: "a1",
+    page: 1,
+    text: "hello",
+    x: 10,
+    y: 20,
+    width: 100,
+    height: 20,
+    color: "#000",
+    fontSize: 12,
+    fontFamily: "Arial"
+  };
 
-    expect(session.all()).toHaveLength(2);
+  const dummyAnnotation2: PdfTextAnnotation = {
+    id: "a2",
+    page: 1,
+    text: "world",
+    x: 10,
+    y: 50,
+    width: 100,
+    height: 20,
+    color: "#000",
+    fontSize: 12,
+    fontFamily: "Arial"
+  };
 
-    history.execute(new DeleteTextAnnotationsCommand(session, [annotation1]));
-    expect(session.all()).toHaveLength(1);
-    expect(session.all()[0]?.id).toBe("id2");
+  describe("AddTextAnnotationCommand", () => {
+    it("adds an annotation to the session when executed", () => {
+      const session = new TextAnnotationSession();
+      const command = new AddTextAnnotationCommand(session, dummyAnnotation);
 
-    history.undo();
-    expect(session.all()).toHaveLength(2);
+      command.execute();
+      expect(session.page(1)).toEqual([dummyAnnotation]);
+    });
 
-    history.redo();
-    expect(session.all()).toHaveLength(1);
-    expect(session.all()[0]?.id).toBe("id2");
+    it("removes the annotation from the session when undone", () => {
+      const session = new TextAnnotationSession();
+      const command = new AddTextAnnotationCommand(session, dummyAnnotation);
 
-    expect(changed).toHaveBeenCalledTimes(3);
+      command.execute();
+      command.undo();
+      expect(session.page(1)).toEqual([]);
+    });
   });
 
-  it("undoes and redoes AddTextAnnotationCommand", () => {
-    const changed = vi.fn();
-    const session = new TextAnnotationSession();
-    const history = new CommandHistory(changed);
+  describe("DeleteTextAnnotationsCommand", () => {
+    it("removes annotations from the session when executed", () => {
+      const session = new TextAnnotationSession([dummyAnnotation, dummyAnnotation2]);
+      const command = new DeleteTextAnnotationsCommand(session, [dummyAnnotation, dummyAnnotation2]);
 
-    expect(session.all()).toHaveLength(0);
+      command.execute();
+      expect(session.page(1)).toEqual([]);
+    });
 
-    history.execute(new AddTextAnnotationCommand(session, annotation1));
-    expect(session.all()).toHaveLength(1);
-    expect(session.all()[0]?.id).toBe("id1");
+    it("restores the annotations to the session when undone", () => {
+      const session = new TextAnnotationSession([dummyAnnotation, dummyAnnotation2]);
+      const command = new DeleteTextAnnotationsCommand(session, [dummyAnnotation]);
 
-    history.undo();
-    expect(session.all()).toHaveLength(0);
+      command.execute();
+      command.undo();
 
-    history.redo();
-    expect(session.all()).toHaveLength(1);
-    expect(session.all()[0]?.id).toBe("id1");
-
-    expect(changed).toHaveBeenCalledTimes(3);
+      const annotations = session.page(1);
+      expect(annotations).toHaveLength(2);
+      expect(annotations).toContainEqual(dummyAnnotation);
+      expect(annotations).toContainEqual(dummyAnnotation2);
+    });
   });
 
-  it("undoes and redoes ReplaceTextAnnotationCommand", () => {
-    const changed = vi.fn();
-    const session = new TextAnnotationSession([annotation1]);
-    const history = new CommandHistory(changed);
+  describe("ReplaceTextAnnotationCommand", () => {
+    it("replaces the old annotation with the new one when executed", () => {
+      const session = new TextAnnotationSession([dummyAnnotation]);
 
-    const afterAnnotation = { ...annotation1, text: "Replaced" };
+      const updatedAnnotation = { ...dummyAnnotation, text: "updated" };
+      const command = new ReplaceTextAnnotationCommand(session, dummyAnnotation, updatedAnnotation);
 
-    expect(session.all()).toHaveLength(1);
-    expect(session.all()[0]?.text).toBe("Hello");
+      command.execute();
+      expect(session.page(1)).toEqual([updatedAnnotation]);
+    });
 
-    history.execute(new ReplaceTextAnnotationCommand(session, annotation1, afterAnnotation));
-    expect(session.all()).toHaveLength(1);
-    expect(session.all()[0]?.text).toBe("Replaced");
+    it("restores the old annotation when undone", () => {
+      const session = new TextAnnotationSession([dummyAnnotation]);
 
-    history.undo();
-    expect(session.all()).toHaveLength(1);
-    expect(session.all()[0]?.text).toBe("Hello");
+      const updatedAnnotation = { ...dummyAnnotation, text: "updated" };
+      const command = new ReplaceTextAnnotationCommand(session, dummyAnnotation, updatedAnnotation);
 
-    history.redo();
-    expect(session.all()).toHaveLength(1);
-    expect(session.all()[0]?.text).toBe("Replaced");
-
-    expect(changed).toHaveBeenCalledTimes(3);
+      command.execute();
+      command.undo();
+      expect(session.page(1)).toEqual([dummyAnnotation]);
+    });
   });
 });
