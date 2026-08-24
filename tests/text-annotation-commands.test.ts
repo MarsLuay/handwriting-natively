@@ -1,145 +1,101 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, expect, it } from "vitest";
 import {
   AddTextAnnotationCommand,
   DeleteTextAnnotationsCommand,
-  ReplaceTextAnnotationCommand,
-} from '../src/text/TextAnnotationCommands';
-import { TextAnnotationSession } from '../src/text/TextAnnotationSession';
-import type { PdfTextAnnotation } from '../src/model';
+  ReplaceTextAnnotationCommand
+} from "../src/text/TextAnnotationCommands";
+import { TextAnnotationSession } from "../src/text/TextAnnotationSession";
+import { PdfTextAnnotation } from "../src/model";
 
-describe('TextAnnotationCommands', () => {
-  let session: TextAnnotationSession;
-
-  const mockAnnotation1: PdfTextAnnotation = {
-    id: 'id-1',
+describe("TextAnnotationCommands", () => {
+  const dummyAnnotation: PdfTextAnnotation = {
+    id: "a1",
     page: 1,
-    text: 'Hello World',
+    text: "hello",
     x: 10,
     y: 20,
     width: 100,
-    height: 50,
-    color: '#000000',
+    height: 20,
+    color: "#000",
     fontSize: 12,
-    fontFamily: 'Helvetica',
-    bold: false,
-    italic: false,
-    strikethrough: false,
-    runs: [],
-    sourceRuns: [],
-    createdAt: '2023-01-01T00:00:00Z',
-    updatedAt: '2023-01-01T00:00:00Z',
+    fontFamily: "Arial"
   };
 
-  const mockAnnotation2: PdfTextAnnotation = {
-    id: 'id-2',
+  const dummyAnnotation2: PdfTextAnnotation = {
+    id: "a2",
     page: 1,
-    text: 'Another text',
-    x: 100,
-    y: 200,
-    width: 200,
-    height: 100,
-    color: '#FF0000',
-    fontSize: 14,
-    fontFamily: 'Arial',
-    bold: true,
-    italic: false,
-    strikethrough: false,
-    runs: [],
-    sourceRuns: [],
-    createdAt: '2023-01-01T00:00:00Z',
-    updatedAt: '2023-01-01T00:00:00Z',
+    text: "world",
+    x: 10,
+    y: 50,
+    width: 100,
+    height: 20,
+    color: "#000",
+    fontSize: 12,
+    fontFamily: "Arial"
   };
 
-  beforeEach(() => {
-    session = new TextAnnotationSession();
-  });
+  describe("AddTextAnnotationCommand", () => {
+    it("adds an annotation to the session when executed", () => {
+      const session = new TextAnnotationSession();
+      const command = new AddTextAnnotationCommand(session, dummyAnnotation);
 
-  describe('AddTextAnnotationCommand', () => {
-    it('should add the text annotation to the session on execute', () => {
-      const command = new AddTextAnnotationCommand(session, mockAnnotation1);
-
-      expect(session.all()).toHaveLength(0);
       command.execute();
-
-      expect(session.all()).toHaveLength(1);
-      expect(session.all()[0]).toEqual(mockAnnotation1);
+      expect(session.page(1)).toEqual([dummyAnnotation]);
     });
 
-    it('should remove the text annotation from the session on undo', () => {
-      const command = new AddTextAnnotationCommand(session, mockAnnotation1);
+    it("removes the annotation from the session when undone", () => {
+      const session = new TextAnnotationSession();
+      const command = new AddTextAnnotationCommand(session, dummyAnnotation);
 
       command.execute();
-      expect(session.all()).toHaveLength(1);
-
       command.undo();
-      expect(session.all()).toHaveLength(0);
+      expect(session.page(1)).toEqual([]);
     });
   });
 
-  describe('DeleteTextAnnotationsCommand', () => {
-    it('should remove the text annotations from the session on execute', () => {
-      session.add(mockAnnotation1);
-      session.add(mockAnnotation2);
+  describe("DeleteTextAnnotationsCommand", () => {
+    it("removes annotations from the session when executed", () => {
+      const session = new TextAnnotationSession([dummyAnnotation, dummyAnnotation2]);
+      const command = new DeleteTextAnnotationsCommand(session, [dummyAnnotation, dummyAnnotation2]);
 
-      const command = new DeleteTextAnnotationsCommand(session, [mockAnnotation1, mockAnnotation2]);
-
-      expect(session.all()).toHaveLength(2);
       command.execute();
-
-      expect(session.all()).toHaveLength(0);
+      expect(session.page(1)).toEqual([]);
     });
 
-    it('should restore the text annotations to the session on undo', () => {
-      session.add(mockAnnotation1);
-      session.add(mockAnnotation2);
-
-      const command = new DeleteTextAnnotationsCommand(session, [mockAnnotation1, mockAnnotation2]);
+    it("restores the annotations to the session when undone", () => {
+      const session = new TextAnnotationSession([dummyAnnotation, dummyAnnotation2]);
+      const command = new DeleteTextAnnotationsCommand(session, [dummyAnnotation]);
 
       command.execute();
-      expect(session.all()).toHaveLength(0);
-
       command.undo();
 
-      const allAnnotations = session.all();
-      expect(allAnnotations).toHaveLength(2);
-      // Need to find them because they might be returned in different order if we look by map, though here it returns flattened array
-      expect(allAnnotations).toContainEqual(mockAnnotation1);
-      expect(allAnnotations).toContainEqual(mockAnnotation2);
+      const annotations = session.page(1);
+      expect(annotations).toHaveLength(2);
+      expect(annotations).toContainEqual(dummyAnnotation);
+      expect(annotations).toContainEqual(dummyAnnotation2);
     });
   });
 
-  describe('ReplaceTextAnnotationCommand', () => {
-    const updatedAnnotation1: PdfTextAnnotation = {
-      ...mockAnnotation1,
-      text: 'Updated Hello World',
-    };
+  describe("ReplaceTextAnnotationCommand", () => {
+    it("replaces the old annotation with the new one when executed", () => {
+      const session = new TextAnnotationSession([dummyAnnotation]);
 
-    it('should replace the old text annotation with the new one on execute', () => {
-      session.add(mockAnnotation1);
-
-      const command = new ReplaceTextAnnotationCommand(session, mockAnnotation1, updatedAnnotation1);
-
-      expect(session.all()).toHaveLength(1);
-      expect(session.all()[0]?.text).toBe('Hello World');
+      const updatedAnnotation = { ...dummyAnnotation, text: "updated" };
+      const command = new ReplaceTextAnnotationCommand(session, dummyAnnotation, updatedAnnotation);
 
       command.execute();
-
-      expect(session.all()).toHaveLength(1);
-      expect(session.all()[0]?.text).toBe('Updated Hello World');
+      expect(session.page(1)).toEqual([updatedAnnotation]);
     });
 
-    it('should restore the old text annotation on undo', () => {
-      session.add(mockAnnotation1);
+    it("restores the old annotation when undone", () => {
+      const session = new TextAnnotationSession([dummyAnnotation]);
 
-      const command = new ReplaceTextAnnotationCommand(session, mockAnnotation1, updatedAnnotation1);
+      const updatedAnnotation = { ...dummyAnnotation, text: "updated" };
+      const command = new ReplaceTextAnnotationCommand(session, dummyAnnotation, updatedAnnotation);
 
       command.execute();
-      expect(session.all()[0]?.text).toBe('Updated Hello World');
-
       command.undo();
-
-      expect(session.all()).toHaveLength(1);
-      expect(session.all()[0]?.text).toBe('Hello World');
+      expect(session.page(1)).toEqual([dummyAnnotation]);
     });
   });
 });
