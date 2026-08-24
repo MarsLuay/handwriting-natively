@@ -1,10 +1,51 @@
 import { describe, expect, it } from "vitest";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
-import { resolvePageCoordinateLayout } from "../src/pdf/PageCoordinateLayout";
+import { normalizeRotation, resolvePageCoordinateLayout } from "../src/pdf/PageCoordinateLayout";
 
 function page(element: HTMLElement, width = 612, height = 792): PdfPageInfo {
   return { pageNumber: 1, width, height, scale: 1, rotation: 0, element };
 }
+
+describe("normalizeRotation", () => {
+  it("keeps standard 90-degree intervals", () => {
+    expect(normalizeRotation(0)).toBe(0);
+    expect(normalizeRotation(90)).toBe(90);
+    expect(normalizeRotation(180)).toBe(180);
+    expect(normalizeRotation(270)).toBe(270);
+  });
+
+  it("handles values equal to or greater than 360", () => {
+    expect(normalizeRotation(360)).toBe(0);
+    expect(normalizeRotation(450)).toBe(90);
+    expect(normalizeRotation(540)).toBe(180);
+    expect(normalizeRotation(630)).toBe(270);
+    expect(normalizeRotation(720)).toBe(0);
+  });
+
+  it("handles negative values", () => {
+    expect(normalizeRotation(-90)).toBe(270);
+    expect(normalizeRotation(-180)).toBe(180);
+    expect(normalizeRotation(-270)).toBe(90);
+    expect(normalizeRotation(-360)).toBe(0);
+    expect(normalizeRotation(-450)).toBe(270);
+  });
+
+  it("snaps fractional values by rounding", () => {
+    expect(normalizeRotation(89.5)).toBe(90);
+    expect(normalizeRotation(90.4)).toBe(90);
+    expect(normalizeRotation(269.8)).toBe(270);
+    expect(normalizeRotation(-90.3)).toBe(270);
+    expect(normalizeRotation(-89.6)).toBe(270);
+  });
+
+  it("defaults non-right angles to 0", () => {
+    expect(normalizeRotation(45)).toBe(0);
+    expect(normalizeRotation(120)).toBe(0);
+    expect(normalizeRotation(-60)).toBe(0);
+    expect(normalizeRotation(1)).toBe(0);
+    expect(normalizeRotation(89.4)).toBe(0);
+  });
+});
 
 describe("page coordinate layout", () => {
   it("uses the smaller axis scale when the PDF is width-fitted", () => {
