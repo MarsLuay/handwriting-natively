@@ -1,4 +1,5 @@
 import type { DrawingToolPreferences, PdfPoint } from "../model";
+import { clamp01 } from "../util/math";
 
 export interface PencilSample { width: number; opacity: number; textureStrength: number }
 
@@ -96,10 +97,6 @@ function sampleAt(
     ? Math.min(1, (Math.abs(point.tiltX ?? 0) + Math.abs(point.tiltY ?? 0)) / 120)
     : 0;
   return { width: sample.width, opacity: sample.opacity, tilt };
-}
-
-function clamp01(value: number): number {
-  return Math.max(0, Math.min(1, value));
 }
 
 /**
