@@ -1,30 +1,44 @@
-import { describe, expect, it } from "vitest";
-import { isHTMLCanvasElement } from "../src/dom/typeGuards";
+import { describe, expect, it, vi } from "vitest";
+import { setElementCssProps } from "../src/dom/typeGuards.js";
 
-describe("isHTMLCanvasElement", () => {
-  it("returns true for a canvas element", () => {
-    const canvas = document.createElement("canvas");
-    expect(isHTMLCanvasElement(canvas)).toBe(true);
+describe("setElementCssProps", () => {
+  it("uses setCssProps if available", () => {
+    const el = document.createElement("div") as any;
+    el.setCssProps = vi.fn();
+    el.style.setProperty = vi.fn();
+
+    setElementCssProps(el, { color: "red" });
+
+    expect(el.setCssProps).toHaveBeenCalledWith({ color: "red" });
+    expect(el.style.setProperty).not.toHaveBeenCalled();
   });
 
-  it("returns false for a non-canvas element", () => {
-    const div = document.createElement("div");
-    expect(isHTMLCanvasElement(div)).toBe(false);
+  it("falls back to style.setProperty if setCssProps is not available", () => {
+    const el = document.createElement("div");
+    vi.spyOn(el.style, "setProperty");
+
+    setElementCssProps(el, { color: "red" });
+
+    expect(el.style.setProperty).toHaveBeenCalledWith("color", "red");
   });
 
-  it("returns false for null", () => {
-    expect(isHTMLCanvasElement(null)).toBe(false);
+  it("converts camelCase properties to kebab-case for style.setProperty fallback", () => {
+    const el = document.createElement("div");
+    vi.spyOn(el.style, "setProperty");
+
+    setElementCssProps(el, { backgroundColor: "blue", fontSize: "16px" });
+
+    expect(el.style.setProperty).toHaveBeenCalledWith("background-color", "blue");
+    expect(el.style.setProperty).toHaveBeenCalledWith("font-size", "16px");
   });
 
-  it("returns false for undefined", () => {
-    expect(isHTMLCanvasElement(undefined)).toBe(false);
-  });
+  it("preserves CSS variable names starting with --", () => {
+    const el = document.createElement("div");
+    vi.spyOn(el.style, "setProperty");
 
-  it("returns false for a plain object", () => {
-    expect(isHTMLCanvasElement({})).toBe(false);
-  });
+    setElementCssProps(el, { "--myVar": "10px", "--myOtherVar": "20px" });
 
-  it("returns false for a string", () => {
-    expect(isHTMLCanvasElement("canvas")).toBe(false);
+    expect(el.style.setProperty).toHaveBeenCalledWith("--myVar", "10px");
+    expect(el.style.setProperty).toHaveBeenCalledWith("--myOtherVar", "20px");
   });
 });
