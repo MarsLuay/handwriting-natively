@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation
 import { highlighterSampleWidth, highlighterSegmentWidths } from "../tools/HighlighterTool";
 import { graphiteStampCircles, seedFromId } from "../tools/PencilTool";
 import { penSampleWidth, penSegmentWidths } from "../tools/PenTool";
+import { escapeXml } from "../util/escapeXml";
 
 export interface PdfExportPageMetrics {
   page: number;
@@ -502,10 +503,6 @@ function richTextContents(runs: readonly PdfTextRun[]): string {
     return `<span style="${escapeXml(textStyleDeclaration(run, decoration))}">${escapeXml(run.text).replace(/\n/g, "<br/>")}</span>`;
   }).join("");
   return `<body xmlns="http://www.w3.org/1999/xhtml"><p>${spans}</p></body>`;
-}
-
-function escapeXml(text: string): string {
-  return text.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&apos;" })[character]!);
 }
 
 function textStyleDeclaration(

@@ -2738,9 +2738,17 @@ export class ViewerInkSession {
     }
     const metrics = [...this.pageMetrics.entries()];
     this.pageMetrics.clear();
+    const deletedSet = new Set(deletedPages);
     for (const [page, value] of metrics) {
-      if (deletedPages.includes(page)) continue;
-      const removedBeforePage = deletedPages.filter((deletedPage) => deletedPage < page).length;
+      if (deletedSet.has(page)) continue;
+      let removedBeforePage = 0;
+      for (let i = 0; i < deletedPages.length; i++) {
+        const dp = deletedPages[i];
+        if (dp !== undefined && dp < page) {
+          removedBeforePage = deletedPages.length - i;
+          break;
+        }
+      }
       this.pageMetrics.set(page - removedBeforePage, value);
     }
     this.history.clear();
@@ -3051,8 +3059,12 @@ export class ViewerInkSession {
       pages = [...new Set(scope.filter((page) => Number.isFinite(page) && page >= 1))];
     }
 
-    const pageSet = new Set(pages);
-    const strokes = this.ink.all().filter((stroke) => pageSet.has(stroke.page));
+    const strokes: InkStroke[] = [];
+    for (const page of new Set(pages)) {
+      for (const stroke of this.ink.page(page)) {
+        strokes.push(stroke);
+      }
+    }
     if (strokes.length === 0) {
       this.logger.textTool("clear-freehand-skipped", {
         scope: scope === "all" || scope === "selected" ? scope : "pages",
@@ -3515,7 +3527,7 @@ export class ViewerInkSession {
           : {}),
         ...details
       }),
-      onMousePan: (phase, _event, details) => this.logger.mousePan(phase, { page: surface.page.pageNumber, ...details })
+      onTouchPan: (phase, _event, details) => this.logger.touchInput(phase, { page: surface.page.pageNumber, ...details })
     });
   }
 
@@ -4639,10 +4651,15 @@ export class ViewerInkSession {
   }
 
   private textAt(page: number, point: Pick<PdfPoint, "x" | "y">): PdfTextAnnotation | null {
-    return [...this.texts.page(page)].reverse().find((text) =>
-      point.x >= text.x && point.x <= text.x + text.width
-      && point.y <= text.y && point.y >= text.y - text.height
-    ) ?? null;
+    const pageTexts = this.texts.page(page);
+    for (let i = pageTexts.length - 1; i >= 0; i--) {
+      const text = pageTexts[i];
+      if (point.x >= text.x && point.x <= text.x + text.width
+          && point.y <= text.y && point.y >= text.y - text.height) {
+        return text;
+      }
+    }
+    return null;
   }
 
   private logText(surface: PageSurface, phase: string, details: Record<string, unknown> = {}): void {
@@ -7140,7 +7157,16 @@ export class ViewerInkSession {
 
   private id(): string {
     const cryptoObj = window.crypto;
-    return cryptoObj?.randomUUID?.() ?? `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    if (cryptoObj?.randomUUID) {
+      return cryptoObj.randomUUID();
+    }
+    if (cryptoObj?.getRandomValues) {
+      const array = new Uint32Array(4);
+      cryptoObj.getRandomValues(array);
+      return `stroke-${Date.now()}-${Array.from(array, dec => dec.toString(16).padStart(8, '0')).join('')}`;
+    }
+    // Fail secure if no cryptographic PRNG is available
+    throw new Error("Secure random number generation is not supported by this browser.");
   }
 
   private errorMessage(error: unknown): string {
