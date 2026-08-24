@@ -35,7 +35,13 @@ export class InkSession {
   pageIntersecting(page: number, bounds: Bounds): readonly InkStroke[] {
     return this.indexByPage.get(page)?.query(bounds) ?? [];
   }
-  all(): InkStroke[] { return [...this.byPage.values()].flat(); }
+  all(): InkStroke[] {
+    const allStrokes: InkStroke[] = [];
+    for (const strokes of this.byPage.values()) {
+      allStrokes.push(...strokes);
+    }
+    return allStrokes;
+  }
   clear(): void { this.byPage.clear(); this.indexByPage.clear(); }
 
   private index(page: number): StrokeSpatialIndex {

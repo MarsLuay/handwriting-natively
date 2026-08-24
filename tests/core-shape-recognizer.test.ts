@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PdfPoint } from "../src/model";
-import { recognizeHeldShape, resizeShapePoints, shapeResizeAnchor, SHAPE_RECOGNITION_HOLD_MS } from "../src/tools/ShapeRecognizer";
+import { recognizeHeldShape, resizeShapePoints, shapeResizeAnchor, shapeResizeHandle, SHAPE_RECOGNITION_HOLD_MS } from "../src/tools/ShapeRecognizer";
 
 const point = (x: number, y: number): PdfPoint => ({ x, y, pressure: 0.5, time: 0 });
 
@@ -102,5 +102,50 @@ describe("stationary-hold shape recognition", () => {
       expect.objectContaining({ x: 0, y: 0 }),
       expect.objectContaining({ x: 0, y: -100 })
     ]);
+  });
+});
+
+describe("shapeResizeHandle", () => {
+  it("throws a TypeError when given an empty shape array", () => {
+    expect(() => shapeResizeHandle([], { x: 0, y: 0 })).toThrowError(TypeError);
+    expect(() => shapeResizeHandle([], { x: 0, y: 0 })).toThrowError("Cannot resize an empty shape");
+  });
+
+  it("returns the single point when given a single-point shape", () => {
+    const p1 = point(10, 10);
+    expect(shapeResizeHandle([p1], { x: 0, y: 0 })).toBe(p1);
+  });
+
+  it("returns the nearest point from a list of points", () => {
+    const p1 = point(0, 0);
+    const p2 = point(10, 0);
+    const p3 = point(0, 10);
+    const p4 = point(10, 10);
+    const shape = [p1, p2, p3, p4];
+
+    expect(shapeResizeHandle(shape, { x: 2, y: 2 })).toBe(p1);
+    expect(shapeResizeHandle(shape, { x: 12, y: 2 })).toBe(p2);
+    expect(shapeResizeHandle(shape, { x: 2, y: 12 })).toBe(p3);
+    expect(shapeResizeHandle(shape, { x: 12, y: 12 })).toBe(p4);
+  });
+
+  it("returns the exact point if the pointer perfectly coincides", () => {
+    const p1 = point(0, 0);
+    const p2 = point(10, 0);
+    const shape = [p1, p2];
+
+    expect(shapeResizeHandle(shape, { x: 10, y: 0 })).toBe(p2);
+  });
+
+  it("breaks ties by returning the first equidistant point encountered", () => {
+    const p1 = point(0, 0);
+    const p2 = point(10, 0);
+    const shape = [p1, p2];
+
+    // Pointer is at (5, 0), exactly equidistant from (0, 0) and (10, 0).
+    expect(shapeResizeHandle(shape, { x: 5, y: 0 })).toBe(p1);
+
+    const shapeReversed = [p2, p1];
+    expect(shapeResizeHandle(shapeReversed, { x: 5, y: 0 })).toBe(p2);
   });
 });
