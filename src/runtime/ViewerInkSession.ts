@@ -4639,10 +4639,15 @@ export class ViewerInkSession {
   }
 
   private textAt(page: number, point: Pick<PdfPoint, "x" | "y">): PdfTextAnnotation | null {
-    return [...this.texts.page(page)].reverse().find((text) =>
-      point.x >= text.x && point.x <= text.x + text.width
-      && point.y <= text.y && point.y >= text.y - text.height
-    ) ?? null;
+    const pageTexts = this.texts.page(page);
+    for (let i = pageTexts.length - 1; i >= 0; i--) {
+      const text = pageTexts[i];
+      if (point.x >= text.x && point.x <= text.x + text.width
+          && point.y <= text.y && point.y >= text.y - text.height) {
+        return text;
+      }
+    }
+    return null;
   }
 
   private logText(surface: PageSurface, phase: string, details: Record<string, unknown> = {}): void {
