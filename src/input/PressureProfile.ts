@@ -109,7 +109,6 @@ export function pressureConditionerOptionsForCalibration(
   };
 }
 
-
 function finite(value: number | null | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
