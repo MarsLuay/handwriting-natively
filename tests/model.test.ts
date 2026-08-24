@@ -1,23 +1,33 @@
-import { describe, expect, it } from "vitest";
-import { isDrawingTool } from "../src/model";
+import { describe, it, expect } from "vitest";
+import { isToolId } from "../src/model";
 
-describe("isDrawingTool", () => {
-  it("returns true for valid drawing tools", () => {
-    expect(isDrawingTool("pen")).toBe(true);
-    expect(isDrawingTool("pencil")).toBe(true);
-    expect(isDrawingTool("highlighter")).toBe(true);
+describe("isToolId", () => {
+  it("should return true for valid drawing tools", () => {
+    expect(isToolId("pen")).toBe(true);
+    expect(isToolId("pencil")).toBe(true);
+    expect(isToolId("highlighter")).toBe(true);
   });
 
-  it("returns false for non-drawing tools", () => {
-    expect(isDrawingTool("text")).toBe(false);
-    expect(isDrawingTool("eraser")).toBe(false);
-    expect(isDrawingTool("lasso")).toBe(false);
-    expect(isDrawingTool("laser")).toBe(false);
+  it("should return true for other valid tools", () => {
+    expect(isToolId("text")).toBe(true);
+    expect(isToolId("eraser")).toBe(true);
+    expect(isToolId("lasso")).toBe(true);
+    expect(isToolId("laser")).toBe(true);
   });
 
-  it("returns false for invalid inputs", () => {
-    expect(isDrawingTool("")).toBe(false);
-    expect(isDrawingTool("random")).toBe(false);
-    expect(isDrawingTool("pen1")).toBe(false);
+  it("should return false for invalid tool strings", () => {
+    expect(isToolId("shape")).toBe(false);
+    expect(isToolId("pan")).toBe(false);
+    expect(isToolId("")).toBe(false);
+    expect(isToolId("unknown")).toBe(false);
+  });
+
+  it("should return false for non-string inputs", () => {
+    expect(isToolId(null)).toBe(false);
+    expect(isToolId(undefined)).toBe(false);
+    expect(isToolId(123)).toBe(false);
+    expect(isToolId({})).toBe(false);
+    expect(isToolId([])).toBe(false);
+    expect(isToolId(() => {})).toBe(false);
   });
 });
