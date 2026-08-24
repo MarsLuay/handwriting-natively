@@ -58,13 +58,24 @@ export class StrokeSpatialIndex {
     if (!isFiniteBounds(bounds)) return [];
     const ids = new Set<string>();
     for (const cell of this.cellsFor(bounds)) {
-      for (const id of this.cells.get(cell) ?? []) ids.add(id);
+      const cellIds = this.cells.get(cell);
+      if (cellIds) {
+        for (const id of cellIds) ids.add(id);
+      }
     }
-    return [...ids]
-      .map((id) => this.entries.get(id))
-      .filter((entry): entry is IndexedStroke => Boolean(entry && intersects(entry.bounds, bounds)))
-      .sort((left, right) => left.order - right.order)
-      .map((entry) => entry.stroke);
+    const result: IndexedStroke[] = [];
+    for (const id of ids) {
+      const entry = this.entries.get(id);
+      if (entry && intersects(entry.bounds, bounds)) {
+        result.push(entry);
+      }
+    }
+    result.sort((left, right) => left.order - right.order);
+    const mappedResult = new Array(result.length);
+    for (let i = 0, len = result.length; i < len; i++) {
+        mappedResult[i] = result[i].stroke;
+    }
+    return mappedResult;
   }
 
   private cellsFor(bounds: Bounds): string[] {
