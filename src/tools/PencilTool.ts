@@ -1,4 +1,5 @@
 import type { DrawingToolPreferences, PdfPoint } from "../model";
+import { clamp01 } from "../util/math";
 
 export interface PencilSample { width: number; opacity: number; textureStrength: number }
 
@@ -98,9 +99,6 @@ function sampleAt(
   return { width: sample.width, opacity: sample.opacity, tilt };
 }
 
-function clamp01(value: number): number {
-  return Math.max(0, Math.min(1, value));
-}
 
 /**
  * Along-path stamp pitch. Scales with tip width and document-space floors so
