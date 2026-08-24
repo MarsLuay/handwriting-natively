@@ -1,4 +1,5 @@
 import type { PressureCalibration, PressureProfile } from "../model";
+import { clamp01 } from "../util/math";
 
 export type { PressureProfile } from "../model";
 
@@ -92,10 +93,10 @@ export function applyPenEarlyStrokePressureFloor(
 export function pressureConditionerOptionsForCalibration(
   calibration: PressureCalibration
 ): PressureConditionerOptions {
-  const smoothing = clampUnit(finite(calibration.smoothing, 0.78));
+  const smoothing = clamp01(finite(calibration.smoothing, 0.78));
   const responsiveness = 1 - smoothing;
   return {
-    initialFloor: clampUnit(finite(calibration.initialFloor, DEFAULTS.initialFloor)),
+    initialFloor: clamp01(finite(calibration.initialFloor, DEFAULTS.initialFloor)),
     gain: Math.max(0, finite(calibration.gain, DEFAULTS.gain)),
     // At zero, no EMA/slew smoothing remains: each sample reaches its
     // calibrated target. Higher smoothing damps stationary changes first,
@@ -108,9 +109,6 @@ export function pressureConditionerOptionsForCalibration(
   };
 }
 
-function clampUnit(value: number): number {
-  return Math.min(1, Math.max(0, value));
-}
 
 function finite(value: number | null | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -138,18 +136,18 @@ export class PressureConditioner {
 
   constructor(private readonly profile: PressureProfile = "auto", options: PressureConditionerOptions = {}) {
     this.options = {
-      initialFloor: clampUnit(finite(options.initialFloor, DEFAULTS.initialFloor)),
+      initialFloor: clamp01(finite(options.initialFloor, DEFAULTS.initialFloor)),
       strokeSize: Math.max(0, finite(options.strokeSize, DEFAULTS.strokeSize)),
       earlyFloorLengthMultiplier: Math.max(0, finite(options.earlyFloorLengthMultiplier, DEFAULTS.earlyFloorLengthMultiplier)),
       gain: Math.max(0, finite(options.gain, DEFAULTS.gain)),
       curve: Math.max(0.05, finite(options.curve, DEFAULTS.curve)),
-      stationaryEma: clampUnit(finite(options.stationaryEma, DEFAULTS.stationaryEma)),
-      movingEma: clampUnit(finite(options.movingEma, DEFAULTS.movingEma)),
+      stationaryEma: clamp01(finite(options.stationaryEma, DEFAULTS.stationaryEma)),
+      movingEma: clamp01(finite(options.movingEma, DEFAULTS.movingEma)),
       distanceForFullResponse: Math.max(0.001, finite(options.distanceForFullResponse, DEFAULTS.distanceForFullResponse)),
-      minimumSlew: clampUnit(finite(options.minimumSlew, DEFAULTS.minimumSlew)),
+      minimumSlew: clamp01(finite(options.minimumSlew, DEFAULTS.minimumSlew)),
       slewPerDistance: Math.max(0, finite(options.slewPerDistance, DEFAULTS.slewPerDistance)),
-      maximumSlew: clampUnit(finite(options.maximumSlew, DEFAULTS.maximumSlew)),
-      mousePressure: clampUnit(finite(options.mousePressure, DEFAULTS.mousePressure))
+      maximumSlew: clamp01(finite(options.maximumSlew, DEFAULTS.maximumSlew)),
+      mousePressure: clamp01(finite(options.mousePressure, DEFAULTS.mousePressure))
     };
   }
 
@@ -173,7 +171,7 @@ export class PressureConditioner {
       next = target;
     } else {
       const previous = this.previousPenPressure;
-      const distanceWeight = clampUnit(distance / this.options.distanceForFullResponse);
+      const distanceWeight = clamp01(distance / this.options.distanceForFullResponse);
       const ema = this.options.stationaryEma
         + (this.options.movingEma - this.options.stationaryEma) * distanceWeight;
       const smoothed = previous + (target - previous) * ema;
@@ -181,7 +179,7 @@ export class PressureConditioner {
         this.options.maximumSlew,
         this.options.minimumSlew + distance * this.options.slewPerDistance
       );
-      next = clampUnit(previous + Math.max(-maximumChange, Math.min(maximumChange, smoothed - previous)));
+      next = clamp01(previous + Math.max(-maximumChange, Math.min(maximumChange, smoothed - previous)));
     }
 
     next = applyPenEarlyStrokePressureFloor(
@@ -196,8 +194,8 @@ export class PressureConditioner {
   }
 
   private penTarget(rawPressure: number | null | undefined): number {
-    const raw = clampUnit(finite(rawPressure, 0));
-    return clampUnit(Math.pow(clampUnit(raw * this.options.gain), this.options.curve));
+    const raw = clamp01(finite(rawPressure, 0));
+    return clamp01(Math.pow(clamp01(raw * this.options.gain), this.options.curve));
   }
 
   private sampleDistance(sample: PressureSample): number {
