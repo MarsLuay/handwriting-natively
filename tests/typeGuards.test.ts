@@ -1,52 +1,44 @@
-import { describe, it, expect } from "vitest";
-import { isElementInDocument } from "../src/dom/typeGuards";
+import { describe, expect, it, vi } from "vitest";
+import { setElementCssProps } from "../src/dom/typeGuards.js";
 
-describe("isElementInDocument", () => {
-  it("returns true for a normal element in the document", () => {
+describe("setElementCssProps", () => {
+  it("uses setCssProps if available", () => {
+    const el = document.createElement("div") as any;
+    el.setCssProps = vi.fn();
+    el.style.setProperty = vi.fn();
+
+    setElementCssProps(el, { color: "red" });
+
+    expect(el.setCssProps).toHaveBeenCalledWith({ color: "red" });
+    expect(el.style.setProperty).not.toHaveBeenCalled();
+  });
+
+  it("falls back to style.setProperty if setCssProps is not available", () => {
     const el = document.createElement("div");
-    expect(isElementInDocument(el, document)).toBe(true);
+    vi.spyOn(el.style, "setProperty");
+
+    setElementCssProps(el, { color: "red" });
+
+    expect(el.style.setProperty).toHaveBeenCalledWith("color", "red");
   });
 
-  it("returns false for non-elements", () => {
-    expect(isElementInDocument({}, document)).toBe(false);
-    expect(isElementInDocument(null, document)).toBe(false);
-    expect(isElementInDocument("string", document)).toBe(false);
-    expect(isElementInDocument(document, document)).toBe(false);
-  });
-
-  it("returns false if ownerDocument has no defaultView", () => {
+  it("converts camelCase properties to kebab-case for style.setProperty fallback", () => {
     const el = document.createElement("div");
-    const docWithoutView = {
-      defaultView: null
-    } as unknown as Document;
-    expect(isElementInDocument(el, docWithoutView)).toBe(false);
+    vi.spyOn(el.style, "setProperty");
+
+    setElementCssProps(el, { backgroundColor: "blue", fontSize: "16px" });
+
+    expect(el.style.setProperty).toHaveBeenCalledWith("background-color", "blue");
+    expect(el.style.setProperty).toHaveBeenCalledWith("font-size", "16px");
   });
 
-  it("handles cross-window elements correctly", () => {
-    const iframe = document.createElement("iframe");
-    document.body.appendChild(iframe);
-    const iframeDoc = iframe.contentDocument;
-    if (!iframeDoc) throw new Error("No iframe doc");
-    const iframeEl = iframeDoc.createElement("div");
+  it("preserves CSS variable names starting with --", () => {
+    const el = document.createElement("div");
+    vi.spyOn(el.style, "setProperty");
 
-    // Should be true for its own document
-    expect(isElementInDocument(iframeEl, iframeDoc)).toBe(true);
-    // Should be false when tested against a different document's constructor
-    expect(isElementInDocument(iframeEl, document)).toBe(false);
+    setElementCssProps(el, { "--myVar": "10px", "--myOtherVar": "20px" });
 
-    document.body.removeChild(iframe);
-  });
-
-  it("respects Obsidian-style instanceOf method if present", () => {
-    const mockConstructor = function() {};
-    const mockDocument = {
-      defaultView: { Element: mockConstructor }
-    } as unknown as Document;
-
-    const objWithInstanceOf = {
-      instanceOf: (ctor: unknown) => ctor === mockConstructor
-    };
-
-    expect(isElementInDocument(objWithInstanceOf, mockDocument)).toBe(true);
+    expect(el.style.setProperty).toHaveBeenCalledWith("--myVar", "10px");
+    expect(el.style.setProperty).toHaveBeenCalledWith("--myOtherVar", "20px");
   });
 });
