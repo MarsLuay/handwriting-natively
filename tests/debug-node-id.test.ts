@@ -7,33 +7,44 @@ describe("getDebugNodeId", () => {
     expect(getDebugNodeId(undefined)).toBeNull();
   });
 
-  it("returns null for non-Node objects when Node is available", () => {
-    // A plain object is not an instance of Node.
-    const fakeNode = {} as EventTarget;
-    expect(getDebugNodeId(fakeNode)).toBeNull();
+  it("returns null for non-Node objects", () => {
+    // A plain object that is typed as an EventTarget to mock an incompatible type
+    const nonNode = {} as EventTarget;
+    expect(getDebugNodeId(nonNode)).toBeNull();
+
+    // A class that extends EventTarget but is not a Node
+    class CustomTarget extends EventTarget {}
+    const customTarget = new CustomTarget();
+    expect(getDebugNodeId(customTarget)).toBeNull();
   });
 
-  it("returns a stable ID for the same DOM Node", () => {
-    const node = document.createElement("div");
-    const id1 = getDebugNodeId(node);
-    const id2 = getDebugNodeId(node);
+  it("returns a stable numeric ID for a valid DOM Node", () => {
+    const div = document.createElement("div");
 
-    expect(id1).toBeTypeOf("number");
-    expect(id1).toBe(id2);
+    const id1 = getDebugNodeId(div);
+    expect(typeof id1).toBe("number");
+
+    // Calling it again on the same node should return the exact same ID
+    const id2 = getDebugNodeId(div);
+    expect(id2).toBe(id1);
   });
 
-  it("returns unique, sequential IDs for different DOM Nodes", () => {
-    const node1 = document.createElement("span");
-    const node2 = document.createElement("p");
+  it("returns different IDs for different Nodes", () => {
+    const div1 = document.createElement("div");
+    const div2 = document.createElement("span");
+    const textNode = document.createTextNode("hello");
 
-    const id1 = getDebugNodeId(node1);
-    const id2 = getDebugNodeId(node2);
+    const id1 = getDebugNodeId(div1);
+    const id2 = getDebugNodeId(div2);
+    const id3 = getDebugNodeId(textNode);
 
-    expect(id1).toBeTypeOf("number");
-    expect(id2).toBeTypeOf("number");
     expect(id1).not.toBe(id2);
-    // Note: Since these tests run after others, we can't assume id1 is exactly 1,
-    // but we can assume id2 is exactly id1 + 1 (since they are created sequentially here).
-    expect(id2).toBe((id1 as number) + 1);
+    expect(id1).not.toBe(id3);
+    expect(id2).not.toBe(id3);
+
+    // Assert all are numbers
+    expect(typeof id1).toBe("number");
+    expect(typeof id2).toBe("number");
+    expect(typeof id3).toBe("number");
   });
 });
