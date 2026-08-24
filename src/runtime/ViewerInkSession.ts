@@ -3527,7 +3527,7 @@ export class ViewerInkSession {
           : {}),
         ...details
       }),
-      onTouchPan: (phase, _event, details) => this.logger.touchInput(phase, { page: surface.page.pageNumber, ...details })
+      onTouchPan: (phase, _event, details) => this.logger.touchPan(phase, { page: surface.page.pageNumber, ...details })
     });
   }
 
@@ -4654,7 +4654,7 @@ export class ViewerInkSession {
     const pageTexts = this.texts.page(page);
     for (let i = pageTexts.length - 1; i >= 0; i--) {
       const text = pageTexts[i];
-      if (point.x >= text.x && point.x <= text.x + text.width
+      if (text && point.x >= text.x && point.x <= text.x + text.width
           && point.y <= text.y && point.y >= text.y - text.height) {
         return text;
       }

@@ -5,7 +5,6 @@ import { scrollPdfBy } from "../integration/PdfScrollRoot";
 import { PalmRejectionPolicy, type PenStateResetReason } from "./PalmRejectionPolicy";
 import { PointerCapabilities, type PointerSample } from "./PointerCapabilities";
 import { isTipContact, remapMouseTipSamples } from "./PenPresence";
-import { isSelectablePdfTarget } from "./PdfSelectableTarget";
 import {
   resolveTouchAxisLock,
   shouldClaimVerticalTouchPan,
@@ -813,17 +812,3 @@ export class PointerRouter {
   };
 }
 
-function targetLabel(target: EventTarget | null): string {
-  if (target === null) return "null";
-  if (!(target instanceof Element)) return Object.prototype.toString.call(target);
-  const tag = target.tagName.toLowerCase();
-  const classes = [...target.classList].slice(0, 3).join(".");
-  return classes ? `${tag}.${classes}` : tag;
-}
-
-function scrollRootLabel(root: HTMLElement): string {
-  const id = root.id ? `#${root.id}` : "";
-  const classes = [...root.classList].slice(0, 2).join(".");
-  const scrollable = root.scrollHeight > root.clientHeight;
-  return `${root.tagName.toLowerCase()}${id}${classes ? `.${classes}` : ""} scrollable=${scrollable}`;
-}
