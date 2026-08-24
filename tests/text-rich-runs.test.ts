@@ -8,7 +8,8 @@ import {
   plainTextToRuns,
   sliceTextRuns,
   styleAtTextOffset,
-  styleForTextRange
+  styleForTextRange,
+  sameTextRunStyle
 } from "../src/text/RichTextRuns";
 
 const base = {
@@ -103,5 +104,31 @@ describe("RichTextRuns", () => {
     const queried = styleAtTextOffset(runs, 0)!;
     queried.color = "#ef4444";
     expect(runs[0]?.color).toBe("#111111");
+  });
+
+  it("compares text run styles correctly", () => {
+    const style1 = { ...base };
+    const style2 = { ...base };
+
+    // Identical
+    expect(sameTextRunStyle(style1, style2)).toBe(true);
+
+    // Color difference
+    expect(sameTextRunStyle(style1, { ...style2, color: "#ef4444" })).toBe(false);
+
+    // Font size difference
+    expect(sameTextRunStyle(style1, { ...style2, fontSize: 18 })).toBe(false);
+
+    // Font family difference
+    expect(sameTextRunStyle(style1, { ...style2, fontFamily: "Arial" })).toBe(false);
+
+    // Bold difference
+    expect(sameTextRunStyle(style1, { ...style2, bold: true })).toBe(false);
+
+    // Italic difference
+    expect(sameTextRunStyle(style1, { ...style2, italic: true })).toBe(false);
+
+    // Strikethrough difference
+    expect(sameTextRunStyle(style1, { ...style2, strikethrough: true })).toBe(false);
   });
 });
