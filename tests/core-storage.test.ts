@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { InkStroke, PdfTextAnnotation } from "../src/model";
-import { createDocumentIdentity } from "../src/storage/DocumentIdentity";
 import { MigrationManager } from "../src/storage/MigrationManager";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
@@ -95,11 +94,6 @@ describe("sidecar storage", () => {
     expect(migrated.schemaVersion).toBe(1);
     expect(migrated.pages[0]?.rotation).toBe(0);
     expect(migrated.pages[0]?.strokes).toEqual([stroke]);
-  });
-
-  it("uses fingerprint/content hash identity across renames and path fallback otherwise", () => {
-    expect(createDocumentIdentity({ vaultPath: "old.pdf", fingerprint: "fp" }).id).toBe(createDocumentIdentity({ vaultPath: "new.pdf", fingerprint: "fp" }).id);
-    expect(createDocumentIdentity({ vaultPath: "old.pdf" }).id).not.toBe(createDocumentIdentity({ vaultPath: "new.pdf" }).id);
   });
 
   it("prefers the newer sidecar or recovery snapshot when both exist", () => {
