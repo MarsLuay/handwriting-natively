@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { InkStroke } from "../src/model";
 import { InkSession } from "../src/ink/InkSession";
-import { AddStrokeCommand, DeleteStrokesCommand, ReplacePageStrokesCommand, ReplaceStrokesCommand, translateStrokes } from "../src/history/AnnotationCommands";
+import { AddStrokeCommand, DeleteStrokesCommand, ReplacePageStrokesCommand, ReplaceStrokesCommand, ReplaceAnnotationSelectionCommand, translateStrokes } from "../src/history/AnnotationCommands";
 import { CommandHistory } from "../src/history/CommandHistory";
+import { TextAnnotationSession } from "../src/text/TextAnnotationSession";
+import type { PdfTextAnnotation } from "../src/model";
 
 const stroke: InkStroke = { id: "s", page: 1, tool: "pen", color: "#000000", width: 2, opacity: 1, inputType: "pen", points: [{ x: 1, y: 2, pressure: 1, time: 0 }], createdAt: "now", updatedAt: "now" };
 
@@ -36,5 +38,19 @@ describe("annotation command history", () => {
 
     history.redo();
     expect(session.all().map((item) => item.id)).toEqual(["left", "right"]);
+  });
+
+  it("throws an error when initializing replace commands with unequal array lengths", () => {
+    const session = new InkSession();
+    const texts = new TextAnnotationSession();
+    const text = { id: "t", page: 1, text: "hello", x: 0, y: 0, width: 10, height: 10, color: "#000000", fontSize: 12, fontFamily: "sans-serif" } as PdfTextAnnotation;
+
+    expect(() => new ReplaceStrokesCommand(session, [stroke], [])).toThrowError("Replacement sets must have equal length");
+    expect(() => new ReplaceStrokesCommand(session, [], [stroke])).toThrowError("Replacement sets must have equal length");
+
+    expect(() => new ReplaceAnnotationSelectionCommand(session, [stroke], [], texts, [], [])).toThrowError("Replacement sets must have equal lengths");
+    expect(() => new ReplaceAnnotationSelectionCommand(session, [], [stroke], texts, [], [])).toThrowError("Replacement sets must have equal lengths");
+    expect(() => new ReplaceAnnotationSelectionCommand(session, [], [], texts, [text], [])).toThrowError("Replacement sets must have equal lengths");
+    expect(() => new ReplaceAnnotationSelectionCommand(session, [], [], texts, [], [text])).toThrowError("Replacement sets must have equal lengths");
   });
 });
