@@ -1,50 +1,101 @@
-import { describe, it, expect, vi } from "vitest";
-import { ReplaceTextAnnotationCommand } from "../src/text/TextAnnotationCommands";
-import type { TextAnnotationSession } from "../src/text/TextAnnotationSession";
-import type { PdfTextAnnotation } from "../src/model";
+import { describe, expect, it } from "vitest";
+import {
+  AddTextAnnotationCommand,
+  DeleteTextAnnotationsCommand,
+  ReplaceTextAnnotationCommand
+} from "../src/text/TextAnnotationCommands";
+import { TextAnnotationSession } from "../src/text/TextAnnotationSession";
+import { PdfTextAnnotation } from "../src/model";
 
-describe("ReplaceTextAnnotationCommand", () => {
-    it("should replace before with after on execute", () => {
-        const session = {
-            replace: vi.fn(),
-            add: vi.fn(),
-            remove: vi.fn()
-        } as unknown as TextAnnotationSession;
+describe("TextAnnotationCommands", () => {
+  const dummyAnnotation: PdfTextAnnotation = {
+    id: "a1",
+    page: 1,
+    text: "hello",
+    x: 10,
+    y: 20,
+    width: 100,
+    height: 20,
+    color: "#000",
+    fontSize: 12,
+    fontFamily: "Arial"
+  };
 
-        const before: PdfTextAnnotation = { id: "1", text: "before" } as any;
-        const after: PdfTextAnnotation = { id: "1", text: "after" } as any;
+  const dummyAnnotation2: PdfTextAnnotation = {
+    id: "a2",
+    page: 1,
+    text: "world",
+    x: 10,
+    y: 50,
+    width: 100,
+    height: 20,
+    color: "#000",
+    fontSize: 12,
+    fontFamily: "Arial"
+  };
 
-        const command = new ReplaceTextAnnotationCommand(session, before, after);
+  describe("AddTextAnnotationCommand", () => {
+    it("adds an annotation to the session when executed", () => {
+      const session = new TextAnnotationSession();
+      const command = new AddTextAnnotationCommand(session, dummyAnnotation);
 
-        command.execute();
-
-        expect(session.replace).toHaveBeenCalledWith(after);
+      command.execute();
+      expect(session.page(1)).toEqual([dummyAnnotation]);
     });
 
-    it("should replace after with before on undo", () => {
-        const session = {
-            replace: vi.fn(),
-            add: vi.fn(),
-            remove: vi.fn()
-        } as unknown as TextAnnotationSession;
+    it("removes the annotation from the session when undone", () => {
+      const session = new TextAnnotationSession();
+      const command = new AddTextAnnotationCommand(session, dummyAnnotation);
 
-        const before: PdfTextAnnotation = { id: "1", text: "before" } as any;
-        const after: PdfTextAnnotation = { id: "1", text: "after" } as any;
+      command.execute();
+      command.undo();
+      expect(session.page(1)).toEqual([]);
+    });
+  });
 
-        const command = new ReplaceTextAnnotationCommand(session, before, after);
+  describe("DeleteTextAnnotationsCommand", () => {
+    it("removes annotations from the session when executed", () => {
+      const session = new TextAnnotationSession([dummyAnnotation, dummyAnnotation2]);
+      const command = new DeleteTextAnnotationsCommand(session, [dummyAnnotation, dummyAnnotation2]);
 
-        command.undo();
-
-        expect(session.replace).toHaveBeenCalledWith(before);
+      command.execute();
+      expect(session.page(1)).toEqual([]);
     });
 
-    it("should have correct label", () => {
-        const session = {} as unknown as TextAnnotationSession;
-        const before: PdfTextAnnotation = {} as any;
-        const after: PdfTextAnnotation = {} as any;
+    it("restores the annotations to the session when undone", () => {
+      const session = new TextAnnotationSession([dummyAnnotation, dummyAnnotation2]);
+      const command = new DeleteTextAnnotationsCommand(session, [dummyAnnotation]);
 
-        const command = new ReplaceTextAnnotationCommand(session, before, after);
+      command.execute();
+      command.undo();
 
-        expect(command.label).toBe("Edit text annotation");
+      const annotations = session.page(1);
+      expect(annotations).toHaveLength(2);
+      expect(annotations).toContainEqual(dummyAnnotation);
+      expect(annotations).toContainEqual(dummyAnnotation2);
     });
+  });
+
+  describe("ReplaceTextAnnotationCommand", () => {
+    it("replaces the old annotation with the new one when executed", () => {
+      const session = new TextAnnotationSession([dummyAnnotation]);
+
+      const updatedAnnotation = { ...dummyAnnotation, text: "updated" };
+      const command = new ReplaceTextAnnotationCommand(session, dummyAnnotation, updatedAnnotation);
+
+      command.execute();
+      expect(session.page(1)).toEqual([updatedAnnotation]);
+    });
+
+    it("restores the old annotation when undone", () => {
+      const session = new TextAnnotationSession([dummyAnnotation]);
+
+      const updatedAnnotation = { ...dummyAnnotation, text: "updated" };
+      const command = new ReplaceTextAnnotationCommand(session, dummyAnnotation, updatedAnnotation);
+
+      command.execute();
+      command.undo();
+      expect(session.page(1)).toEqual([dummyAnnotation]);
+    });
+  });
 });

@@ -12,18 +12,12 @@ import {
   type TouchAxisLock
 } from "./TouchAxisPolicy";
 
-export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "mouse-pan" | "native" | "ignored";
+export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "native" | "ignored";
 
 export function isAnnotationChromeTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(
     ".native-pdf-handwriting-selection-toolbar, .native-pdf-handwriting-selection-control, .native-pdf-handwriting-text-input"
   ));
-}
-
-/** Primary tip drag: mouse LMB or stylus tip (not barrel / eraser buttons). */
-export function isDragPanPointer(event: Pick<PointerEvent, "pointerType" | "button">): boolean {
-  if (event.button !== 0) return false;
-  return event.pointerType === "mouse" || event.pointerType === "pen";
 }
 
 /** W3C Pointer Events reports an eraser stylus tip as button 5 / buttons bit 32. */
@@ -45,13 +39,6 @@ export function safeReleasePointerCapture(element: Element, pointerId: number): 
   } catch {
     return false;
   }
-}
-
-interface PanGesture {
-  startX: number;
-  startY: number;
-  lastY: number;
-  active: boolean;
 }
 
 /** Draw-mode single-finger axis lock (Ink dedicated-writing pattern). */
@@ -104,7 +91,7 @@ export interface PointerRouterCallbacks {
       dy?: number;
     }
   ): void;
-  onMousePan?(phase: "start" | "activate" | "move" | "end" | "abort", event: PointerEvent, details: Record<string, unknown>): void;
+  onTouchPan?(phase: "start" | "activate" | "move" | "end" | "abort", event: PointerEvent, details: Record<string, unknown>): void;
 }
 
 export class PointerRouter {
@@ -115,7 +102,6 @@ export class PointerRouter {
   readonly generation: number;
   private readonly routed = new Map<number, "draw" | "edit" | "text">();
   private readonly stylusErasers = new Set<number>();
-  private readonly panning = new Map<number, PanGesture>();
   private readonly touches = new Set<number>();
   private touchAxis: TouchAxisGesture | null = null;
   private readonly palmPolicy: PalmRejectionPolicy;
@@ -185,9 +171,6 @@ export class PointerRouter {
       return "touch-pan";
     }
     if (!this.callbacks.drawingEnabled()) {
-      if (isDragPanPointer(event) && this.callbacks.scrollRoot?.()) {
-        if (!isAnnotationChromeTarget(event.target) && !isSelectablePdfTarget(event.target)) return "mouse-pan";
-      }
       return "native";
     }
     // MockTab can expose a physical eraser as a mouse pointer with W3C's
@@ -235,21 +218,6 @@ export class PointerRouter {
       this.clearTouchAxisGesture("multi-finger");
     } else if (route === "touch-pan" && this.callbacks.drawingEnabled() && !this.palmPolicy.hasActivePen()) {
       this.beginTouchAxisGesture(event);
-    }
-    if (route === "mouse-pan") {
-      this.panning.set(event.pointerId, {
-        startX: event.clientX,
-        startY: event.clientY,
-        lastY: event.clientY,
-        active: false
-      });
-      this.element.setPointerCapture?.(event.pointerId);
-      const root = this.callbacks.scrollRoot?.();
-      this.callbacks.onMousePan?.("start", event, {
-        target: targetLabel(event.target),
-        scrollRoot: root ? scrollRootLabel(root) : null
-      });
-      return;
     }
     // Palm / Pencil companion touch while a stylus is down: block native scroll.
     if (route === "ignored") {
@@ -461,7 +429,7 @@ export class PointerRouter {
     event.preventDefault();
     event.stopPropagation();
     const changed = scrollPdfBy(root, -deltaY);
-    this.callbacks.onMousePan?.("move", event, {
+    this.callbacks.onTouchPan?.("move", event, {
       reason: "touch-axis-vertical",
       deltaY: -deltaY,
       changed,
@@ -530,11 +498,6 @@ export class PointerRouter {
       return;
     }
     if (this.recoverMissingPointerDown(event)) return;
-    const pan = this.panning.get(event.pointerId);
-    if (pan) {
-      this.updateMousePan(event, pan);
-      return;
-    }
     this.updateTouchAxisGesture(event);
   };
 
@@ -548,7 +511,6 @@ export class PointerRouter {
       safeReleasePointerCapture(this.element, event.pointerId);
       this.routed.delete(event.pointerId);
     }
-    this.finishMousePan(event);
     if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
     this.touches.delete(event.pointerId);
     if (this.touchAxis?.pointerId === event.pointerId) this.clearTouchAxisGesture("pointerup");
@@ -568,7 +530,6 @@ export class PointerRouter {
       safeReleasePointerCapture(this.element, event.pointerId);
       this.routed.delete(event.pointerId);
     }
-    this.finishMousePan(event);
     if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
     this.touches.delete(event.pointerId);
     if (this.touchAxis?.pointerId === event.pointerId) this.clearTouchAxisGesture("pointercancel");
@@ -705,7 +666,6 @@ export class PointerRouter {
     this.cancelScheduledCursorUpdate();
     const captureIds = new Set<number>([
       ...this.routed.keys(),
-      ...this.panning.keys(),
       ...(this.touchAxis ? [this.touchAxis.pointerId] : [])
     ]);
     for (const pointerId of captureIds) {
@@ -713,7 +673,6 @@ export class PointerRouter {
     }
     this.routed.clear();
     this.stylusErasers.clear();
-    this.panning.clear();
     this.touches.clear();
     this.touchAxis = null;
     this.palmPolicy.setResetListener(null);
@@ -722,7 +681,6 @@ export class PointerRouter {
     this.element.classList.remove(
       "native-pdf-handwriting-has-eraser-cursor",
       "native-pdf-handwriting-has-draw-cursor",
-      "native-pdf-handwriting-panning",
       "native-pdf-handwriting-pen-capturing",
       "native-pdf-handwriting-touch-none",
       "native-pdf-handwriting-touch-pan-xy"
@@ -735,56 +693,6 @@ export class PointerRouter {
     if (!this.callbacks.drawingEnabled() || !this.callbacks.rightMouseEraserEnabled?.() || event.button !== 2) return;
     event.preventDefault();
   };
-
-  private updateMousePan(event: PointerEvent, pan: PanGesture): void {
-    const root = this.callbacks.scrollRoot?.();
-    if (!root) {
-      this.callbacks.onMousePan?.("abort", event, { reason: "missing-scroll-root" });
-      this.panning.delete(event.pointerId);
-      return;
-    }
-    if (!pan.active) {
-      const dx = event.clientX - pan.startX;
-      const dy = event.clientY - pan.startY;
-      if (Math.hypot(dx, dy) < 4) return;
-      if (Math.abs(dx) > Math.max(4, Math.abs(dy) * 1.25)) {
-        this.callbacks.onMousePan?.("abort", event, { reason: "horizontal-dominant", dx, dy });
-        this.panning.delete(event.pointerId);
-        return;
-      }
-      pan.active = true;
-      this.element.classList.add("native-pdf-handwriting-panning");
-      this.callbacks.onMousePan?.("activate", event, {
-        scrollRoot: scrollRootLabel(root),
-        scrollTop: root.scrollTop
-      });
-    }
-    const deltaY = event.clientY - pan.lastY;
-    event.preventDefault();
-    const changed = scrollPdfBy(root, -deltaY);
-    pan.lastY = event.clientY;
-    this.callbacks.onMousePan?.("move", event, {
-      deltaY: -deltaY,
-      scrollTop: root.scrollTop,
-      changed
-    });
-  }
-
-  private finishMousePan(event: PointerEvent): void {
-    const pan = this.panning.get(event.pointerId);
-    if (!pan) return;
-    if (pan.active) {
-      event.preventDefault();
-      const root = this.callbacks.scrollRoot?.();
-      this.callbacks.onMousePan?.("end", event, {
-        scrollTop: root?.scrollTop ?? null,
-        scrollRoot: root ? scrollRootLabel(root) : null
-      });
-    }
-    this.panning.delete(event.pointerId);
-    safeReleasePointerCapture(this.element, event.pointerId);
-    if (!this.panning.size) this.element.classList.remove("native-pdf-handwriting-panning");
-  }
 
   private scheduleCustomCursorUpdate(event: PointerEvent): void {
     if (event.pointerType !== "mouse" && event.pointerType !== "pen") {
