@@ -34,7 +34,7 @@
     "obsidian": "latest",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.65.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "allowScripts": {
     "esbuild@0.28.1": true
