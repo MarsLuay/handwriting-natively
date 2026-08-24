@@ -7140,7 +7140,16 @@ export class ViewerInkSession {
 
   private id(): string {
     const cryptoObj = window.crypto;
-    return cryptoObj?.randomUUID?.() ?? `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    if (cryptoObj?.randomUUID) {
+      return cryptoObj.randomUUID();
+    }
+    if (cryptoObj?.getRandomValues) {
+      const array = new Uint32Array(4);
+      cryptoObj.getRandomValues(array);
+      return `stroke-${Date.now()}-${Array.from(array, dec => dec.toString(16).padStart(8, '0')).join('')}`;
+    }
+    // Fail secure if no cryptographic PRNG is available
+    throw new Error("Secure random number generation is not supported by this browser.");
   }
 
   private errorMessage(error: unknown): string {
