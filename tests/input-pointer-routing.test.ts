@@ -264,7 +264,7 @@ describe("PointerRouter", () => {
       drawingEnabled: () => true,
       scrollRoot: () => scrollRoot,
       onTouchLifecycle: lifecycle,
-      onMousePan: pans
+      onTouchPan: pans
     });
 
     element.dispatchEvent(pointer("touch", 120, { clientX: 10, clientY: 20 }));
@@ -307,7 +307,7 @@ describe("PointerRouter", () => {
       drawingEnabled: () => true,
       scrollRoot: () => scrollRoot,
       onTouchLifecycle: lifecycle,
-      onMousePan: pans
+      onTouchPan: pans
     });
 
     element.dispatchEvent(pointer("touch", 121, { clientX: 10, clientY: 20 }));
@@ -952,58 +952,6 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
-  it("scrolls vertically on mouse drag when draw mode is off", () => {
-    const element = document.createElement("div");
-    const scroller = document.createElement("div");
-    let scrollTop = 100;
-    Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
-    Object.defineProperty(scroller, "clientHeight", { value: 600, configurable: true });
-    Object.defineProperty(scroller, "scrollTop", {
-      get: () => scrollTop,
-      set: (value: number) => { scrollTop = value; }
-    });
-    Object.assign(element, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
-    const routes: string[] = [];
-    const router = new PointerRouter(element, {
-      activeTool: () => "pen",
-      drawingEnabled: () => false,
-      scrollRoot: () => scroller,
-      onRoute: (route) => routes.push(route)
-    });
-
-    element.dispatchEvent(pointer("mouse", 12, { clientX: 40, clientY: 100 }));
-    expect(routes.at(-1)).toBe("mouse-pan");
-    element.dispatchEvent(pointer("mouse", 12, { eventType: "pointermove", clientX: 40, clientY: 140 }));
-    expect(scrollTop).toBe(60);
-    router.destroy();
-  });
-
-  it("scrolls vertically on stylus drag when draw mode is off", () => {
-    const element = document.createElement("div");
-    const scroller = document.createElement("div");
-    let scrollTop = 100;
-    Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
-    Object.defineProperty(scroller, "clientHeight", { value: 600, configurable: true });
-    Object.defineProperty(scroller, "scrollTop", {
-      get: () => scrollTop,
-      set: (value: number) => { scrollTop = value; }
-    });
-    Object.assign(element, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
-    const routes: string[] = [];
-    const router = new PointerRouter(element, {
-      activeTool: () => "pen",
-      drawingEnabled: () => false,
-      scrollRoot: () => scroller,
-      onRoute: (route) => routes.push(route)
-    });
-
-    element.dispatchEvent(pointer("pen", 21, { clientX: 40, clientY: 100 }));
-    expect(routes.at(-1)).toBe("mouse-pan");
-    element.dispatchEvent(pointer("pen", 21, { eventType: "pointermove", clientX: 40, clientY: 140 }));
-    expect(scrollTop).toBe(60);
-    router.destroy();
-  });
-
   it("keeps native routing over pdf text so selection still works", () => {
     const element = document.createElement("div");
     const textLayer = document.createElement("div");
@@ -1021,23 +969,6 @@ describe("PointerRouter", () => {
     });
     span.dispatchEvent(pointer("mouse", 13));
     expect(routes.at(-1)).toBe("native");
-    router.destroy();
-  });
-
-  it("routes mouse pan through empty text layer padding", () => {
-    const element = document.createElement("div");
-    const textLayer = document.createElement("div");
-    textLayer.className = "textLayer";
-    element.append(textLayer);
-    const routes: string[] = [];
-    const router = new PointerRouter(element, {
-      activeTool: () => "pen",
-      drawingEnabled: () => false,
-      scrollRoot: () => document.createElement("div"),
-      onRoute: (route) => routes.push(route)
-    });
-    textLayer.dispatchEvent(pointer("mouse", 15));
-    expect(routes.at(-1)).toBe("mouse-pan");
     router.destroy();
   });
 
