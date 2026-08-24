@@ -420,6 +420,17 @@ export class SessionLogger {
     });
   }
 
+  touchPan(
+    phase: "probe" | "activate" | "move" | "skip" | "abort" | "end" | "lostpointercapture" | "pointercancel" | "pointerup" | "touchcancel" | "touchend" | "start",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit("info", "touch pan", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   /** Confirms whether a sidebar action augmented Obsidian's existing menu. */
   thumbnailMenu(
     phase: "context-seen" | "context-ignored" | "menu-scan" | "native-template-armed" | "native-template-appended" | "native-template-unavailable" | "native-menu-appended" | "native-menu-missing" | "standalone-add" | "range-selected" | "range-delete-requested" | "keyboard-delete-error",

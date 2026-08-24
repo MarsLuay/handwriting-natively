@@ -18,7 +18,14 @@ describe("TextAnnotationCommands", () => {
     height: 20,
     color: "#000",
     fontSize: 12,
-    fontFamily: "Arial"
+    fontFamily: "Arial",
+    bold: false,
+    italic: false,
+    strikethrough: false,
+    runs: [],
+    sourceRuns: [],
+    createdAt: "",
+    updatedAt: ""
   };
 
   const dummyAnnotation2: PdfTextAnnotation = {
@@ -31,7 +38,14 @@ describe("TextAnnotationCommands", () => {
     height: 20,
     color: "#000",
     fontSize: 12,
-    fontFamily: "Arial"
+    fontFamily: "Arial",
+    bold: false,
+    italic: false,
+    strikethrough: false,
+    runs: [],
+    sourceRuns: [],
+    createdAt: "",
+    updatedAt: ""
   };
 
   describe("AddTextAnnotationCommand", () => {
