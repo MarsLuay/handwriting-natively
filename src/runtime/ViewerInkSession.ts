@@ -3515,7 +3515,7 @@ export class ViewerInkSession {
           : {}),
         ...details
       }),
-      onMousePan: (phase, _event, details) => this.logger.mousePan(phase, { page: surface.page.pageNumber, ...details })
+      onTouchPan: (phase, _event, details) => this.logger.touchInput(phase, { page: surface.page.pageNumber, ...details })
     });
   }
 
@@ -4639,10 +4639,15 @@ export class ViewerInkSession {
   }
 
   private textAt(page: number, point: Pick<PdfPoint, "x" | "y">): PdfTextAnnotation | null {
-    return [...this.texts.page(page)].reverse().find((text) =>
-      point.x >= text.x && point.x <= text.x + text.width
-      && point.y <= text.y && point.y >= text.y - text.height
-    ) ?? null;
+    const pageTexts = this.texts.page(page);
+    for (let i = pageTexts.length - 1; i >= 0; i--) {
+      const text = pageTexts[i];
+      if (point.x >= text.x && point.x <= text.x + text.width
+          && point.y <= text.y && point.y >= text.y - text.height) {
+        return text;
+      }
+    }
+    return null;
   }
 
   private logText(surface: PageSurface, phase: string, details: Record<string, unknown> = {}): void {
@@ -7140,7 +7145,16 @@ export class ViewerInkSession {
 
   private id(): string {
     const cryptoObj = window.crypto;
-    return cryptoObj?.randomUUID?.() ?? `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    if (cryptoObj?.randomUUID) {
+      return cryptoObj.randomUUID();
+    }
+    if (cryptoObj?.getRandomValues) {
+      const array = new Uint32Array(4);
+      cryptoObj.getRandomValues(array);
+      return `stroke-${Date.now()}-${Array.from(array, dec => dec.toString(16).padStart(8, '0')).join('')}`;
+    }
+    // Fail secure if no cryptographic PRNG is available
+    throw new Error("Secure random number generation is not supported by this browser.");
   }
 
   private errorMessage(error: unknown): string {
