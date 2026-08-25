@@ -1050,6 +1050,7 @@ export class ViewerInkSession {
     for (const page of order.neighbors) {
       this.zoomSettleQueue.push({ page, tier: "neighbor" });
     }
+    this.zoomSettleQueue.reverse();
     this.logger.zoomComposite("settle-paint", {
       pages: (order.focus !== null ? 1 : 0) + order.neighbors.length,
       focusPage: order.focus,
@@ -1078,7 +1079,7 @@ export class ViewerInkSession {
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
       while (this.zoomSettleQueue.length > 0) {
-        const item = this.zoomSettleQueue.shift()!;
+        const item = this.zoomSettleQueue.pop()!;
         this.paintOneZoomSettlePage(item.page, item.tier);
       }
       this.finishZoomSettleSlices();
@@ -1146,7 +1147,7 @@ export class ViewerInkSession {
       return;
     }
 
-    const item = this.zoomSettleQueue.shift()!;
+    const item = this.zoomSettleQueue.pop()!;
     this.paintOneZoomSettlePage(item.page, item.tier);
 
     if (this.zoomSettleQueue.length === 0) {
@@ -1156,7 +1157,7 @@ export class ViewerInkSession {
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
       while (this.zoomSettleQueue.length > 0) {
-        const next = this.zoomSettleQueue.shift()!;
+        const next = this.zoomSettleQueue.pop()!;
         this.paintOneZoomSettlePage(next.page, next.tier);
       }
       this.finishZoomSettleSlices();
