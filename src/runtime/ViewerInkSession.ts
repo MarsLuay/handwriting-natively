@@ -1050,6 +1050,7 @@ export class ViewerInkSession {
     for (const page of order.neighbors) {
       this.zoomSettleQueue.push({ page, tier: "neighbor" });
     }
+    this.zoomSettleQueue.reverse();
     this.logger.zoomComposite("settle-paint", {
       pages: (order.focus !== null ? 1 : 0) + order.neighbors.length,
       focusPage: order.focus,
@@ -1078,9 +1079,10 @@ export class ViewerInkSession {
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
       while (this.zoomSettleQueue.length > 0) {
-        const item = this.zoomSettleQueue.shift()!;
+        const item = this.zoomSettleQueue.pop()!;
         this.paintOneZoomSettlePage(item.page, item.tier);
       }
+      this.zoomSettleQueue.length = 0;
       this.finishZoomSettleSlices();
       return;
     }
@@ -1146,7 +1148,7 @@ export class ViewerInkSession {
       return;
     }
 
-    const item = this.zoomSettleQueue.shift()!;
+    const item = this.zoomSettleQueue.pop()!;
     this.paintOneZoomSettlePage(item.page, item.tier);
 
     if (this.zoomSettleQueue.length === 0) {
@@ -1156,9 +1158,10 @@ export class ViewerInkSession {
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
       while (this.zoomSettleQueue.length > 0) {
-        const next = this.zoomSettleQueue.shift()!;
+        const next = this.zoomSettleQueue.pop()!;
         this.paintOneZoomSettlePage(next.page, next.tier);
       }
+      this.zoomSettleQueue.length = 0;
       this.finishZoomSettleSlices();
       return;
     }
@@ -1395,13 +1398,12 @@ export class ViewerInkSession {
   onPdfPageContentMutation(recordCount: number): void {
     if (this.destroyed) return;
     const pages = this.options.adapter.pages();
+    const pagesMap = new Map(pages.map((p) => [p.pageNumber, p]));
     this.notePageMutationShieldNativeContent(recordCount, pages.length);
-    const livePagesByNumber = new Map(pages.map((page) => [page.pageNumber, page]));
     const detachedOverlayPages = [...this.surfaces.entries()]
       .filter(([pageNumber, surface]) => {
-        if (surface.overlay.isConnected) return false;
-        const live = livePagesByNumber.get(pageNumber);
-        return Boolean(live && live.element.isConnected);
+        const page = pagesMap.get(pageNumber);
+        return !surface.overlay.isConnected && page && page.element.isConnected;
       })
       .map(([pageNumber]) => pageNumber);
     // Pinch zoom can replace the live `.page` while the predecessor + overlay
@@ -1409,7 +1411,7 @@ export class ViewerInkSession {
     // that no longer receives canvas hits.
     const driftedPageElements = [...this.surfaces.entries()]
       .filter(([pageNumber, surface]) => {
-        const live = livePagesByNumber.get(pageNumber);
+        const live = pagesMap.get(pageNumber);
         return Boolean(live && live.element !== surface.page.element && live.element.isConnected);
       })
       .map(([pageNumber]) => pageNumber);
@@ -1433,7 +1435,7 @@ export class ViewerInkSession {
     const reattachedOverlayPages = reattached
       ? reattachCandidates.filter((pageNumber) => {
         const surface = this.surfaces.get(pageNumber);
-        const live = pages.find((page) => page.pageNumber === pageNumber);
+        const live = pagesMap.get(pageNumber);
         return Boolean(
           surface
           && live
