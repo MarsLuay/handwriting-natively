@@ -1,0 +1,1 @@
+{"id":"source-pdf-write-contract","status":"candidate","claim":"The documented no-in-place-source-PDF invariant conflicts with page insertion/deletion write paths in src/main.ts.","evidence":["README.md","docs/architecture.md","src/main.ts"],"nextAction":"Resolve intended page insertion/deletion behavior before updating the invariant."}
