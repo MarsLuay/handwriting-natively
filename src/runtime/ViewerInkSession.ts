@@ -1400,7 +1400,6 @@ export class ViewerInkSession {
     const pages = this.options.adapter.pages();
     const pagesMap = new Map(pages.map((p) => [p.pageNumber, p]));
     this.notePageMutationShieldNativeContent(recordCount, pages.length);
-
     const detachedOverlayPages = [...this.surfaces.entries()]
       .filter(([pageNumber, surface]) => {
         const page = pagesMap.get(pageNumber);
