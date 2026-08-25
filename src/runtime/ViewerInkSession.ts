@@ -1396,15 +1396,20 @@ export class ViewerInkSession {
     if (this.destroyed) return;
     const pages = this.options.adapter.pages();
     this.notePageMutationShieldNativeContent(recordCount, pages.length);
+    const livePagesByNumber = new Map(pages.map((page) => [page.pageNumber, page]));
     const detachedOverlayPages = [...this.surfaces.entries()]
-      .filter(([pageNumber, surface]) => !surface.overlay.isConnected && pages.some((page) => page.pageNumber === pageNumber && page.element.isConnected))
+      .filter(([pageNumber, surface]) => {
+        if (surface.overlay.isConnected) return false;
+        const live = livePagesByNumber.get(pageNumber);
+        return Boolean(live && live.element.isConnected);
+      })
       .map(([pageNumber]) => pageNumber);
     // Pinch zoom can replace the live `.page` while the predecessor + overlay
     // stay connected. Remount before PointerRouter is left listening on a shell
     // that no longer receives canvas hits.
     const driftedPageElements = [...this.surfaces.entries()]
       .filter(([pageNumber, surface]) => {
-        const live = pages.find((page) => page.pageNumber === pageNumber);
+        const live = livePagesByNumber.get(pageNumber);
         return Boolean(live && live.element !== surface.page.element && live.element.isConnected);
       })
       .map(([pageNumber]) => pageNumber);
