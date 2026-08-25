@@ -1096,9 +1096,10 @@ export class ViewerInkSession {
    */
   private zoomSettlePageOrder(): { focus: number | null; neighbors: number[] } {
     const currentPage = this.options.adapter.getViewState().pageNumber;
+    const view = this.options.adapter.host.getBoundingClientRect();
     const ranked = [...this.surfaces.entries()].map(([pageNumber, surface]) => ({
       pageNumber,
-      area: this.surfaceViewportIntersectionArea(surface)
+      area: this.surfaceViewportIntersectionArea(surface, view)
     }));
     ranked.sort((a, b) => b.area - a.area);
 
@@ -1117,8 +1118,7 @@ export class ViewerInkSession {
     return { focus, neighbors };
   }
 
-  private surfaceViewportIntersectionArea(surface: PageSurface): number {
-    const view = this.options.adapter.host.getBoundingClientRect();
+  private surfaceViewportIntersectionArea(surface: PageSurface, view: DOMRect): number {
     const rect = surface.overlay.getBoundingClientRect();
     const left = Math.max(view.left, rect.left);
     const top = Math.max(view.top, rect.top);
