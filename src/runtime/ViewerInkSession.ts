@@ -1077,10 +1077,10 @@ export class ViewerInkSession {
     }
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
-      while (this.zoomSettleQueue.length > 0) {
-        const item = this.zoomSettleQueue.shift()!;
+      for (const item of this.zoomSettleQueue) {
         this.paintOneZoomSettlePage(item.page, item.tier);
       }
+      this.zoomSettleQueue.length = 0;
       this.finishZoomSettleSlices();
       return;
     }
@@ -1155,10 +1155,10 @@ export class ViewerInkSession {
     }
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
-      while (this.zoomSettleQueue.length > 0) {
-        const next = this.zoomSettleQueue.shift()!;
+      for (const next of this.zoomSettleQueue) {
         this.paintOneZoomSettlePage(next.page, next.tier);
       }
+      this.zoomSettleQueue.length = 0;
       this.finishZoomSettleSlices();
       return;
     }
