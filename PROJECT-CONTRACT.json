@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "contractId": "native-pdf-handwriting-context-v1",
+  "projectName": "Handwriting Natively",
+  "routes": [
+    {
+      "id": "project-memory",
+      "path": "context/routes/project-memory.json"
+    }
+  ],
+  "taskLedger": {
+    "path": "PROJECT-TASKS.md",
+    "section": "Durable tasks"
+  },
+  "projectMemory": {
+    "taskPath": "PROJECT-TASKS.json",
+    "candidatePath": "project-memory/candidates.jsonl",
+    "verifiedPath": "project-memory/verified.jsonl",
+    "humanReadablePaths": [
+      "project-memory/architecture.md",
+      "project-memory/decisions.md",
+      "project-memory/quirks.md",
+      "project-memory/known-failures.md"
+    ]
+  },
+  "project": {
+    "key": "native-pdf-handwriting"
+  },
+  "contextBudget": {
+    "maxTokens": 1800,
+    "charsPerToken": 4
+  }
+}

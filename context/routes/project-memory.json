@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "id": "project-memory",
+  "summary": "Load verified, bounded project context without leaking chat or runtime state.",
+  "taskTerms": [
+    "project memory",
+    "project context",
+    "memory contract",
+    "durable task",
+    "architecture decision",
+    "quirk",
+    "known failure",
+    "context drift",
+    "native-pdf-handwriting"
+  ],
+  "taskPaths": [
+    "PROJECT-CONTRACT.json",
+    "PROJECT-TASKS.json",
+    "PROJECT-TASKS.md",
+    "context/routes/project-memory.json",
+    "project-memory/architecture.md",
+    "project-memory/decisions.md",
+    "project-memory/quirks.md",
+    "project-memory/known-failures.md",
+    "src/integration/",
+    "docs/current-limitations.md",
+    "src/main.ts",
+    "docs/architecture.md",
+    "AGENTS.md",
+    "src/ink/",
+    "src/tools/"
+  ],
+  "requiredReads": [
+    "PROJECT-CONTRACT.json",
+    "PROJECT-TASKS.json",
+    "project-memory/architecture.md",
+    "project-memory/decisions.md",
+    "project-memory/quirks.md",
+    "project-memory/known-failures.md",
+    "AGENTS.md",
+    "README.md"
+  ],
+  "invariants": [
+    "Only verified project memory is eligible for model context.",
+    "Current user instructions, current code, tests, and the project contract outrank memory.",
+    "Credentials, absolute private paths, runtime/provider state, raw chat content, and generated output never enter stable project context."
+  ],
+  "tests": [
+    "tests/core-storage.test.ts",
+    "tests/core-autosave.test.ts",
+    "tests/integration-adapters-focus.test.ts",
+    "tests/runtime-viewer-session.test.ts"
+  ]
+}

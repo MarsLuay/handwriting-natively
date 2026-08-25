@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "projectId": "native-pdf-handwriting",
+  "projectKey": "native-pdf-handwriting",
+  "tasks": [
+    {
+      "id": "runtime-compatibility",
+      "status": "pending",
+      "title": "Validate the PDF adapter against current Obsidian desktop, Android, and iPad builds.",
+      "paths": [
+        "src/integration/",
+        "docs/current-limitations.md"
+      ],
+      "checks": [
+        "npm test",
+        "npm run build",
+        "Manual PDF checks on current desktop, Android, and iPad builds"
+      ]
+    },
+    {
+      "id": "source-pdf-write-contract",
+      "status": "blocked",
+      "title": "Resolve the documented no-in-place-write invariant versus page insert/delete paths that call modifyBinary.",
+      "paths": [
+        "src/main.ts",
+        "docs/architecture.md",
+        "AGENTS.md"
+      ],
+      "checks": [
+        "Decide whether page insertion/deletion may mutate the source PDF, then align code and documentation"
+      ]
+    },
+    {
+      "id": "large-document-profiling",
+      "status": "pending",
+      "title": "Profile dense-page erasing and lasso resize/clipboard behavior on large documents.",
+      "paths": [
+        "docs/current-limitations.md",
+        "src/ink/",
+        "src/tools/"
+      ],
+      "checks": [
+        "Profile dense pages",
+        "Profile lasso resize and clipboard behavior"
+      ]
+    }
+  ]
+}
