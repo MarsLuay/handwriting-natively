@@ -118,7 +118,7 @@ describe("dom typeGuards", () => {
 
     it("uses setCssProps if available (Obsidian specific)", () => {
       const el = document.createElement("div") as any;
-      let calledProps = null;
+      let calledProps: Record<string, string> | null = null;
       el.setCssProps = (props: Record<string, string>) => {
         calledProps = props;
       };
@@ -126,9 +126,59 @@ describe("dom typeGuards", () => {
       const props = { color: "red" };
       setElementCssProps(el, props);
 
-      expect(calledProps).toBe(props);
+      expect(calledProps).toEqual(props);
       // should not touch style.setProperty if setCssProps is used
       expect(el.style.color).toBe("");
+    });
+
+    it("filters out unsafe CSS properties containing XSS payloads", () => {
+      const el = document.createElement("div");
+
+      setElementCssProps(el, {
+        "--safe-color": "red",
+        "--xss-url1": "url('javascript:alert(1)')",
+        "--xss-url2": "url('j\\a v\\a s\\c r\\i p\\t:alert(1)')",
+        "--xss-url3": "url('jav\\000061script:alert(1)')",
+        "--xss-url4": "url('jav/*comment*/ascript:alert(1)')",
+        "--xss-expr": "expression(alert(1))",
+        "--xss-binding": "-moz-binding: url(foo.xml)",
+        "--xss-behavior": "behavior: url(foo.htc)",
+        "--safe-calc": "calc(100% / 2 * 3)",
+        "--safe-bg": "url('safe.png')"
+      });
+
+      // safe values should be applied
+      expect(el.style.getPropertyValue("--safe-color")).toBe("red");
+      expect(el.style.getPropertyValue("--safe-calc")).toBe("calc(100% / 2 * 3)");
+      expect(el.style.getPropertyValue("--safe-bg")).toBe("url('safe.png')");
+
+      // unsafe values should be filtered out
+      expect(el.style.getPropertyValue("--xss-url1")).toBe("");
+      expect(el.style.getPropertyValue("--xss-url2")).toBe("");
+      expect(el.style.getPropertyValue("--xss-url3")).toBe("");
+      expect(el.style.getPropertyValue("--xss-url4")).toBe("");
+      expect(el.style.getPropertyValue("--xss-expr")).toBe("");
+      expect(el.style.getPropertyValue("--xss-binding")).toBe("");
+      expect(el.style.getPropertyValue("--xss-behavior")).toBe("");
+    });
+
+    it("filters out unsafe CSS properties when setCssProps is available", () => {
+      const el = document.createElement("div") as any;
+      let calledProps: Record<string, string> | null = null;
+      el.setCssProps = (props: Record<string, string>) => {
+        calledProps = props;
+      };
+
+      setElementCssProps(el, {
+        safeColor: "red",
+        xssUrl: "url('javascript:alert(1)')",
+        safeBg: "url('safe.png')"
+      });
+
+      expect(calledProps).toEqual({
+        safeColor: "red",
+        safeBg: "url('safe.png')"
+      });
     });
   });
 });
