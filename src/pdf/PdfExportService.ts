@@ -505,14 +505,22 @@ function richTextContents(runs: readonly PdfTextRun[]): string {
   return `<body xmlns="http://www.w3.org/1999/xhtml"><p>${spans}</p></body>`;
 }
 
+function escapeCssString(value: string): string {
+  return value.replace(/["\\]/g, '\\$&').replace(/[\n\r]/g, "");
+}
+
+function sanitizeCssValue(value: string): string {
+  return value.replace(/[;"'\\]/g, "");
+}
+
 function textStyleDeclaration(
   run: Pick<PdfTextRun, "fontFamily" | "fontSize" | "color" | "bold" | "italic">,
   decoration = ""
 ): string {
   return [
-    `font-family:${run.fontFamily}`,
+    `font-family:"${escapeCssString(run.fontFamily)}"`,
     `font-size:${formatPdfNumber(run.fontSize)}pt`,
-    `color:${run.color}`,
+    `color:${sanitizeCssValue(run.color)}`,
     run.bold ? "font-weight:bold" : "",
     run.italic ? "font-style:italic" : "",
     decoration
