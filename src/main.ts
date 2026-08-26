@@ -1036,7 +1036,6 @@ export default class NativePdfInkPlugin extends Plugin {
       });
       new Notice("New handwritten PDF created.");
     } catch (error) {
-      console.error("[Handwriting Natively] create PDF from template failed", error);
       await this.vaultDebugLog.writeUrgent("error", "pdf-create-failed", {
         template,
         error: error instanceof Error ? error.message : String(error)
@@ -1066,7 +1065,6 @@ export default class NativePdfInkPlugin extends Plugin {
       });
       new Notice("New notebook created.");
     } catch (error) {
-      console.error("[Handwriting Natively] create notebook failed", error);
       await this.vaultDebugLog.writeUrgent("error", "notebook-create-failed", {
         error: error instanceof Error ? error.message : String(error)
       });
