@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isStylusEraserInput, PointerRouter } from "../src/input/PointerRouter";
+import { isStylusEraserInput, PointerRouter, safeReleasePointerCapture } from "../src/input/PointerRouter";
 import { PalmRejectionPolicy } from "../src/input/PalmRejectionPolicy";
 import type { ToolId } from "../src/model";
 
@@ -1044,4 +1044,43 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
+});
+
+describe("safeReleasePointerCapture", () => {
+  it("returns true when element has pointer capture and release succeeds", () => {
+    const element = document.createElement("div");
+    element.hasPointerCapture = vi.fn().mockReturnValue(true);
+    element.releasePointerCapture = vi.fn();
+
+    expect(safeReleasePointerCapture(element, 1)).toBe(true);
+    expect(element.hasPointerCapture).toHaveBeenCalledWith(1);
+    expect(element.releasePointerCapture).toHaveBeenCalledWith(1);
+  });
+
+  it("returns false when element does not have pointer capture", () => {
+    const element = document.createElement("div");
+    element.hasPointerCapture = vi.fn().mockReturnValue(false);
+    element.releasePointerCapture = vi.fn();
+
+    expect(safeReleasePointerCapture(element, 1)).toBe(false);
+    expect(element.hasPointerCapture).toHaveBeenCalledWith(1);
+    expect(element.releasePointerCapture).not.toHaveBeenCalled();
+  });
+
+  it("returns false and does not throw when optional functions are missing", () => {
+    const element = {} as Element;
+    expect(safeReleasePointerCapture(element, 1)).toBe(false);
+  });
+
+  it("returns false and does not throw when releasePointerCapture throws an exception", () => {
+    const element = document.createElement("div");
+    element.hasPointerCapture = vi.fn().mockReturnValue(true);
+    element.releasePointerCapture = vi.fn(() => {
+      throw new DOMException("No active pointer with the given id is found.", "NotFoundError");
+    });
+
+    expect(safeReleasePointerCapture(element, 1)).toBe(false);
+    expect(element.hasPointerCapture).toHaveBeenCalledWith(1);
+    expect(element.releasePointerCapture).toHaveBeenCalledWith(1);
+  });
 });
