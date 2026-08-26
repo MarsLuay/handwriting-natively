@@ -16,12 +16,53 @@ import {
   pullProgressFromRaw,
   smoothPullToward,
   stretchPixelsForPull,
-  visualPullFromRaw
+  visualPullFromRaw,
+  resolvePullStretchTarget
 } from "../src/input/PullToAddPageGesture";
 
 afterEach(() => {
   document.body.replaceChildren();
   vi.useRealTimers();
+});
+
+describe("resolvePullStretchTarget", () => {
+  it("returns the element with class .pdfViewer if it exists", () => {
+    const root = document.createElement("div");
+    const viewer = document.createElement("div");
+    viewer.className = "pdfViewer";
+    root.appendChild(viewer);
+    expect(resolvePullStretchTarget(root)).toBe(viewer);
+  });
+
+  it("returns the element with class .pdf-viewer if it exists", () => {
+    const root = document.createElement("div");
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    root.appendChild(viewer);
+    expect(resolvePullStretchTarget(root)).toBe(viewer);
+  });
+
+  it("returns the element with id #viewer if it exists", () => {
+    const root = document.createElement("div");
+    const viewer = document.createElement("div");
+    viewer.id = "viewer";
+    root.appendChild(viewer);
+    expect(resolvePullStretchTarget(root)).toBe(viewer);
+  });
+
+  it("returns the first child element if specific selectors do not match", () => {
+    const root = document.createElement("div");
+    const child = document.createElement("div");
+    child.className = "some-other-class";
+    root.appendChild(child);
+    expect(resolvePullStretchTarget(root)).toBe(child);
+  });
+
+  it("returns the scrollRoot itself if no HTML element children exist", () => {
+    const root = document.createElement("div");
+    root.appendChild(document.createTextNode("Just text"));
+    expect(resolvePullStretchTarget(root)).toBe(root);
+  });
 });
 
 describe("pull-to-add math", () => {
