@@ -1,7 +1,7 @@
 # Handwriting Natively agent rules
 
 <!-- project-memory-bootstrap:v1 -->
-## Project memory bootstrap
+## Memory bank bootstrap (technical name: project-memory)
 
 From this project root, before any task, run:
 
