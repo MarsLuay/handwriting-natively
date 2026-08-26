@@ -123,4 +123,26 @@ describe("PDF export", () => {
     expect(annotation.lookup(PDFName.of("AP"), PDFDict).lookup(PDFName.of("N"))).toBeDefined();
     expect(canvasContext.fillText).toHaveBeenCalled();
   });
+
+  it("throws when pdf-lib embedPng fails while exporting a text block", async () => {
+    vi.spyOn(PDFDocument.prototype, "embedPng").mockRejectedValue(new Error("simulated failure"));
+    const canvasContext = {
+      font: "", fillStyle: "", strokeStyle: "", lineWidth: 0,
+      measureText: vi.fn((text: string) => ({ width: text.length * 12 })),
+      fillText: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn()
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(canvasContext as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL1rQAAAABJRU5ErkJggg=="
+    );
+    const text = {
+      id: "unicode", page: 1, text: "Bold 한글", x: 10, y: 90, width: 90, height: 24,
+      color: "#111827", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+      runs: [{ text: "Bold", color: "#111827", fontSize: 12, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      sourceRuns: [], createdAt: "now", updatedAt: "now"
+    };
+    const exporter = new PdfExportService();
+    const source = await sourcePdf();
+    await expect(exporter.export({ sourceBytes: source, texts: [text] })).rejects.toThrow("Text export rendering is unavailable");
+  });
 });
