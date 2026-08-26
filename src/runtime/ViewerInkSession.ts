@@ -2,6 +2,7 @@ import type { DrawingTool, InkStroke, PdfPoint, PdfTextAnnotation, PdfTextRun, P
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
 import type { ObsidianPdfAdapter } from "../integration/ObsidianPdfAdapter";
 import type { PdfPageInfo } from "../integration/PdfPageLocator";
+import { describeTarget } from "../dom/describeElement";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
@@ -635,13 +636,6 @@ export class ViewerInkSession {
         ".pdf-sidebar-container, .pdf-sidebar, .pdf-thumbnail-view, .pdf-outline-view"
       ));
     };
-    const targetLabel = (target: EventTarget | null): string => {
-      if (target === null) return "null";
-      if (!(target instanceof Element)) return Object.prototype.toString.call(target);
-      const tag = target.tagName.toLowerCase();
-      const classes = [...target.classList].slice(0, 3).join(".");
-      return classes ? `${tag}.${classes}` : tag;
-    };
     const applyWheelPan = (root: HTMLElement, deltaX: number, deltaY: number, clientX: number, clientY: number): boolean => {
       return replayWheelPan(doc, () => {
         const vertical = deltaY === 0 ? false : scrollPdfByDetailed(root, deltaY, clientX, clientY).changed;
@@ -683,7 +677,7 @@ export class ViewerInkSession {
         clientX: Math.round(e.clientX),
         clientY: Math.round(e.clientY),
         within: within(e.target),
-        target: targetLabel(e.target),
+        target: describeTarget(e.target),
         targetId: getDebugNodeId(e.target),
         hitPageId: getDebugNodeId(hitPage),
         hasDataPageNumber: Boolean(hitPage?.hasAttribute("data-page-number")),
@@ -719,7 +713,7 @@ export class ViewerInkSession {
         touchCount: e.touches.length,
         changedCount: e.changedTouches.length,
         within: within(e.target),
-        target: targetLabel(e.target),
+        target: describeTarget(e.target),
         touches
       });
     }, { ...options, passive: true });
@@ -746,7 +740,7 @@ export class ViewerInkSession {
           clientX: Math.round(e.clientX),
           clientY: Math.round(e.clientY),
           within: within(e.target),
-          target: targetLabel(e.target),
+          target: describeTarget(e.target),
           burstIndex: wheelPinchCount
         });
         return;
@@ -755,7 +749,7 @@ export class ViewerInkSession {
       if (e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return;
       const root = adapter.scrollElement();
       const inViewer = within(e.target);
-      const target = targetLabel(e.target);
+      const target = describeTarget(e.target);
       if (withinNativePdfSidebar(e.target)) {
         logWheelPan("sidebar", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
         return;
@@ -782,7 +776,7 @@ export class ViewerInkSession {
           scale: e.scale,
           rotation: e.rotation,
           within: within(e.target),
-          target: targetLabel(e.target)
+          target: describeTarget(e.target)
         });
       }, options);
     }
