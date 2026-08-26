@@ -16,8 +16,6 @@ import type { CompatibilityResult } from "./PdfViewerCompatibility";
 import { PDF_PAGE_SELECTOR } from "./pdfPageSelectors";
 import { installPdfZoomBoost, type PdfZoomBoostHandle } from "./PdfZoomBoost";
 
-const LOG_PREFIX = "[Handwriting Natively]";
-
 export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   abstract readonly kind: "direct" | "embedded";
   readonly host: HTMLElement;
@@ -489,8 +487,6 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     event: string,
     payload: Record<string, unknown>
   ): void {
-    if (level === "info") console.debug(LOG_PREFIX, event, payload);
-    else console.warn(LOG_PREFIX, event, payload);
     this.callbacks.onDebugLog?.(level, event, payload);
   }
 
@@ -750,8 +746,6 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   }
 
   private logAdapterEvent(level: "info" | "warn", event: string, payload: Record<string, unknown>): void {
-    if (level === "info") console.debug(LOG_PREFIX, event, payload);
-    else console.warn(LOG_PREFIX, event, payload);
     this.callbacks.onDebugLog?.(level, event, payload);
   }
 
