@@ -1066,7 +1066,6 @@ export default class NativePdfInkPlugin extends Plugin {
       });
       new Notice("New notebook created.");
     } catch (error) {
-      console.error("[Handwriting Natively] create notebook failed", error);
       await this.vaultDebugLog.writeUrgent("error", "notebook-create-failed", {
         error: error instanceof Error ? error.message : String(error)
       });
