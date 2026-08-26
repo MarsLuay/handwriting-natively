@@ -1,9 +1,12 @@
 export function escapeXml(text: string): string {
-  return text.replace(/[&<>"']/g, (character) => ({
+  return String(text).replace(/[&<>"'`=/]/g, (character) => ({
     "&": "&amp;",
     "<": "&lt;",
     ">": "&gt;",
     "\"": "&quot;",
-    "'": "&apos;"
-  })[character]!);
+    "'": "&#39;",
+    "`": "&#x60;",
+    "=": "&#x3D;",
+    "/": "&#x2F;"
+  })[character as "&" | "<" | ">" | "\"" | "'" | "`" | "=" | "/"]);
 }

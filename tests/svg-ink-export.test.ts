@@ -51,7 +51,7 @@ describe("SVG ink export", () => {
     const result = exportInkStrokesToSvg([
       stroke({ id: 'a&b<"\'c', color: 'url("x&<y")' })
     ]);
-    expect(result.svg).toContain('data-stroke-id="a&amp;b&lt;&quot;&apos;c"');
+    expect(result.svg).toContain('data-stroke-id="a&amp;b&lt;&quot;&#39;c"');
     expect(result.svg).toContain('fill="url(&quot;x&amp;&lt;y&quot;)"');
     expect(result.svg).not.toContain('data-stroke-id="a&b<');
   });
