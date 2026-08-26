@@ -71,9 +71,9 @@ export class StrokeSpatialIndex {
       }
     }
     result.sort((left, right) => left.order - right.order);
-    const mappedResult = new Array(result.length);
+    const mappedResult: InkStroke[] = new Array<InkStroke>(result.length);
     for (let i = 0, len = result.length; i < len; i++) {
-        mappedResult[i] = result[i].stroke;
+        mappedResult[i] = result[i]!.stroke;
     }
     return mappedResult;
   }
