@@ -564,7 +564,6 @@ export default class NativePdfInkPlugin extends Plugin {
             domDescribeError: domError instanceof Error ? domError.message : String(domError)
           };
         }
-        console.warn("[Handwriting Natively] PDF view not ready or incompatible", error);
         await this.vaultDebugLog.writeUrgent("warn", "session attach failed", {
           document: file.path,
           error: message,
@@ -628,7 +627,6 @@ export default class NativePdfInkPlugin extends Plugin {
       onViewStateChange: (state, source) => getSession()?.onViewStateChange(state, source),
       onPageContentMutation: (recordCount) => getSession()?.onPdfPageContentMutation(recordCount),
       onCompatibilityWarning: (message) => {
-        console.warn(`[Handwriting Natively] ${message}`);
         this.vaultDebugLog.write("warn", "compatibility", { message });
       },
       onDebugLog: (level, event, payload) => {
@@ -684,7 +682,6 @@ export default class NativePdfInkPlugin extends Plugin {
       this.app.workspace.setActiveLeaf(leaf, { focus: true });
       this.vaultDebugLog.write("info", "embed annotate open tab", { document: file.path });
     } catch (error) {
-      console.warn("[Handwriting Natively] open PDF tab failed", error);
       this.vaultDebugLog.write("warn", "embed annotate open tab failed", {
         document: file.path,
         error: error instanceof Error ? error.message : String(error)
@@ -1036,7 +1033,6 @@ export default class NativePdfInkPlugin extends Plugin {
       });
       new Notice("New handwritten PDF created.");
     } catch (error) {
-      console.error("[Handwriting Natively] create PDF from template failed", error);
       await this.vaultDebugLog.writeUrgent("error", "pdf-create-failed", {
         template,
         error: error instanceof Error ? error.message : String(error)
@@ -1066,7 +1062,6 @@ export default class NativePdfInkPlugin extends Plugin {
       });
       new Notice("New notebook created.");
     } catch (error) {
-      console.error("[Handwriting Natively] create notebook failed", error);
       await this.vaultDebugLog.writeUrgent("error", "notebook-create-failed", {
         error: error instanceof Error ? error.message : String(error)
       });
