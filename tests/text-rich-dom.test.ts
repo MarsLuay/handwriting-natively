@@ -74,4 +74,36 @@ describe("RichTextDom", () => {
 
     root.remove();
   });
+
+  it("uses fallback style when style dataset is invalid JSON or has invalid types", () => {
+    const root = document.createElement("div");
+
+    // Case 1: Invalid JSON format (triggers catch block)
+    const span1 = document.createElement("span");
+    span1.textContent = "Bad JSON";
+    span1.className = "native-pdf-handwriting-text-run";
+    span1.dataset.nativePdfHandwritingTextStyle = "{ bad json";
+    root.append(span1);
+
+    // Case 2: Valid JSON but missing properties / incorrect types (triggers if condition)
+    const span2 = document.createElement("span");
+    span2.textContent = "Bad Types";
+    span2.className = "native-pdf-handwriting-text-run";
+    span2.dataset.nativePdfHandwritingTextStyle = JSON.stringify({
+      color: "#ff0000",
+      fontSize: "not a number", // Should be number
+      fontFamily: "sans-serif",
+      bold: true,
+      italic: false,
+      strikethrough: false
+    });
+    root.append(span2);
+
+    // Since both spans have invalid styles, readTextRuns should fall back to `base` style for both.
+    // The runs are contiguous and have the exact same style (the fallback), so they get merged.
+    const result = readTextRuns(root, base);
+    expect(result).toEqual([
+      run("Bad JSONBad Types")
+    ]);
+  });
 });
