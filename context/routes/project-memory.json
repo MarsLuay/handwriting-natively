@@ -14,7 +14,7 @@
     "native-pdf-handwriting"
   ],
   "taskPaths": [
-    "PROJECT-CONTRACT.json",
+    "docs/project-memory/PROJECT-CONTRACT.json",
     "PROJECT-TASKS.json",
     "PROJECT-TASKS.md",
     "context/routes/project-memory.json",
@@ -31,7 +31,7 @@
     "src/tools/"
   ],
   "requiredReads": [
-    "PROJECT-CONTRACT.json",
+    "docs/project-memory/PROJECT-CONTRACT.json",
     "PROJECT-TASKS.json",
     "docs/project-memory/architecture.md",
     "docs/project-memory/decisions.md",
