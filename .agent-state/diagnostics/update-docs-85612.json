@@ -1,0 +1,205 @@
+{
+  "schema": 2,
+  "status": "blocked",
+  "mode": "check",
+  "root": "/Users/mars/ObsidianNotes/.Projects/native-pdf-handwriting",
+  "docs_root": "/Users/mars/ObsidianNotes/.Projects/native-pdf-handwriting/docs/source-of-truth",
+  "source_root": "/Users/mars/ObsidianNotes/.Projects/native-pdf-handwriting",
+  "changed_files": [
+    "PROJECT-TASKS.json",
+    "PROJECT-TASKS.md",
+    "context/routes/project-memory.json",
+    "docs/project-memory/PROJECT-CONTRACT.json",
+    "docs/project-memory/verified.jsonl"
+  ],
+  "changed_files_truncated": false,
+  "changed": [],
+  "changed_truncated": false,
+  "baseline": {
+    "ok": false,
+    "strict": false,
+    "pages": 0,
+    "errors": [
+      "README.md is missing",
+      ".docs-nav.json is missing; run docs_nav.py build --write"
+    ],
+    "warnings": [],
+    "affected_pages": []
+  },
+  "final": {
+    "ok": false,
+    "strict": false,
+    "pages": 0,
+    "errors": [
+      "README.md is missing",
+      ".docs-nav.json is missing; run docs_nav.py build --write"
+    ],
+    "warnings": [],
+    "affected_pages": []
+  },
+  "source_references": {
+    "references": 0,
+    "search_roots": [
+      "/Users/mars/ObsidianNotes/.Projects/native-pdf-handwriting"
+    ],
+    "missing": [],
+    "missing_truncated": false,
+    "outside_root": [],
+    "outside_root_truncated": false,
+    "dynamic": [],
+    "dynamic_truncated": false
+  },
+  "project_memory": {
+    "status": "blocked",
+    "contract": {
+      "path": "docs/project-memory/PROJECT-CONTRACT.json",
+      "status": "invalid",
+      "checker": "fallback-contract-validation",
+      "contract_id": "native-pdf-handwriting-context-v1",
+      "contract_hash": null,
+      "schema_version": 1,
+      "route_count": 1,
+      "errors": [
+        "context-contract route selection is unknown; inspect the task pathway before updating docs"
+      ]
+    },
+    "task_ledger": {
+      "json_path": "docs/project-memory/PROJECT-TASKS.json",
+      "markdown_path": "docs/project-memory/PROJECT-TASKS.md",
+      "task_count": 3,
+      "active_count": 3,
+      "statuses": {
+        "pending": 2,
+        "blocked": 1
+      }
+    },
+    "managed_paths": [
+      "docs/project-memory/PROJECT-CONTRACT.json",
+      "docs/project-memory/PROJECT-TASKS.json",
+      "docs/project-memory/PROJECT-TASKS.md",
+      "docs/project-memory/architecture.md",
+      "docs/project-memory/candidates.jsonl",
+      "docs/project-memory/decisions.md",
+      "docs/project-memory/known-failures.md",
+      "docs/project-memory/quirks.md",
+      "docs/project-memory/verified.jsonl"
+    ],
+    "changed_paths": [
+      "docs/project-memory/PROJECT-CONTRACT.json",
+      "docs/project-memory/verified.jsonl"
+    ],
+    "unknown_paths": [],
+    "memory_files": [
+      {
+        "path": "docs/project-memory/PROJECT-TASKS.json",
+        "kind": "task_json",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "path": "docs/project-memory/PROJECT-TASKS.md",
+        "kind": "task_markdown",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "path": "docs/project-memory/architecture.md",
+        "kind": "human_readable",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "path": "docs/project-memory/decisions.md",
+        "kind": "human_readable",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "path": "docs/project-memory/quirks.md",
+        "kind": "human_readable",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "path": "docs/project-memory/known-failures.md",
+        "kind": "human_readable",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "path": "docs/project-memory/candidates.jsonl",
+        "kind": "candidate",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "path": "docs/project-memory/verified.jsonl",
+        "kind": "verified",
+        "ok": true,
+        "errors": []
+      }
+    ],
+    "route_selection": {
+      "status": "unknown",
+      "route": null,
+      "scores": [
+        {
+          "id": "project-memory",
+          "score": 1,
+          "textMatches": [
+            "project memory"
+          ],
+          "pathMatches": []
+        }
+      ]
+    },
+    "errors": [
+      "context-contract route selection is unknown; inspect the task pathway before updating docs"
+    ],
+    "errors_truncated": false
+  },
+  "context_contract": {
+    "path": "docs/project-memory/PROJECT-CONTRACT.json",
+    "status": "invalid",
+    "checker": "fallback-contract-validation",
+    "contract_id": "native-pdf-handwriting-context-v1",
+    "contract_hash": null,
+    "schema_version": 1,
+    "route_count": 1,
+    "errors": [
+      "context-contract route selection is unknown; inspect the task pathway before updating docs"
+    ]
+  },
+  "task": "project memory",
+  "strict_references": false,
+  "agent_markdown": {
+    "files": [
+      "AGENTS.md"
+    ],
+    "conflicts": [],
+    "conflicts_truncated": false,
+    "project_memory_bootstrap": {
+      "required": true,
+      "loader": "scripts/project-memory-context.py",
+      "files": [
+        "AGENTS.md"
+      ],
+      "errors": []
+    }
+  },
+  "errors": [
+    "README.md is missing",
+    ".docs-nav.json is missing; run docs_nav.py build --write",
+    "context-contract route selection is unknown; inspect the task pathway before updating docs"
+  ],
+  "errors_truncated": false,
+  "affected_pages": [],
+  "unmapped_changed_files": [
+    "PROJECT-TASKS.json",
+    "PROJECT-TASKS.md",
+    "context/routes/project-memory.json"
+  ],
+  "unmapped_changed_files_truncated": false,
+  "review_required": true,
+  "report_path": "/Users/mars/ObsidianNotes/.Projects/native-pdf-handwriting/.agent-state/diagnostics/update-docs-85612.json"
+}
