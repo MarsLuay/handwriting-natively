@@ -46,14 +46,50 @@ type CssPropsHost = HTMLElement & {
   setCssProps?: (props: Record<string, string>) => void;
 };
 
+export function isSafeCssValue(value: string): boolean {
+  if (typeof value !== "string") return false;
+
+  let decoded = value.replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_, hex: string) => {
+    const code = parseInt(hex, 16);
+    if (code > 0x10FFFF) {
+      return String.fromCharCode(0xFFFD);
+    }
+    return String.fromCodePoint(code);
+  });
+
+  decoded = decoded.replace(/\\([^0-9a-fA-F])/g, "$1");
+
+  const noComments = value.replace(/\/\*[\s\S]*?\*\//g, "");
+  const decodedNoComments = decoded.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  const rawNormalized = noComments.toLowerCase().replace(/[^a-z0-9():]/g, "");
+  const decodedNormalized = decodedNoComments.toLowerCase().replace(/[^a-z0-9():]/g, "");
+
+  const isDangerous = (s: string) =>
+    s.includes("javascript:") ||
+    s.includes("vbscript:") ||
+    s.includes("expression(") ||
+    s.includes("mozbinding:") ||
+    s.includes("behavior:");
+
+  return !(isDangerous(rawNormalized) || isDangerous(decodedNormalized));
+}
+
 /** Prefer Obsidian `setCssProps`; setProperty fallback for jsdom/tests (no `.style.* =` writes). */
 export function setElementCssProps(el: HTMLElement, props: Record<string, string>): void {
+  const safeProps: Record<string, string> = {};
+  for (const [key, value] of Object.entries(props)) {
+    if (isSafeCssValue(value)) {
+      safeProps[key] = value;
+    }
+  }
+
   const host = el as CssPropsHost;
   if (typeof host.setCssProps === "function") {
-    host.setCssProps(props);
+    host.setCssProps(safeProps);
     return;
   }
-  for (const [key, value] of Object.entries(props)) {
+  for (const [key, value] of Object.entries(safeProps)) {
     const cssKey = key.startsWith("--") ? key : key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
     el.style.setProperty(cssKey, value);
   }
