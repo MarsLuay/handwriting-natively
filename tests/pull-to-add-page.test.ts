@@ -14,6 +14,7 @@ import {
   isMomentumScrollTick,
   isScrollAtBottom,
   pullProgressFromRaw,
+  resolveLastPdfPage,
   smoothPullToward,
   stretchPixelsForPull,
   visualPullFromRaw,
@@ -474,5 +475,82 @@ describe("PullToAddPageGesture", () => {
     document.dispatchEvent(pointer("mouse", 14, { target: canvas, clientY: 500 }));
     expect(logs.some((e) => e.phase === "pointer-start")).toBe(true);
     gesture.destroy();
+  });
+});
+
+describe("resolveLastPdfPage", () => {
+  function createPage(pageNumber: string | null, isChrome = false): HTMLDivElement {
+    const el = document.createElement("div");
+    el.className = "page";
+    if (pageNumber !== null) {
+      el.dataset.pageNumber = pageNumber;
+    }
+    if (isChrome) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "native-pdf-handwriting-page-overlay";
+      wrapper.appendChild(el);
+      return el; // While it returns el, we need to append wrapper to root for isHandwritingPageChrome to work
+    }
+    return el;
+  }
+
+  it("returns null when no PDF pages exist in the root element", () => {
+    const root = document.createElement("div");
+    expect(resolveLastPdfPage(root)).toBeNull();
+  });
+
+  it("returns the only page when just one page exists", () => {
+    const root = document.createElement("div");
+    const page = createPage("1");
+    root.appendChild(page);
+    expect(resolveLastPdfPage(root)).toBe(page);
+  });
+
+  it("returns the page with the highest data-page-number", () => {
+    const root = document.createElement("div");
+    const page1 = createPage("1");
+    const page2 = createPage("2");
+    const page3 = createPage("3");
+    root.append(page1, page2, page3);
+
+    expect(resolveLastPdfPage(root)).toBe(page3);
+  });
+
+  it("correctly identifies the highest page number even if the DOM order is mixed up", () => {
+    const root = document.createElement("div");
+    const page1 = createPage("1");
+    const page3 = createPage("3");
+    const page2 = createPage("2");
+    root.append(page1, page3, page2);
+
+    expect(resolveLastPdfPage(root)).toBe(page3);
+  });
+
+  it("gracefully handles missing or invalid data-page-number attributes", () => {
+    const root = document.createElement("div");
+    const pageValid = createPage("1");
+    const pageMissing = createPage(null);
+    pageMissing.className = "page";
+    // We need to give it data-page-number but invalid to test the || 0
+    const pageInvalid = createPage("not-a-number");
+
+    root.append(pageInvalid, pageValid, pageMissing);
+
+    // pageValid has "1" which is > 0
+    expect(resolveLastPdfPage(root)).toBe(pageValid);
+  });
+
+  it("ignores handwriting chrome elements", () => {
+    const root = document.createElement("div");
+    const page1 = createPage("1");
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "native-pdf-handwriting-page-overlay";
+    const chromePage = createPage("999");
+    wrapper.appendChild(chromePage);
+
+    root.append(page1, wrapper);
+
+    expect(resolveLastPdfPage(root)).toBe(page1);
   });
 });
