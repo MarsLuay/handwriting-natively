@@ -123,4 +123,33 @@ describe("PDF export", () => {
     expect(annotation.lookup(PDFName.of("AP"), PDFDict).lookup(PDFName.of("N"))).toBeDefined();
     expect(canvasContext.fillText).toHaveBeenCalled();
   });
+
+  it("omits unsafe FreeText CSS color payloads from rich contents", async () => {
+    const output = await new PdfExportService().export({
+      sourceBytes: await sourcePdf(),
+      texts: [{
+        id: "xss", page: 1, text: "note", x: 10, y: 90, width: 70, height: 16,
+        color: "expression(alert(1))", fontSize: 12, fontFamily: "sans-serif",
+        bold: false, italic: false, strikethrough: false,
+        runs: [{
+          text: "note",
+          color: "red;background:url(javascript:alert(1))",
+          fontSize: 12,
+          fontFamily: "sans-serif",
+          bold: false,
+          italic: false,
+          strikethrough: false
+        }],
+        sourceRuns: [], createdAt: "now", updatedAt: "now"
+      }],
+      mode: "editable"
+    });
+    const annotation = (await PDFDocument.load(output)).getPages()[0]!
+      .node.lookup(PDFName.of("Annots"), PDFArray).lookup(0, PDFDict);
+    const rc = annotation.lookup(PDFName.of("RC"), PDFHexString).decodeText();
+    expect(rc.toLowerCase()).not.toContain("javascript");
+    expect(rc.toLowerCase()).not.toContain("expression");
+    expect(rc).not.toContain("background:");
+    expect(rc).toContain("color:");
+  });
 });

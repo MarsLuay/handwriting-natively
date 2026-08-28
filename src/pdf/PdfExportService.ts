@@ -509,8 +509,12 @@ function escapeCssString(value: string): string {
   return value.replace(/["\\]/g, '\\$&').replace(/[\n\r]/g, "");
 }
 
-function sanitizeCssValue(value: string): string {
-  return value.replace(/[;"'\\]/g, "");
+function sanitizeCssColor(value: string): string {
+  const trimmed = value.trim();
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(trimmed)) return trimmed;
+  if (/^(rgb|rgba|hsl|hsla)\(\s*[\d.%\s,/]+\)$/i.test(trimmed)) return trimmed;
+  if (/^[a-zA-Z]{1,32}$/.test(trimmed)) return trimmed;
+  return "";
 }
 
 function textStyleDeclaration(
@@ -520,7 +524,7 @@ function textStyleDeclaration(
   return [
     `font-family:"${escapeCssString(run.fontFamily)}"`,
     `font-size:${formatPdfNumber(run.fontSize)}pt`,
-    `color:${sanitizeCssValue(run.color)}`,
+    `color:${sanitizeCssColor(run.color)}`,
     run.bold ? "font-weight:bold" : "",
     run.italic ? "font-style:italic" : "",
     decoration
