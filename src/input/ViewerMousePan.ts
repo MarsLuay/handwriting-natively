@@ -1,4 +1,5 @@
 import { isHTMLElement } from "../dom/typeGuards";
+import { describeTarget } from "../dom/describeElement";
 import { scrollPdfByDetailed, describeScrollElement } from "../integration/PdfScrollRoot";
 import { ActiveTouches } from "./ActiveTouches";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
@@ -118,7 +119,7 @@ export class ViewerMousePan {
         this.callbacks.onPan?.("skip", event, {
           reason: "multi-touch",
           touches: this.activeTouches.size,
-          target: targetLabel(event.target)
+          target: describeTarget(event.target)
         });
         return;
       }
@@ -128,7 +129,7 @@ export class ViewerMousePan {
       this.callbacks.onPan?.("probe", event, {
         inBoundary,
         enabled: finger ? this.touchPanAllowed() : this.callbacks.enabled(),
-        target: targetLabel(event.target),
+        target: describeTarget(event.target),
         pointerType: event.pointerType
       });
     }
@@ -139,37 +140,37 @@ export class ViewerMousePan {
           reason: "button",
           button: event.button,
           pointerType: event.pointerType,
-          target: targetLabel(event.target)
+          target: describeTarget(event.target)
         });
       }
       return;
     }
     if (!inBoundary) {
-      this.callbacks.onPan?.("skip", event, { reason: "outside-boundary", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "outside-boundary", target: describeTarget(event.target) });
       return;
     }
     if (isAnnotationChromeTarget(event.target)) {
-      this.callbacks.onPan?.("skip", event, { reason: "annotation-chrome", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "annotation-chrome", target: describeTarget(event.target) });
       return;
     }
     if (event.target instanceof Element && event.target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown")) {
-      this.callbacks.onPan?.("skip", event, { reason: "toolbar", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "toolbar", target: describeTarget(event.target) });
       return;
     }
     // Mouse/stylus on PDF text → native selection. Finger still pans when touch pan is enabled.
     if (!finger && isSelectablePdfTarget(event.target)) {
-      this.callbacks.onPan?.("skip", event, { reason: "selectable", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "selectable", target: describeTarget(event.target) });
       return;
     }
 
     // Finger only if touchPanEnabled. Mouse/stylus only when Draw is off (enabled).
     if (finger) {
       if (!this.touchPanAllowed()) {
-        this.callbacks.onPan?.("skip", event, { reason: "touch-disabled", target: targetLabel(event.target) });
+        this.callbacks.onPan?.("skip", event, { reason: "touch-disabled", target: describeTarget(event.target) });
         return;
       }
     } else if (!this.callbacks.enabled()) {
-      this.callbacks.onPan?.("skip", event, { reason: "disabled", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "disabled", target: describeTarget(event.target) });
       return;
     }
 
@@ -194,9 +195,9 @@ export class ViewerMousePan {
       this.claimGesture(event, pan);
     }
     this.callbacks.onPan?.("start", event, {
-      target: targetLabel(event.target),
+      target: describeTarget(event.target),
       scrollRoot: describeScrollElement(scrollRoot),
-      captureHost: targetLabel(captureTarget),
+      captureHost: describeTarget(captureTarget),
       pointerType: event.pointerType,
       deferredClaim: !finger
     });
@@ -222,7 +223,7 @@ export class ViewerMousePan {
       this.callbacks.onPan?.("cancel", event, {
         dx: event.clientX - pan.startX,
         dy: event.clientY - pan.startY,
-        target: targetLabel(event.target),
+        target: describeTarget(event.target),
         pointerType: pan.pointerType
       });
     }
@@ -290,10 +291,3 @@ export class ViewerMousePan {
   }
 }
 
-function targetLabel(target: EventTarget | null): string {
-  if (target === null) return "null";
-  if (!(target instanceof Element)) return Object.prototype.toString.call(target);
-  const tag = target.tagName.toLowerCase();
-  const classes = [...target.classList].slice(0, 3).join(".");
-  return classes ? `${tag}.${classes}` : tag;
-}
