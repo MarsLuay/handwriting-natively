@@ -1806,12 +1806,6 @@ export class ViewerInkSession {
       (result): result is NonNullable<typeof result> => result !== null
     );
     for (const result of quarantined) {
-      // Keep this warning available even when optional vault debug logging is off.
-      console.warn("[Handwriting Natively] annotation file quarantined", {
-        document: options.pdfPath,
-        documentId: session.identity.id,
-        ...result
-      });
       session.logger.sidecarQuarantined({ documentId: session.identity.id, ...result });
     }
     if (quarantined.length) {

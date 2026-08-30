@@ -532,7 +532,7 @@ export class SessionLogger {
     this.emit("warn", "sidecar quarantined", {
       document: this.documentPath,
       ...details
-    });
+    }, true);
   }
 
   sidecarPersist(details: {
@@ -646,8 +646,8 @@ export class SessionLogger {
     });
   }
 
-  private emit(level: "info" | "warn", event: string, payload: Record<string, unknown>): void {
-    if (!this.isEnabled()) return;
+  private emit(level: "info" | "warn", event: string, payload: Record<string, unknown>, force = false): void {
+    if (!this.isEnabled() && !force) return;
     if (level === "info") console.debug(PREFIX, event, payload);
     else console.warn(PREFIX, event, payload);
     this.vaultLog?.write(level, event, payload);
