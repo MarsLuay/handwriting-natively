@@ -1,6 +1,7 @@
 import { isHTMLElement, setElementCssProps } from "../dom/typeGuards";
 import { queryPdfPageNodes } from "../integration/pdfPageSelectors";
 import { createDetachedDiv, createDetachedEl, createDetachedSvg } from "../vendor/createDetached";
+import { ActiveTouches } from "./ActiveTouches";
 import { isAnnotationChromeTarget } from "./PointerRouter";
 
 /** Ignored overscroll before the cue engages — casual bottom-scroll stays inert. */
@@ -174,7 +175,7 @@ export class PullToAddPageGesture {
   private displayPull = 0;
   private displayStretch = 0;
   private smoothFrame: number | null = null;
-  private readonly activeTouches = new Set<number>();
+  private readonly activeTouches = new ActiveTouches();
   private crossedArm = false;
   private wasAtBottom = false;
   private approachingFast = false;
@@ -401,11 +402,7 @@ export class PullToAddPageGesture {
 
   private onPointerDown(event: PointerEvent): void {
     if (event.pointerType === "touch") {
-      this.activeTouches.add(event.pointerId);
-      if (event.isPrimary && this.activeTouches.size > 1) {
-        this.activeTouches.clear();
-        this.activeTouches.add(event.pointerId);
-      }
+      this.activeTouches.add(event);
       if (this.activeTouches.size >= 2) {
         this.abortActivePointer("multi-touch");
         return;
@@ -486,7 +483,7 @@ export class PullToAddPageGesture {
   }
 
   private onPointerUp(event: PointerEvent): void {
-    if (event.pointerType === "touch") this.activeTouches.delete(event.pointerId);
+    if (event.pointerType === "touch") this.activeTouches.delete(event);
     if (this.activePointerId !== event.pointerId) return;
     if (this.claimed && event.target instanceof Element && event.target.hasPointerCapture?.(event.pointerId)) {
       event.target.releasePointerCapture?.(event.pointerId);
