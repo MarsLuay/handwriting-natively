@@ -797,13 +797,14 @@ export class ViewerInkSession {
     this.viewportPaintFrame = view.requestAnimationFrame(() => {
       this.viewportPaintFrame = null;
       if (this.destroyed || this.isZoomHandoffActive()) return;
+      const rootRect = this.options.adapter.root.getBoundingClientRect();
       for (const surface of this.surfaces.values()) {
         const needsUpgrade = surface.viewportCullPending || surface.settleUpgradePending;
-        if (!needsUpgrade || !this.surfaceNearViewport(surface)) continue;
+        if (!needsUpgrade || !this.surfaceNearViewport(surface, "idle", rootRect)) continue;
         const reason = surface.settleUpgradePending && !surface.viewportCullPending
           ? "settle-upgrade"
           : "viewport-enter";
-        this.renderPage(surface.page.pageNumber, undefined, reason);
+        this.renderPage(surface.page.pageNumber, undefined, reason, true, true, rootRect);
       }
     });
   }
@@ -5943,7 +5944,8 @@ export class ViewerInkSession {
     },
     reason = "",
     syncText = true,
-    includeActivePreview = true
+    includeActivePreview = true,
+    rootRect?: DOMRect
   ): boolean {
     const surface = this.surfaces.get(pageNumber);
     if (!surface || this.zoomCompositing) return false;
@@ -5953,7 +5955,7 @@ export class ViewerInkSession {
     const layout = this.pageLayout(surface);
     this.syncOverlayLayout(surface);
     const marginMode = ViewerInkSession.isZoomPaintReason(reason) ? "strict" : "idle";
-    if (this.shouldCullPagePaint(surface, includeActivePreview, marginMode)) {
+    if (this.shouldCullPagePaint(surface, includeActivePreview, marginMode, rootRect)) {
       surface.viewportCullPending = true;
       return false;
     }
@@ -6232,19 +6234,20 @@ export class ViewerInkSession {
   private shouldCullPagePaint(
     surface: PageSurface,
     includeActivePreview: boolean,
-    marginMode: "idle" | "strict" = "idle"
+    marginMode: "idle" | "strict" = "idle",
+    rootRect?: DOMRect
   ): boolean {
     if (includeActivePreview && (surface.builder || surface.editPath.length > 0)) return false;
     if (this.selectionPage === surface.page.pageNumber) return false;
-    return !this.surfaceNearViewport(surface, marginMode);
+    return !this.surfaceNearViewport(surface, marginMode, rootRect);
   }
 
   /**
    * @param marginMode `idle` prefetches with a large pad; `strict` is root intersection
    * only (zoom settle — off-screen quality is deferred via viewportCullPending).
    */
-  private surfaceNearViewport(surface: PageSurface, marginMode: "idle" | "strict" = "idle"): boolean {
-    const root = this.options.adapter.root.getBoundingClientRect();
+  private surfaceNearViewport(surface: PageSurface, marginMode: "idle" | "strict" = "idle", rootRect?: DOMRect): boolean {
+    const root = rootRect ?? this.options.adapter.root.getBoundingClientRect();
     const page = surface.overlay.getBoundingClientRect();
     // JSDOM and detached/pdf-loading DOMs do not expose useful geometry.
     // Paint normally until the real viewer provides stable rectangles.
