@@ -1,7 +1,7 @@
 import { createDetachedDiv, createDetachedEl, createDetachedSpan } from "../vendor/createDetached";
-import { setElementCssProps } from "../dom/typeGuards";
 import type { ToolPreferences } from "../model";
 import type { DropdownOption } from "./DropdownController";
+import { createWidthOptions } from "./DrawingToolDropdown";
 
 export const LASER_WIDTHS = [1, 1.5, 2, 2.5, 4, 6] as const;
 const LASER_WIDTH_LABELS = ["Fine", "Medium", "Standard", "Bold", "Heavy", "Beam"] as const;
@@ -21,22 +21,14 @@ export function laserWidthOptions(
   preferences: ToolPreferences,
   selectWidth: (width: number) => void
 ): DropdownOption[] {
-  const width = preferences.laser.width;
-  return LASER_WIDTHS.map((value, index) => ({
-    id: `laser-width-${value}`,
-    label: `${LASER_WIDTH_LABELS[index]} (${value})`,
-    active: width === value,
-    render: (button) => {
-      const preview = createDetachedSpan(button.ownerDocument);
-      preview.className = "native-pdf-handwriting-width-preview";
-      setElementCssProps(preview, {
-        "--ink-preview-width": `${Math.min(12, value)}px`,
-        "--ink-preview-color": preferences.laser.color
-      });
-      button.prepend(preview);
-    },
-    onSelect: () => selectWidth(value)
-  }));
+  return createWidthOptions(
+    LASER_WIDTHS,
+    LASER_WIDTHS.map((_, index) => LASER_WIDTH_LABELS[index]),
+    preferences.laser.width,
+    preferences.laser.color,
+    "laser",
+    selectWidth
+  );
 }
 
 export function laserMenu(
