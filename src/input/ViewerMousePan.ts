@@ -1,5 +1,6 @@
 import { isHTMLElement } from "../dom/typeGuards";
 import { scrollPdfByDetailed, describeScrollElement } from "../integration/PdfScrollRoot";
+import { ActiveTouches } from "./ActiveTouches";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
 import { isAnnotationChromeTarget } from "./PointerRouter";
 
@@ -41,7 +42,7 @@ export interface ViewerMousePanCallbacks {
 
 export class ViewerMousePan {
   private readonly panning = new Map<number, PanGesture>();
-  private readonly activeTouches = new Set<number>();
+  private readonly activeTouches = new ActiveTouches();
   private readonly abort = new AbortController();
 
   constructor(
@@ -110,14 +111,8 @@ export class ViewerMousePan {
     const tip = isDragPanPointer(event);
 
     if (event.pointerType === "touch") {
-      this.activeTouches.add(event.pointerId);
+      this.activeTouches.add(event);
       // Second finger → release one-finger pan so native pinch/zoom can run.
-      // Primary down clears stale IDs left when terminal events were dropped
-      // (common on iPad after pinch / drawer / modal transitions).
-      if (event.isPrimary && this.activeTouches.size > 1) {
-        this.activeTouches.clear();
-        this.activeTouches.add(event.pointerId);
-      }
       if (this.activeTouches.size >= 2) {
         this.abortTouchPans(event, "multi-touch");
         this.callbacks.onPan?.("skip", event, {
@@ -214,7 +209,7 @@ export class ViewerMousePan {
   };
 
   private readonly onEnd = (event: PointerEvent): void => {
-    if (event.pointerType === "touch") this.activeTouches.delete(event.pointerId);
+    if (event.pointerType === "touch") this.activeTouches.delete(event);
     const pan = this.panning.get(event.pointerId);
     if (!pan) return;
     if (pan.active) {
