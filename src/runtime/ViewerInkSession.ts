@@ -622,44 +622,24 @@ export class ViewerInkSession {
   private installPointerProbe(adapter: ViewerInkSessionOptions["adapter"]): void {
     const doc = adapter.host.ownerDocument;
     const options = { capture: true, signal: this.pointerProbeAbort.signal };
-    let wheelPinchCount = 0;
-    let lastWheelLogAt = 0;
-    let wheelPanCount = 0;
-    let lastWheelPanLogAt = 0;
+
     const within = (target: EventTarget | null): boolean => {
       if (!(target instanceof Element)) return false;
       return adapter.host.contains(target) || adapter.root.contains(target);
     };
-    const withinNativePdfSidebar = (target: EventTarget | null): boolean => {
-      if (!(target instanceof Element)) return false;
-      return Boolean(target.closest(
-        ".pdf-sidebar-container, .pdf-sidebar, .pdf-thumbnail-view, .pdf-outline-view"
-      ));
-    };
-    const applyWheelPan = (root: HTMLElement, deltaX: number, deltaY: number, clientX: number, clientY: number): boolean => {
-      return replayWheelPan(doc, () => {
-        const vertical = deltaY === 0 ? false : scrollPdfByDetailed(root, deltaY, clientX, clientY).changed;
-        const beforeLeft = root.scrollLeft;
-        if (deltaX !== 0) root.scrollLeft += deltaX;
-        return vertical || root.scrollLeft !== beforeLeft;
-      });
-    };
-    const logWheelPan = (
-      phase: "in-view" | "sidebar" | "outside-viewer" | "no-scroll-root",
-      details: Record<string, unknown>
-    ): void => {
-      const now = performance.now();
-      wheelPanCount += 1;
-      if (wheelPanCount > 1 && now - lastWheelPanLogAt < 80) return;
-      lastWheelPanLogAt = now;
-      this.logger.pointerSeen({
-        source: "wheel-pan",
-        pointerType: "wheel",
-        phase,
-        ...details,
-        burstIndex: wheelPanCount
-      });
-    };
+
+    this.installPointerDownProbes(doc, options, within);
+    this.installPointerUpCancelProbes(doc, options);
+    this.installTouchProbes(doc, options, within);
+    this.installWheelProbes(doc, options, within, adapter);
+    this.installGestureProbes(doc, options, within);
+  }
+
+  private installPointerDownProbes(
+    doc: Document,
+    options: AddEventListenerOptions,
+    within: (target: EventTarget | null) => boolean
+  ): void {
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
       const hitPage = this.closestPdfPageElement(e.target);
       this.logger.pointerSeen({
@@ -689,15 +669,29 @@ export class ViewerInkSession {
       // stops the event mid-descent. Microtask is too late for preventDefault.
       this.captureDrawPointerFallback(e, within);
     }, { ...options, passive: false });
+
     // Bubble: if the page router never marked the pointer, own the stroke here.
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
       this.bubbleDrawPointerFallback(e, within);
     }, { capture: false, signal: this.pointerProbeAbort.signal, passive: false });
+  }
+
+  private installPointerUpCancelProbes(
+    doc: Document,
+    options: AddEventListenerOptions
+  ): void {
     const clearHandled = (e: PointerEvent): void => {
       this.handledDrawPointers.delete(e.pointerId);
     };
     doc.addEventListener("pointerup", clearHandled, options);
     doc.addEventListener("pointercancel", clearHandled, options);
+  }
+
+  private installTouchProbes(
+    doc: Document,
+    options: AddEventListenerOptions,
+    within: (target: EventTarget | null) => boolean
+  ): void {
     doc.addEventListener("touchstart", (e: TouchEvent) => {
       const touches = [...e.changedTouches].map((touch) => ({
         identifier: touch.identifier,
@@ -717,6 +711,52 @@ export class ViewerInkSession {
         touches
       });
     }, { ...options, passive: true });
+  }
+
+  private installWheelProbes(
+    doc: Document,
+    options: AddEventListenerOptions,
+    within: (target: EventTarget | null) => boolean,
+    adapter: ViewerInkSessionOptions["adapter"]
+  ): void {
+    let wheelPinchCount = 0;
+    let lastWheelLogAt = 0;
+    let wheelPanCount = 0;
+    let lastWheelPanLogAt = 0;
+
+    const withinNativePdfSidebar = (target: EventTarget | null): boolean => {
+      if (!(target instanceof Element)) return false;
+      return Boolean(target.closest(
+        ".pdf-sidebar-container, .pdf-sidebar, .pdf-thumbnail-view, .pdf-outline-view"
+      ));
+    };
+
+    const applyWheelPan = (root: HTMLElement, deltaX: number, deltaY: number, clientX: number, clientY: number): boolean => {
+      return replayWheelPan(doc, () => {
+        const vertical = deltaY === 0 ? false : scrollPdfByDetailed(root, deltaY, clientX, clientY).changed;
+        const beforeLeft = root.scrollLeft;
+        if (deltaX !== 0) root.scrollLeft += deltaX;
+        return vertical || root.scrollLeft !== beforeLeft;
+      });
+    };
+
+    const logWheelPan = (
+      phase: "in-view" | "sidebar" | "outside-viewer" | "no-scroll-root",
+      details: Record<string, unknown>
+    ): void => {
+      const now = performance.now();
+      wheelPanCount += 1;
+      if (wheelPanCount > 1 && now - lastWheelPanLogAt < 80) return;
+      lastWheelPanLogAt = now;
+      this.logger.pointerSeen({
+        source: "wheel-pan",
+        pointerType: "wheel",
+        phase,
+        ...details,
+        burstIndex: wheelPanCount
+      });
+    };
+
     // Mac trackpad pinch = wheel+ctrl in Chromium/Electron — not pointerType "touch".
     // MockTab two-finger pan = plain continuous wheel. This document-capture
     // listener sees every Obsidian pane, so only own events in the PDF view;
@@ -747,9 +787,11 @@ export class ViewerInkSession {
       }
       if (e.deltaX === 0 && e.deltaY === 0) return;
       if (e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return;
+
       const root = adapter.scrollElement();
       const inViewer = within(e.target);
       const target = describeTarget(e.target);
+
       if (withinNativePdfSidebar(e.target)) {
         logWheelPan("sidebar", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
         return;
@@ -762,10 +804,18 @@ export class ViewerInkSession {
         logWheelPan("no-scroll-root", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
         return;
       }
+
       e.preventDefault();
       const changed = applyWheelPan(root, e.deltaX, e.deltaY, e.clientX, e.clientY);
       logWheelPan("in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
     }, { ...options, passive: false });
+  }
+
+  private installGestureProbes(
+    doc: Document,
+    options: AddEventListenerOptions,
+    within: (target: EventTarget | null) => boolean
+  ): void {
     // Safari / some WebKit builds expose gesture* for pinch.
     for (const name of ["gesturestart", "gesturechange", "gestureend"] as const) {
       doc.addEventListener(name, (event) => {
