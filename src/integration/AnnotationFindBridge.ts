@@ -643,7 +643,7 @@ export class AnnotationFindBridge {
   private clearHitsOnPage(pageNumber: number): void {
     const page = this.callbacks.getPageElement(pageNumber);
     if (!page) return;
-    for (const box of page.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")) {
+    for (const box of page.querySelectorAll<HTMLElement>(`.${HN_FIND_HIT_CLASS}, .${HN_FIND_SELECTED_CLASS}`)) {
       box.classList.remove(HN_FIND_HIT_CLASS, HN_FIND_SELECTED_CLASS);
     }
   }
