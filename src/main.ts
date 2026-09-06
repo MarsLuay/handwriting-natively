@@ -144,6 +144,7 @@ export default class NativePdfInkPlugin extends Plugin {
   /** Back off repeated attach failures so layout rescans cannot storm a not-ready PDF. */
   private readonly attachRetry = new AttachRetryPolicy();
   private readonly scanDebounce = new ScanDebounce();
+  private readonly flushDebounce = new ScanDebounce();
   private scanAgain = false;
   private unloaded = false;
   private readonly vaultDebugLog = new VaultDebugLog(
@@ -227,7 +228,7 @@ export default class NativePdfInkPlugin extends Plugin {
       this.scheduleDebouncedScan();
     }));
     this.registerEvent(this.app.workspace.on("file-open", (file) => {
-      for (const session of this.sessions.values()) void session.flush();
+      this.requestFlushAllSessions();
       void this.vaultDebugLog.writeUrgent("info", "file-open", {
         path: file?.path ?? null,
         extension: file?.extension ?? null,
@@ -428,6 +429,15 @@ export default class NativePdfInkPlugin extends Plugin {
     if (!path || !await this.app.vault.adapter.exists(path)) return null;
     const logs = await this.app.vault.adapter.read(path);
     return logs.trim() ? logs : null;
+  }
+
+  private requestFlushAllSessions(): void {
+    if (this.unloaded) return;
+    this.flushDebounce.schedule(100, () => {
+      for (const session of this.sessions.values()) {
+        void session.flush();
+      }
+    });
   }
 
   private scheduleDebouncedScan(delayMs = 100): void {
