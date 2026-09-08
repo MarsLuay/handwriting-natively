@@ -176,13 +176,17 @@ export class PointerRouter {
     // dedicated eraser button/bit. Route it before the active drawing tool.
     if (isStylusEraserInput(event)) return "edit";
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
-    if (tool === "text" && (penLike || (event.pointerType === "mouse" && event.button === 0))) return "text";
+    if (this.isTextToolRoute(tool, event, penLike)) return "text";
     const editing = tool === "eraser" || tool === "lasso";
     if (event.pointerType === "mouse" && event.button === 2 && this.callbacks.rightMouseEraserEnabled?.()) return "edit";
     if (penLike) return editing ? "edit" : "draw";
     if (event.pointerType === "mouse" && event.button === 0 && isInkDrawTool(tool)) return "draw";
     if (event.pointerType === "mouse" && event.button === 0 && editing) return "edit";
     return "native";
+  }
+
+  private isTextToolRoute(tool: ToolId, event: PointerEvent, penLike: boolean): boolean {
+    return tool === "text" && (penLike || (event.pointerType === "mouse" && event.button === 0));
   }
 
   /** Document fallback / sync repair entry — same path as the page capture listener. */
