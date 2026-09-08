@@ -83,9 +83,15 @@ export class StrokeSpatialIndex {
     const maxX = Math.floor(bounds.maxX / this.cellSize);
     const minY = Math.floor(bounds.minY / this.cellSize);
     const maxY = Math.floor(bounds.maxY / this.cellSize);
-    const cells: string[] = [];
+    const width = maxX - minX + 1;
+    const height = maxY - minY + 1;
+    const cells = new Array<string>(width * height);
+    let i = 0;
     for (let y = minY; y <= maxY; y += 1) {
-      for (let x = minX; x <= maxX; x += 1) cells.push(`${x}:${y}`);
+      const yStr = ":" + y;
+      for (let x = minX; x <= maxX; x += 1) {
+        cells[i++] = x + yStr;
+      }
     }
     return cells;
   }
