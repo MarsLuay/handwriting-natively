@@ -610,6 +610,10 @@ export class PullToAddPageGesture {
       || this.releasing;
   }
 
+  private get isReleasingAndReset(): boolean {
+    return this.releasing && this.displayPull <= 0.3 && this.displayStretch <= 0.5 && this.rawPull <= 0;
+  }
+
   private paintDisplayPull(): void {
     // Never paint the cue / stretch unless the scroll root is still at the edge
     // (or we are already mid-gesture / releasing — cue height can confuse slack).
@@ -647,7 +651,7 @@ export class PullToAddPageGesture {
     }
     this.renderVisual(visualState, this.displayStretch);
 
-    if (this.releasing && this.displayPull <= 0.3 && this.displayStretch <= 0.5 && this.rawPull <= 0) {
+    if (this.isReleasingAndReset) {
       this.displayPull = 0;
       this.displayStretch = 0;
       this.releasing = false;
