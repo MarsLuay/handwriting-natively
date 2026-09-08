@@ -186,28 +186,8 @@ export interface PluginSettings {
 
 export const PLUGIN_ID = "native-pdf-handwriting";
 
-/** Build path defaults from Vault#configDir. */
-export function createDefaultSettings(configDir: string): PluginSettings {
-  const root = configDir.replace(/\\/g, "/").replace(/\/+$/, "");
+export function createDefaultToolPreferences(): ToolPreferences {
   return {
-  autosave: true,
-  autosaveDelayMs: 750,
-  saveWhenClosing: true,
-  showSaveStatus: true,
-  retryFailedAutosaves: true,
-  textEscapeAction: "save",
-  sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
-  pdfTemplatePath: "",
-  mouseDragScroll: true,
-  pressureProfile: "auto",
-  pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
-  simplifyStrokes: true,
-  boostedPdfZoom: false,
-  hideStylusAnnotationLabel: false,
-  toolbarPlacement: "main",
-  vaultDebugLog: false,
-  vaultDebugLogPath: `${root}/plugins/${PLUGIN_ID}/debug.md`,
-  toolPreferences: {
     activeTool: "pen",
     pen: {
       color: "#111827",
@@ -261,7 +241,31 @@ export function createDefaultSettings(configDir: string): PluginSettings {
       fadeMs: 1400
     },
     recentColors: ["#111827", "#2563eb", "#dc2626", "#059669", "#f59e0b", "#facc15"]
-  }
+  };
+}
+
+/** Build path defaults from Vault#configDir. */
+export function createDefaultSettings(configDir: string): PluginSettings {
+  const root = configDir.replace(/\\/g, "/").replace(/\/+$/, "");
+  return {
+  autosave: true,
+  autosaveDelayMs: 750,
+  saveWhenClosing: true,
+  showSaveStatus: true,
+  retryFailedAutosaves: true,
+  textEscapeAction: "save",
+  sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
+  pdfTemplatePath: "",
+  mouseDragScroll: true,
+  pressureProfile: "auto",
+  pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
+  simplifyStrokes: true,
+  boostedPdfZoom: false,
+  hideStylusAnnotationLabel: false,
+  toolbarPlacement: "main",
+  vaultDebugLog: false,
+  vaultDebugLogPath: `${root}/plugins/${PLUGIN_ID}/debug.md`,
+  toolPreferences: createDefaultToolPreferences()
   };
 }
 
