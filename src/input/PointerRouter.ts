@@ -357,11 +357,11 @@ export class PointerRouter {
 
   /** WebKit / iPad: explicit touch-action modes (Ink finger-blocker pattern). */
   private syncTouchActionMode(): void {
-    const mode = this.palmPolicy.hasActivePen() || this.touchAxis?.lock === "vertical"
-      ? "none"
-      : this.callbacks.drawingEnabled()
-        ? "pan-xy"
-        : "default";
+    const mode = !this.callbacks.drawingEnabled()
+      ? "default"
+      : this.palmPolicy.hasActivePen() || this.touchAxis?.lock === "vertical"
+        ? "none"
+        : "pan-xy";
     this.element.classList.toggle("native-pdf-handwriting-touch-none", mode === "none");
     this.element.classList.toggle("native-pdf-handwriting-touch-pan-xy", mode === "pan-xy");
     // Legacy alias from 0.1.42–0.1.45 — keep cleared so only one mode class wins.

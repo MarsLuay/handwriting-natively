@@ -1084,3 +1084,50 @@ describe("safeReleasePointerCapture", () => {
     expect(element.releasePointerCapture).toHaveBeenCalledWith(1);
   });
 });
+
+describe("Regression Tests", () => {
+  it("does not add touch-pan-xy class when drawing is disabled", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => false
+    });
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    router.destroy();
+    element.remove();
+  });
+
+  it("clears touch-pan-xy when syncTouchActionMode is called with drawing disabled", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+
+    let drawingEnabled = true;
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => drawingEnabled
+    });
+
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
+
+    drawingEnabled = false;
+    router.syncToolState();
+
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+
+    router.destroy();
+    element.remove();
+  });
+});
