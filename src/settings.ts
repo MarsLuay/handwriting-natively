@@ -9,6 +9,12 @@ export interface SettingsHost {
   readAllLogs(): Promise<string | null>;
 }
 
+export const MAX_COPIED_LOG_CHARACTERS = 32_000;
+
+export function getCopiedLogText(logs: string): string {
+  return logs.slice(-MAX_COPIED_LOG_CHARACTERS);
+}
+
 type ImperativeSettingDefinition =
   | {
     type: "group";
@@ -356,7 +362,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
 
     new Setting(contents)
       .setName("Copy all logs")
-      .setDesc("Copy the complete vault debug log. Enable vault debug log and reproduce an issue first to capture new events.")
+      .setDesc(`Copy the last ${MAX_COPIED_LOG_CHARACTERS.toLocaleString()} characters of the vault debug log. Enable vault debug log and reproduce an issue first to capture new events.`)
       .addButton((button) =>
         button.setButtonText("Copy logs").onClick(async () => {
           try {
@@ -365,8 +371,8 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
               new Notice("No vault debug logs are available. Enable vault debug log and reproduce the issue first.");
               return;
             }
-            await navigator.clipboard.writeText(logs);
-            new Notice("All debug logs copied.");
+            await navigator.clipboard.writeText(getCopiedLogText(logs));
+            new Notice(`Last ${MAX_COPIED_LOG_CHARACTERS.toLocaleString()} debug log characters copied.`);
           } catch (error) {
             console.error("Handwriting Natively could not copy logs", error);
             new Notice("Could not copy logs. Check clipboard permission and try again.");

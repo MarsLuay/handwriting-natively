@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, mergeSettings } from "../src/model";
+import { DEFAULT_SETTINGS, getCopiedLogText, MAX_COPIED_LOG_CHARACTERS, mergeSettings } from "../src/settings";
 
 describe("safe defaults", () => {
+  it("copies only the tail of oversized debug logs", () => {
+    const logs = `${"a".repeat(12)}${"b".repeat(MAX_COPIED_LOG_CHARACTERS)}`;
+
+    expect(getCopiedLogText(logs)).toBe("b".repeat(MAX_COPIED_LOG_CHARACTERS));
+    expect(getCopiedLogText("short log")).toBe("short log");
+  });
+
   it("enables autosave", () => {
     expect(DEFAULT_SETTINGS.autosave).toBe(true);
     expect(DEFAULT_SETTINGS.autosaveDelayMs).toBe(750);
