@@ -38,7 +38,7 @@ npm run build
 
 Copy `manifest.json`, `main.js`, and `styles.css` into your vault plugin folder, then reload Obsidian. See `docs/manual-test-checklist.md` before trusting private PDF-view integration.
 
-Settings includes **Copy all logs**, which copies the complete vault debug log after it is enabled and an issue is reproduced. The UI is English; annotation files are language-independent.
+Settings includes **Copy all logs**, which copies the last 32,000 characters of the vault debug log after it is enabled and an issue is reproduced. The UI is English; annotation files are language-independent.
 
 ## License
 
