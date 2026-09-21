@@ -197,23 +197,23 @@ export class PointerRouter {
   }
 
   /** Document fallback / sync repair entry — same path as the page capture listener. */
-  acceptPointerDown(event: PointerEvent): void {
-    this.handleDown(event);
+  acceptPointerDown(event: PointerEvent): PointerRoute {
+    return this.handleDown(event);
   }
 
-  private readonly handleDown = (event: PointerEvent): void => {
+  private readonly handleDown = (event: PointerEvent): PointerRoute => {
     this.callbacks.onRouterReceived?.(event, this.generation);
     if (this.callbacks.isInputOwnerActive?.() === false) {
       this.callbacks.onPointerRejected?.("inactive-owner", event, this.generation);
-      return;
+      return "ignored";
     }
     if (isAnnotationChromeTarget(event.target)) {
       this.callbacks.onPointerRejected?.("annotation-chrome", event, this.generation);
-      return;
+      return "native";
     }
     if (this.callbacks.isPointerHandled?.(event.pointerId, this.generation)) {
       this.callbacks.onPointerRejected?.("already-handled", event, this.generation);
-      return;
+      return "ignored";
     }
     this.callbacks.onPointerHandled?.(event.pointerId, this.generation);
     this.paintCustomCursorsNow(event);
@@ -249,15 +249,16 @@ export class PointerRouter {
         activePens: this.palmPolicy.hasActivePen(),
         touchCount: this.touches.size
       });
-      return;
+      return route;
     }
-    if (route !== "draw" && route !== "edit" && route !== "text") return;
+    if (route !== "draw" && route !== "edit" && route !== "text") return route;
     this.routed.set(event.pointerId, route);
     event.preventDefault();
     event.stopImmediatePropagation();
     this.element.setPointerCapture?.(event.pointerId);
     this.syncTouchActionMode();
     this.callbacks.onStart?.(this.inkSamples(event), route, event);
+    return route;
   };
 
   /** Samples with MockTab mouse-tip remapped to pen after pen was seen. */
@@ -682,6 +683,18 @@ export class PointerRouter {
   /** Listeners survive only while the abort signal is live and the page is in the document. */
   isAlive(): boolean {
     return !this.abort.signal.aborted && this.element.isConnected;
+  }
+
+  activePenIds(): number[] {
+    return this.palmPolicy.activePenIds();
+  }
+
+  hasPointerCapture(pointerId: number): boolean {
+    try {
+      return this.element.hasPointerCapture?.(pointerId) ?? false;
+    } catch {
+      return false;
+    }
   }
 
   destroy(): void {
