@@ -23,7 +23,7 @@ export function laserWidthOptions(
 ): DropdownOption[] {
   return createWidthOptions(
     LASER_WIDTHS,
-    LASER_WIDTHS.map((_, index) => LASER_WIDTH_LABELS[index]),
+    LASER_WIDTHS.map((_, index) => LASER_WIDTH_LABELS[index] ?? ""),
     preferences.laser.width,
     preferences.laser.color,
     "laser",

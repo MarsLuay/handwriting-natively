@@ -1,3 +1,9 @@
+## 0.1.53 — 2026-09-21
+
+- Recover long-lived handwriting after router teardown with generation-aware pointer ownership and inactive-session rejection.
+- Add input lifecycle diagnostics for stale routers, pointer ownership, and session rebinds.
+- Unblock release builds with strict TypeScript fixes for laser labels and page-coordinate test mocks.
+
 ## 0.1.52 — 2026-08-06
 
 - Improve stylus handling after pen hover and keep palm contacts from interrupting drawing or touch gestures.
