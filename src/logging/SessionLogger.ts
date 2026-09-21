@@ -328,7 +328,7 @@ export class SessionLogger {
    * zoom recycle / aborted listeners (zero `pointer route` while probe still fires).
    */
   pageRouter(
-    phase: "rebind" | "unavailable" | "received" | "fallback",
+    phase: "rebind" | "unavailable" | "received" | "fallback" | "rejected",
     details: Record<string, unknown> = {}
   ): void {
     this.emit("info", "page router", {
