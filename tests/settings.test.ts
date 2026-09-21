@@ -1,5 +1,20 @@
-import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, getCopiedLogText, MAX_COPIED_LOG_CHARACTERS, mergeSettings } from "../src/settings";
+import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_SETTINGS, mergeSettings } from "../src/model";
+
+vi.mock("obsidian", () => {
+  class MockObsidianBase {}
+  return {
+    FuzzySuggestModal: MockObsidianBase,
+    Notice: MockObsidianBase,
+    Plugin: MockObsidianBase,
+    PluginSettingTab: MockObsidianBase,
+    Setting: MockObsidianBase,
+    TFile: MockObsidianBase,
+    TFolder: MockObsidianBase
+  };
+});
+
+const { getCopiedLogText, MAX_COPIED_LOG_CHARACTERS } = await import("../src/settings");
 
 describe("safe defaults", () => {
   it("copies only the tail of oversized debug logs", () => {
