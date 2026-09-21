@@ -223,6 +223,32 @@ describe("SessionLogger", () => {
     debug.mockRestore();
   });
 
+  it("dumps bounded input lifecycle and stroke heartbeat on an anomaly", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
+    });
+
+    for (let index = 0; index < 45; index += 1) logger.inputLifecycleEvent(`event-${index}`, { index });
+    logger.inputStroke("start", { page: 1, routerGeneration: 4 });
+    logger.inputStroke("end", { page: 1, routerGeneration: 4 });
+    logger.inputAnomaly({ reason: "pen-over-visible-page-not-routed", geometricPageNumber: 1 });
+
+    const anomaly = writes.find((entry) => entry.event === "ink input anomaly");
+    expect(anomaly?.payload).toMatchObject({
+      reason: "pen-over-visible-page-not-routed",
+      lastSuccessfulStroke: {
+        lastPage: 1,
+        lastRouterGeneration: 4,
+        lastStartAt: expect.any(String),
+        lastEndAt: expect.any(String)
+      },
+      firstFailedPenDown: { at: expect.any(String) }
+    });
+    expect(anomaly?.payload.lifecycle).toHaveLength(40);
+    expect((anomaly?.payload.lifecycle as Array<{ event: string }>)[0]?.event).toBe("event-8");
+  });
+
   it("logs renderer parity when an ink stroke commits", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const logger = new SessionLogger("Notes/example.pdf", {

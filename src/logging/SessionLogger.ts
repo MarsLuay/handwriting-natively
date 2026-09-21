@@ -77,7 +77,21 @@ export interface ZoomTickLog {
   msSinceLastTick?: number | null;
 }
 
+interface InputStrokeHeartbeat {
+  lastStartAt: string | null;
+  lastEndAt: string | null;
+  lastPage: number | null;
+  lastRouterGeneration: number | null;
+}
+
+interface InputLifecycleRecord {
+  at: string;
+  event: string;
+  details: Record<string, unknown>;
+}
+
 export class SessionLogger {
+  private static readonly INPUT_LIFECYCLE_LIMIT = 40;
   private lastViewState: PdfViewState | null = null;
   private refreshWindowStart = 0;
   private refreshWindowCount = 0;
@@ -89,6 +103,14 @@ export class SessionLogger {
   private alignMoveCount = 0;
   private shapeResizeMoveCount = 0;
   private readonly textToolHotCounts = new Map<string, number>();
+  private readonly inputLifecycle: InputLifecycleRecord[] = [];
+  private readonly inputHeartbeat: InputStrokeHeartbeat = {
+    lastStartAt: null,
+    lastEndAt: null,
+    lastPage: null,
+    lastRouterGeneration: null
+  };
+  private firstFailedPenDown: Record<string, unknown> | null = null;
   /** High-frequency text phases — sample so vault debug does not flood disk I/O. */
   private static readonly TEXT_TOOL_HOT_PHASES = new Set([
     "render",
@@ -343,6 +365,46 @@ export class SessionLogger {
     this.emit("info", "pointer seen", {
       document: this.documentPath,
       ...details
+    });
+  }
+
+  /** Keep bounded input history in memory; dump it only for a routed-input anomaly. */
+  inputLifecycleEvent(event: string, details: Record<string, unknown> = {}): void {
+    this.inputLifecycle.push({ at: new Date().toISOString(), event, details: { ...details } });
+    if (this.inputLifecycle.length > SessionLogger.INPUT_LIFECYCLE_LIMIT) {
+      this.inputLifecycle.splice(0, this.inputLifecycle.length - SessionLogger.INPUT_LIFECYCLE_LIMIT);
+    }
+  }
+
+  /** Last successful pen stroke heartbeat, used to correlate the first failed down. */
+  inputStroke(phase: "start" | "end", details: { page: number; routerGeneration?: number | null }): void {
+    const at = new Date().toISOString();
+    if (phase === "start") {
+      this.inputHeartbeat.lastStartAt = at;
+    } else {
+      this.inputHeartbeat.lastEndAt = at;
+    }
+    this.inputHeartbeat.lastPage = details.page;
+    this.inputHeartbeat.lastRouterGeneration = details.routerGeneration ?? null;
+    this.inputLifecycleEvent(`stroke-${phase}`, {
+      page: details.page,
+      routerGeneration: details.routerGeneration ?? null
+    });
+  }
+
+  /** Emit the bounded, high-signal snapshot requested for visible-page routing failures. */
+  inputAnomaly(details: Record<string, unknown>): void {
+    const failedAt = new Date().toISOString();
+    if (!this.firstFailedPenDown) {
+      this.firstFailedPenDown = { at: failedAt, ...details };
+    }
+    this.inputLifecycleEvent("ink-input-anomaly", { reason: details.reason ?? "unknown" });
+    this.emit("warn", "ink input anomaly", {
+      document: this.documentPath,
+      ...details,
+      firstFailedPenDown: this.firstFailedPenDown,
+      lastSuccessfulStroke: { ...this.inputHeartbeat },
+      lifecycle: this.inputLifecycle.slice()
     });
   }
 

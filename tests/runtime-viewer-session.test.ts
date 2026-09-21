@@ -810,6 +810,67 @@ describe("viewer runtime tracer", () => {
     }
   });
 
+  it("recovers pen input from visible-page geometry without hijacking a real UI target", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const uiTarget = document.createElement("div");
+    uiTarget.className = "setting-item";
+    document.body.append(uiTarget);
+    const originalElementFromPoint = document.elementFromPoint;
+    const originalElementsFromPoint = document.elementsFromPoint;
+
+    try {
+      adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => adapter.pageElement
+      });
+      Object.defineProperty(document, "elementsFromPoint", {
+        configurable: true,
+        value: () => [adapter.pageElement]
+      });
+
+      const recovered = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 91 });
+      uiTarget.dispatchEvent(recovered);
+      expect(recovered.defaultPrevented).toBe(true);
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 91 }));
+
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => uiTarget
+      });
+      Object.defineProperty(document, "elementsFromPoint", {
+        configurable: true,
+        value: () => [uiTarget]
+      });
+      const nativeUi = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 92 });
+      uiTarget.dispatchEvent(nativeUi);
+      expect(nativeUi.defaultPrevented).toBe(false);
+
+      await session.manualSave();
+      const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+      expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    } finally {
+      if (originalElementFromPoint) document.elementFromPoint = originalElementFromPoint;
+      else delete (document as Partial<Document>).elementFromPoint;
+      if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
+      else delete (document as Partial<Document>).elementsFromPoint;
+      uiTarget.remove();
+      await session.destroy();
+    }
+  });
+
 
   it("lets Draw mode ink with mouse while fingers keep native scroll policy", async () => {
     const files = new MemoryFiles();
