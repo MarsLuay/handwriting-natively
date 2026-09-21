@@ -12,6 +12,7 @@ import {
 } from "./TouchAxisPolicy";
 
 export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "native" | "ignored";
+export type PointerRejectionReason = "annotation-chrome" | "already-handled" | "inactive-owner";
 
 export function isAnnotationChromeTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(
@@ -67,10 +68,16 @@ export interface PointerRouterCallbacks {
   onRoute?(route: PointerRoute, event: PointerEvent): void;
   /** Fired as soon as this router's pointerdown listener runs (before classify). */
   onRouterReceived?(event: PointerEvent, generation: number): void;
-  /** True when document fallback / a prior accept already owns this pointerId. */
-  isPointerHandled?(pointerId: number): boolean;
+  /** True when document fallback / another router already owns this pointerId. */
+  isPointerHandled?(pointerId: number, generation: number): boolean;
   /** Mark pointerId so document fallback does not start a duplicate stroke. */
-  onPointerHandled?(pointerId: number): void;
+  onPointerHandled?(pointerId: number, generation: number): void;
+  /** Release pointer ownership when this listener generation is torn down. */
+  onPointerOwnerReleased?(generation: number): void;
+  /** Explain pointerdown rejection while the session is still listening. */
+  onPointerRejected?(reason: PointerRejectionReason, event: PointerEvent, generation: number): void;
+  /** Prevent a superseded session from reclaiming a page during async teardown. */
+  isInputOwnerActive?(): boolean;
   /** Native terminal events can land outside a virtualized PDF page. */
   onTouchLifecycle?(
     phase: "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block" | "pen-state" | "touchend" | "touchcancel" | "axis-lock",
@@ -195,10 +202,20 @@ export class PointerRouter {
   }
 
   private readonly handleDown = (event: PointerEvent): void => {
-    if (isAnnotationChromeTarget(event.target)) return;
-    if (this.callbacks.isPointerHandled?.(event.pointerId)) return;
     this.callbacks.onRouterReceived?.(event, this.generation);
-    this.callbacks.onPointerHandled?.(event.pointerId);
+    if (this.callbacks.isInputOwnerActive?.() === false) {
+      this.callbacks.onPointerRejected?.("inactive-owner", event, this.generation);
+      return;
+    }
+    if (isAnnotationChromeTarget(event.target)) {
+      this.callbacks.onPointerRejected?.("annotation-chrome", event, this.generation);
+      return;
+    }
+    if (this.callbacks.isPointerHandled?.(event.pointerId, this.generation)) {
+      this.callbacks.onPointerRejected?.("already-handled", event, this.generation);
+      return;
+    }
+    this.callbacks.onPointerHandled?.(event.pointerId, this.generation);
     this.paintCustomCursorsNow(event);
     if (event.pointerType === "touch") {
       // Finger after a vanished Pencil tip: do not keep scroll-lock forever.
@@ -271,6 +288,7 @@ export class PointerRouter {
    * pressure/eraser mouse tip; ordinary mouse movement stays native.
    */
   private recoverMissingPointerDown(event: PointerEvent): boolean {
+    if (this.callbacks.isInputOwnerActive?.() === false) return false;
     if (!this.callbacks.drawingEnabled() || !isTipContact(event)) return false;
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
     if (!penLike) return false;
@@ -280,6 +298,7 @@ export class PointerRouter {
     const route = this.classify(event);
     if (route !== "draw" && route !== "edit" && route !== "text") return false;
     this.routed.set(event.pointerId, route);
+    this.callbacks.onPointerHandled?.(event.pointerId, this.generation);
     event.preventDefault();
     event.stopImmediatePropagation();
     this.element.setPointerCapture?.(event.pointerId);
@@ -680,6 +699,7 @@ export class PointerRouter {
     this.touchAxis = null;
     this.palmPolicy.setResetListener(null);
     this.palmPolicy.reset();
+    this.callbacks.onPointerOwnerReleased?.(this.generation);
     this.abort.abort();
     this.element.classList.remove(
       "native-pdf-handwriting-has-eraser-cursor",

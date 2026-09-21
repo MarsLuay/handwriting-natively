@@ -588,6 +588,60 @@ describe("viewer runtime tracer", () => {
     }
   });
 
+  it("reclaims stylus input after touch/UI activity and a rebind loses the prior terminal", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, {
+        builder: object | undefined;
+        router: { destroy(): void } | null;
+      }>;
+      ensurePageRouter(surface: unknown, options?: { force?: boolean; reason?: string }): void;
+    };
+
+    try {
+      const draw = adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")!;
+      draw.click();
+
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 201 }));
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", 140, 160, { pointerType: "touch", pointerId: 202 }));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 140, 160, { pointerType: "touch", pointerId: 202 }));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 120, { pointerType: "touch", pointerId: 201 }));
+
+      draw.click();
+      draw.click();
+      const surface = internal.surfaces.get(1)!;
+      const firstDown = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 301 });
+      adapter.pageElement.dispatchEvent(firstDown);
+      const firstBuilder = surface.builder;
+      expect(firstBuilder).toBeDefined();
+
+      // Simulate a zoom/page handoff that tears down the listener before the
+      // platform delivers the old stylus terminal event.
+      surface.router!.destroy();
+      internal.ensurePageRouter(surface, { reason: "test-missed-terminal-rebind" });
+
+      const secondDown = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 301 });
+      adapter.pageElement.dispatchEvent(secondDown);
+      expect(secondDown.defaultPrevented).toBe(true);
+      expect(surface.builder).not.toBe(firstBuilder);
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 301 }));
+    } finally {
+      await session.destroy({ silent: true, alreadyPersisted: true });
+    }
+  });
+
   it("document capture remounts router onto the hit page shell when duplicates diverge", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();

@@ -1025,6 +1025,41 @@ describe("PointerRouter", () => {
     second.destroy();
   });
 
+  it("does not let a torn-down router suppress a reused pointer id", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const handled = new Map<number, number>();
+    const starts = vi.fn();
+    const createRouter = (): PointerRouter => new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      isPointerHandled: (pointerId) => handled.has(pointerId),
+      onPointerHandled: (pointerId, generation) => handled.set(pointerId, generation),
+      onPointerOwnerReleased: (generation) => {
+        for (const [pointerId, ownerGeneration] of handled) {
+          if (ownerGeneration === generation) handled.delete(pointerId);
+        }
+      },
+      onStart: starts
+    });
+
+    const first = createRouter();
+    first.acceptPointerDown(pointer("pen", 301));
+    expect(starts).toHaveBeenCalledOnce();
+    first.destroy();
+
+    const second = createRouter();
+    second.acceptPointerDown(pointer("pen", 301));
+    expect(starts).toHaveBeenCalledTimes(2);
+    second.destroy();
+    element.remove();
+  });
+
   it("destroy swallows NotFoundError from releasePointerCapture during zoom settle", () => {
     const element = document.createElement("div");
     document.body.append(element);

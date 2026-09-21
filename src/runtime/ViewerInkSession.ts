@@ -396,8 +396,8 @@ export class ViewerInkSession {
   /** Last applied browser direct-manipulation policy for mounted PDF pages. */
   private touchDrawPolicyEnabled: boolean | null = null;
   private readonly pointerProbeAbort = new AbortController();
-  /** Dedup document fallback vs page-router handleDown for the same pointerId. */
-  private readonly handledDrawPointers = new Set<number>();
+  /** Dedup document fallback vs page-router handleDown by pointer and router generation. */
+  private readonly handledDrawPointers = new Map<number, number>();
   private lastPointerPdf: { x: number; y: number } | undefined;
   /** Stable PDF point sizes from sidecar / first trusted live measurement — survives bad data-scale inference. */
   private readonly pageMetrics = new Map<number, { width: number; height: number }>();
@@ -3526,6 +3526,7 @@ export class ViewerInkSession {
         return prefs[resolveDrawingTool(activeTool)].color;
       },
       projectCursor: (clientX, clientY) => this.projectInkScreenPoint(surface, clientX, clientY),
+      isInputOwnerActive: () => inputOwners(surface.page.element).get(surface.page.element) === this,
       onStart: (samples, route, event) => this.pointerStart(surface, samples, route, event),
       onMove: (samples, route, event) => this.pointerMove(surface, samples, route, event),
       onEnd: (samples, route, event) => this.pointerEnd(surface, samples, route, event),
@@ -3543,9 +3544,32 @@ export class ViewerInkSession {
           inkCanvasId: getDebugNodeId(surface.canvas)
         });
       },
-      isPointerHandled: (pointerId) => this.wasDrawPointerHandled(pointerId),
-      onPointerHandled: (pointerId) => {
-        this.markDrawPointerHandled(pointerId);
+      isPointerHandled: (pointerId, generation) => this.wasDrawPointerHandled(pointerId, generation),
+      onPointerHandled: (pointerId, generation) => {
+        this.markDrawPointerHandled(pointerId, generation);
+      },
+      onPointerOwnerReleased: (generation) => {
+        this.releaseDrawPointerOwner(generation);
+      },
+      onPointerRejected: (reason, event, generation) => {
+        const pageElement = surface.page.element;
+        this.logger.pageRouter("rejected", {
+          page: surface.page.pageNumber,
+          reason,
+          listenerGeneration: generation,
+          activeListenerGeneration: surface.router?.generation ?? null,
+          handledByGeneration: this.handledDrawPointers.get(event.pointerId) ?? null,
+          pointerType: event.pointerType || "(empty)",
+          pointerId: event.pointerId,
+          targetId: getDebugNodeId(event.target),
+          pageId: getDebugNodeId(pageElement),
+          pageConnected: pageElement.isConnected,
+          bindsToPage: Boolean(surface.router?.bindsTo(pageElement)),
+          routerAlive: Boolean(surface.router?.isAlive()),
+          activeInputOwner: inputOwners(pageElement).get(pageElement) === this,
+          drawEnabled: this.drawEnabled,
+          activeTool: this.activeTool()
+        });
       },
       onRoute: (route, event) => {
         this.updateDebug(surface, event);
@@ -3584,12 +3608,18 @@ export class ViewerInkSession {
    * Also rebinds when listeners were aborted but the element reference still matches.
    */
 
-  private markDrawPointerHandled(pointerId: number): void {
-    this.handledDrawPointers.add(pointerId);
+  private markDrawPointerHandled(pointerId: number, generation: number): void {
+    this.handledDrawPointers.set(pointerId, generation);
   }
 
-  private wasDrawPointerHandled(pointerId: number): boolean {
+  private wasDrawPointerHandled(pointerId: number, _generation?: number): boolean {
     return this.handledDrawPointers.has(pointerId);
+  }
+
+  private releaseDrawPointerOwner(generation: number): void {
+    for (const [pointerId, ownerGeneration] of this.handledDrawPointers) {
+      if (ownerGeneration === generation) this.handledDrawPointers.delete(pointerId);
+    }
   }
 
   private closestPdfPageElement(target: EventTarget | null): HTMLElement | null {
@@ -3684,6 +3714,15 @@ export class ViewerInkSession {
       });
       return;
     }
+    const activeInputOwner = inputOwners(hitPage).get(hitPage);
+    if (activeInputOwner && activeInputOwner !== this) {
+      this.logFallbackSkip("inactive-input-owner", event, {
+        page: pageNumber,
+        activeInputOwner: true,
+        hitPageId: getDebugNodeId(hitPage)
+      });
+      return;
+    }
     const binds = Boolean(surface.router?.bindsTo(hitPage));
     const alive = Boolean(surface.router?.isAlive());
     const boundOk = binds && alive;
@@ -3743,6 +3782,16 @@ export class ViewerInkSession {
       this.logFallbackSkip("no-surface", event, {
         via: "bubble",
         page: pageNumber,
+        hitPageId: getDebugNodeId(hitPage)
+      });
+      return;
+    }
+    const activeInputOwner = inputOwners(hitPage).get(hitPage);
+    if (activeInputOwner && activeInputOwner !== this) {
+      this.logFallbackSkip("inactive-input-owner", event, {
+        via: "bubble",
+        page: pageNumber,
+        activeInputOwner: true,
         hitPageId: getDebugNodeId(hitPage)
       });
       return;
