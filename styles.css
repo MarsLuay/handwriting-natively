@@ -917,6 +917,52 @@
   text-decoration: underline;
 }
 
+.native-pdf-handwriting-scan-input { display: none; }
+.native-pdf-handwriting-scan-body { min-width: min(520px, 78vw); }
+.native-pdf-handwriting-scan-preview {
+  background: var(--background-secondary, #f3f4f6);
+  border-radius: 8px;
+  line-height: 0;
+  margin: 12px 0;
+  max-height: 58vh;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+}
+.native-pdf-handwriting-scan-image {
+  display: block;
+  height: auto;
+  max-height: 58vh;
+  max-width: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+.native-pdf-handwriting-scan-corner {
+  background: var(--interactive-accent, #2563eb);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  color: transparent;
+  cursor: grab;
+  height: 28px;
+  padding: 0;
+  position: absolute;
+  touch-action: none;
+  transform: translate(-50%, -50%);
+  width: 28px;
+}
+.native-pdf-handwriting-scan-corner:active { cursor: grabbing; }
+.native-pdf-handwriting-scan-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.native-pdf-handwriting-scan-controls button,
+.native-pdf-handwriting-scan-body > button {
+  min-height: 36px;
+}
+.native-pdf-handwriting-scan-error { color: var(--text-error, #b91c1c); }
+
 @media (min-width: 700px) {
   .native-pdf-handwriting-dropdown { max-width: 360px; }
 }

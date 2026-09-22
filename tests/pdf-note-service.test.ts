@@ -8,8 +8,15 @@ import {
   deletePdfPages,
   GOODNOTES_STANDARD_PAGE_SIZE,
   insertMatchingBlankPage,
+  insertScannedPages,
+  scanPageSize,
   US_LETTER_PAGE_SIZE
 } from "../src/pdf/PdfNoteService";
+
+const ONE_PIXEL_PNG = Uint8Array.from(Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64"
+));
 
 async function createPdf(pageSizes: readonly (readonly [number, number])[]): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
@@ -115,5 +122,29 @@ describe("PDF note service", () => {
     await expect(deletePdfPages(source, [])).rejects.toThrow("Select at least one");
     await expect(deletePdfPages(source, [1, 2, 3, 4, 5])).rejects.toThrow("at least one page");
     expect(await sizes(source)).toHaveLength(5);
+  });
+
+  it("inserts corrected scan images in capture order with aspect-ratio page sizes", async () => {
+    const source = await createPdf([[400, 600], [500, 700]]);
+    const result = await insertScannedPages(source, 2, [
+      { bytes: ONE_PIXEL_PNG, mimeType: "image/png", width: 100, height: 200 },
+      { bytes: ONE_PIXEL_PNG, mimeType: "image/png", width: 300, height: 100 }
+    ]);
+
+    expect(result.pageNumber).toBe(2);
+    expect(result.count).toBe(2);
+    expect(await sizes(result.bytes)).toEqual([
+      { width: 400, height: 600 },
+      { width: 396, height: 792 },
+      { width: 792, height: 264 },
+      { width: 500, height: 700 }
+    ]);
+    expect(await sizes(source)).toHaveLength(2);
+    expect(scanPageSize(100, 200)).toEqual([396, 792]);
+    expect(scanPageSize(300, 100)).toEqual([792, 264]);
+  });
+
+  it("rejects an empty scan batch", async () => {
+    await expect(insertScannedPages(await createPdf([[400, 600]]), 2, [])).rejects.toThrow("at least one");
   });
 });

@@ -183,6 +183,27 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
+  it("exposes Scan document as a More action", () => {
+    const selected: string[] = [];
+    const toolbar = new AnnotationToolbar({
+      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
+      autosave: true,
+      callbacks: {
+        onPreferencesChange: vi.fn(),
+        onMore: (action) => selected.push(action)
+      },
+      supportedMoreActions: ["scan-document"],
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
+    const scan = document.querySelector<HTMLButtonElement>("[data-option-id='scan-document']");
+    expect(scan?.textContent).toBe("Scan document");
+    scan?.click();
+    expect(selected).toEqual(["scan-document"]);
+    toolbar.destroy();
+  });
+
   it("activates the laser pointer from the toolbar", () => {
     const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
     const changed = vi.fn();

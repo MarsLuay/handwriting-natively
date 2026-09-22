@@ -2662,4 +2662,55 @@ describe("viewer runtime tracer", () => {
     expect(document.querySelectorAll(".native-pdf-handwriting-page-mutation-snapshot")).toHaveLength(1);
     await session.destroy();
   });
+
+  it("shows Scan document on mobile and inserts confirmed pages after the current page", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const page2 = document.createElement("div");
+    page2.dataset.pageNumber = "2";
+    const page3 = document.createElement("div");
+    page3.dataset.pageNumber = "3";
+    adapter.root.append(page2, page3);
+    const initialPages = adapter.pages.bind(adapter);
+    let requestedPage = 0;
+    let insertedCount = 0;
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      openScanDocument: async () => [
+        { bytes: new Uint8Array([1]), mimeType: "image/jpeg", width: 100, height: 200 },
+        { bytes: new Uint8Array([2]), mimeType: "image/jpeg", width: 200, height: 100 }
+      ],
+      onInsertScannedPages: async (pageNumber, pages) => {
+        requestedPage = pageNumber;
+        insertedCount = pages.length;
+        const pagesAfterInsert = [
+          ...initialPages(),
+          { pageNumber: 2, width: 600, height: 800, scale: 1, rotation: 0, element: page2 },
+          { pageNumber: 3, width: 600, height: 800, scale: 1, rotation: 0, element: page3 }
+        ];
+        vi.spyOn(adapter, "pages").mockReturnValue(pagesAfterInsert);
+        vi.spyOn(adapter, "page").mockImplementation((number) => pagesAfterInsert.find((page) => page.pageNumber === number));
+        return 2;
+      },
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: false })
+    });
+
+    const more = adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='more']");
+    more?.click();
+    expect(document.querySelector<HTMLButtonElement>("[data-option-id='scan-document']")?.textContent).toBe("Scan document");
+    await (session as unknown as { scanDocument(): Promise<void> }).scanDocument();
+
+    expect(requestedPage).toBe(2);
+    expect(insertedCount).toBe(2);
+    expect(adapter.focusedPages).toContain(2);
+    await session.destroy();
+  });
 });
