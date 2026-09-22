@@ -28,7 +28,7 @@ import {
   createPdfFromTemplate,
   createUnsupportedPdfPageMutationCallbacks
 } from "./pdf/PdfNoteService";
-import { mergeSettings, NativePdfInkSettingTab } from "./settings";
+import { mergeSettings, NativePdfInkSettingTab, type CopiedLogDiagnostics } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
 import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
@@ -426,6 +426,36 @@ export default class NativePdfInkPlugin extends Plugin {
     if (!path || !await this.app.vault.adapter.exists(path)) return null;
     const logs = await this.app.vault.adapter.read(path);
     return logs.trim() ? logs : null;
+  }
+
+  /** Snapshot runtime metadata only when the user explicitly copies logs. */
+  getCopiedLogDiagnostics(): CopiedLogDiagnostics {
+    const platform = Platform.isIosApp
+      ? "iOS"
+      : Platform.isAndroidApp
+        ? "Android"
+        : Platform.isMacOS
+          ? "macOS"
+          : Platform.isWin
+            ? "Windows"
+            : Platform.isLinux
+              ? "Linux"
+              : "unknown";
+    const appMode = Platform.isMobile ? "mobile" : Platform.isDesktop ? "desktop" : "unknown";
+    const runtime = Platform.isDesktopApp
+      ? "Electron desktop"
+      : Platform.isMobileApp
+        ? "Capacitor mobile"
+        : "Obsidian WebView";
+    const devicePixelRatio = typeof window !== "undefined" ? window.devicePixelRatio : undefined;
+    return {
+      pluginVersion: this.manifest.version,
+      obsidianVersion: apiVersion,
+      platform,
+      appMode,
+      runtime,
+      ...(typeof devicePixelRatio === "number" && Number.isFinite(devicePixelRatio) ? { devicePixelRatio } : {})
+    };
   }
 
   private requestFlushAllSessions(): void {
