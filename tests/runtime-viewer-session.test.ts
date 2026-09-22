@@ -7,7 +7,7 @@ import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
 import { HN_DEV_PROBE_ACTIVE_KEY, HN_DEV_PROBE_EVENT, type HnDevProbeDiagnostic } from "../src/runtime/DevProbeDiagnostics";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
-import { createDocumentIdentity } from "../src/storage/DocumentIdentity";
+import { createDocumentIdentity, hashDocumentContent } from "../src/storage/DocumentIdentity";
 import { serializeSidecar } from "../src/storage/SidecarSchema";
 import type { TextStyleChange } from "../src/ui/TextDropdown";
 
@@ -354,7 +354,10 @@ describe("viewer runtime tracer", () => {
     const sidecars = new SidecarRepository(files, "annotations", {
       now: () => new Date("2026-02-01T03:04:05.678Z")
     });
-    const documentId = createDocumentIdentity({ vaultPath: "Notes/example.pdf" }).id;
+    const documentId = createDocumentIdentity({
+      vaultPath: "Notes/example.pdf",
+      contentHash: hashDocumentContent(sourceBytes)
+    }).id;
     const sourcePath = sidecars.pathFor(documentId);
     files.values.set(sourcePath, "{");
     const notices: string[] = [];

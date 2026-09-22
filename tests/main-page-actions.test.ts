@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const mainSource = readFileSync(fileURLToPath(new URL("../src/main.ts", import.meta.url)), "utf8");
+const mainSource = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
 
 describe("main PDF page actions", () => {
   it("does not retain an in-place source-PDF write path", () => {
