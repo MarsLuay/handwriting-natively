@@ -23,6 +23,7 @@ export interface HnDevProbeDiagnostic {
   type:
     | "zoom-burst-start"
     | "zoom-settled"
+    | "zoom-profile"
     | "host-page-content-mutation"
     | "zoom-repaint"
     | "zoom-composite-release"
