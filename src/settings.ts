@@ -7,12 +7,61 @@ export interface SettingsHost {
   inkSettings: PluginSettings;
   saveSettings(settings: PluginSettings): Promise<void>;
   readAllLogs(): Promise<string | null>;
+  getCopiedLogDiagnostics(): CopiedLogDiagnostics;
 }
 
 export const MAX_COPIED_LOG_CHARACTERS = 32_000;
+export const COPIED_LOG_DIAGNOSTICS_SEPARATOR = "\n\n--- Handwriting Natively diagnostics ---\n";
 
-export function getCopiedLogText(logs: string): string {
-  return logs.slice(-MAX_COPIED_LOG_CHARACTERS);
+export interface CopiedLogDiagnostics {
+  pluginVersion: string;
+  obsidianVersion: string;
+  platform: string;
+  appMode: string;
+  runtime?: string;
+  userAgent?: string;
+  devicePixelRatio?: number;
+}
+
+const MAX_DIAGNOSTIC_VALUE_CHARACTERS = 512;
+
+function diagnosticValue(value: string | number | undefined): string {
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "unavailable";
+  const normalized = value?.trim();
+  return normalized ? normalized.slice(0, MAX_DIAGNOSTIC_VALUE_CHARACTERS) : "unavailable";
+}
+
+/** Build a deterministic, bounded snapshot of the runtime available at copy time. */
+export function buildCopiedLogDiagnostics(
+  diagnostics: CopiedLogDiagnostics,
+  maxCharacters = MAX_COPIED_LOG_CHARACTERS - COPIED_LOG_DIAGNOSTICS_SEPARATOR.length
+): string {
+  const core = [
+    `Plugin version: ${diagnosticValue(diagnostics.pluginVersion)}`,
+    `Obsidian version/API: ${diagnosticValue(diagnostics.obsidianVersion)}`,
+    `Platform: ${diagnosticValue(diagnostics.platform)}`,
+    `App mode: ${diagnosticValue(diagnostics.appMode)}`
+  ].join("\n");
+  const optional = [
+    `Runtime: ${diagnosticValue(diagnostics.runtime)}`,
+    `User agent: ${diagnosticValue(diagnostics.userAgent)}`,
+    `Device pixel ratio: ${diagnosticValue(diagnostics.devicePixelRatio)}`
+  ].join("\n");
+  const budget = Math.max(0, maxCharacters);
+  if (core.length >= budget) return core.slice(0, budget);
+  const optionalBudget = budget - core.length - 1;
+  if (optionalBudget <= 0) return core;
+  return `${core}\n${optional.slice(0, optionalBudget)}`;
+}
+
+export function getCopiedLogText(logs: string, diagnostics: CopiedLogDiagnostics): string {
+  const diagnosticsText = buildCopiedLogDiagnostics(diagnostics);
+  const logBudget = Math.max(
+    0,
+    MAX_COPIED_LOG_CHARACTERS - COPIED_LOG_DIAGNOSTICS_SEPARATOR.length - diagnosticsText.length
+  );
+  const logText = logBudget > 0 ? logs.slice(-logBudget) : "";
+  return `${logText}${COPIED_LOG_DIAGNOSTICS_SEPARATOR}${diagnosticsText}`;
 }
 
 type ImperativeSettingDefinition =
@@ -362,7 +411,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
 
     new Setting(contents)
       .setName("Copy all logs")
-      .setDesc(`Copy the last ${MAX_COPIED_LOG_CHARACTERS.toLocaleString()} characters of the vault debug log. Enable vault debug log and reproduce an issue first to capture new events.`)
+      .setDesc(`Copy the latest vault debug log plus current version and device diagnostics, up to ${MAX_COPIED_LOG_CHARACTERS.toLocaleString()} characters.`)
       .addButton((button) =>
         button.setButtonText("Copy logs").onClick(async () => {
           try {
@@ -371,8 +420,8 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
               new Notice("No vault debug logs are available. Enable vault debug log and reproduce the issue first.");
               return;
             }
-            await navigator.clipboard.writeText(getCopiedLogText(logs));
-            new Notice(`Last ${MAX_COPIED_LOG_CHARACTERS.toLocaleString()} debug log characters copied.`);
+            await navigator.clipboard.writeText(getCopiedLogText(logs, this.host.getCopiedLogDiagnostics()));
+            new Notice("Debug logs and current diagnostics copied.");
           } catch (error) {
             console.error("Handwriting Natively could not copy logs", error);
             new Notice("Could not copy logs. Check clipboard permission and try again.");

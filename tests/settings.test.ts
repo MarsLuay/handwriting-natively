@@ -14,14 +14,81 @@ vi.mock("obsidian", () => {
   };
 });
 
-const { getCopiedLogText, MAX_COPIED_LOG_CHARACTERS } = await import("../src/settings");
+const {
+  buildCopiedLogDiagnostics,
+  COPIED_LOG_DIAGNOSTICS_SEPARATOR,
+  getCopiedLogText,
+  MAX_COPIED_LOG_CHARACTERS
+} = await import("../src/settings");
+
+const diagnostics = {
+  pluginVersion: "0.1.55",
+  obsidianVersion: "1.8.10",
+  platform: "Windows",
+  appMode: "desktop",
+  runtime: "Chromium test runtime",
+  userAgent: "TestRuntime/1.0",
+  devicePixelRatio: 1.25
+};
 
 describe("safe defaults", () => {
-  it("copies only the tail of oversized debug logs", () => {
-    const logs = `${"a".repeat(12)}${"b".repeat(MAX_COPIED_LOG_CHARACTERS)}`;
+  it("appends copy-time diagnostics while retaining the full short log", () => {
+    const copied = getCopiedLogText("short log", diagnostics);
 
-    expect(getCopiedLogText(logs)).toBe("b".repeat(MAX_COPIED_LOG_CHARACTERS));
-    expect(getCopiedLogText("short log")).toBe("short log");
+    expect(copied).toBe(
+      `short log${COPIED_LOG_DIAGNOSTICS_SEPARATOR}${buildCopiedLogDiagnostics(diagnostics)}`
+    );
+    expect(copied).toContain("Plugin version: 0.1.55");
+    expect(copied).toContain("Obsidian version/API: 1.8.10");
+    expect(copied).toContain("Platform: Windows");
+    expect(copied).toContain("App mode: desktop");
+    expect(copied).toContain("Runtime: Chromium test runtime");
+    expect(copied).toContain("User agent: TestRuntime/1.0");
+    expect(copied).toContain("Device pixel ratio: 1.25");
+  });
+
+  it("reserves diagnostics space before taking the newest log tail", () => {
+    const logs = `${"a".repeat(12)}${"b".repeat(MAX_COPIED_LOG_CHARACTERS)}`;
+    const diagnosticsText = buildCopiedLogDiagnostics(diagnostics);
+    const logBudget = MAX_COPIED_LOG_CHARACTERS - COPIED_LOG_DIAGNOSTICS_SEPARATOR.length - diagnosticsText.length;
+    const copied = getCopiedLogText(logs, diagnostics);
+
+    expect(copied.length).toBe(MAX_COPIED_LOG_CHARACTERS);
+    expect(copied).toBe(
+      `${"b".repeat(logBudget)}${COPIED_LOG_DIAGNOSTICS_SEPARATOR}${diagnosticsText}`
+    );
+  });
+
+  it("keeps the payload bounded and preserves core fields with missing or huge optional values", () => {
+    const copied = getCopiedLogText("log", {
+      pluginVersion: "0.1.55",
+      obsidianVersion: "1.8.10",
+      platform: "Windows",
+      appMode: "desktop",
+      userAgent: "u".repeat(MAX_COPIED_LOG_CHARACTERS),
+      devicePixelRatio: Number.NaN
+    });
+
+    expect(copied.length).toBeLessThanOrEqual(MAX_COPIED_LOG_CHARACTERS);
+    expect(copied).toContain("Plugin version: 0.1.55");
+    expect(copied).toContain("Obsidian version/API: 1.8.10");
+    expect(copied).toContain("Platform: Windows");
+    expect(copied).toContain("Runtime: unavailable");
+    expect(copied).toContain("User agent: ");
+    expect(copied).toContain("Device pixel ratio: unavailable");
+  });
+
+  it("does not fail when optional runtime fields are unavailable", () => {
+    const copied = getCopiedLogText("short log", {
+      pluginVersion: "0.1.55",
+      obsidianVersion: "1.8.10",
+      platform: "unknown",
+      appMode: "unknown"
+    });
+
+    expect(copied).toContain("Runtime: unavailable");
+    expect(copied).toContain("User agent: unavailable");
+    expect(copied).toContain("Device pixel ratio: unavailable");
   });
 
   it("enables autosave", () => {
