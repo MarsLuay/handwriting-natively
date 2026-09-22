@@ -7,7 +7,7 @@ import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integrat
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
-import { isAnnotationChromeTarget, PointerRouter } from "../input/PointerRouter";
+import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
 import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
 import { PullToAddPageGesture } from "../input/PullToAddPageGesture";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, type SelectionShortcutAction } from "../input/SelectionShortcuts";
@@ -75,11 +75,22 @@ interface PointerHitTest {
   targetPage: HTMLElement | null;
   geometricPage: PdfPageInfo | null;
   safeRecoveryPage: PdfPageInfo | null;
+  firstInteractiveHit: Element | null;
+  firstInteractiveHitBelongsToPage: boolean;
+  pageOccludedByUi: boolean;
   details: Record<string, unknown>;
 }
 
 function emptyPointerHitTest(targetPage: HTMLElement | null): PointerHitTest {
-  return { targetPage, geometricPage: null, safeRecoveryPage: null, details: {} };
+  return {
+    targetPage,
+    geometricPage: null,
+    safeRecoveryPage: null,
+    firstInteractiveHit: null,
+    firstInteractiveHitBelongsToPage: false,
+    pageOccludedByUi: false,
+    details: {}
+  };
 }
 
 function rectDetails(element: Element | null): Record<string, number> | null {
@@ -136,6 +147,23 @@ function isNonInteractiveHit(element: Element | null): boolean {
     || style?.display === "none"
     || style?.visibility === "hidden"
     || style?.opacity === "0";
+}
+
+const OBSIDIAN_UI_OCCLUDER_SELECTOR = [
+  ".workspace-drawer",
+  ".workspace-drawer-backdrop",
+  ".modal",
+  ".modal-bg",
+  ".modal-container",
+  ".menu",
+  ".popover",
+  ".suggestion-container",
+  ".setting-item",
+  ".vertical-tab-content",
+].join(", ");
+
+function isObsidianUiOccluder(element: Element | null, viewerHost: Element): boolean {
+  return Boolean(element && !viewerHost.contains(element) && element.closest(OBSIDIAN_UI_OCCLUDER_SELECTOR));
 }
 
 function isInputChromeTarget(target: EventTarget | null): boolean {
@@ -250,6 +278,7 @@ interface PageSurface {
   /** Neighbor zoom settle used blit-stretch / lower backing; needs idle HQ upgrade. */
   settleUpgradePending: boolean;
   router: PointerRouter | null;
+  pendingRouterHandoff: PointerRouterHandoff | null;
   livePaintFrame: number | null;
   pendingLivePaint: { kind: "draw" | "edit"; syncText: boolean; sampleCount: number; event?: PointerEvent } | null;
   /** Prefix of editPath already represented by the destructive live eraser preview. */
@@ -500,7 +529,7 @@ export class ViewerInkSession {
       fontSize: options.settings.toolPreferences.text.fontSize,
       fontFamily: options.settings.toolPreferences.text.fontFamily
     });
-    this.toolbar = new AnnotationToolbar({
+      this.toolbar = new AnnotationToolbar({
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
@@ -563,7 +592,20 @@ export class ViewerInkSession {
         onTextFormatPointerDown: () => this.captureActiveTextSelection("toolbar-pointerdown"),
         activeTextStyle: () => this.activeTextStyle(),
         onDrawModeChange: (enabled) => {
+          const previous = this.drawEnabled;
           this.drawEnabled = enabled;
+          if (enabled) this.viewerMousePan?.abortPenPans("draw-enabled");
+          this.logger.inputLifecycleEvent("draw-state", {
+            previous,
+            next: enabled,
+            reason: "toolbar",
+            activeTool: this.activeTool(),
+            sessionId: this.identity.id,
+            routerGenerations: [...this.surfaces.values()]
+              .map((surface) => surface.router?.generation ?? null),
+            strokeActive: this.hasAnyLiveInkInput(),
+            sinceLastSuccessfulStrokeMs: this.logger.timeSinceLastSuccessfulStrokeMs(),
+          });
           if (!enabled) {
             this.clearSelection();
             this.clearTemporaryEraserModifier();
@@ -623,7 +665,8 @@ export class ViewerInkSession {
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
     this.viewerMousePan = new ViewerMousePan(adapter.host.ownerDocument, {
-      enabled: () => !this.drawEnabled && (this.options.mouseDragScrollEnabled?.() ?? this.options.settings.mouseDragScroll),
+        enabled: () => !this.drawEnabled && (this.options.mouseDragScrollEnabled?.() ?? this.options.settings.mouseDragScroll),
+        drawEnabled: () => this.drawEnabled,
       // Fingers: native PDF viewer only. Custom touch pan fights pinch/scroll remounts on phone.
       touchPanEnabled: () => false,
       scrollRoot: () => adapter.scrollElement(),
@@ -637,6 +680,15 @@ export class ViewerInkSession {
       captureElement: () => adapter.root,
       onPan: (phase, event, details) => {
         this.logMousePan(phase, event, details);
+        if (event.pointerType === "pen" && this.drawEnabled && (phase === "start" || phase === "activate" || phase === "move")) {
+          this.logger.inputInvariantViolation("pen-pan-activated-while-draw-enabled", {
+            phase,
+            pointerId: event.pointerId,
+            activeTool: this.activeTool(),
+            blocked: false,
+            ...details,
+          });
+        }
         this.feedPullToAddFromPan(phase, details);
       }
     });
@@ -1113,6 +1165,7 @@ export class ViewerInkSession {
   private surfaceHasLiveInkInput(surface: PageSurface): boolean {
     if (surface.builder) return true;
     if (surface.editPath.length > 0 && (surface.editTool === "eraser" || surface.editTool === "lasso")) return true;
+    if ((surface.router?.activePenIds().length ?? 0) > 0) return true;
     return false;
   }
 
@@ -3578,7 +3631,8 @@ export class ViewerInkSession {
       editTool: undefined,
       eraserSize: undefined,
       eraserWholeStrokes: undefined,
-      textIntent: null
+      textIntent: null,
+      pendingRouterHandoff: null
     };
     surface.router = this.createPageRouter(surface);
     this.ensurePagePositioning(page.element);
@@ -3622,7 +3676,7 @@ export class ViewerInkSession {
   }
 
   private createPageRouter(surface: PageSurface): PointerRouter {
-    return new PointerRouter(surface.page.element, {
+    const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
       drawingEnabled: () => this.drawEnabled,
       rightMouseEraserEnabled: () => this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton,
@@ -3646,7 +3700,28 @@ export class ViewerInkSession {
       projectCursor: (clientX, clientY) => this.projectInkScreenPoint(surface, clientX, clientY),
       isInputOwnerActive: () => inputOwners(surface.page.element).get(surface.page.element) === this,
       onStart: (samples, route, event) => {
+        const recoveredAfterRouterRebind = Boolean(surface.builder);
+        if (recoveredAfterRouterRebind) {
+          this.commitActiveDrawBeforeSurfaceLoss(surface, "router-rebind-recovery");
+        }
         this.pointerStart(surface, samples, route, event);
+        this.logger.inputLifecycleEvent("route-decision", {
+          page: surface.page.pageNumber,
+          route,
+          pointerType: event.pointerType || "(empty)",
+          pointerId: event.pointerId,
+          routerGeneration: surface.router?.generation ?? null,
+          routerAlive: Boolean(surface.router?.isAlive()),
+          routerBindsToPage: Boolean(surface.router?.bindsTo(surface.page.element)),
+          inputOwnerIsThisSession: inputOwners(surface.page.element).get(surface.page.element) === this,
+          drawEnabled: this.drawEnabled,
+          activeTool: this.activeTool(),
+          recoveredAfterRouterRebind,
+          defaultPrevented: event.defaultPrevented,
+          pointerCapture: Boolean(surface.router?.hasPointerCapture(event.pointerId)),
+          handledPointerGeneration: this.handledDrawPointers.get(event.pointerId) ?? null,
+          touchAction: [...surface.page.element.classList].filter((name) => name.startsWith("native-pdf-handwriting-touch-")),
+        });
         if (route === "draw" && surface.builder && event.pointerType === "pen") {
           this.logger.inputStroke("start", { page: surface.page.pageNumber, routerGeneration: surface.router?.generation ?? null });
         }
@@ -3691,8 +3766,11 @@ export class ViewerInkSession {
       onPointerHandled: (pointerId, generation) => {
         this.markDrawPointerHandled(pointerId, generation);
       },
-      onPointerOwnerReleased: (generation) => {
-        this.releaseDrawPointerOwner(generation);
+      onPointerOwnerReleased: (generation, handoff) => {
+        this.releaseDrawPointerOwner(generation, handoff);
+        if (handoff && (handoff.routed.length || handoff.activePenIds.length)) {
+          surface.pendingRouterHandoff = handoff;
+        }
       },
       onPointerRejected: (reason, event, generation) => {
         const pageElement = surface.page.element;
@@ -3762,6 +3840,18 @@ export class ViewerInkSession {
       },
       onTouchPan: (phase, _event, details) => this.logger.touchPan(phase, { page: surface.page.pageNumber, ...details })
     });
+    if (surface.pendingRouterHandoff) {
+      const handoff = surface.pendingRouterHandoff;
+      surface.pendingRouterHandoff = null;
+      router.adoptPointerState(handoff);
+      this.logger.inputLifecycleEvent("router-handoff", {
+        page: surface.page.pageNumber,
+        listenerGeneration: router.generation,
+        routedPointerIds: handoff.routed.map(({ pointerId }) => pointerId),
+        activePenIds: handoff.activePenIds
+      });
+    }
+    return router;
   }
 
   /**
@@ -3779,9 +3869,10 @@ export class ViewerInkSession {
     return this.handledDrawPointers.has(pointerId);
   }
 
-  private releaseDrawPointerOwner(generation: number): void {
+  private releaseDrawPointerOwner(generation: number, handoff?: PointerRouterHandoff): void {
+    const preserved = new Set(handoff?.routed.map(({ pointerId }) => pointerId) ?? []);
     for (const [pointerId, ownerGeneration] of this.handledDrawPointers) {
-      if (ownerGeneration === generation) this.handledDrawPointers.delete(pointerId);
+      if (ownerGeneration === generation && !preserved.has(pointerId)) this.handledDrawPointers.delete(pointerId);
     }
   }
 
@@ -3838,9 +3929,25 @@ export class ViewerInkSession {
       ?? pages.find((page) => page.element.isConnected && containsClientPoint(page.element, event.clientX, event.clientY))
       ?? null;
     const topBelongsToPage = Boolean(topHit && geometricPage?.element.contains(topHit));
+    const firstInteractiveHit = hitEntries.find((element) => !isNonInteractiveHit(element)) ?? null;
+    const firstInteractiveHitBelongsToPage = Boolean(
+      firstInteractiveHit && geometricPage?.element.contains(firstInteractiveHit),
+    );
+    const firstInteractiveHitOutsideViewer = Boolean(
+      firstInteractiveHit && !this.options.adapter.host.contains(firstInteractiveHit),
+    );
+    const pageOccludedByUi = Boolean(
+      geometricPage
+      && firstInteractiveHit
+      && firstInteractiveHitOutsideViewer
+      && !firstInteractiveHitBelongsToPage
+      && isObsidianUiOccluder(firstInteractiveHit, this.options.adapter.host),
+    );
     const topIsChrome = isInputChromeTarget(topHit) || isAnnotationChromeTarget(topHit);
-    const safeRecoveryPage = geometricPage && !topIsChrome && (
+    const safeRecoveryPage = geometricPage && !topIsChrome && !pageOccludedByUi && (
       topBelongsToPage
+      || firstInteractiveHitBelongsToPage
+      || !firstInteractiveHit
       || (!topHit && targetWithin && targetPage === geometricPage.element)
     )
       ? geometricPage
@@ -3859,6 +3966,9 @@ export class ViewerInkSession {
       targetPage,
       geometricPage,
       safeRecoveryPage,
+      firstInteractiveHit,
+      firstInteractiveHitBelongsToPage,
+      pageOccludedByUi,
       details: {
         targetWithinViewer: targetWithin,
         targetPageId: getDebugNodeId(targetPage),
@@ -3867,6 +3977,9 @@ export class ViewerInkSession {
         topHitIsPdfPage: topBelongsToPage,
         topHitIsNonInteractive: isNonInteractiveHit(topHit),
         hitStack: hitEntries.slice(0, 8).map((element) => hitElementDetails(element)),
+        firstInteractiveHit: hitElementDetails(firstInteractiveHit),
+        firstInteractiveHitBelongsToPage,
+        pageOccludedByUi,
         composedPath: path.map((entry) => isElement(entry) ? hitElementDetails(entry) : Object.prototype.toString.call(entry)),
         adapterHostRect: rectDetails(this.options.adapter.host),
         viewerRootRect: rectDetails(this.options.adapter.root),
@@ -3969,6 +4082,16 @@ export class ViewerInkSession {
     });
   }
 
+  private skipOccludedPointer(event: PointerEvent, hitTest: PointerHitTest): boolean {
+    if (!hitTest.pageOccludedByUi) return false;
+    this.logFallbackSkip("ui-occluded", event, {
+      page: hitTest.geometricPage?.pageNumber ?? null,
+      pageOccludedByUi: true,
+      firstInteractiveHit: hitTest.details.firstInteractiveHit ?? null
+    });
+    return true;
+  }
+
   private pageInfoForHitElement(hitPage: HTMLElement, pageNumber: number, surface: PageSurface): PdfPageInfo {
     const fromAdapter = this.options.adapter.page(pageNumber);
     if (fromAdapter && fromAdapter.element === hitPage) return fromAdapter;
@@ -3995,6 +4118,7 @@ export class ViewerInkSession {
     if (!this.shouldFallbackRoutePointer(event)) return;
     const targetWithin = within(event.target);
     if (isInputChromeTarget(event.target)) return;
+    if (this.skipOccludedPointer(event, hitTest)) return;
     let hitPage = this.closestPdfPageElement(event.target);
     if ((!targetWithin || !hitPage) && hitTest.safeRecoveryPage) {
       hitPage = hitTest.safeRecoveryPage.element;
@@ -4094,6 +4218,7 @@ export class ViewerInkSession {
     if (this.wasDrawPointerHandled(event.pointerId)) return;
     const targetWithin = within(event.target);
     if (isInputChromeTarget(event.target)) return;
+    if (this.skipOccludedPointer(event, hitTest)) return;
     let hitPage = this.closestPdfPageElement(event.target);
     if ((!targetWithin || !hitPage) && hitTest.safeRecoveryPage) {
       hitPage = hitTest.safeRecoveryPage.element;
@@ -4831,6 +4956,7 @@ export class ViewerInkSession {
   private commitActiveDrawBeforeSurfaceLoss(surface: PageSurface, reason: string): void {
     // Laser trails are intentionally ephemeral; only saved ink must survive a remount.
     if (!surface.builder || surface.laserDraft) return;
+    surface.pendingRouterHandoff = null;
     this.cancelLivePaint(surface);
     this.commitActiveDraw(surface, [], "surface-unmount", reason);
   }

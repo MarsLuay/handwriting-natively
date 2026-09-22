@@ -161,6 +161,12 @@ export class PalmRejectionPolicy {
     return [...this.activePens];
   }
 
+  /** Restore stylus contact when a page router is rebound during a live tip. */
+  adoptActivePenIds(pointerIds: readonly number[]): void {
+    for (const pointerId of pointerIds) this.activePens.add(pointerId);
+    if (this.activePens.size > 0) this.markPenActivity();
+  }
+
   reset(): void {
     this.clearAll("reset");
   }

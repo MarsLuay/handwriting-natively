@@ -392,6 +392,20 @@ export class SessionLogger {
     });
   }
 
+  timeSinceLastSuccessfulStrokeMs(): number | null {
+    if (!this.inputHeartbeat.lastEndAt) return null;
+    const endedAt = Date.parse(this.inputHeartbeat.lastEndAt);
+    return Number.isFinite(endedAt) ? Math.max(0, Date.now() - endedAt) : null;
+  }
+
+  inputInvariantViolation(reason: string, details: Record<string, unknown> = {}): void {
+    this.emit("warn", "ink input invariant violation", {
+      document: this.documentPath,
+      reason,
+      ...details
+    });
+  }
+
   /** Emit the bounded, high-signal snapshot requested for visible-page routing failures. */
   inputAnomaly(details: Record<string, unknown>): void {
     const failedAt = new Date().toISOString();
