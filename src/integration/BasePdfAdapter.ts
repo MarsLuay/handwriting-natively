@@ -13,6 +13,7 @@ import {
   type PdfSidebarOffsetReason
 } from "./PdfSidebarRailOffset";
 import type { CompatibilityResult } from "./PdfViewerCompatibility";
+import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import { PDF_PAGE_SELECTOR } from "./pdfPageSelectors";
 import { installPdfZoomBoost, type PdfZoomBoostHandle } from "./PdfZoomBoost";
 
@@ -581,10 +582,11 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.lastIgnoredSidebarLayoutLogAt = now;
   }
 
-  compatibilityReport(): { errors: string[]; warnings: string[] } {
+  compatibilityReport(): { errors: string[]; warnings: string[]; platform?: PlatformCapabilityReport } {
     return {
       errors: [...this.compatibility.errors],
-      warnings: [...this.compatibility.warnings]
+      warnings: [...this.compatibility.warnings],
+      ...(this.compatibility.platform ? { platform: this.compatibility.platform } : {})
     };
   }
 

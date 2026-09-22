@@ -51,6 +51,7 @@ type MutableAdapter = DataAdapter & {
   remove: (path: string) => Promise<void>;
   rename?: (from: string, to: string) => Promise<void>;
   mkdir: (path: string) => Promise<void>;
+  list?: (path: string) => Promise<{ files: string[]; folders: string[] }>;
 };
 
 /**
@@ -102,6 +103,10 @@ export function createVaultFsTextAdapter(vault: Vault): TextFileAdapter {
     async remove(path) {
       const normalized = normalizeVaultRelativePath(path);
       if (await adapter.exists(normalized)) await adapter.remove(normalized);
+    },
+    async list(folder) {
+      if (typeof adapter.list !== "function") return [];
+      return (await adapter.list(normalizeVaultRelativePath(folder))).files;
     }
   };
 }

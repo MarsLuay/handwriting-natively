@@ -1,6 +1,7 @@
 import { BasePdfAdapter } from "./BasePdfAdapter";
 import { PdfAdapterCompatibilityError, type PdfAdapterCallbacks } from "./ObsidianPdfAdapter";
 import { PdfViewerCompatibility } from "./PdfViewerCompatibility";
+import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 
 export class EmbeddedPdfAdapter extends BasePdfAdapter {
   readonly kind = "embedded" as const;
@@ -21,9 +22,15 @@ export class EmbeddedPdfAdapter extends BasePdfAdapter {
     options: {
       privateViewer?: import("./PdfViewerCompatibility").PdfJsViewerLike;
       findController?: import("./PdfViewerCompatibility").PdfFindControllerLike;
+      platform?: PlatformCapabilityReport;
     } = {}
   ): EmbeddedPdfAdapter {
-    const compatibility = PdfViewerCompatibility.embedded(host, options.privateViewer, options.findController);
+    const compatibility = PdfViewerCompatibility.embedded(
+      host,
+      options.privateViewer,
+      options.findController,
+      options.platform
+    );
     if (!compatibility.compatible) throw new PdfAdapterCompatibilityError("embedded", compatibility.errors);
     return new EmbeddedPdfAdapter(compatibility, host, callbacks);
   }

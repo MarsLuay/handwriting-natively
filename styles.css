@@ -532,13 +532,14 @@
 .pdfViewer .page.native-pdf-handwriting-touch-pan-xy,
 .pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-pan-xy,
 .pdfViewer .pdf-page-view.native-pdf-handwriting-touch-pan-xy {
-  touch-action: pan-x pan-y;
+  touch-action: pan-x pan-y pinch-zoom;
 }
 /* Legacy finger-draw class (pre-0.1.28). Kept inert so old sessions clear cleanly. */
 .pdf-viewer .native-pdf-handwriting-touch-draw-page,
 .pdfViewer .native-pdf-handwriting-touch-draw-page { touch-action: auto; }
 .native-pdf-handwriting-canvas,
 .native-pdf-handwriting-draft-canvas { display: block; height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; z-index: 1; }
+.native-pdf-handwriting-canvas.is-wet-hidden { visibility: hidden; }
 .native-pdf-handwriting-canvas.is-selection-chrome-raised { z-index: 3; }
 .native-pdf-handwriting-text-layer { inset: 0; pointer-events: none; position: absolute; z-index: 2; }
 .native-pdf-handwriting-text-box,

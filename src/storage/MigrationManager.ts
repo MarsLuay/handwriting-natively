@@ -1,4 +1,5 @@
-import { parseSidecar, type SidecarSchemaV1 } from "./SidecarSchema";
+import { createDocumentIdentity } from "./DocumentIdentity";
+import { parseSidecar, type SidecarDocumentIdentity, type SidecarSchemaV1 } from "./SidecarSchema";
 
 export interface LegacySidecarV0 {
   version: 0;
@@ -15,12 +16,12 @@ export class MigrationManager {
       return this.migrate(raw, now);
     }
     if (this.isV0(input)) {
-      const document = {
+      const document = this.normalizeIdentity({
         id: input.pdf.id,
         vaultPath: input.pdf.path,
         ...(input.pdf.fingerprint === undefined ? {} : { fingerprint: input.pdf.fingerprint }),
         ...(input.pdf.contentHash === undefined ? {} : { contentHash: input.pdf.contentHash })
-      };
+      });
       return parseSidecar(JSON.stringify({
         schemaVersion: 1,
         document,
@@ -29,7 +30,8 @@ export class MigrationManager {
         updatedAt: input.updatedAt ?? now
       }));
     }
-    return parseSidecar(JSON.stringify(input));
+    const parsed = parseSidecar(JSON.stringify(input));
+    return { ...parsed, document: this.normalizeIdentity(parsed.document) };
   }
 
   private isV0(value: unknown): value is LegacySidecarV0 {
@@ -43,6 +45,23 @@ export class MigrationManager {
     const normalized = ((value ?? 0) % 360 + 360) % 360;
     if (normalized === 90 || normalized === 180 || normalized === 270) return normalized;
     return 0;
+  }
+
+  private normalizeIdentity(document: SidecarDocumentIdentity): SidecarDocumentIdentity {
+    const canonical = createDocumentIdentity({
+      vaultPath: document.vaultPath,
+      ...(document.fingerprint === undefined ? {} : { fingerprint: document.fingerprint }),
+      ...(document.contentHash === undefined ? {} : { contentHash: document.contentHash })
+    });
+    const aliases = new Set(document.aliases ?? []);
+    const legacyIds = new Set(document.legacyIds ?? []);
+    if (canonical.id !== document.id) legacyIds.add(document.id);
+    if (document.vaultPath !== canonical.vaultPath) aliases.add(document.vaultPath);
+    return {
+      ...canonical,
+      ...(aliases.size ? { aliases: [...aliases] } : {}),
+      ...(legacyIds.size ? { legacyIds: [...legacyIds] } : {})
+    };
   }
 }
 

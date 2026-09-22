@@ -1,6 +1,11 @@
 import { BasePdfAdapter } from "./BasePdfAdapter";
 import { PdfAdapterCompatibilityError, type PdfAdapterCallbacks } from "./ObsidianPdfAdapter";
-import { PdfViewerCompatibility, type PdfFindControllerLike, type PdfJsViewerLike } from "./PdfViewerCompatibility";
+import {
+  PdfViewerCompatibility,
+  type PdfFindControllerLike,
+  type PdfJsViewerLike
+} from "./PdfViewerCompatibility";
+import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import { ensurePdfPageNumbers, waitForPdfPageNodes } from "./pdfPageSelectors";
 
 export class NativePdfViewAdapter extends BasePdfAdapter {
@@ -16,10 +21,16 @@ export class NativePdfViewAdapter extends BasePdfAdapter {
     options: {
       privateViewer?: PdfJsViewerLike;
       findController?: PdfFindControllerLike;
+      platform?: PlatformCapabilityReport;
       pageWaitMs?: number;
     } = {}
   ): Promise<NativePdfViewAdapter> {
-    let compatibility = PdfViewerCompatibility.direct(host, options.privateViewer, options.findController);
+    let compatibility = PdfViewerCompatibility.direct(
+      host,
+      options.privateViewer,
+      options.findController,
+      options.platform
+    );
     const pagesMissing =
       Boolean(compatibility.viewerRoot)
       && !compatibility.compatible
@@ -28,7 +39,12 @@ export class NativePdfViewAdapter extends BasePdfAdapter {
     if (pagesMissing && compatibility.viewerRoot) {
       await waitForPdfPageNodes(compatibility.viewerRoot, options.pageWaitMs ?? 5_000);
       ensurePdfPageNumbers(compatibility.viewerRoot);
-      compatibility = PdfViewerCompatibility.direct(host, options.privateViewer, options.findController);
+      compatibility = PdfViewerCompatibility.direct(
+        host,
+        options.privateViewer,
+        options.findController,
+        options.platform
+      );
     }
 
     if (!compatibility.compatible) {

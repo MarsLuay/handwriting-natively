@@ -6,6 +6,12 @@ import { PalmRejectionPolicy, type PenStateResetReason } from "./PalmRejectionPo
 import { PointerCapabilities, type PointerSample } from "./PointerCapabilities";
 import { isTipContact, remapMouseTipSamples } from "./PenPresence";
 import {
+  DEFAULT_MANIPULATION_PLATFORM_CAPABILITIES,
+  MANIPULATION_REARM_MS,
+  ManipulationStateMachine,
+  type ManipulationPlatformCapabilities
+} from "./ManipulationStateMachine";
+import {
   resolveTouchAxisLock,
   shouldClaimVerticalTouchPan,
   type TouchAxisLock
@@ -50,8 +56,11 @@ interface TouchAxisGesture {
   pointerId: number;
   startX: number;
   startY: number;
+  lastX: number;
   lastY: number;
   lock: TouchAxisLock;
+  assist: boolean;
+  active: boolean;
 }
 
 export interface PointerRouterCallbacks {
@@ -102,6 +111,7 @@ export interface PointerRouterCallbacks {
     }
   ): void;
   onTouchPan?(phase: "start" | "activate" | "move" | "end" | "abort", event: PointerEvent, details: Record<string, unknown>): void;
+  manipulationCapabilities?(): ManipulationPlatformCapabilities;
 }
 
 export class PointerRouter {
@@ -113,7 +123,10 @@ export class PointerRouter {
   private readonly routed = new Map<number, "draw" | "edit" | "text">();
   private readonly stylusErasers = new Set<number>();
   private readonly touches = new Set<number>();
+  private readonly manipulationTouches = new Set<number>();
   private touchAxis: TouchAxisGesture | null = null;
+  private readonly manipulation: ManipulationStateMachine;
+  private manipulationRearmTimer: number | undefined;
   private readonly palmPolicy: PalmRejectionPolicy;
   private readonly abort = new AbortController();
   private readonly eraserCursor: HTMLElement;
@@ -128,6 +141,9 @@ export class PointerRouter {
     palmPolicy = new PalmRejectionPolicy()
   ) {
     this.generation = PointerRouter.nextGeneration++;
+    this.manipulation = new ManipulationStateMachine(
+      callbacks.manipulationCapabilities?.() ?? DEFAULT_MANIPULATION_PLATFORM_CAPABILITIES
+    );
     this.palmPolicy = palmPolicy;
     this.palmPolicy.setResetListener((reason, activePenIds) => {
       this.emitPenStateReset(reason, activePenIds);
@@ -205,6 +221,45 @@ export class PointerRouter {
     return this.handleDown(event);
   }
 
+  private notePenSignal(event: PointerEvent): void {
+    if (!this.callbacks.drawingEnabled()) return;
+    const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
+    if (!penLike) return;
+    const transition = this.manipulation.penSignal();
+    if (transition.cancelAssist) this.clearTouchAxisGesture("pen-contact", event);
+    this.applyManipulationTransition(transition);
+  }
+
+  private applyManipulationTransition(transition: {
+    cancelRearm: boolean;
+    scheduleRearm: boolean;
+  }): void {
+    if (transition.cancelRearm) this.clearManipulationRearm();
+    if (transition.scheduleRearm) {
+      this.clearManipulationRearm();
+      const view = this.element.ownerDocument.defaultView;
+      this.manipulationRearmTimer = (view?.setTimeout ?? window.setTimeout)(() => {
+        this.manipulationRearmTimer = undefined;
+        this.manipulation.rearm();
+        this.syncTouchActionMode();
+      }, MANIPULATION_REARM_MS);
+    }
+    this.syncTouchActionMode();
+  }
+
+  private clearManipulationRearm(): void {
+    if (this.manipulationRearmTimer === undefined) return;
+    const view = this.element.ownerDocument.defaultView;
+    (view?.clearTimeout ?? window.clearTimeout)(this.manipulationRearmTimer);
+    this.manipulationRearmTimer = undefined;
+  }
+
+  private finishManipulationTouch(event: PointerEvent, panned: boolean): void {
+    if (!this.manipulationTouches.delete(event.pointerId)) return;
+    const transition = this.manipulation.touchEnd(panned);
+    this.applyManipulationTransition(transition);
+  }
+
   private readonly handleDown = (event: PointerEvent): PointerRoute => {
     this.callbacks.onRouterReceived?.(event, this.generation);
     if (this.callbacks.isInputOwnerActive?.() === false) {
@@ -228,20 +283,35 @@ export class PointerRouter {
     if (event.pointerType === "touch" && event.isPrimary && this.touches.size > 0) {
       const trackedBefore = this.touches.size;
       this.touches.clear();
+      this.manipulationTouches.clear();
+      this.clearManipulationRearm();
+      this.manipulation.reset();
       // Keep active pens — a stale finger ID must not unlock Pencil scroll lock.
       if (!this.palmPolicy.hasActivePen()) this.palmPolicy.reset();
       this.callbacks.onTouchLifecycle?.("primary-reset", event, { trackedBefore, trackedAfter: 0 });
     }
+    this.notePenSignal(event);
     this.palmPolicy.pointerDown(event);
     if (this.palmPolicy.hasActivePen()) this.syncTouchActionMode();
     this.beginStylusEraser(event);
     const route = this.classify(event);
-    if (event.pointerType === "touch" && route !== "ignored") this.touches.add(event.pointerId);
+    if (event.pointerType === "touch" && route !== "ignored") {
+      this.touches.add(event.pointerId);
+      if (this.callbacks.drawingEnabled()) {
+        const transition = this.manipulation.touchStart();
+        this.manipulationTouches.add(event.pointerId);
+        if (transition.pinchTakeover) this.clearTouchAxisGesture("pinch-takeover", event);
+        this.applyManipulationTransition(transition);
+        if (transition.assistThisGesture) {
+          this.beginTouchAxisGesture(event, true);
+        }
+      }
+    }
     this.callbacks.onRoute?.(route, event);
     if (route === "touch-zoom-pan") {
       this.clearTouchAxisGesture("multi-finger");
     } else if (route === "touch-pan" && this.callbacks.drawingEnabled() && !this.palmPolicy.hasActivePen()) {
-      this.beginTouchAxisGesture(event);
+      if (!this.touchAxis) this.beginTouchAxisGesture(event, false);
     }
     // Palm / Pencil companion touch while a stylus is down: block native scroll.
     if (route === "ignored") {
@@ -337,9 +407,13 @@ export class PointerRouter {
     const trackedBefore = this.touches.size;
     for (const touch of Array.from(event.changedTouches)) {
       this.touches.delete(touch.identifier);
+      const terminal = this.syntheticPointerEvent(touch.identifier, event.type === "touchcancel" ? "pointercancel" : "pointerup");
+      const panned = this.touchAxis?.pointerId === touch.identifier
+        && (this.touchAxis.active || this.touchAxis.lock === "vertical");
       if (this.touchAxis?.pointerId === touch.identifier) {
-        this.clearTouchAxisGesture(event.type === "touchcancel" ? "touchcancel" : "touchend");
+        this.clearTouchAxisGesture(event.type === "touchcancel" ? "touchcancel" : "pointerup", terminal);
       }
+      this.finishManipulationTouch(terminal, panned);
     }
     const remaining = event.touches.length;
     if (remaining > 0) {
@@ -381,31 +455,50 @@ export class PointerRouter {
 
   /** WebKit / iPad: explicit touch-action modes (Ink finger-blocker pattern). */
   private syncTouchActionMode(): void {
+    if (!this.callbacks.drawingEnabled()) {
+      this.clearManipulationRearm();
+      if (this.manipulation.state !== "armed" || this.manipulation.activeTouches > 0) this.manipulation.reset();
+    }
     const mode = !this.callbacks.drawingEnabled()
       ? "default"
       : this.palmPolicy.hasActivePen() || this.touchAxis?.lock === "vertical"
         ? "none"
-        : "pan-xy";
+        : this.manipulation.touchAction();
     this.element.classList.toggle("native-pdf-handwriting-touch-none", mode === "none");
     this.element.classList.toggle("native-pdf-handwriting-touch-pan-xy", mode === "pan-xy");
     // Legacy alias from 0.1.42–0.1.45 — keep cleared so only one mode class wins.
     this.element.classList.remove("native-pdf-handwriting-pen-capturing");
   }
 
-  private beginTouchAxisGesture(event: PointerEvent): void {
+  private beginTouchAxisGesture(event: PointerEvent, assist: boolean): void {
     this.touchAxis = {
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
+      lastX: event.clientX,
       lastY: event.clientY,
-      lock: "none"
+      lock: "none",
+      assist,
+      active: false
     };
+    if (assist) {
+      this.callbacks.onTouchPan?.("start", event, { reason: "standing-guard-assist", pointerId: event.pointerId });
+    }
   }
 
-  private clearTouchAxisGesture(reason: string): void {
+  private clearTouchAxisGesture(reason: string, event?: PointerEvent): void {
     const gesture = this.touchAxis;
     if (!gesture) return;
     this.touchAxis = null;
+    if (gesture.assist && gesture.active) {
+      this.callbacks.onTouchPan?.(reason === "pointerup" ? "end" : "abort", event ?? this.syntheticPointerEvent(
+        gesture.pointerId,
+        reason === "pointerup" ? "pointerup" : "pointercancel"
+      ), {
+        reason,
+        pointerId: gesture.pointerId
+      });
+    }
     if (gesture.lock === "vertical") {
       safeReleasePointerCapture(this.element, gesture.pointerId);
     }
@@ -444,21 +537,34 @@ export class PointerRouter {
         dy,
         touchCount: this.touches.size
       });
-      if (next === "horizontal") return;
-      this.element.setPointerCapture?.(event.pointerId);
+      if (next === "horizontal" && !gesture.assist) return;
+      if (gesture.assist) {
+        gesture.active = true;
+        this.element.setPointerCapture?.(event.pointerId);
+        this.callbacks.onTouchPan?.("activate", event, { reason: "standing-guard-assist", pointerId: event.pointerId });
+      } else {
+        this.element.setPointerCapture?.(event.pointerId);
+      }
     }
-    if (!shouldClaimVerticalTouchPan(gesture.lock)) return;
+    if (!gesture.assist && !shouldClaimVerticalTouchPan(gesture.lock)) return;
     const root = this.callbacks.scrollRoot?.();
     if (!root) return;
     const deltaY = event.clientY - gesture.lastY;
+    const deltaX = event.clientX - gesture.lastX;
+    gesture.lastX = event.clientX;
     gesture.lastY = event.clientY;
-    if (deltaY === 0) return;
+    if (deltaY === 0 && deltaX === 0) return;
     event.preventDefault();
     event.stopPropagation();
     const changed = scrollPdfBy(root, -deltaY);
+    if (gesture.assist && deltaX !== 0) {
+      if (typeof root.scrollBy === "function") root.scrollBy(-deltaX, 0);
+      else root.scrollLeft -= deltaX;
+    }
     this.callbacks.onTouchPan?.("move", event, {
-      reason: "touch-axis-vertical",
+      reason: gesture.assist ? "touch-standing-guard-assist" : "touch-axis-vertical",
       deltaY: -deltaY,
+      deltaX: -deltaX,
       changed,
       scrollTop: root.scrollTop
     });
@@ -480,6 +586,22 @@ export class PointerRouter {
 
   private syntheticLifecycleEvent(): Event {
     return new Event("pointercancel", { bubbles: true, cancelable: true });
+  }
+
+  private syntheticPointerEvent(pointerId: number, type: "pointerup" | "pointercancel" = "pointercancel"): PointerEvent {
+    const event = new Event(type, { bubbles: true, cancelable: true }) as PointerEvent;
+    Object.defineProperties(event, {
+      pointerId: { value: pointerId },
+      pointerType: { value: "touch" },
+      button: { value: 0 },
+      buttons: { value: 0 },
+      pressure: { value: 0 },
+      width: { value: 0 },
+      height: { value: 0 },
+      clientX: { value: 0 },
+      clientY: { value: 0 }
+    });
+    return event;
   }
 
   private finishRoutedPointer(event: PointerEvent, phase: "pointerup" | "pointercancel"): void {
@@ -511,6 +633,7 @@ export class PointerRouter {
 
   private readonly handleMove = (event: PointerEvent): void => {
     this.scheduleCustomCursorUpdate(event);
+    this.notePenSignal(event);
     this.palmPolicy.notePenActivity(event);
     const route = this.routed.get(event.pointerId);
     if (route) {
@@ -539,8 +662,11 @@ export class PointerRouter {
       this.routed.delete(event.pointerId);
     }
     if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
+    const endedTouchGesture = this.touchAxis?.pointerId === event.pointerId;
+    const pannedTouch = Boolean(endedTouchGesture && (this.touchAxis?.active || this.touchAxis?.lock === "vertical"));
     this.touches.delete(event.pointerId);
-    if (this.touchAxis?.pointerId === event.pointerId) this.clearTouchAxisGesture("pointerup");
+    if (endedTouchGesture) this.clearTouchAxisGesture("pointerup", event);
+    this.finishManipulationTouch(event, pannedTouch);
     this.releasePenContact(event, "pointerup");
     this.syncTouchActionMode();
     // The custom cursor is a live pointer affordance, never a mark left after
@@ -558,8 +684,10 @@ export class PointerRouter {
       this.routed.delete(event.pointerId);
     }
     if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
+    const endedTouchGesture = this.touchAxis?.pointerId === event.pointerId;
     this.touches.delete(event.pointerId);
-    if (this.touchAxis?.pointerId === event.pointerId) this.clearTouchAxisGesture("pointercancel");
+    if (endedTouchGesture) this.clearTouchAxisGesture("pointercancel", event);
+    this.finishManipulationTouch(event, false);
     this.releasePenContact(event, "pointercancel");
     this.syncTouchActionMode();
     this.hideCustomCursors();
@@ -617,7 +745,12 @@ export class PointerRouter {
       return;
     }
     if (event.pointerType !== "touch") return;
-    if (this.touchAxis?.pointerId === event.pointerId) this.clearTouchAxisGesture("document-touch-terminal");
+    const endedTouchGesture = this.touchAxis?.pointerId === event.pointerId;
+    const pannedTouch = Boolean(endedTouchGesture && (this.touchAxis?.active || this.touchAxis?.lock === "vertical"));
+    if (endedTouchGesture) {
+      this.clearTouchAxisGesture(event.type === "pointerup" ? "pointerup" : "document-touch-terminal", event);
+    }
+    this.finishManipulationTouch(event, pannedTouch);
     const route = this.routed.get(event.pointerId);
     const endedOnThisPage = event.target instanceof Node && this.element.contains(event.target);
     let completion: "document-end" | "document-cancel" | undefined;
@@ -720,6 +853,7 @@ export class PointerRouter {
 
   destroy(): void {
     this.cancelScheduledCursorUpdate();
+    this.clearManipulationRearm();
     const handoff: PointerRouterHandoff = {
       routed: [...this.routed.entries()].map(([pointerId, route]) => ({ pointerId, route })),
       activePenIds: this.palmPolicy.activePenIds()
@@ -734,6 +868,9 @@ export class PointerRouter {
     this.routed.clear();
     this.stylusErasers.clear();
     this.touches.clear();
+    this.manipulationTouches.clear();
+    this.manipulation.reset();
+    this.clearTouchAxisGesture("destroy");
     this.touchAxis = null;
     this.palmPolicy.setResetListener(null);
     this.palmPolicy.reset();
