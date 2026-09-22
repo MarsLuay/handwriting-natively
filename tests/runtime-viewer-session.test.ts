@@ -3010,4 +3010,164 @@ describe("viewer runtime tracer", () => {
     expect([...files.values.keys()].some((path) => path.startsWith("annotations/"))).toBe(false);
     await session.destroy();
   });
+
+  it("shows Scan document on mobile and inserts confirmed pages after the current page", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const page2 = document.createElement("div");
+    page2.dataset.pageNumber = "2";
+    const page3 = document.createElement("div");
+    page3.dataset.pageNumber = "3";
+    adapter.root.append(page2, page3);
+    const initialPages = adapter.pages.bind(adapter);
+    let requestedPage = 0;
+    let insertedCount = 0;
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      openScanDocument: async () => [
+        { bytes: new Uint8Array([1]), mimeType: "image/jpeg", width: 100, height: 200 },
+        { bytes: new Uint8Array([2]), mimeType: "image/jpeg", width: 200, height: 100 }
+      ],
+      onInsertScannedPages: async (pageNumber, pages) => {
+        requestedPage = pageNumber;
+        insertedCount = pages.length;
+        const pagesAfterInsert = [
+          ...initialPages(),
+          { pageNumber: 2, width: 600, height: 800, scale: 1, rotation: 0, element: page2 },
+          { pageNumber: 3, width: 600, height: 800, scale: 1, rotation: 0, element: page3 }
+        ];
+        vi.spyOn(adapter, "pages").mockReturnValue(pagesAfterInsert);
+        vi.spyOn(adapter, "page").mockImplementation((number) => pagesAfterInsert.find((page) => page.pageNumber === number));
+        return 2;
+      },
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: false })
+    });
+
+    const more = adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='more']");
+    more?.click();
+    expect(document.querySelector<HTMLButtonElement>("[data-option-id='scan-document']")?.textContent).toBe("Scan document");
+    expect(document.querySelector<HTMLButtonElement>("[data-option-id='import-page']")).toBeNull();
+    await (session as unknown as { scanDocument(): Promise<void> }).scanDocument();
+
+    expect(requestedPage).toBe(2);
+    expect(insertedCount).toBe(2);
+    expect(adapter.focusedPages).toContain(2);
+    await session.destroy();
+  });
+
+  it("hides Scan document on desktop and leaves PDF unchanged when capture is cancelled", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const insert = vi.fn(async () => 2);
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array([9]),
+      writeSourcePdf: async () => undefined,
+      onImportPages: async () => null,
+      openScanDocument: async () => null,
+      onInsertScannedPages: insert,
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: false, phone: false })
+    });
+
+    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
+    expect(document.querySelector("[data-option-id='scan-document']")).toBeNull();
+    expect(document.querySelector("[data-option-id='import-page']")?.textContent).toBe("Import page");
+    await (session as unknown as { scanDocument(): Promise<void> }).scanDocument();
+    expect(insert).not.toHaveBeenCalled();
+    expect([...files.values.keys()]).toEqual([]);
+    await session.destroy();
+  });
+
+  it("shifts live sidecar annotations when a single scanned page is inserted", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const page2 = document.createElement("div");
+    page2.dataset.pageNumber = "2";
+    adapter.root.append(page2);
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      openScanDocument: async () => [
+        { bytes: new Uint8Array([1]), mimeType: "image/jpeg", width: 100, height: 200 }
+      ],
+      onInsertScannedPages: async () => {
+        const pagesAfterInsert = [
+          ...adapter.pages(),
+          { pageNumber: 2, width: 600, height: 800, scale: 1, rotation: 0, element: page2 }
+        ];
+        vi.spyOn(adapter, "pages").mockReturnValue(pagesAfterInsert);
+        return 2;
+      },
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: true })
+    });
+    const internal = session as unknown as {
+      ink: { add(stroke: InkStroke): void; all(): InkStroke[] };
+    };
+    internal.ink.add({
+      id: "later", page: 2, tool: "pen", color: "#000000", width: 2, opacity: 1, inputType: "pen",
+      points: [{ x: 1, y: 2, pressure: 0.5, time: 3 }], createdAt: "2026-01-01", updatedAt: "2026-01-01"
+    });
+
+    await (session as unknown as { scanDocument(): Promise<void> }).scanDocument();
+    expect(internal.ink.all().map((stroke) => stroke.page)).toEqual([3]);
+    await session.destroy();
+  });
+
+  it("surfaces insert failures without mutating live ink when the scan write fails", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const notices: string[] = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      openScanDocument: async () => [
+        { bytes: new Uint8Array([1]), mimeType: "image/jpeg", width: 100, height: 200 }
+      ],
+      onInsertScannedPages: async () => {
+        throw new Error("scan write failed");
+      },
+      notice: (message) => notices.push(message),
+      runtimePlatform: () => ({ mobile: true, phone: false })
+    });
+    const internal = session as unknown as {
+      ink: { add(stroke: InkStroke): void; all(): InkStroke[] };
+    };
+    internal.ink.add({
+      id: "keep", page: 1, tool: "pen", color: "#000000", width: 2, opacity: 1, inputType: "pen",
+      points: [{ x: 1, y: 2, pressure: 0.5, time: 3 }], createdAt: "2026-01-01", updatedAt: "2026-01-01"
+    });
+
+    await (session as unknown as { scanDocument(): Promise<void> }).scanDocument();
+    expect(notices.some((message) => message.includes("scan write failed"))).toBe(true);
+    expect(internal.ink.all().map((stroke) => stroke.page)).toEqual([1]);
+    await session.destroy();
+  });
 });
