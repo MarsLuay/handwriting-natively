@@ -27,17 +27,21 @@ import {
   createGoodNotesNotebook,
   createPdfFromTemplate,
   deletePdfPages,
-  insertMatchingBlankPage
+  insertMatchingBlankPage,
+  insertScannedPages
 } from "./pdf/PdfNoteService";
+import { writePdfAndAnnotationStoresAtomic } from "./pdf/PdfPageMutation";
 import { mergeSettings, NativePdfInkSettingTab } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
 import { createDocumentIdentity } from "./storage/DocumentIdentity";
-import { insertPageIntoSidecar, removePageFromSidecar } from "./storage/SidecarPageRemoval";
+import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "./storage/SidecarPageRemoval";
 import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
 import type { PluginSettings, ToolPreferences } from "./model";
 import { createVaultFsTextAdapter, createVaultSyncWriter } from "./storage/VaultFs";
 import { parsePageRanges } from "./util/parsePageRanges";
+import { ScanDocumentModal } from "./ui/ScanDocumentModal";
+import type { ScanDocumentPage } from "./scanning/ScanDocument";
 
 class UnsavedChangesModal extends Modal {
   private readonly abort = new AbortController();
@@ -664,6 +668,8 @@ export default class NativePdfInkPlugin extends Plugin {
       readSourcePdf: async () => new Uint8Array(await this.app.vault.readBinary(file)),
       writeExport: async (name, bytes) => this.writeAndOpenExport(file, name, bytes),
       onInsertPage: (pageNumber) => this.insertPageInPlace(file, pageNumber),
+      openScanDocument: () => new Promise((resolve) => new ScanDocumentModal(this.app, resolve).open()),
+      onInsertScannedPages: (pageNumber, pages) => this.insertScannedPagesInPlace(file, pageNumber, pages),
       onDeletePage: (pageNumber) => this.deletePageInPlace(file, pageNumber),
       onDeletePages: (pageNumbers) => this.deletePagesInPlace(file, pageNumbers),
       writeSvgExport: async (name, svg) => this.writeSvgExport(file, name, svg),
@@ -900,6 +906,66 @@ export default class NativePdfInkPlugin extends Plugin {
         document: file.path,
         requestedPage: requestedPageNumber,
         rolledBackPdf: pdfWritten,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
+  }
+
+  /** Inserts confirmed scanner pages and remaps all persisted page stores once. */
+  private async insertScannedPagesInPlace(
+    file: TFile,
+    requestedPageNumber: number,
+    pages: readonly ScanDocumentPage[]
+  ): Promise<number> {
+    const source = new Uint8Array(await this.app.vault.readBinary(file));
+    const inserted = await insertScannedPages(source, requestedPageNumber, pages);
+    const files = createVaultFsTextAdapter(this.app.vault);
+    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
+    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
+    const documentId = createDocumentIdentity({ vaultPath: file.path }).id;
+    const sidecarBefore = await sidecars.load(documentId);
+    const recoveryBefore = await recovery.load(documentId);
+    const sidecarAfter = sidecarBefore ? insertPagesIntoSidecar(sidecarBefore, inserted.pageNumber, inserted.count) : null;
+    const recoveryAfter = recoveryBefore ? insertPagesIntoSidecar(recoveryBefore, inserted.pageNumber, inserted.count) : null;
+    let writeStage = "prepared";
+    try {
+      await this.vaultDebugLog.writeUrgent("info", "pdf-scan-insert-start", {
+        document: file.path,
+        page: inserted.pageNumber,
+        requestedPage: requestedPageNumber,
+        count: inserted.count,
+        hasSidecar: Boolean(sidecarBefore),
+        hasRecovery: Boolean(recoveryBefore)
+      });
+      await writePdfAndAnnotationStoresAtomic({
+        sourceBytes: source,
+        updatedBytes: inserted.bytes,
+        sidecarBefore,
+        sidecarAfter,
+        recoveryBefore,
+        recoveryAfter,
+        writePdf: async (bytes) => this.app.vault.modifyBinary(file, bytes.slice().buffer),
+        saveSidecar: (value) => sidecars.save(value),
+        saveRecovery: (value) => recovery.save(value),
+        onStage: (stage) => { writeStage = stage; }
+      });
+      await this.vaultDebugLog.writeUrgent("info", "pdf-scan-insert-complete", {
+        document: file.path,
+        page: inserted.pageNumber,
+        count: inserted.count,
+        sourceBytes: source.byteLength,
+        resultBytes: inserted.bytes.byteLength,
+        sidecarRemapped: Boolean(sidecarAfter),
+        recoveryRemapped: Boolean(recoveryAfter)
+      });
+      return inserted.pageNumber;
+    } catch (error) {
+      await this.vaultDebugLog.writeUrgent("error", "pdf-scan-insert-failed", {
+        document: file.path,
+        page: inserted.pageNumber,
+        count: inserted.count,
+        writeStage,
         error: error instanceof Error ? error.message : String(error)
       });
       throw error;

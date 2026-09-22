@@ -1,4 +1,5 @@
 import { PDFDocument } from "pdf-lib";
+import type { ScanDocumentPage } from "../scanning/ScanDocument";
 
 /** PDF points for a blank US Letter page (8.5 × 11 inches). */
 export const US_LETTER_PAGE_SIZE: readonly [number, number] = [612, 792];
@@ -38,6 +39,56 @@ export interface InsertedPdfPage {
   bytes: Uint8Array;
   /** One-indexed page number of the newly inserted page. */
   pageNumber: number;
+}
+
+export interface InsertedPdfPages {
+  bytes: Uint8Array;
+  /** One-indexed page number of the first newly inserted page. */
+  pageNumber: number;
+  count: number;
+}
+
+/** Keeps a scanned page's aspect ratio while using a practical PDF point size. */
+export function scanPageSize(width: number, height: number): readonly [number, number] {
+  if (!(width > 0) || !(height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) {
+    throw new Error("Scanned page dimensions must be positive.");
+  }
+  const longEdge = 792;
+  const aspect = width / height;
+  return aspect >= 1
+    ? [longEdge, longEdge / aspect]
+    : [longEdge * aspect, longEdge];
+}
+
+/** Inserts corrected camera pages as real PDF pages in capture order. */
+export async function insertScannedPages(
+  sourceBytes: Uint8Array,
+  requestedPageNumber: number,
+  scannedPages: readonly ScanDocumentPage[]
+): Promise<InsertedPdfPages> {
+  if (!scannedPages.length) throw new Error("Capture at least one document page.");
+  const source = await PDFDocument.load(sourceBytes);
+  const pageCount = source.getPageCount();
+  if (!pageCount) throw new Error("Cannot add a page to a PDF with no pages.");
+  const requested = Number.isFinite(requestedPageNumber)
+    ? Math.floor(requestedPageNumber)
+    : pageCount + 1;
+  const pageNumber = Math.max(1, Math.min(pageCount + 1, requested));
+
+  for (const [offset, scanned] of scannedPages.entries()) {
+    const image = scanned.mimeType === "image/png"
+      ? await source.embedPng(scanned.bytes)
+      : await source.embedJpg(scanned.bytes);
+    const [width, height] = scanPageSize(scanned.width, scanned.height);
+    const page = source.insertPage(pageNumber - 1 + offset, [width, height]);
+    page.drawImage(image, { x: 0, y: 0, width, height });
+  }
+
+  return {
+    bytes: await source.save(),
+    pageNumber,
+    count: scannedPages.length
+  };
 }
 
 /** Inserts a blank page matching the preceding page (or page one at the start). */
