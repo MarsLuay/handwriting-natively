@@ -1060,6 +1060,30 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
+  it("reports routed pen ownership before teardown so a replacement router can adopt it", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    let handoff: { routed: Array<{ pointerId: number; route: "draw" | "edit" | "text" }>; activePenIds: number[] } | undefined;
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      drawingEnabled: () => true,
+      onPointerOwnerReleased: (_generation, state) => { handoff = state; }
+    });
+
+    router.acceptPointerDown(pointer("pen", 302));
+    expect(router.activeRoutedPointerIds()).toEqual([302]);
+    router.destroy();
+
+    expect(handoff).toEqual({ routed: [{ pointerId: 302, route: "draw" }], activePenIds: [302] });
+    expect(router.activeRoutedPointerIds()).toEqual([]);
+    element.remove();
+  });
+
   it("destroy swallows NotFoundError from releasePointerCapture during zoom settle", () => {
     const element = document.createElement("div");
     document.body.append(element);

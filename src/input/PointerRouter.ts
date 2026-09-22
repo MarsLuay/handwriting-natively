@@ -13,6 +13,10 @@ import {
 
 export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "native" | "ignored";
 export type PointerRejectionReason = "annotation-chrome" | "already-handled" | "inactive-owner";
+export interface PointerRouterHandoff {
+  routed: Array<{ pointerId: number; route: "draw" | "edit" | "text" }>;
+  activePenIds: number[];
+}
 
 export function isAnnotationChromeTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(
@@ -73,7 +77,7 @@ export interface PointerRouterCallbacks {
   /** Mark pointerId so document fallback does not start a duplicate stroke. */
   onPointerHandled?(pointerId: number, generation: number): void;
   /** Release pointer ownership when this listener generation is torn down. */
-  onPointerOwnerReleased?(generation: number): void;
+  onPointerOwnerReleased?(generation: number, handoff?: PointerRouterHandoff): void;
   /** Explain pointerdown rejection while the session is still listening. */
   onPointerRejected?(reason: PointerRejectionReason, event: PointerEvent, generation: number): void;
   /** Prevent a superseded session from reclaiming a page during async teardown. */
@@ -689,6 +693,23 @@ export class PointerRouter {
     return this.palmPolicy.activePenIds();
   }
 
+  activeRoutedPointerIds(): number[] {
+    return [...this.routed.keys()];
+  }
+
+  adoptPointerState(handoff: PointerRouterHandoff): void {
+    for (const { pointerId, route } of handoff.routed) {
+      this.routed.set(pointerId, route);
+      try {
+        this.element.setPointerCapture?.(pointerId);
+      } catch {
+        // The platform may have already ended the pointer during the rebind.
+      }
+    }
+    this.palmPolicy.adoptActivePenIds(handoff.activePenIds);
+    this.syncTouchActionMode();
+  }
+
   hasPointerCapture(pointerId: number): boolean {
     try {
       return this.element.hasPointerCapture?.(pointerId) ?? false;
@@ -699,8 +720,12 @@ export class PointerRouter {
 
   destroy(): void {
     this.cancelScheduledCursorUpdate();
+    const handoff: PointerRouterHandoff = {
+      routed: [...this.routed.entries()].map(([pointerId, route]) => ({ pointerId, route })),
+      activePenIds: this.palmPolicy.activePenIds()
+    };
     const captureIds = new Set<number>([
-      ...this.routed.keys(),
+      ...handoff.routed.map(({ pointerId }) => pointerId),
       ...(this.touchAxis ? [this.touchAxis.pointerId] : [])
     ]);
     for (const pointerId of captureIds) {
@@ -712,7 +737,7 @@ export class PointerRouter {
     this.touchAxis = null;
     this.palmPolicy.setResetListener(null);
     this.palmPolicy.reset();
-    this.callbacks.onPointerOwnerReleased?.(this.generation);
+    this.callbacks.onPointerOwnerReleased?.(this.generation, handoff);
     this.abort.abort();
     this.element.classList.remove(
       "native-pdf-handwriting-has-eraser-cursor",

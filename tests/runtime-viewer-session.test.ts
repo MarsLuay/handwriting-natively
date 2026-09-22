@@ -642,6 +642,51 @@ describe("viewer runtime tracer", () => {
     }
   });
 
+  it("adopts a routed stylus pointer across a mobile router rebind", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, {
+        builder: object | undefined;
+        router: { destroy(): void } | null;
+      }>;
+      ensurePageRouter(surface: unknown, options?: { force?: boolean; reason?: string }): void;
+    };
+
+    try {
+      adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+      const surface = internal.surfaces.get(1)!;
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 303 }));
+      adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 140, { pointerType: "pen", pointerId: 303 }));
+      const builderBefore = surface.builder;
+      expect(builderBefore).toBeDefined();
+
+      surface.router!.destroy();
+      internal.ensurePageRouter(surface, { reason: "test-mobile-scroll-rebind" });
+      adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160, { pointerType: "pen", pointerId: 303 }));
+      expect(surface.builder).toBe(builderBefore);
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "pen", pointerId: 303 }));
+      expect(surface.builder).toBeUndefined();
+
+      await session.manualSave();
+      const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+      expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    } finally {
+      await session.destroy({ silent: true, alreadyPersisted: true });
+    }
+  });
+
   it("document capture remounts router onto the hit page shell when duplicates diverge", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
@@ -813,6 +858,7 @@ describe("viewer runtime tracer", () => {
   it("recovers pen input from visible-page geometry without hijacking a real UI target", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
       adapter,
       pdfPath: "Notes/example.pdf",
@@ -822,11 +868,18 @@ describe("viewer runtime tracer", () => {
       saveSettings: async () => undefined,
       readSourcePdf: async () => new Uint8Array(),
       writeExport: async () => undefined,
-      notice: () => undefined
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
     });
+    const drawer = document.createElement("div");
+    drawer.className = "workspace-drawer mod-left";
     const uiTarget = document.createElement("div");
     uiTarget.className = "setting-item";
-    document.body.append(uiTarget);
+    drawer.append(uiTarget);
+    document.body.append(drawer);
     const originalElementFromPoint = document.elementFromPoint;
     const originalElementsFromPoint = document.elementsFromPoint;
 
@@ -857,6 +910,19 @@ describe("viewer runtime tracer", () => {
       const nativeUi = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 92 });
       uiTarget.dispatchEvent(nativeUi);
       expect(nativeUi.defaultPrevented).toBe(false);
+      expect(logs).not.toContainEqual(expect.objectContaining({
+        event: "ink input anomaly",
+        payload: expect.objectContaining({ reason: "pen-over-visible-page-not-routed" })
+      }));
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: "page router",
+        payload: expect.objectContaining({
+          phase: "skip",
+          reason: "ui-occluded",
+          pageOccludedByUi: true,
+          firstInteractiveHit: expect.objectContaining({ classes: expect.arrayContaining(["setting-item"]) })
+        })
+      }));
 
       await session.manualSave();
       const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
@@ -866,7 +932,7 @@ describe("viewer runtime tracer", () => {
       else delete (document as Partial<Document>).elementFromPoint;
       if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
       else delete (document as Partial<Document>).elementsFromPoint;
-      uiTarget.remove();
+      drawer.remove();
       await session.destroy();
     }
   });

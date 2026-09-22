@@ -33,6 +33,8 @@ export function isFingerPanPointer(event: Pick<PointerEvent, "pointerType" | "bu
 export interface ViewerMousePanCallbacks {
   /** Mouse/stylus drag-scroll when Draw is off. */
   enabled(): boolean;
+  /** Hard guard against stale pan state when Draw toggles during a gesture. */
+  drawEnabled?(): boolean;
   /** Finger drag-scroll. Default off — leave movement to native PDF viewer. */
   touchPanEnabled?(): boolean;
   scrollRoot(): HTMLElement;
@@ -79,6 +81,27 @@ export class ViewerMousePan {
 
   private touchPanAllowed(): boolean {
     return this.callbacks.touchPanEnabled?.() ?? false;
+  }
+
+  private penPanBlocked(event: PointerEvent, phase: "start" | "activate" | "move"): boolean {
+    if (event.pointerType !== "pen" || this.callbacks.drawEnabled?.() !== true) return false;
+    this.callbacks.onPan?.("abort", event, {
+      reason: "pen-pan-blocked-while-draw-enabled",
+      phase,
+      drawEnabled: true,
+      pointerId: event.pointerId
+    });
+    return true;
+  }
+
+  abortPenPans(reason = "draw-enabled"): void {
+    for (const [pointerId, pan] of [...this.panning.entries()]) {
+      if (pan.pointerType !== "pen") continue;
+      this.callbacks.onPan?.("abort", this.syntheticPointerEvent(pointerId), { reason, pointerId });
+      this.releaseClaim(pan, pointerId);
+      this.panning.delete(pointerId);
+    }
+    if (!this.panning.size) this.captureHost().classList.remove("native-pdf-handwriting-panning");
   }
 
   private abortTouchPans(event: PointerEvent, reason: string): void {
@@ -163,6 +186,8 @@ export class ViewerMousePan {
       return;
     }
 
+    if (this.penPanBlocked(event, "start")) return;
+
     // Finger only if touchPanEnabled. Mouse/stylus only when Draw is off (enabled).
     if (finger) {
       if (!this.touchPanAllowed()) {
@@ -232,7 +257,29 @@ export class ViewerMousePan {
     if (!this.panning.size) this.captureHost().classList.remove("native-pdf-handwriting-panning");
   };
 
+  private syntheticPointerEvent(pointerId: number): PointerEvent {
+    const event = new Event("pointercancel", { bubbles: true, cancelable: true }) as PointerEvent;
+    Object.defineProperties(event, {
+      pointerId: { value: pointerId },
+      pointerType: { value: "pen" },
+      clientX: { value: 0 },
+      clientY: { value: 0 },
+      buttons: { value: 0 },
+      width: { value: 0 },
+      height: { value: 0 },
+      pressure: { value: 0 }
+    });
+    return event;
+  }
+
   private updatePan(event: PointerEvent, pan: PanGesture): void {
+    if (this.penPanBlocked(event, pan.active ? "move" : "activate")) {
+      this.releaseClaim(pan, event.pointerId);
+      this.panning.delete(event.pointerId);
+      if (!this.panning.size) this.captureHost().classList.remove("native-pdf-handwriting-panning");
+      return;
+    }
+
     const root = this.callbacks.scrollRoot();
     pan.scrollRoot = root;
     if (!pan.active) {
