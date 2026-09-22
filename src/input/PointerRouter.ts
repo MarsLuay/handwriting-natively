@@ -300,7 +300,6 @@ export class PointerRouter {
       if (this.callbacks.drawingEnabled()) {
         const transition = this.manipulation.touchStart();
         this.manipulationTouches.add(event.pointerId);
-        if (transition.pinchTakeover) this.clearTouchAxisGesture("pinch-takeover", event);
         this.applyManipulationTransition(transition);
         if (transition.assistThisGesture) {
           this.beginTouchAxisGesture(event, true);
@@ -562,7 +561,9 @@ export class PointerRouter {
       else root.scrollLeft -= deltaX;
     }
     this.callbacks.onTouchPan?.("move", event, {
-      reason: gesture.assist ? "touch-standing-guard-assist" : "touch-axis-vertical",
+      reason: gesture.assist && gesture.lock === "horizontal"
+        ? "touch-standing-guard-assist"
+        : "touch-axis-vertical",
       deltaY: -deltaY,
       deltaX: -deltaX,
       changed,

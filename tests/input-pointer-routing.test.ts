@@ -1182,7 +1182,7 @@ describe("Regression Tests", () => {
       drawingEnabled: () => drawingEnabled
     });
 
-    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
 
     drawingEnabled = false;
     router.syncToolState();

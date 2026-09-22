@@ -95,7 +95,7 @@ export class ManipulationStateMachine {
       scheduleRearm: false,
       cancelRearm,
       activeTouches: this.activeTouchCount
-    });
+    }, from === "assisted-touch" ? "none" : undefined);
   }
 
   touchStart(): ManipulationTransition {
@@ -202,11 +202,14 @@ export class ManipulationStateMachine {
     });
   }
 
-  private record(transition: Omit<ManipulationTransition, "to" | "touchAction">): ManipulationTransition {
+  private record(
+    transition: Omit<ManipulationTransition, "to" | "touchAction">,
+    touchActionOverride?: "none" | "pan-xy"
+  ): ManipulationTransition {
     const result: ManipulationTransition = {
       ...transition,
       to: this.currentState,
-      touchAction: this.touchAction()
+      touchAction: touchActionOverride ?? this.touchAction()
     };
     this.last = result;
     return result;
