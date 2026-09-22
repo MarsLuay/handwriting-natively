@@ -690,6 +690,14 @@ export class SessionLogger {
     });
   }
 
+  /** One bounded summary for a completed native pinch/zoom burst. */
+  zoomProfile(details: Record<string, unknown> = {}): void {
+    this.emit("info", "ink zoom profile", {
+      document: this.documentPath,
+      ...details
+    });
+  }
+
   /** Tracks the compositor handoff around a zoom-settle repaint. */
   zoomComposite(
     phase:

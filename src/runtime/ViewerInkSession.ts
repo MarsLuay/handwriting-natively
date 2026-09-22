@@ -256,6 +256,46 @@ interface LaserTrail {
   fadeMs: number;
 }
 
+interface ZoomProfileState {
+  startedAt: number;
+  gestureEndedAt: number | null;
+  scaleStart: number | null;
+  scaleEnd: number | null;
+  scaleChangingEvents: number;
+  scaleIntervalCount: number;
+  scaleIntervalTotalMs: number;
+  scaleIntervalMaxMs: number;
+  scaleDeltaCount: number;
+  scaleDeltaTotal: number;
+  scaleDeltaMax: number;
+  lastScaleAt: number | null;
+  lastScale: number | null;
+  scrollEvents: number;
+  pageChangingEvents: number;
+  mobileRefreshSignals: number;
+  mobileRefreshDeferred: number;
+  mobileRefreshFramesScheduled: number;
+  mobileRefreshExecutions: number;
+  refreshRequests: number;
+  refreshExecutions: number;
+  layoutFramesScheduled: number;
+  layoutFramesExecuted: number;
+  layoutSyncs: number;
+  compositorTicks: number;
+  bitmapBlits: number;
+  vectorRepaints: number;
+  canvasResizes: number;
+  hqUpgrades: number;
+  routerRebinds: number;
+  routerDestroys: number;
+  taskCount: number;
+  totalTaskMs: number;
+  longestTaskMs: number;
+  lateFrameCount: number;
+  maxFrameIntervalMs: number;
+  lastLayoutFrameAt: number | null;
+}
+
 interface PageSurface {
   page: PdfPageInfo;
   overlay: HTMLElement;
@@ -410,11 +450,13 @@ export class ViewerInkSession {
   private resizeFrame: number | null = null;
   private viewportPaintFrame: number | null = null;
   private pendingScheduledRefresh: { reason: string; repaintOnly: boolean } | null = null;
-  /** Trailing debounce for mobile scroll remounts (rAF alone still storms every frame). */
-  private mobileScrollRefreshTimer: number | null = null;
+  /** One display-frame refresh for mobile scroll/pagechanging signals. */
+  private mobileScrollRefreshFrame: number | null = null;
   /** Remount after zoom/handoff if scroll/pagechanging arrived while compositing. */
   private pendingMobileScrollRemount = false;
   private zoomSettleTimer: number | null = null;
+  /** Coalesces repeated native scale signals to one overlay/layout pass per frame. */
+  private zoomLayoutFrame: number | null = null;
   private zoomBurstStartedAt = 0;
   private zoomTickCount = 0;
   private zoomBurstScaleStart: number | null = null;
@@ -435,6 +477,7 @@ export class ViewerInkSession {
   /** First and final ink-anchor snapshots expose zoom coordinate drift without stroke data. */
   private readonly zoomInkLayoutLoggedPhases = new Set<string>();
   private readonly zoomInkAnchorByPage = new Map<number, { normalizedX: number; normalizedY: number }>();
+  private zoomProfile: ZoomProfileState | null = null;
   private laserTrails: LaserTrail[] = [];
   private laserFadeFrame: number | null = null;
   private lastLaserPaintAt = 0;
@@ -479,7 +522,6 @@ export class ViewerInkSession {
   private static readonly ZOOM_ACTIVE_MS = 600;
   /** Retry settle while a live stroke/edit is in progress (avoid wiping draft mid-drag). */
   private static readonly ZOOM_SETTLE_LIVE_INK_RETRY_MS = 120;
-  private static readonly MOBILE_SCROLL_REFRESH_MS = 200;
   /** PDF.js usually swaps canvas/text layers hundreds of ms after scalechanging. */
   private static readonly ZOOM_NATIVE_RENDER_GRACE_MS = 500;
   /** Do not release during the tail of a native page-content replacement burst. */
@@ -994,6 +1036,7 @@ export class ViewerInkSession {
 
   private scheduleRefresh(reason: string, repaintOnly = false): void {
     if (this.destroyed) return;
+    if (this.zoomProfile) this.zoomProfile.refreshRequests += 1;
     if (repaintOnly) {
       this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
       return;
@@ -1020,31 +1063,43 @@ export class ViewerInkSession {
       this.resizeFrame = null;
       this.pendingScheduledRefresh = null;
       if (!pending) return;
+      const started = performance.now();
       if (pending.repaintOnly) this.repaintSurfaces(pending.reason);
       else this.refresh(pending.reason);
+      this.recordZoomProfileTask(started);
     });
   }
 
-  /** Coalesce mobile scroll/pagechanging remounts; skip while zoom/handoff active. */
+  /** Coalesce mobile scroll/pagechanging remounts to one display frame. */
   private scheduleMobileScrollRefresh(): void {
     if (this.destroyed || !this.runtimePlatform().mobile) return;
+    if (this.zoomProfile) this.zoomProfile.mobileRefreshSignals += 1;
     if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
       this.pendingMobileScrollRemount = true;
+      if (this.zoomProfile) this.zoomProfile.mobileRefreshDeferred += 1;
       this.scheduleZoomRepaint("view-scroll-mobile", this.options.adapter.getViewState().scale);
       return;
     }
-    if (this.mobileScrollRefreshTimer !== null) {
-      window.clearTimeout(this.mobileScrollRefreshTimer);
+    if (this.mobileScrollRefreshFrame !== null) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) {
+      this.refresh("view-scroll-mobile");
+      return;
     }
-    this.mobileScrollRefreshTimer = window.setTimeout(() => {
-      this.mobileScrollRefreshTimer = null;
+    if (this.zoomProfile) this.zoomProfile.mobileRefreshFramesScheduled += 1;
+    this.mobileScrollRefreshFrame = view.requestAnimationFrame(() => {
+      this.mobileScrollRefreshFrame = null;
       if (this.destroyed) return;
       if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
         this.pendingMobileScrollRemount = true;
+        if (this.zoomProfile) this.zoomProfile.mobileRefreshDeferred += 1;
         return;
       }
+      if (this.zoomProfile) this.zoomProfile.mobileRefreshExecutions += 1;
+      const started = performance.now();
       this.refresh("view-scroll-mobile");
-    }, ViewerInkSession.MOBILE_SCROLL_REFRESH_MS);
+      this.recordZoomProfileTask(started);
+    });
   }
 
   private flushPendingMobileScrollRemount(): void {
@@ -1091,13 +1146,167 @@ export class ViewerInkSession {
     });
   }
 
+  private startZoomProfile(scale: number | undefined, now: number): void {
+    const scaleStart = this.lastKnownViewScale ?? scale ?? null;
+    this.zoomProfile = {
+      startedAt: now,
+      gestureEndedAt: null,
+      scaleStart,
+      scaleEnd: scaleStart,
+      scaleChangingEvents: 0,
+      scaleIntervalCount: 0,
+      scaleIntervalTotalMs: 0,
+      scaleIntervalMaxMs: 0,
+      scaleDeltaCount: 0,
+      scaleDeltaTotal: 0,
+      scaleDeltaMax: 0,
+      lastScaleAt: null,
+      lastScale: scaleStart,
+      scrollEvents: 0,
+      pageChangingEvents: 0,
+      mobileRefreshSignals: 0,
+      mobileRefreshDeferred: 0,
+      mobileRefreshFramesScheduled: 0,
+      mobileRefreshExecutions: 0,
+      refreshRequests: 0,
+      refreshExecutions: 0,
+      layoutFramesScheduled: 0,
+      layoutFramesExecuted: 0,
+      layoutSyncs: 0,
+      compositorTicks: 0,
+      bitmapBlits: 0,
+      vectorRepaints: 0,
+      canvasResizes: 0,
+      hqUpgrades: 0,
+      routerRebinds: 0,
+      routerDestroys: 0,
+      taskCount: 0,
+      totalTaskMs: 0,
+      longestTaskMs: 0,
+      lateFrameCount: 0,
+      maxFrameIntervalMs: 0,
+      lastLayoutFrameAt: null
+    };
+  }
+
+  private recordZoomScale(scale: number, now: number): void {
+    const profile = this.zoomProfile;
+    if (!profile) return;
+    profile.scaleChangingEvents += 1;
+    profile.scaleEnd = scale;
+    if (profile.lastScaleAt !== null) {
+      const interval = Math.max(0, now - profile.lastScaleAt);
+      profile.scaleIntervalCount += 1;
+      profile.scaleIntervalTotalMs += interval;
+      profile.scaleIntervalMaxMs = Math.max(profile.scaleIntervalMaxMs, interval);
+    }
+    if (profile.lastScale !== null) {
+      const delta = Math.abs(scale - profile.lastScale);
+      profile.scaleDeltaCount += 1;
+      profile.scaleDeltaTotal += delta;
+      profile.scaleDeltaMax = Math.max(profile.scaleDeltaMax, delta);
+    }
+    profile.lastScaleAt = now;
+    profile.lastScale = scale;
+  }
+
+  private recordZoomProfileTask(started: number): void {
+    const profile = this.zoomProfile;
+    if (!profile) return;
+    const duration = Math.max(0, performance.now() - started);
+    profile.taskCount += 1;
+    profile.totalTaskMs += duration;
+    profile.longestTaskMs = Math.max(profile.longestTaskMs, duration);
+  }
+
+  private scheduleZoomOverlayLayout(): void {
+    if (this.destroyed || !this.zoomCompositing || this.zoomLayoutFrame !== null) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) return;
+    if (this.zoomProfile) this.zoomProfile.layoutFramesScheduled += 1;
+    this.zoomLayoutFrame = view.requestAnimationFrame(() => {
+      this.zoomLayoutFrame = null;
+      if (this.destroyed || !this.zoomCompositing) return;
+      const now = performance.now();
+      if (this.zoomProfile) {
+        this.zoomProfile.layoutFramesExecuted += 1;
+        if (this.zoomProfile.lastLayoutFrameAt !== null) {
+          const interval = Math.max(0, now - this.zoomProfile.lastLayoutFrameAt);
+          this.zoomProfile.maxFrameIntervalMs = Math.max(this.zoomProfile.maxFrameIntervalMs, interval);
+          if (interval > 24) this.zoomProfile.lateFrameCount += 1;
+        }
+        this.zoomProfile.lastLayoutFrameAt = now;
+      }
+      const started = performance.now();
+      this.syncZoomOverlayLayouts();
+      this.recordZoomProfileTask(started);
+    });
+  }
+
+  private cancelZoomOverlayLayout(): void {
+    if (this.zoomLayoutFrame === null) return;
+    this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.zoomLayoutFrame);
+    this.zoomLayoutFrame = null;
+  }
+
+  private finishZoomProfile(): void {
+    const profile = this.zoomProfile;
+    if (!profile) return;
+    const endedAt = profile.gestureEndedAt ?? performance.now();
+    const profileEndedAt = performance.now();
+    const metrics = {
+      mobile: this.runtimePlatform().mobile,
+      gestureStartAt: roundMs(profile.startedAt),
+      gestureEndAt: roundMs(endedAt),
+      durationMs: roundMs(endedAt - profile.startedAt),
+      profileWindowMs: roundMs(profileEndedAt - profile.startedAt),
+      scaleStart: profile.scaleStart,
+      scaleEnd: profile.scaleEnd,
+      scaleChangingEvents: profile.scaleChangingEvents,
+      scaleIntervalAvgMs: profile.scaleIntervalCount ? roundMs(profile.scaleIntervalTotalMs / profile.scaleIntervalCount) : 0,
+      scaleIntervalMaxMs: roundMs(profile.scaleIntervalMaxMs),
+      scaleDeltaAvg: profile.scaleDeltaCount ? Number((profile.scaleDeltaTotal / profile.scaleDeltaCount).toFixed(4)) : 0,
+      scaleDeltaMax: Number(profile.scaleDeltaMax.toFixed(4)),
+      scrollEvents: profile.scrollEvents,
+      pageChangingEvents: profile.pageChangingEvents,
+      mobileRefreshSignals: profile.mobileRefreshSignals,
+      mobileRefreshDeferred: profile.mobileRefreshDeferred,
+      mobileRefreshFramesScheduled: profile.mobileRefreshFramesScheduled,
+      mobileRefreshExecutions: profile.mobileRefreshExecutions,
+      refreshRequests: profile.refreshRequests,
+      refreshExecutions: profile.refreshExecutions,
+      layoutFramesScheduled: profile.layoutFramesScheduled,
+      layoutFramesExecuted: profile.layoutFramesExecuted,
+      layoutSyncs: profile.layoutSyncs,
+      compositorTicks: profile.compositorTicks,
+      bitmapBlits: profile.bitmapBlits,
+      vectorRepaints: profile.vectorRepaints,
+      canvasResizes: profile.canvasResizes,
+      hqUpgrades: profile.hqUpgrades,
+      routerRebinds: profile.routerRebinds,
+      routerDestroys: profile.routerDestroys,
+      pluginWorkMs: roundMs(profile.totalTaskMs),
+      longestTaskMs: roundMs(profile.longestTaskMs),
+      lateFrameCount: profile.lateFrameCount,
+      maxFrameIntervalMs: roundMs(profile.maxFrameIntervalMs),
+      nativeContentMutations: this.zoomNativeContentMutations
+    };
+    this.logger.zoomProfile(metrics);
+    this.reportDevProbe("zoom-profile", metrics);
+    this.zoomProfile = null;
+  }
+
   private scheduleZoomRepaint(reason: string, scale?: number): void {
     if (this.destroyed) return;
     const now = performance.now();
     this.lastZoomSignalAt = now;
-    if (!this.zoomBurstStartedAt || now - this.zoomBurstStartedAt > ViewerInkSession.ZOOM_ACTIVE_MS) {
+    // Keep one burst for the full gesture. A long, healthy pinch can last well
+    // beyond ZOOM_ACTIVE_MS while still delivering scale ticks every frame;
+    // the settle timer is the actual quiet-window boundary.
+    if (!this.zoomBurstStartedAt) {
       this.zoomBurstStartedAt = now;
       this.zoomTickCount = 0;
+      this.startZoomProfile(scale, now);
       // Prefer pre-burst scale so a single large jump is not treated as delta=0.
       this.zoomBurstScaleStart = this.lastKnownViewScale ?? scale ?? null;
       this.zoomTextLayoutLoggedPages.clear();
@@ -1111,14 +1320,18 @@ export class ViewerInkSession {
       });
     }
     this.zoomTickCount += 1;
+    if (this.zoomProfile) this.zoomProfile.compositorTicks += 1;
+    if (scale !== undefined && (reason.includes("scalechanging") || reason.includes("data-scale"))) {
+      this.recordZoomScale(scale, now);
+    }
     this.zoomBurstReason = reason;
     // Only freeze ink bitmap during real zoom/rotation — pages-dom storms must keep repainting.
     if (ViewerInkSession.shouldCompositeDuring(reason) && !this.zoomCompositing) {
       this.beginZoomCompositing();
     }
     // Burst: keep overlay box glued to PDF canvas content box; skip stroke redraw.
-    if (this.zoomCompositing) this.syncZoomOverlayLayouts();
-    this.refreshSurfaceCursors();
+    // The first tick syncs immediately; subsequent native signals share one rAF.
+    if (this.zoomCompositing) this.scheduleZoomOverlayLayout();
     if (scale !== undefined) {
       if (this.zoomBurstScaleStart === null) this.zoomBurstScaleStart = scale;
       this.zoomBurstScaleEnd = scale;
@@ -1197,6 +1410,11 @@ export class ViewerInkSession {
     const burstDurationMs = roundMs(performance.now() - this.zoomBurstStartedAt);
     const scaleStart = this.zoomBurstScaleStart;
     const scaleEnd = this.zoomBurstScaleEnd;
+    this.cancelZoomOverlayLayout();
+    const finalLayoutStarted = performance.now();
+    if (this.zoomCompositing) this.syncZoomOverlayLayouts();
+    this.recordZoomProfileTask(finalLayoutStarted);
+    if (this.zoomProfile) this.zoomProfile.gestureEndedAt = performance.now();
     this.zoomBurstStartedAt = 0;
     this.zoomTickCount = 0;
     this.zoomBurstScaleStart = null;
@@ -1386,14 +1604,13 @@ export class ViewerInkSession {
         }
       }
       if (this.surfaces.get(pageNumber) && paintPath !== "disconnected") {
-        if (!this.surfaceHasLiveInkInput(surface)) {
-          this.ensurePageRouter(surface, { force: true, reason });
-        } else {
-          this.ensurePageRouter(surface, { reason: `${reason}-live-ink` });
-        }
+        this.ensurePageRouter(surface, {
+          reason: this.surfaceHasLiveInkInput(surface) ? `${reason}-live-ink` : reason
+        });
         const upgradeBefore = surface.settleUpgradePending;
         const painted = this.renderPage(pageNumber, this.zoomSettleStats, reason);
         this.logZoomInkLayout(surface, "settle");
+        if (this.zoomProfile && tier === "focus" && painted) this.zoomProfile.hqUpgrades += 1;
         if (painted) this.zoomSettleStats.pagesRepainted += 1;
         else if (surface.viewportCullPending) {
           this.zoomSettleStats.skippedCulled += 1;
@@ -1422,6 +1639,7 @@ export class ViewerInkSession {
       canvasesResized: this.zoomSettleStats.canvasesResized - resizedBefore,
       skippedBlitOnly: this.zoomSettleStats.skippedBlitOnly - blitBefore
     });
+    this.recordZoomProfileTask(started);
   }
 
   private finishZoomSettleSlices(): void {
@@ -1473,6 +1691,7 @@ export class ViewerInkSession {
       scale: Number(view.scale.toFixed(4)),
       sliced: true
     });
+    this.finishZoomProfile();
     this.zoomSettleBurst = null;
     this.releaseZoomCompositeAfterNativeRender();
   }
@@ -1511,10 +1730,13 @@ export class ViewerInkSession {
     this.lastZoomNativeContentAt = 0;
     this.zoomHandoffNeedsFinalRebase = false;
     this.zoomCompositing = true;
+    const started = performance.now();
     for (const surface of this.surfaces.values()) {
       this.captureInkLayerFromCanvas(surface);
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
     }
+    this.syncZoomOverlayLayouts();
+    this.recordZoomProfileTask(started);
     this.logger.zoomComposite("begin", { pages: this.surfaces.size });
   }
 
@@ -1757,6 +1979,7 @@ export class ViewerInkSession {
 
   /** Align overlay boxes during zoom burst without paintCommittedStrokes. */
   private syncZoomOverlayLayouts(phase: "burst" | "native-content" = "burst"): void {
+    if (this.zoomProfile) this.zoomProfile.layoutSyncs += 1;
     const pages = this.options.adapter.pages();
     const byNumber = new Map(pages.map((page) => [page.pageNumber, page]));
     for (const [pageNumber, surface] of this.surfaces) {
@@ -1777,6 +2000,7 @@ export class ViewerInkSession {
       this.syncTextLayoutDuringZoom(surface);
       this.logZoomInkLayout(surface, phase);
     }
+    this.refreshSurfaceCursors();
   }
 
   /**
@@ -1811,11 +2035,9 @@ export class ViewerInkSession {
           continue;
         }
       }
-      if (!this.surfaceHasLiveInkInput(surface)) {
-        this.ensurePageRouter(surface, { force: true, reason: "zoom-handoff-final" });
-      } else {
-        this.ensurePageRouter(surface, { reason: "zoom-handoff-final-live-ink" });
-      }
+      this.ensurePageRouter(surface, {
+        reason: this.surfaceHasLiveInkInput(surface) ? "zoom-handoff-final-live-ink" : "zoom-handoff-final"
+      });
       // A capped backing canvas can keep the same pixel dimensions while its
       // CSS geometry changes. Invalidating forces a canonical PDF-space paint
       // at the final scale in either case.
@@ -2086,6 +2308,7 @@ export class ViewerInkSession {
 
   refresh(reason = "manual"): void {
     if (this.destroyed) return;
+    if (this.zoomProfile) this.zoomProfile.refreshExecutions += 1;
     if (
       reason !== "create"
       && (this.isZoomGestureActive() || this.isZoomHandoffActive())
@@ -2322,6 +2545,10 @@ export class ViewerInkSession {
 
   onViewStateChange(state: PdfViewState, source: ViewStateSource): void {
     this.logger.viewState(state, source);
+    if (this.zoomProfile) {
+      if (source === "scroll") this.zoomProfile.scrollEvents += 1;
+      if (source === "pagechanging") this.zoomProfile.pageChangingEvents += 1;
+    }
     if (source === "scroll") {
       if (this.selected.length) this.selectionToolbar.relayout();
       // Mobile only mounts current±pad — debounce remount; never full-refresh mid-zoom.
@@ -3424,9 +3651,9 @@ export class ViewerInkSession {
       this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.viewportPaintFrame);
       this.viewportPaintFrame = null;
     }
-    if (this.mobileScrollRefreshTimer !== null) {
-      window.clearTimeout(this.mobileScrollRefreshTimer);
-      this.mobileScrollRefreshTimer = null;
+    if (this.mobileScrollRefreshFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.mobileScrollRefreshFrame);
+      this.mobileScrollRefreshFrame = null;
     }
     this.pendingMobileScrollRemount = false;
     if (this.zoomSettleTimer !== null) {
@@ -3434,9 +3661,11 @@ export class ViewerInkSession {
       this.zoomSettleTimer = null;
     }
     this.cancelZoomSettleSlice();
+    this.cancelZoomOverlayLayout();
     this.cancelZoomCompositeRelease();
     this.endZoomCompositing();
     this.releaseZoomCompositeLayers();
+    this.finishZoomProfile();
     this.syncAnnotationCursorMode(false);
     this.resizeObserver?.disconnect();
     for (const surface of this.surfaces.values()) {
@@ -4313,6 +4542,7 @@ export class ViewerInkSession {
     // Callers pass force after zoom handoff / page remount when rebinding is required.
     if (!force && binds && alive) return;
     if (surface.router) {
+      if (this.zoomProfile) this.zoomProfile.routerDestroys += 1;
       this.logger.inputLifecycleEvent("router-destroy", {
         page: surface.page.pageNumber,
         reason,
@@ -4340,6 +4570,7 @@ export class ViewerInkSession {
     }
     this.claimInputOwner(pageElement, surface.page.pageNumber);
     surface.router = this.createPageRouter(surface);
+    if (this.zoomProfile) this.zoomProfile.routerRebinds += 1;
     this.logger.inputLifecycleEvent("router-rebind", {
       page: surface.page.pageNumber,
       reason,
@@ -6454,6 +6685,7 @@ export class ViewerInkSession {
     layerContext.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
     layerContext.imageSmoothingEnabled = false;
     layerContext.drawImage(surface.canvas, 0, 0);
+    if (this.zoomProfile) this.zoomProfile.bitmapBlits += 1;
     layerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
     surface.inkLayerValid = true;
     // Raster warm — must not satisfy blit-only settle (needs vector restamp).
@@ -6483,6 +6715,7 @@ export class ViewerInkSession {
     backingScale: number
   ): void {
     if (!surface.inkLayer) return;
+    if (this.zoomProfile) this.zoomProfile.bitmapBlits += 1;
     surface.context.setTransform(1, 0, 0, 1, 0, 0);
     surface.context.clearRect(0, 0, pixelWidth, pixelHeight);
     surface.context.imageSmoothingEnabled = false;
@@ -6515,6 +6748,7 @@ export class ViewerInkSession {
     stats?: { strokesRedrawn: number },
     graphiteQuality: "full" | "draft" = "full"
   ): void {
+    if (this.zoomProfile && graphiteQuality === "full") this.zoomProfile.vectorRepaints += 1;
     const previous = surface.context;
     surface.context = context;
     try {
@@ -6672,6 +6906,7 @@ export class ViewerInkSession {
     }
 
     if (needsResize) {
+      if (this.zoomProfile) this.zoomProfile.canvasResizes += 1;
       surface.canvas.width = pixelWidth;
       surface.canvas.height = pixelHeight;
       // Cheap settle skips draft warm (~45MP alloc). HQ / normal paints warm it.

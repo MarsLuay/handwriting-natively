@@ -242,7 +242,11 @@ function pointer(type: string, x: number, y: number): PointerEvent {
   return event as unknown as PointerEvent;
 }
 
-async function createSession(adapter: ZoomAdapter, files = new MemoryFiles()): Promise<ViewerInkSession> {
+async function createSession(
+  adapter: ZoomAdapter,
+  files = new MemoryFiles(),
+  platform: { mobile: boolean; phone: boolean } = { mobile: false, phone: false }
+): Promise<ViewerInkSession> {
   const settings = structuredClone(DEFAULT_SETTINGS);
   settings.autosave = false;
   settings.toolPreferences.activeTool = "pen";
@@ -255,7 +259,8 @@ async function createSession(adapter: ZoomAdapter, files = new MemoryFiles()): P
     saveSettings: async () => undefined,
     readSourcePdf: async () => new Uint8Array(),
     writeExport: async () => undefined,
-    notice: () => undefined
+    notice: () => undefined,
+    runtimePlatform: () => platform
   });
 }
 
@@ -396,6 +401,72 @@ describe("zoom ink compositing", () => {
     expect(settles).toHaveLength(1);
     await flushZoomSettleSlices();
     expect(debugCalls("ink zoom repaint")).toHaveLength(1);
+
+    await session.destroy();
+  });
+
+  it("coalesces sustained mobile pinch work to display frames without router churn", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter, new MemoryFiles(), { mobile: true, phone: false });
+    const surface = probeSurface(session) as SurfaceProbe & { router: unknown };
+
+    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
+    context.arc.mockClear();
+    context.fill.mockClear();
+    context.stroke.mockClear();
+
+    vi.useFakeTimers();
+    await vi.advanceTimersByTimeAsync(1);
+    const routerBefore = surface.router;
+    for (let i = 0; i < 60; i += 1) {
+      const scale = 1.2 + i * 0.01;
+      adapter.zoomTo(scale, { left: i, top: i / 2, width: 720 + i * 4, height: 960 + i * 5 });
+      session.onViewStateChange(adapter.getViewState(), "scalechanging");
+      session.onViewStateChange(adapter.getViewState(), "scroll");
+      await vi.advanceTimersByTimeAsync(16);
+    }
+
+    // The live pinch path only moves the cached bitmap; no committed vector
+    // redraw is allowed on each native scale/scroll notification.
+    expect(paintStampCalls(context)).toBe(0);
+    expect(surface.router).toBe(routerBefore);
+
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+    await vi.advanceTimersByTimeAsync(532);
+
+    const profile = debugCalls("ink zoom profile").at(-1)?.[2] as {
+      scaleChangingEvents: number;
+      scrollEvents: number;
+      compositorTicks: number;
+      layoutFramesScheduled: number;
+      layoutFramesExecuted: number;
+      mobileRefreshDeferred: number;
+      routerRebinds: number;
+      routerDestroys: number;
+      vectorRepaints: number;
+      canvasResizes: number;
+      hqUpgrades: number;
+      longestTaskMs: number;
+    } | undefined;
+    expect(profile).toMatchObject({
+      scaleChangingEvents: 60,
+      scrollEvents: 60,
+      compositorTicks: 120,
+      mobileRefreshDeferred: 60,
+      routerRebinds: 0,
+      routerDestroys: 0
+    });
+    expect(profile?.layoutFramesScheduled).toBeLessThanOrEqual(60);
+    expect(profile?.layoutFramesExecuted).toBeLessThanOrEqual(60);
+    expect(profile?.vectorRepaints).toBeGreaterThan(0);
+    expect(profile?.vectorRepaints).toBeLessThan(60);
+    expect(profile?.canvasResizes).toBeGreaterThan(0);
+    expect(profile?.hqUpgrades).toBeGreaterThanOrEqual(1);
+    expect(profile?.longestTaskMs).toBeGreaterThanOrEqual(0);
 
     await session.destroy();
   });
