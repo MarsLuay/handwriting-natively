@@ -6,8 +6,11 @@ coverage/
 *.map
 .DS_Store
 
-# Local reference clones; never part of the distributable plugin.
+# Local reference clones; keep only their provenance manifest in the parent Git
+# repository. The nested .git directory remains local reference metadata.
 Inspiration/
+inspirations/*
+!inspirations/manifest.json
 
 # The TypeScript sources are canonical; these are accidental compiler emits.
 src/**/*.js

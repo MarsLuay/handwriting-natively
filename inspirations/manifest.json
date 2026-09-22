@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "targetProject": "native-pdf-handwriting",
+  "inspirations": [
+    {
+      "path": "inspirations/ellimist-afk-handwriting",
+      "ownerRepo": "ellimist-afk/handwriting",
+      "remoteUrl": "https://github.com/ellimist-afk/handwriting.git",
+      "targetProject": "native-pdf-handwriting",
+      "purpose": "Reference Obsidian handwriting input, palm-rejection, zoom, ink-rendering, and PDF annotation implementations while developing handwriting-natively; do not import or execute donor code directly.",
+      "persistence": "persistent",
+      "revision": "f87c4554dc8f1e9e752f2dd0aff4d69ba8fc4b6a"
+    }
+  ]
+}
