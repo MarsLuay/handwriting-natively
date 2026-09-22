@@ -22,7 +22,7 @@ async function nextAnimationFrame(): Promise<void> {
 }
 
 describe("PointerRouter", () => {
-  it("uses touch-pan-xy in Draw mode until a stylus tip goes down", () => {
+  it("keeps native touch and pinch available before a stylus tip goes down", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -34,8 +34,8 @@ describe("PointerRouter", () => {
       activeTool: () => "pen",
       drawingEnabled: () => true
     });
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
     element.dispatchEvent(pointer("pen", 90, { pressure: 0.5 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
     expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
@@ -115,7 +115,7 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
-  it("leaves one finger to native scroll even when Draw mode is on", () => {
+  it("keeps one finger under the router guard when Draw mode is on", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -290,7 +290,7 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
-  it("leaves horizontal single-finger Draw pans to native and aborts on second finger", () => {
+  it("carries horizontal single-finger Draw pans while the standing guard is active", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -323,8 +323,12 @@ describe("PointerRouter", () => {
       expect.any(Event),
       expect.objectContaining({ reason: "lock-horizontal", axisLock: "horizontal" })
     );
-    expect(horizontal.defaultPrevented).toBe(false);
-    expect(pans).not.toHaveBeenCalled();
+    expect(horizontal.defaultPrevented).toBe(true);
+    expect(pans).toHaveBeenCalledWith(
+      "move",
+      horizontal,
+      expect.objectContaining({ reason: "touch-standing-guard-assist", deltaX: -12 })
+    );
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
 
     element.dispatchEvent(pointer("touch", 122, { isPrimary: false, clientX: 40, clientY: 40 }));
@@ -1178,7 +1182,7 @@ describe("Regression Tests", () => {
       drawingEnabled: () => drawingEnabled
     });
 
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
 
     drawingEnabled = false;
     router.syncToolState();

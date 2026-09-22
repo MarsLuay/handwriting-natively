@@ -7,6 +7,10 @@ export interface SidecarDocumentIdentity {
   vaultPath: string;
   fingerprint?: string;
   contentHash?: string;
+  /** Prior vault paths observed during an explicit rename/move rebind. */
+  aliases?: string[];
+  /** IDs emitted by older path-based releases, retained for migration/audit. */
+  legacyIds?: string[];
 }
 
 export interface SidecarPage {
@@ -135,6 +139,10 @@ export function validateSidecar(value: unknown): value is SidecarSchemaV1 {
   if (typeof value.document.id !== "string" || typeof value.document.vaultPath !== "string" ||
       (value.document.fingerprint !== undefined && typeof value.document.fingerprint !== "string") ||
       (value.document.contentHash !== undefined && typeof value.document.contentHash !== "string") ||
+      (value.document.aliases !== undefined &&
+        (!Array.isArray(value.document.aliases) || value.document.aliases.some((alias) => typeof alias !== "string"))) ||
+      (value.document.legacyIds !== undefined &&
+        (!Array.isArray(value.document.legacyIds) || value.document.legacyIds.some((id) => typeof id !== "string"))) ||
       typeof value.createdAt !== "string" || typeof value.updatedAt !== "string") return false;
   return value.pages.every((page) => isRecord(page) && Number.isInteger(page.page) &&
     isFiniteNumber(page.width) && page.width > 0 && isFiniteNumber(page.height) && page.height > 0 &&

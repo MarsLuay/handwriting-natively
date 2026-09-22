@@ -9,6 +9,44 @@ export const US_LETTER_PAGE_SIZE: readonly [number, number] = [612, 792];
  */
 export const GOODNOTES_STANDARD_PAGE_SIZE: readonly [number, number] = [455.04, 588.41];
 
+export type PdfPageMutationAction = "insert" | "delete";
+
+/**
+ * Page structure changes are intentionally fail-closed until a separate
+ * derived-PDF workflow can be supported by the viewer/session boundary.
+ */
+export class PdfPageMutationUnsupportedError extends Error {
+  readonly code = "source-pdf-page-mutation-unsupported";
+
+  constructor(readonly action: PdfPageMutationAction) {
+    super(
+      `Page ${action === "insert" ? "insertion" : "deletion"} is unavailable because original PDFs are read-only. `
+      + "Annotations remain in the sidecar; Export PDF creates a separate copy."
+    );
+    this.name = "PdfPageMutationUnsupportedError";
+  }
+}
+
+export function rejectUnsupportedPdfPageMutation(action: PdfPageMutationAction): never {
+  throw new PdfPageMutationUnsupportedError(action);
+}
+
+/**
+ * Keeps the existing page-action entry points explicit while guaranteeing
+ * that no source PDF or sidecar is touched by an unsupported mutation.
+ */
+export function createUnsupportedPdfPageMutationCallbacks(): {
+  onInsertPage: (requestedPageNumber: number) => Promise<number>;
+  onDeletePage: (pageNumber: number) => Promise<void>;
+  onDeletePages: (pageNumbers: readonly number[]) => Promise<void>;
+} {
+  return {
+    onInsertPage: async () => rejectUnsupportedPdfPageMutation("insert"),
+    onDeletePage: async () => rejectUnsupportedPdfPageMutation("delete"),
+    onDeletePages: async () => rejectUnsupportedPdfPageMutation("delete")
+  };
+}
+
 async function appendFirstTemplatePage(pdfDocument: PDFDocument, templateBytes?: Uint8Array): Promise<void> {
   if (!templateBytes) {
     pdfDocument.addPage([...US_LETTER_PAGE_SIZE]);

@@ -26,13 +26,10 @@ import { VaultDebugLog } from "./logging/VaultDebugLog";
 import {
   createGoodNotesNotebook,
   createPdfFromTemplate,
-  deletePdfPages,
-  insertMatchingBlankPage
+  createUnsupportedPdfPageMutationCallbacks
 } from "./pdf/PdfNoteService";
 import { mergeSettings, NativePdfInkSettingTab } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
-import { createDocumentIdentity } from "./storage/DocumentIdentity";
-import { insertPageIntoSidecar, removePageFromSidecar } from "./storage/SidecarPageRemoval";
 import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
 import type { PluginSettings, ToolPreferences } from "./model";
@@ -663,9 +660,7 @@ export default class NativePdfInkPlugin extends Plugin {
       },
       readSourcePdf: async () => new Uint8Array(await this.app.vault.readBinary(file)),
       writeExport: async (name, bytes) => this.writeAndOpenExport(file, name, bytes),
-      onInsertPage: (pageNumber) => this.insertPageInPlace(file, pageNumber),
-      onDeletePage: (pageNumber) => this.deletePageInPlace(file, pageNumber),
-      onDeletePages: (pageNumbers) => this.deletePagesInPlace(file, pageNumbers),
+      ...createUnsupportedPdfPageMutationCallbacks(),
       writeSvgExport: async (name, svg) => this.writeSvgExport(file, name, svg),
       notice: (message) => new Notice(message),
       decideUnsaved: () => this.decideUnsaved(),
@@ -856,161 +851,6 @@ export default class NativePdfInkPlugin extends Plugin {
 
   private templateLogValue(): string {
     return this.inkSettings.pdfTemplatePath.trim() || "blank-us-letter";
-  }
-
-  /** Insert in place: source pages and every later sidecar page move together. */
-  private async insertPageInPlace(file: TFile, requestedPageNumber: number): Promise<number> {
-    const source = new Uint8Array(await this.app.vault.readBinary(file));
-    const inserted = await insertMatchingBlankPage(source, requestedPageNumber);
-    const files = createVaultFsTextAdapter(this.app.vault);
-    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
-    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
-    const documentId = createDocumentIdentity({ vaultPath: file.path }).id;
-    const sidecarBefore = await sidecars.load(documentId);
-    const recoveryBefore = await recovery.load(documentId);
-    const sidecarAfter = sidecarBefore ? insertPageIntoSidecar(sidecarBefore, inserted.pageNumber) : null;
-    const recoveryAfter = recoveryBefore ? insertPageIntoSidecar(recoveryBefore, inserted.pageNumber) : null;
-    let pdfWritten = false;
-    try {
-      await this.vaultDebugLog.writeUrgent("info", "pdf-page-insert-start", {
-        document: file.path,
-        page: inserted.pageNumber,
-        requestedPage: requestedPageNumber,
-        hasSidecar: Boolean(sidecarBefore),
-        hasRecovery: Boolean(recoveryBefore)
-      });
-      await this.app.vault.modifyBinary(file, inserted.bytes.slice().buffer);
-      pdfWritten = true;
-      if (sidecarAfter) await sidecars.save(sidecarAfter);
-      if (recoveryAfter) await recovery.save(recoveryAfter);
-      await this.vaultDebugLog.writeUrgent("info", "pdf-page-insert-complete", {
-        document: file.path,
-        page: inserted.pageNumber,
-        sourceBytes: source.byteLength,
-        resultBytes: inserted.bytes.byteLength,
-        sidecarRemapped: Boolean(sidecarAfter),
-        recoveryRemapped: Boolean(recoveryAfter)
-      });
-      return inserted.pageNumber;
-    } catch (error) {
-      if (pdfWritten) await this.app.vault.modifyBinary(file, source.slice().buffer).catch(() => undefined);
-      if (sidecarBefore) await sidecars.save(sidecarBefore).catch(() => undefined);
-      if (recoveryBefore) await recovery.save(recoveryBefore).catch(() => undefined);
-      await this.vaultDebugLog.writeUrgent("error", "pdf-page-insert-failed", {
-        document: file.path,
-        requestedPage: requestedPageNumber,
-        rolledBackPdf: pdfWritten,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      throw error;
-    }
-  }
-
-  /** Delete one source page and its matching sidecar/recovery annotations together. */
-  private async deletePageInPlace(file: TFile, pageNumber: number): Promise<void> {
-    await this.deletePagesInPlace(file, [pageNumber]);
-  }
-
-  /** Delete one or more original source pages and remap annotations in one write transaction. */
-  private async deletePagesInPlace(file: TFile, requestedPageNumbers: readonly number[]): Promise<void> {
-    const source = new Uint8Array(await this.app.vault.readBinary(file));
-    const deletion = await deletePdfPages(source, requestedPageNumbers);
-    const { bytes: updated, pageNumbers, pageCountBefore, pageCountAfter } = deletion;
-    const files = createVaultFsTextAdapter(this.app.vault);
-    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
-    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
-    const documentId = createDocumentIdentity({ vaultPath: file.path }).id;
-    const sidecarBefore = await sidecars.load(documentId);
-    const recoveryBefore = await recovery.load(documentId);
-    const sidecarAfter = sidecarBefore
-      ? pageNumbers.reduce((sidecar, pageNumber) => removePageFromSidecar(sidecar, pageNumber), sidecarBefore)
-      : null;
-    const recoveryAfter = recoveryBefore
-      ? pageNumbers.reduce((sidecar, pageNumber) => removePageFromSidecar(sidecar, pageNumber), recoveryBefore)
-      : null;
-    const range = pageNumbers.length > 1;
-    const eventPrefix = range ? "pdf-pages-delete" : "pdf-page-delete";
-    let pdfWritten = false;
-    let writeStage = "prepared";
-    try {
-      await this.vaultDebugLog.writeUrgent("info", `${eventPrefix}-start`, {
-        document: file.path,
-        page: pageNumbers[0],
-        pageNumbers,
-        count: pageNumbers.length,
-        firstPage: pageNumbers.at(-1),
-        lastPage: pageNumbers[0],
-        pageCountBefore,
-        pageCountAfter,
-        hasSidecar: Boolean(sidecarBefore),
-        hasRecovery: Boolean(recoveryBefore)
-      });
-      writeStage = "pdf";
-      await this.app.vault.modifyBinary(file, updated.slice().buffer);
-      pdfWritten = true;
-      if (sidecarAfter) {
-        writeStage = "sidecar";
-        await sidecars.save(sidecarAfter);
-      }
-      if (recoveryAfter) {
-        writeStage = "recovery";
-        await recovery.save(recoveryAfter);
-      }
-      await this.vaultDebugLog.writeUrgent("info", `${eventPrefix}-complete`, {
-        document: file.path,
-        page: pageNumbers[0],
-        pageNumbers,
-        count: pageNumbers.length,
-        firstPage: pageNumbers.at(-1),
-        lastPage: pageNumbers[0],
-        pageCountBefore,
-        pageCountAfter,
-        sourceBytes: source.byteLength,
-        resultBytes: updated.byteLength,
-        sidecarRemapped: Boolean(sidecarAfter),
-        recoveryRemapped: Boolean(recoveryAfter)
-      });
-    } catch (error) {
-      let rolledBackPdf = false;
-      let rolledBackSidecar = false;
-      let rolledBackRecovery = false;
-      if (pdfWritten) {
-        try {
-          await this.app.vault.modifyBinary(file, source.slice().buffer);
-          rolledBackPdf = true;
-        } catch {
-          // The failure log records incomplete compensation below.
-        }
-      }
-      if (sidecarBefore) {
-        try {
-          await sidecars.save(sidecarBefore);
-          rolledBackSidecar = true;
-        } catch {
-          // The failure log records incomplete compensation below.
-        }
-      }
-      if (recoveryBefore) {
-        try {
-          await recovery.save(recoveryBefore);
-          rolledBackRecovery = true;
-        } catch {
-          // The failure log records incomplete compensation below.
-        }
-      }
-      await this.vaultDebugLog.writeUrgent("error", `${eventPrefix}-failed`, {
-        document: file.path,
-        page: pageNumbers[0],
-        pageNumbers,
-        count: pageNumbers.length,
-        writeStage,
-        rolledBackPdf,
-        rolledBackSidecar,
-        rolledBackRecovery,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      throw error;
-    }
   }
 
   /** Folder context menu: create a GoodNotes-sized blank PDF in that folder. */

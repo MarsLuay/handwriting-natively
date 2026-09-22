@@ -1,9 +1,12 @@
 import { queryPdfPageNodes } from "./pdfPageSelectors";
+import { PlatformCapabilities, type PlatformCapabilityReport } from "./PlatformCapabilities";
 
 export interface CompatibilityResult {
   compatible: boolean;
   errors: string[];
   warnings: string[];
+  /** Present for reports produced by this compatibility layer; optional for legacy callers. */
+  platform?: PlatformCapabilityReport;
   viewerRoot?: HTMLElement;
   toolbarHost?: HTMLElement;
   privateViewer?: PdfJsViewerLike;
@@ -90,17 +93,35 @@ type PrivateHost = HTMLElement & {
 };
 
 export class PdfViewerCompatibility {
-  static direct(host: HTMLElement, privateViewer?: PdfJsViewerLike, findController?: PdfFindControllerLike): CompatibilityResult {
-    return this.inspect(host, [".pdf-viewer", ".pdfViewer"], [".pdf-toolbar", ".pdf-toolbar-container"], privateViewer, findController);
+  static direct(
+    host: HTMLElement,
+    privateViewer?: PdfJsViewerLike,
+    findController?: PdfFindControllerLike,
+    platform?: PlatformCapabilityReport
+  ): CompatibilityResult {
+    return this.inspect(
+      host,
+      [".pdf-viewer", ".pdfViewer"],
+      [".pdf-toolbar", ".pdf-toolbar-container"],
+      privateViewer,
+      findController,
+      platform
+    );
   }
 
-  static embedded(host: HTMLElement, privateViewer?: PdfJsViewerLike, findController?: PdfFindControllerLike): CompatibilityResult {
+  static embedded(
+    host: HTMLElement,
+    privateViewer?: PdfJsViewerLike,
+    findController?: PdfFindControllerLike,
+    platform?: PlatformCapabilityReport
+  ): CompatibilityResult {
     return this.inspect(
       host,
       [".pdf-embed .pdf-viewer", ".internal-embed .pdf-viewer", ".pdf-viewer", ".pdfViewer"],
       [".pdf-toolbar", ".pdf-toolbar-container"],
       privateViewer,
-      findController
+      findController,
+      platform
     );
   }
 
@@ -229,7 +250,8 @@ export class PdfViewerCompatibility {
     viewerSelectors: string[],
     toolbarSelectors: string[],
     resolvedPrivateViewer?: PdfJsViewerLike,
-    resolvedFindController?: PdfFindControllerLike
+    resolvedFindController?: PdfFindControllerLike,
+    platform: PlatformCapabilityReport = PlatformCapabilities.probe()
   ): CompatibilityResult {
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -254,7 +276,12 @@ export class PdfViewerCompatibility {
     if (!findController) {
       warnings.push("PDF find controller unavailable; Handwriting Natively text will not appear in the PDF find bar");
     }
-    const result: CompatibilityResult = { compatible: errors.length === 0, errors, warnings };
+    const result: CompatibilityResult = {
+      compatible: errors.length === 0,
+      errors,
+      warnings,
+      platform
+    };
     if (viewerRoot) result.viewerRoot = viewerRoot;
     if (toolbarHost) result.toolbarHost = toolbarHost;
     if (privateViewer) result.privateViewer = privateViewer;

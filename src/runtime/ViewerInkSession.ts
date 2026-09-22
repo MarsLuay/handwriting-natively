@@ -14,10 +14,12 @@ import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShor
 import type { PointerSample } from "../input/PointerCapabilities";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
 import { InkSession } from "../ink/InkSession";
+import { DamageLedger } from "../ink/DamageLedger";
 import type { Bounds } from "../ink/StrokeHitTesting";
 import { StrokeBuilder } from "../ink/StrokeBuilder";
 import { StrokeClipboard } from "../ink/StrokeClipboard";
 import { simplifyPoints } from "../ink/StrokeStabilizer";
+import { WetInkRenderer } from "../ink/WetInkRenderer";
 import { PdfCoordinateMapper, type PageRotation } from "../pdf/PdfCoordinateMapper";
 import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type PageCoordinateLayout } from "../pdf/PageCoordinateLayout";
 import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
@@ -40,7 +42,7 @@ import {
 import { drawGraphiteStroke, seedFromId } from "../tools/PencilTool";
 import { drawPenStroke } from "../tools/PenTool";
 import { AutosaveQueue } from "../storage/AutosaveQueue";
-import { createDocumentIdentity } from "../storage/DocumentIdentity";
+import { createDocumentIdentity, hashDocumentContent, type DocumentIdentityInput } from "../storage/DocumentIdentity";
 import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
@@ -200,13 +202,15 @@ function replayWheelPan<T>(ownerDocument: Document, work: () => T): T {
 
 export interface SessionDiagnostics {
   pdfPath: string;
-  compatibility: { errors: string[]; warnings: string[] };
+  compatibility: ReturnType<ObsidianPdfAdapter["compatibilityReport"]>;
   debug: DebugState;
 }
 
 export interface ViewerInkSessionOptions {
   adapter: ObsidianPdfAdapter;
   pdfPath: string;
+  /** Content-derived identity captured once while the source PDF is opened. */
+  contentHash?: string;
   settings: PluginSettings;
   sidecars: SidecarRepository;
   recovery: RecoveryRepository;
@@ -321,8 +325,12 @@ interface PageSurface {
   pendingRouterHandoff: PointerRouterHandoff | null;
   livePaintFrame: number | null;
   pendingLivePaint: { kind: "draw" | "edit"; syncText: boolean; sampleCount: number; event?: PointerEvent } | null;
-  /** Prefix of editPath already represented by the destructive live eraser preview. */
+  /** Prefix of editPath already represented by the transient live eraser preview. */
   liveEraserPaintedPoints: number;
+  /** True while draftCanvas is a wet copy of the committed ink canvas. */
+  wetPreviewActive: boolean;
+  /** Damage accumulated by the transient eraser preview until the command settles. */
+  wetDamage: DamageLedger;
   /** Prefix of live stroke preview already stamped on draftCanvas (incremental paint). */
   liveDrawPaintedPoints: number;
   builder: StrokeBuilder | undefined;
@@ -421,6 +429,7 @@ export class ViewerInkSession {
   private readonly historyDirtyPages = new Set<number>();
   /** Pages already painted by the history callback in this turn. */
   private readonly historyPaintedPages = new Set<number>();
+  private readonly wetRenderer = new WetInkRenderer();
   private readonly autosave: AutosaveQueue<SidecarSchemaV1>;
   private readonly saveCoordinator: SaveCoordinator;
   private selected: InkStroke[] = [];
@@ -562,7 +571,11 @@ export class ViewerInkSession {
   private static readonly PAGE_MUTATION_SHIELD_RENDER_QUIET_MS = 120;
 
   private constructor(private readonly options: ViewerInkSessionOptions) {
-    this.identity = createDocumentIdentity({ vaultPath: options.pdfPath });
+    const identityInput: DocumentIdentityInput = {
+      vaultPath: options.pdfPath,
+      ...(options.contentHash ? { contentHash: options.contentHash } : {})
+    };
+    this.identity = createDocumentIdentity(identityInput);
     this.logger = new SessionLogger(options.pdfPath, options.vaultLog, options.debugEnabled);
     this.textToolActive = options.settings.toolPreferences.activeTool === "text";
     this.logger.textTool("tool-initial", {
@@ -2187,7 +2200,22 @@ export class ViewerInkSession {
       ),
       boostedPdfZoom: options.settings.boostedPdfZoom
     });
-    const session = new ViewerInkSession(options);
+    let contentHash: string | undefined;
+    try {
+      const sourceBytes = await options.readSourcePdf();
+      // An empty byte array is a test/fallback signal, not a useful PDF
+      // identity. Real PDFs always receive a content-derived key.
+      if (sourceBytes.byteLength > 0) contentHash = hashDocumentContent(sourceBytes);
+    } catch (error) {
+      await urgent("session content identity unavailable", {
+        document: options.pdfPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    const session = new ViewerInkSession({
+      ...options,
+      ...(contentHash ? { contentHash } : {})
+    });
     await urgent("session create constructor ok", {
       document: options.pdfPath,
       mobile: platform.mobile
@@ -2198,8 +2226,37 @@ export class ViewerInkSession {
       document: options.pdfPath,
       documentId: session.identity.id
     });
-    const sidecarResult = await options.sidecars.loadWithStatus(session.identity.id);
-    const recoveryResult = await options.recovery.loadWithStatus(session.identity.id);
+    const identityInput: DocumentIdentityInput = {
+      vaultPath: options.pdfPath,
+      ...(contentHash ? { contentHash } : {})
+    };
+    const sidecarResult = await options.sidecars.loadForDocumentWithStatus(identityInput);
+    const legacyPaths = new Set<string>();
+    if (sidecarResult.identity) {
+      legacyPaths.add(sidecarResult.identity.stored.vaultPath);
+      for (const alias of sidecarResult.identity.stored.aliases ?? []) legacyPaths.add(alias);
+    }
+    const recoveryInput: DocumentIdentityInput = {
+      ...identityInput,
+      ...(legacyPaths.size ? { legacyPaths: [...legacyPaths] } : {})
+    };
+    const recoveryResult = await options.recovery.loadForDocumentWithStatus(recoveryInput);
+    const conflicts = [
+      ...(sidecarResult.conflict ? [{ store: "sidecar", conflict: sidecarResult.conflict }] : []),
+      ...(recoveryResult.conflict ? [{ store: "recovery", conflict: recoveryResult.conflict }] : [])
+    ];
+    if (conflicts.length) {
+      const paths = conflicts.flatMap(({ conflict }) => conflict.paths).join(", ");
+      const message = `Conflicting annotation snapshots found for ${options.pdfPath}; preserved files require review: ${paths}`;
+      options.adapter.destroy();
+      options.notice(message);
+      await urgent("session create annotation conflict", {
+        document: options.pdfPath,
+        documentId: session.identity.id,
+        conflicts
+      });
+      throw new Error(message);
+    }
     const sidecar = sidecarResult.data;
     const recovery = recoveryResult.data;
     const stored = pickNewerSidecar(sidecar, recovery);
@@ -3846,6 +3903,8 @@ export class ViewerInkSession {
       livePaintFrame: null,
       pendingLivePaint: null,
       liveEraserPaintedPoints: 0,
+      wetPreviewActive: false,
+      wetDamage: new DamageLedger(),
       liveDrawPaintedPoints: 0,
       builder: undefined,
       pressureConditioner: undefined,
@@ -4672,6 +4731,7 @@ export class ViewerInkSession {
 
   private clearLiveDrawPreview(surface: PageSurface): void {
     const { draftCanvas, draftContext } = surface;
+    this.endWetPreview(surface);
     surface.liveDrawPaintedPoints = 0;
     if (!draftCanvas.width || !draftCanvas.height) return;
     draftContext.setTransform(1, 0, 0, 1, 0, 0);
@@ -4681,6 +4741,7 @@ export class ViewerInkSession {
   /** Drop detached page bitmaps and their scheduled work promptly. */
   private releaseSurfaceBuffers(surface: PageSurface): void {
     this.cancelLivePaint(surface);
+    this.endWetPreview(surface);
     surface.canvas.width = 0;
     surface.canvas.height = 0;
     surface.draftCanvas.width = 0;
@@ -4693,6 +4754,19 @@ export class ViewerInkSession {
     surface.inkLayerContext = null;
     surface.inkLayerValid = false;
     surface.liveEraserPaintedPoints = 0;
+    surface.wetDamage.clear();
+  }
+
+  /** Restore the committed layer after a wet preview is committed or cancelled. */
+  private endWetPreview(surface: PageSurface): void {
+    if (!surface.wetPreviewActive) {
+      surface.wetDamage.clear();
+      return;
+    }
+    this.wetRenderer.end(surface.draftCanvas);
+    surface.wetPreviewActive = false;
+    surface.canvas.classList.remove("is-wet-hidden");
+    surface.wetDamage.clear();
   }
 
   /**
@@ -4835,10 +4909,10 @@ export class ViewerInkSession {
   }
 
   /**
-   * Erasing the display bitmap is O(new input samples), while exact stroke
-   * fragmentation is O(stroke segments × full eraser path). The exact model
-   * update still happens once at pointer-up; cancel/repaint restores this
-   * disposable bitmap immediately.
+   * Erasing the disposable wet bitmap is O(new input samples), while exact
+   * stroke fragmentation is O(stroke segments × full eraser path). The exact
+   * model update still happens once at pointer-up; cancel/repaint restores the
+   * untouched committed canvas immediately.
    */
   private renderLiveEraserPreview(surface: PageSurface): void {
     const eraserSize = surface.eraserSize;
@@ -4853,8 +4927,15 @@ export class ViewerInkSession {
       pixelHeight = surface.canvas.height;
       backingScale = pixelWidth / width;
     } else if (surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight) {
+      this.endWetPreview(surface);
       this.renderPage(surface.page.pageNumber, undefined, "live-eraser-rebase", false, false);
       surface.liveEraserPaintedPoints = 0;
+    }
+
+    if (!surface.wetPreviewActive) {
+      if (!this.wetRenderer.begin(surface.canvas, surface.draftCanvas)) return;
+      surface.wetPreviewActive = true;
+      surface.canvas.classList.add("is-wet-hidden");
     }
 
     if (surface.liveEraserPaintedPoints >= surface.editPath.length) return;
@@ -4863,25 +4944,8 @@ export class ViewerInkSession {
     const pending = surface.editPath.slice(Math.max(0, surface.liveEraserPaintedPoints - 1));
     const mapper = this.mapper(surface);
     const points = pending.map((point) => mapper.toViewport(point));
-    const context = surface.context;
-    context.save();
-    context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
-    context.globalAlpha = 1;
-    context.globalCompositeOperation = "destination-out";
-    context.lineCap = "round";
-    context.lineJoin = "round";
-    context.lineWidth = Math.max(1, eraserSize * this.displayScale(surface));
-    const first = points[0]!;
-    context.beginPath();
-    if (points.length === 1) {
-      context.arc(first.x, first.y, context.lineWidth / 2, 0, Math.PI * 2);
-      context.fill();
-    } else {
-      context.moveTo(first.x, first.y);
-      for (const point of points.slice(1)) context.lineTo(point.x, point.y);
-      context.stroke();
-    }
-    context.restore();
+    const lineWidth = Math.max(1, eraserSize * this.displayScale(surface));
+    this.wetRenderer.erase(surface.draftCanvas, points, lineWidth, backingScale, surface.wetDamage);
     surface.liveEraserPaintedPoints = surface.editPath.length;
   }
 
