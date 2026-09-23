@@ -351,8 +351,6 @@ export interface SessionDiagnostics {
 export interface ViewerInkSessionOptions {
   adapter: ObsidianPdfAdapter;
   pdfPath: string;
-  /** Version included in copied diagnostics and host metadata. */
-  pluginVersion?: string;
   /** Content-derived identity captured once while the source PDF is opened. */
   contentHash?: string;
   /** Version stamped onto bounded copied diagnostics profiles. */
