@@ -695,10 +695,20 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.lastIgnoredSidebarLayoutLogAt = now;
   }
 
-  compatibilityReport(): { errors: string[]; warnings: string[]; platform?: PlatformCapabilityReport } {
+  compatibilityReport(): {
+    errors: string[];
+    warnings: string[];
+    profile: import("./PdfViewerCompatibility").PdfIntegrationProfile;
+    platform?: PlatformCapabilityReport;
+  } {
     return {
       errors: [...this.compatibility.errors],
       warnings: [...this.compatibility.warnings],
+      profile: {
+        ...this.compatibility.profile,
+        failedProbes: [...this.compatibility.profile.failedProbes],
+        warnings: [...this.compatibility.profile.warnings]
+      },
       ...(this.compatibility.platform ? { platform: this.compatibility.platform } : {})
     };
   }

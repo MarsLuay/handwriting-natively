@@ -1,4 +1,4 @@
-import type { DrawingTool, SaveStatus, TextStyle, ToolId, ToolPreferences } from "../model";
+import type { DrawingTool, DrawingPreset, SaveStatus, TextStyle, ToolId, ToolPreferences } from "../model";
 import { isDrawingTool, resolveDrawingTool } from "../model";
 import { colorOptions } from "./ColorPicker";
 import { DropdownController, type DropdownOpenOptions, type DropdownOption } from "./DropdownController";
@@ -189,19 +189,82 @@ export class AnnotationToolbar {
     const content = createDetachedDiv(this.ownerDocument);
     const options = drawingOptions(this.preferences, (tool) => {
       this.preferences.activeTool = tool;
+      this.preferences.activePresetId = null;
       this.lastDrawingTool = tool;
       this.changed("tool");
     }, (width) => {
       this.preferences[this.lastDrawingTool].width = width;
       this.preferences.activeTool = this.lastDrawingTool;
+      this.preferences.activePresetId = null;
       this.changed();
+    }, (preset) => {
+      this.applyDrawingPreset(preset);
     });
     const tools = options.filter((option) => !option.id.startsWith("width-"));
     const widths = options.filter((option) => option.id.startsWith("width-"));
     for (const option of tools) content.append(this.inlineOption(option));
     for (const option of widths) content.append(this.inlineOption(option));
+    content.append(this.presetEditor());
     content.append(drawingAdvanced(this.ownerDocument, this.preferences, () => this.changed(), this.abort.signal));
     return { label: "Drawing options", content };
+  }
+
+  private applyDrawingPreset(preset: DrawingPreset): void {
+    Object.assign(this.preferences[preset.tool], preset.settings);
+    this.preferences.activeTool = preset.tool;
+    this.preferences.activePresetId = preset.id;
+    this.lastDrawingTool = preset.tool;
+    this.changed("tool");
+  }
+
+  private presetEditor(): HTMLElement {
+    const wrapper = createDetachedDiv(this.ownerDocument);
+    wrapper.className = "native-pdf-handwriting-preset-editor";
+    const label = createDetachedEl(this.ownerDocument, "label");
+    label.textContent = "Save current drawing settings as preset";
+    const input = createDetachedEl(this.ownerDocument, "input");
+    input.type = "text";
+    input.maxLength = 80;
+    input.placeholder = `${DRAWING_LABELS[this.lastDrawingTool]} preset`;
+    const save = createDetachedEl(this.ownerDocument, "button");
+    save.type = "button";
+    save.textContent = "Save";
+    save.addEventListener("click", () => {
+      const tool = this.lastDrawingTool;
+      const name = input.value.trim() || `${DRAWING_LABELS[tool]} preset`;
+      const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
+      if (selected) {
+        selected.name = name;
+        selected.tool = tool;
+        selected.settings = { ...this.preferences[tool] };
+      } else {
+        const idBase = `custom-${Date.now().toString(36)}`;
+        let id = idBase;
+        let suffix = 2;
+        while (this.preferences.presets.some((preset) => preset.id === id)) id = `${idBase}-${suffix++}`;
+        if (this.preferences.presets.length >= 8) this.preferences.presets.shift();
+        this.preferences.presets.push({ id, name, tool, settings: { ...this.preferences[tool] } });
+        this.preferences.activePresetId = id;
+      }
+      this.changed();
+    }, { signal: this.abort.signal });
+    label.append(input, save);
+    wrapper.append(label);
+    const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
+    if (selected) {
+      const remove = createDetachedEl(this.ownerDocument, "button");
+      remove.type = "button";
+      remove.textContent = "Delete selected preset";
+      remove.addEventListener("click", () => {
+        const index = this.preferences.presets.findIndex((preset) => preset.id === selected.id);
+        if (index < 0) return;
+        this.preferences.presets.splice(index, 1);
+        this.preferences.activePresetId = this.preferences.presets[0]?.id ?? null;
+        this.changed();
+      }, { signal: this.abort.signal });
+      wrapper.append(remove);
+    }
+    return wrapper;
   }
 
   private laserMenuOptions(): DropdownOpenOptions {

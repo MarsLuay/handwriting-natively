@@ -9,7 +9,7 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 ![Handwriting Natively drawing toolbar on a Lorem Ipsum PDF](docs/handwriting-natively.png)
 
 - Pen, graphite pencil, highlighter, laser pointer (fades away, not saved), circular eraser, and lasso tools with a compact Draw toolbar
-- Draw mode opt-in so normal PDF mouse/trackpad behavior stays intact until you annotate
+- Stylus-first annotation: fingers keep native PDF scrolling/pinch and mouse behavior follows the selected input policy
 - Autosave, recovery, and explicit Save; commands for save, export, and select-all ink (`save-active-pdf-annotations`, `export-active-annotated-pdf`, `select-all-pdf-ink`)
 - Commands to create a handwritten PDF, create a GoodNotes-sized blank notebook, add a matching blank page, and export selected ink as SVG (`create-handwritten-pdf`, `create-notebook`, `add-page-to-active-pdf`, `export-selected-pdf-ink-as-svg`)
 - File-explorer folder context menu **New PDF** (GoodNotes Standard blank page in that folder)
@@ -24,7 +24,7 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 1. Download the latest [GitHub release](https://github.com/MarsLuay/handwriting-natively/releases) assets (`main.js`, `manifest.json`, `styles.css`).
 2. Copy them into `<Vault>/.obsidian/plugins/native-pdf-handwriting/`.
 3. Reload Obsidian and enable **Handwriting Natively** under **Settings → Community plugins**.
-4. Open a PDF, turn on **Draw**, and annotate.
+4. Open a PDF, select an ink tool, and annotate. Stylus input is routed directly; touch remains native PDF navigation.
 
 ### Manual Setup
 
