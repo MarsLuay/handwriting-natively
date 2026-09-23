@@ -79,6 +79,15 @@ export interface PointerRouterCallbacks {
   onEnd?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
   onCancel?(route: "draw" | "edit" | "text", event: PointerEvent): void;
   onRoute?(route: PointerRoute, event: PointerEvent): void;
+  /** Diagnostic-only reason paired with the already-emitted route decision. */
+  onRouteDecision?(route: PointerRoute, reason: string, event: PointerEvent): void;
+  /** Diagnostic-only claim result after annotation prevention/capture. */
+  onPointerClaim?(route: "draw" | "edit" | "text", event: PointerEvent, details: {
+    preventDefaultCalled: boolean;
+    propagationStopped: boolean;
+    captureAttempted: boolean;
+    captureSucceeded: boolean;
+  }): void;
   /** Fired as soon as this router's pointerdown listener runs (before classify). */
   onRouterReceived?(event: PointerEvent, generation: number): void;
   /** True when document fallback / another router already owns this pointerId. */
@@ -189,28 +198,38 @@ export class PointerRouter {
   }
 
   classify(event: PointerEvent): PointerRoute {
+    return this.classifyWithReason(event).route;
+  }
+
+  private classifyWithReason(event: PointerEvent): { route: PointerRoute; reason: string } {
     const tool = this.callbacks.activeTool();
     if (event.pointerType === "touch") {
-      if (this.palmPolicy.shouldIgnore(event)) return "ignored";
+      if (this.palmPolicy.shouldIgnore(event)) return { route: "ignored", reason: "palm-rejection" };
       const multi = this.touches.size + (this.touches.has(event.pointerId) ? 0 : 1) >= 2;
-      if (multi) return "touch-zoom-pan";
+      if (multi) return { route: "touch-zoom-pan", reason: "multi-touch-native" };
       // Fingers always leave native scroll/pinch. Annotation is stylus + optional mouse only.
-      return "touch-pan";
+      return { route: "touch-pan", reason: "touch-native" };
     }
     if (!this.callbacks.canAnnotatePointer(event)) {
-      return "native";
+      return { route: "native", reason: "annotation-policy" };
     }
     // MockTab can expose a physical eraser as a mouse pointer with W3C's
     // dedicated eraser button/bit. Route it before the active drawing tool.
-    if (isStylusEraserInput(event)) return "edit";
+    if (isStylusEraserInput(event)) return { route: "edit", reason: "stylus-eraser" };
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
-    if (this.isTextToolRoute(tool, event, penLike)) return "text";
+    if (this.isTextToolRoute(tool, event, penLike)) return { route: "text", reason: "text-tool" };
     const editing = tool === "eraser" || tool === "lasso";
-    if (event.pointerType === "mouse" && event.button === 2 && this.callbacks.rightMouseEraserEnabled?.()) return "edit";
-    if (penLike) return editing ? "edit" : "draw";
-    if (event.pointerType === "mouse" && event.button === 0 && isInkDrawTool(tool)) return "draw";
-    if (event.pointerType === "mouse" && event.button === 0 && editing) return "edit";
-    return "native";
+    if (event.pointerType === "mouse" && event.button === 2 && this.callbacks.rightMouseEraserEnabled?.()) {
+      return { route: "edit", reason: "right-mouse-eraser" };
+    }
+    if (penLike) return { route: editing ? "edit" : "draw", reason: editing ? "stylus-edit" : "stylus-draw" };
+    if (event.pointerType === "mouse" && event.button === 0 && isInkDrawTool(tool)) {
+      return { route: "draw", reason: "mouse-draw" };
+    }
+    if (event.pointerType === "mouse" && event.button === 0 && editing) {
+      return { route: "edit", reason: "mouse-edit" };
+    }
+    return { route: "native", reason: "unsupported-pointer" };
   }
 
   private isTextToolRoute(tool: ToolId, event: PointerEvent, penLike: boolean): boolean {
@@ -295,7 +314,9 @@ export class PointerRouter {
     this.palmPolicy.pointerDown(event);
     if (this.palmPolicy.hasActivePen()) this.syncTouchActionMode();
     this.beginStylusEraser(event);
-    const route = this.classify(event);
+    const routeDecision = this.classifyWithReason(event);
+    const route = routeDecision.route;
+    this.callbacks.onRouteDecision?.(route, routeDecision.reason, event);
     if (event.pointerType === "touch" && route !== "ignored") {
       this.touches.add(event.pointerId);
       // Touch stays native PDF nav — no custom axis lock from annotation availability.
@@ -320,7 +341,15 @@ export class PointerRouter {
     this.routed.set(event.pointerId, route);
     event.preventDefault();
     event.stopImmediatePropagation();
-    this.element.setPointerCapture?.(event.pointerId);
+    const captureAttempted = typeof this.element.setPointerCapture === "function";
+    if (captureAttempted) this.element.setPointerCapture(event.pointerId);
+    const captureSucceeded = !captureAttempted || (this.element.hasPointerCapture?.(event.pointerId) ?? true);
+    this.callbacks.onPointerClaim?.(route, event, {
+      preventDefaultCalled: true,
+      propagationStopped: true,
+      captureAttempted,
+      captureSucceeded
+    });
     this.syncTouchActionMode();
     this.callbacks.onStart?.(this.inkSamples(event), route, event);
     return route;

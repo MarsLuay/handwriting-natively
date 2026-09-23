@@ -421,6 +421,21 @@ export class SessionLogger {
     });
   }
 
+  /**
+   * Correlated post-UI input diagnostics. The session arms this only for a
+   * bounded window after an active Obsidian shell closes; it never logs moves.
+   */
+  postUiProbe(phase: string, details: Record<string, unknown> = {}): void {
+    const level = phase === "terminal" && details.outcome !== "post-ui-pen-success" ? "warn" : "info";
+    this.emit(level, "post-ui input probe", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      phase,
+      ...details
+    });
+  }
+
   /** Keep bounded input history in memory; dump it only for a routed-input anomaly. */
   inputLifecycleEvent(event: string, details: Record<string, unknown> = {}): void {
     this.inputLifecycle.push({ at: new Date().toISOString(), event, details: { ...details } });

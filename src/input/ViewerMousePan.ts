@@ -42,6 +42,13 @@ export interface ViewerMousePanCallbacks {
   withinTarget?(target: EventTarget | null): boolean;
   captureElement?(): HTMLElement;
   onPan?(phase: MousePanPhase, event: PointerEvent, details: Record<string, unknown>): void;
+  /** Diagnostic-only claim result; pan ownership semantics remain unchanged. */
+  onPanClaim?(event: PointerEvent, details: {
+    preventDefaultCalled: boolean;
+    propagationStopped: boolean;
+    captureAttempted: boolean;
+    captureSucceeded: boolean;
+  }): void;
 }
 
 export class ViewerMousePan {
@@ -99,7 +106,15 @@ export class ViewerMousePan {
     pan.claimed = true;
     event.preventDefault();
     event.stopPropagation();
-    pan.captureTarget.setPointerCapture?.(event.pointerId);
+    const captureAttempted = typeof pan.captureTarget.setPointerCapture === "function";
+    if (captureAttempted) pan.captureTarget.setPointerCapture(event.pointerId);
+    const captureSucceeded = !captureAttempted || (pan.captureTarget.hasPointerCapture?.(event.pointerId) ?? true);
+    this.callbacks.onPanClaim?.(event, {
+      preventDefaultCalled: true,
+      propagationStopped: true,
+      captureAttempted,
+      captureSucceeded
+    });
   }
 
   private releaseClaim(pan: PanGesture, pointerId: number): void {
