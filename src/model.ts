@@ -1,8 +1,9 @@
 export type DrawingTool = "pen" | "pencil" | "highlighter";
-/** There is no Pan tool: Draw off restores native PDF navigation. */
+/** Annotation tools. Mouse pan/native modes live in settings, not as a tool. */
 export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser";
 export type LassoType = "freeform" | "rectangle";
 export type ToolbarPlacement = "main" | "left" | "right";
+export type MouseInputMode = "pan" | "annotate" | "native";
 /** Which input source supplies pressure for new ink strokes. */
 export type PressureProfile = "auto" | "pen" | "mouse";
 /** Compact, device-agnostic controls applied to future pen strokes. */
@@ -168,6 +169,12 @@ export interface PluginSettings {
   sidecarFolder: string;
   /** Vault-relative PDF template; page one is used. Empty means blank US Letter paper. */
   pdfTemplatePath: string;
+  /**
+   * Explicit mouse behavior without a Draw checkbox.
+   * Migrated from legacy `mouseDragScroll` when absent (`true` → pan, `false` → native).
+   */
+  mouseInputMode?: MouseInputMode;
+  /** Legacy mirror of `mouseInputMode === "pan"` for older sidecars / readers. */
   mouseDragScroll: boolean;
   /** Auto uses stylus pressure when available; Pen/Mouse force that input model. */
   pressureProfile: PressureProfile;
@@ -256,6 +263,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   textEscapeAction: "save",
   sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
   pdfTemplatePath: "",
+  mouseInputMode: "pan",
   mouseDragScroll: true,
   pressureProfile: "auto",
   pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
@@ -379,7 +387,18 @@ export function mergeSettings(
   merged.vaultDebugLogPath = migrateVaultDebugLogPath(
     remapPluginDataPath(cleaned.vaultDebugLogPath, defaults.vaultDebugLogPath, configDir)
   );
+  const mouseInputMode = resolvePersistedMouseInputMode(cleaned);
+  merged.mouseInputMode = mouseInputMode;
+  merged.mouseDragScroll = mouseInputMode === "pan";
   return merged;
+}
+
+function resolvePersistedMouseInputMode(
+  cleaned: Partial<PluginSettings>
+): MouseInputMode {
+  const mode = cleaned.mouseInputMode;
+  if (mode === "pan" || mode === "annotate" || mode === "native") return mode;
+  return cleaned.mouseDragScroll === false ? "native" : "pan";
 }
 
 /** Prefer `.md` so the vault log opens as a note in Obsidian. */

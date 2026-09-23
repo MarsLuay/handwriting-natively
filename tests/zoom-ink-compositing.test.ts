@@ -300,7 +300,6 @@ describe("zoom ink compositing", () => {
     const session = await createSession(adapter);
     const overlay = overlayOf(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
@@ -410,7 +409,6 @@ describe("zoom ink compositing", () => {
     const session = await createSession(adapter, new MemoryFiles(), { mobile: true, phone: false });
     const surface = probeSurface(session) as SurfaceProbe & { router: unknown };
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
@@ -553,7 +551,6 @@ describe("zoom ink compositing", () => {
     const session = await createSession(adapter);
     const overlay = overlayOf(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     vi.useFakeTimers();
     adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
@@ -585,7 +582,6 @@ describe("zoom ink compositing", () => {
     const committedBefore = { w: surface.canvas.width, h: surface.canvas.height };
     expect(committedBefore.w).toBeGreaterThan(0);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     vi.useFakeTimers();
     adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
@@ -643,7 +639,6 @@ describe("zoom ink compositing", () => {
       mapper(surface: SurfaceProbe): PdfCoordinateMapper;
     };
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 480, 720));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 500, 700));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 520, 680));
@@ -697,7 +692,6 @@ describe("zoom ink compositing", () => {
     const internal = session as unknown as { handleRootResize(): void };
     const overlay = overlayOf(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
@@ -865,7 +859,6 @@ describe("zoom ink compositing", () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 80, 90));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 110, 120));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 140, 150));
@@ -934,7 +927,6 @@ describe("zoom ink compositing", () => {
     const session = await createSession(adapter);
     const overlay = overlayOf(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
@@ -960,24 +952,19 @@ describe("zoom ink compositing", () => {
     await session.destroy();
   });
 
-  it("draw-mode toggle does not invalidate committed ink", async () => {
+  it("tool chrome refresh does not invalidate committed ink", async () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 90, 100));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 130));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 150, 160));
     expect(probeSurface(session).inkLayerValid).toBe(true);
 
-    // Toggle draw off then on via toolbar.
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
-
+    // Prefer preference chrome path over selectTool (session attach gates vary in this harness).
+    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
+    document.querySelector<HTMLButtonElement>("[data-option-id='pencil']")?.click();
     expect(probeSurface(session).inkLayerValid).toBe(true);
-    const drawModeLogs = debugCalls("session refresh").filter((call) => (call[2] as { reason?: string }).reason === "draw-mode");
-    expect(drawModeLogs.length).toBeGreaterThanOrEqual(1);
-    expect(drawModeLogs.every((call) => (call[2] as { chromeOnly?: boolean }).chromeOnly === true)).toBe(true);
 
     await session.destroy();
   });
@@ -986,7 +973,6 @@ describe("zoom ink compositing", () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 90, 100));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 130));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 150, 160));
@@ -1010,7 +996,6 @@ describe("zoom ink compositing", () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 90, 100));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 130));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 150, 160));
@@ -1037,7 +1022,6 @@ describe("zoom ink compositing", () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter, files);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180));

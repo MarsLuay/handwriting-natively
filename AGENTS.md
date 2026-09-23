@@ -16,7 +16,7 @@ Read every path listed under `Required source reads` before editing. A non-zero 
 - Keep undocumented Obsidian PDF access inside `src/integration/`.
 - Sidecar JSON is the canonical editable annotation store. Original PDFs are never modified.
 - Autosave defaults on. Use Export PDF for a separate annotated copy.
-- Mouse, touch, and trackpad keep normal PDF behavior unless editing is explicit.
+- Mouse, touch, and trackpad keep normal PDF behavior unless the active pointer policy routes annotation (stylus always; mouse only in annotate mode).
 - Use shared toolbar, tools, storage, and engine for direct and embedded PDF views.
 - No OCR. No whole-framework embedding. No in-place PDF writes.
 - Run `npm test` and `npm run build` before done.

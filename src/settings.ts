@@ -203,13 +203,22 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         heading: "PDF navigation",
         items: [
           {
-            name: "Drag to scroll when draw mode is off",
-            desc: "Vertical mouse drag on empty PDF areas scrolls the document. Text selection and links still work normally.",
+            name: "Mouse input on PDF pages",
+            desc: "Pan: drag empty areas to scroll. Annotate: primary mouse uses the active tool. Native: leave scrolling and selection to the PDF viewer. Stylus always annotates; fingers stay native.",
             render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.mouseDragScroll).onChange(async (value) => {
-                  await this.persistPatch({ mouseDragScroll: value });
-                })
+              setting.addDropdown((dropdown) =>
+                dropdown
+                  .addOption("pan", "Drag to pan / scroll")
+                  .addOption("annotate", "Annotate with active tool")
+                  .addOption("native", "Native PDF only")
+                  .setValue(this.host.inkSettings.mouseInputMode ?? (this.host.inkSettings.mouseDragScroll ? "pan" : "native"))
+                  .onChange(async (value) => {
+                    if (value !== "pan" && value !== "annotate" && value !== "native") return;
+                    await this.persistPatch({
+                      mouseInputMode: value,
+                      mouseDragScroll: value === "pan"
+                    });
+                  })
               );
             }
           },
