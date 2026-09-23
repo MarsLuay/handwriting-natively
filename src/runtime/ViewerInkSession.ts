@@ -350,6 +350,7 @@ export interface SessionDiagnostics {
 export interface ViewerInkSessionOptions {
   adapter: ObsidianPdfAdapter;
   pdfPath: string;
+  pluginVersion?: string;
   /** Content-derived identity captured once while the source PDF is opened. */
   contentHash?: string;
   settings: PluginSettings;
