@@ -132,6 +132,10 @@ function hitElementDetails(element: Element | null): Record<string, unknown> | n
     opacity: style?.opacity ?? null,
     position: style?.position ?? null,
     zIndex: style?.zIndex ?? null,
+    transform: style?.transform && style.transform !== "none" ? style.transform : null,
+    hidden: isHTMLElement(element) ? element.hidden : false,
+    ariaHidden: element.getAttribute("aria-hidden"),
+    inert: element.hasAttribute("inert"),
     rect: rectDetails(element),
     connected: element.isConnected,
     pageAncestor: page ? {
@@ -153,27 +157,154 @@ function isNonInteractiveHit(element: Element | null): boolean {
   if (!element) return false;
   const style = element.ownerDocument.defaultView?.getComputedStyle(element);
   return isHTMLElement(element) && element.hidden
+    || element.getAttribute("aria-hidden") === "true"
+    || element.hasAttribute("inert")
     || style?.pointerEvents === "none"
     || style?.display === "none"
     || style?.visibility === "hidden"
     || style?.opacity === "0";
 }
 
-const OBSIDIAN_UI_OCCLUDER_SELECTOR = [
+/** Foreground Obsidian shells that can legitimately own pen hits over a PDF. */
+const OBSIDIAN_UI_SHELL_SELECTOR = [
   ".workspace-drawer",
   ".workspace-drawer-backdrop",
-  ".modal",
-  ".modal-bg",
   ".modal-container",
+  ".modal-bg",
+  ".modal",
   ".menu",
   ".popover",
   ".suggestion-container",
-  ".setting-item",
-  ".vertical-tab-content",
 ].join(", ");
 
-function isObsidianUiOccluder(element: Element | null, viewerHost: Element): boolean {
-  return Boolean(element && !viewerHost.contains(element) && element.closest(OBSIDIAN_UI_OCCLUDER_SELECTOR));
+type ObsidianUiShellKind =
+  | "drawer"
+  | "drawer-backdrop"
+  | "modal"
+  | "menu"
+  | "unknown";
+
+interface ObsidianUiShellRef {
+  kind: ObsidianUiShellKind;
+  shell: Element;
+}
+
+function classifyObsidianUiShell(shell: Element): ObsidianUiShellKind {
+  if (shell.classList.contains("workspace-drawer-backdrop")) return "drawer-backdrop";
+  if (shell.classList.contains("workspace-drawer")) return "drawer";
+  if (
+    shell.classList.contains("modal-container")
+    || shell.classList.contains("modal-bg")
+    || shell.classList.contains("modal")
+  ) {
+    return "modal";
+  }
+  if (
+    shell.classList.contains("menu")
+    || shell.classList.contains("popover")
+    || shell.classList.contains("suggestion-container")
+  ) {
+    return "menu";
+  }
+  return "unknown";
+}
+
+function findObsidianUiShell(element: Element): ObsidianUiShellRef | null {
+  const shell = element.closest(OBSIDIAN_UI_SHELL_SELECTOR);
+  if (!shell) return null;
+  return { kind: classifyObsidianUiShell(shell), shell };
+}
+
+/**
+ * Closed mobile drawers stay in the DOM with pointer-events:auto and can still
+ * appear in elementsFromPoint() after Settings/drawer close. Only treat an open
+ * / pinned / visibly active shell as a real occluder.
+ */
+function isActiveObsidianUiShell(shell: Element, kind: ObsidianUiShellKind): boolean {
+  if (!shell.isConnected || isNonInteractiveHit(shell)) return false;
+  if (kind === "drawer") {
+    return shell.classList.contains("is-shown")
+      || shell.classList.contains("is-pinned")
+      || shell.getAttribute("aria-hidden") === "false";
+  }
+  if (kind === "drawer-backdrop") {
+    return shell.classList.contains("is-shown");
+  }
+  // Modals/menus typically unmount when closed; residual nodes still need the
+  // non-interactive / inert checks above.
+  return true;
+}
+
+function describeObsidianUiShell(
+  element: Element | null,
+  clientX?: number,
+  clientY?: number
+): Record<string, unknown> | null {
+  if (!element) return null;
+  const ref = findObsidianUiShell(element);
+  if (!ref) return null;
+  const hitInsideShellBounds = typeof clientX === "number" && typeof clientY === "number"
+    ? containsClientPoint(ref.shell, clientX, clientY)
+    : null;
+  return {
+    kind: ref.kind,
+    ...hitElementDetails(ref.shell),
+    active: isActiveObsidianUiShell(ref.shell, ref.kind),
+    hitInsideShellBounds
+  };
+}
+
+/**
+ * True only for active Obsidian foreground UI over the PDF. Bare layout chrome
+ * (`.vertical-tab-content`, `.setting-item`, titles) is not enough — those nodes
+ * linger in mobile hit stacks after Settings/drawers close.
+ */
+function isObsidianUiOccluder(
+  element: Element | null,
+  viewerHost: Element,
+  clientX?: number,
+  clientY?: number
+): boolean {
+  if (!element || viewerHost.contains(element) || isNonInteractiveHit(element)) return false;
+  const ref = findObsidianUiShell(element);
+  if (!ref) return false;
+  if (!isActiveObsidianUiShell(ref.shell, ref.kind)) return false;
+  if (typeof clientX === "number" && typeof clientY === "number") {
+    const rect = ref.shell.getBoundingClientRect();
+    // Skip bounds rejection when the shell has no layout box yet (jsdom / mid-transition).
+    if (rect.width > 0 && rect.height > 0 && !containsClientPoint(ref.shell, clientX, clientY)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Stale Settings/drawer/layout hits that must not block geometric pen recovery. */
+const STALE_LAYOUT_HIT_SELECTOR = [
+  ".vertical-tab-content",
+  ".vertical-tabs-container",
+  ".vertical-tab-nav-item",
+  ".vertical-tab-nav-item-title",
+  ".setting-item",
+  ".setting-item-description",
+  ".workspace-drawer-header",
+  ".workspace-tab-header-container",
+].join(", ");
+
+function isIgnorableStaleOutsideHit(
+  element: Element | null,
+  viewerHost: Element,
+  clientX: number,
+  clientY: number
+): boolean {
+  if (!element || viewerHost.contains(element)) return false;
+  const ref = findObsidianUiShell(element);
+  // An open/pinned shell owns the hit even when layout boxes are empty in tests.
+  if (ref && isActiveObsidianUiShell(ref.shell, ref.kind)) return false;
+  if (isObsidianUiOccluder(element, viewerHost, clientX, clientY)) return false;
+  if (isNonInteractiveHit(element)) return true;
+  if (ref) return true;
+  return Boolean(element.closest(STALE_LAYOUT_HIT_SELECTOR));
 }
 
 function isInputChromeTarget(target: EventTarget | null): boolean {
@@ -458,6 +589,12 @@ export class ViewerInkSession {
   private debugState: DebugState = {};
   private destroyed = false;
   private detachNotified = false;
+  /** Last Obsidian drawer/modal/menu class mutation — occlusion anomaly telemetry. */
+  private lastUiShellMutationAt = 0;
+  private uiShellMutationObserver: MutationObserver | null = null;
+  /** Dedup key → last emit time for pen occlusion anomaly bursts. */
+  private lastPenOcclusionAnomalyAt = 0;
+  private lastPenOcclusionAnomalyKey = "";
   private persistEpoch = 0;
   private alreadyEmergencyPersisted = false;
   private writesAbandoned = false;
@@ -796,6 +933,33 @@ export class ViewerInkSession {
     this.installTouchProbes(doc, options, within);
     this.installWheelProbes(doc, options, within, adapter);
     this.installGestureProbes(doc, options, within);
+    this.installUiShellMutationWatch(doc);
+  }
+
+  private installUiShellMutationWatch(doc: Document): void {
+    this.uiShellMutationObserver?.disconnect();
+    if (typeof MutationObserver !== "function") return;
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        const target = mutation.target;
+        if (!isElement(target)) continue;
+        if (
+          target.matches?.(OBSIDIAN_UI_SHELL_SELECTOR)
+          || target.closest?.(OBSIDIAN_UI_SHELL_SELECTOR)
+        ) {
+          this.lastUiShellMutationAt = Date.now();
+          return;
+        }
+      }
+    });
+    const root = doc.body ?? doc.documentElement;
+    if (!root) return;
+    observer.observe(root, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "aria-hidden", "inert", "hidden", "style"]
+    });
+    this.uiShellMutationObserver = observer;
   }
 
   private installPointerDownProbes(
@@ -3790,6 +3954,8 @@ export class ViewerInkSession {
     this.thumbnailSidebarActions?.destroy();
     this.findBridge.destroy();
     this.handledDrawPointers.clear();
+    this.uiShellMutationObserver?.disconnect();
+    this.uiShellMutationObserver = null;
     this.pointerProbeAbort.abort();
     this.toolbar.destroy();
     this.options.adapter.destroy();
@@ -4284,13 +4450,31 @@ export class ViewerInkSession {
       && firstInteractiveHit
       && firstInteractiveHitOutsideViewer
       && !firstInteractiveHitBelongsToPage
-      && isObsidianUiOccluder(firstInteractiveHit, this.options.adapter.host),
+      && isObsidianUiOccluder(
+        firstInteractiveHit,
+        this.options.adapter.host,
+        event.clientX,
+        event.clientY
+      ),
+    );
+    const staleOutsideHit = Boolean(
+      geometricPage
+      && firstInteractiveHit
+      && firstInteractiveHitOutsideViewer
+      && !firstInteractiveHitBelongsToPage
+      && isIgnorableStaleOutsideHit(
+        firstInteractiveHit,
+        this.options.adapter.host,
+        event.clientX,
+        event.clientY
+      ),
     );
     const topIsChrome = isInputChromeTarget(topHit) || isAnnotationChromeTarget(topHit);
     const safeRecoveryPage = geometricPage && !topIsChrome && !pageOccludedByUi && (
       topBelongsToPage
       || firstInteractiveHitBelongsToPage
       || !firstInteractiveHit
+      || staleOutsideHit
       || (!topHit && targetWithin && targetPage === geometricPage.element)
     )
       ? geometricPage
@@ -4305,6 +4489,14 @@ export class ViewerInkSession {
       .map((surface) => ({ page: surface.page.pageNumber, id: getDebugNodeId(surface.overlay), connected: surface.overlay.isConnected, rect: rectDetails(surface.overlay) }))
       .slice(0, 24);
     const scrollRoot = this.options.adapter.scrollElement();
+    const occluderShell = describeObsidianUiShell(
+      firstInteractiveHit,
+      event.clientX,
+      event.clientY
+    );
+    const pageIntersectsHit = Boolean(
+      geometricPage && containsClientPoint(geometricPage.element, event.clientX, event.clientY)
+    );
     return {
       targetPage,
       geometricPage,
@@ -4319,14 +4511,25 @@ export class ViewerInkSession {
         topHit: hitElementDetails(topHit),
         topHitIsPdfPage: topBelongsToPage,
         topHitIsNonInteractive: isNonInteractiveHit(topHit),
-        hitStack: hitEntries.slice(0, 8).map((element) => hitElementDetails(element)),
+        hitStack: hitEntries.slice(0, 12).map((element) => hitElementDetails(element)),
+        elementFromPoint: hitElementDetails(topHit),
         firstInteractiveHit: hitElementDetails(firstInteractiveHit),
         firstInteractiveHitBelongsToPage,
         pageOccludedByUi,
+        occluderShell,
+        staleOutsideHit,
+        pageIntersectsHit,
+        msSinceUiShellMutation: this.lastUiShellMutationAt > 0
+          ? Date.now() - this.lastUiShellMutationAt
+          : null,
         composedPath: path.map((entry) => isElement(entry) ? hitElementDetails(entry) : Object.prototype.toString.call(entry)),
         adapterHostRect: rectDetails(this.options.adapter.host),
         viewerRootRect: rectDetails(this.options.adapter.root),
         scrollRootRect: rectDetails(scrollRoot),
+        pageElementRect: rectDetails(geometricPage?.element ?? null),
+        handwritingOverlayRect: rectDetails(
+          geometricPage ? this.surfaces.get(geometricPage.pageNumber)?.overlay ?? null : null
+        ),
         visiblePageRects: visiblePages.map((page) => ({
           page: page.pageNumber,
           id: getDebugNodeId(page.element),
@@ -4429,9 +4632,36 @@ export class ViewerInkSession {
     this.logFallbackSkip("ui-occluded", event, {
       page: hitTest.geometricPage?.pageNumber ?? null,
       pageOccludedByUi: true,
-      firstInteractiveHit: hitTest.details.firstInteractiveHit ?? null
+      firstInteractiveHit: hitTest.details.firstInteractiveHit ?? null,
+      occluderShell: hitTest.details.occluderShell ?? null
     });
+    if (event.pointerType === "pen" && hitTest.geometricPage) {
+      this.logPenOcclusionAnomaly(event, hitTest);
+    }
     return true;
+  }
+
+  /**
+   * One summarized pen-occlusion anomaly per failed attempt/burst. Keeps the
+   * rich elementsFromPoint stack out of the hot path for mouse / repeat spam.
+   */
+  private logPenOcclusionAnomaly(event: PointerEvent, hitTest: PointerHitTest): void {
+    const hit = hitTest.details.firstInteractiveHit as Record<string, unknown> | null | undefined;
+    const classes = Array.isArray(hit?.classes) ? (hit.classes as string[]).join(".") : "";
+    const key = [
+      hitTest.geometricPage?.pageNumber ?? "?",
+      Math.round(event.clientX / 8),
+      Math.round(event.clientY / 8),
+      String(hit?.tag ?? ""),
+      classes
+    ].join("|");
+    const now = Date.now();
+    if (key === this.lastPenOcclusionAnomalyKey && now - this.lastPenOcclusionAnomalyAt < 750) {
+      return;
+    }
+    this.lastPenOcclusionAnomalyKey = key;
+    this.lastPenOcclusionAnomalyAt = now;
+    this.logInkInputAnomaly(event, hitTest, "pen-occlusion-anomaly");
   }
 
   private pageInfoForHitElement(hitPage: HTMLElement, pageNumber: number, surface: PageSurface): PdfPageInfo {
