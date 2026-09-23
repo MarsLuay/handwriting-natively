@@ -564,7 +564,11 @@ export class SessionLogger {
     scrollRoot: string;
     panCapture: string;
     panBoundary?: string;
-    drawEnabled?: boolean;
+    stylusPolicy?: string;
+    touchPolicy?: string;
+    mousePolicy?: string;
+    activeTool?: string;
+    runtimePlatform?: string;
     mouseDragScroll?: boolean;
     toolbarPlacement?: string;
     loadedStrokes?: number;

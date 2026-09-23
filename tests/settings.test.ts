@@ -138,12 +138,16 @@ describe("safe defaults", () => {
     expect(mergeSettings({ toolPreferences: { activeTool: "shape" } as never }).toolPreferences.activeTool).toBe("pen");
   });
 
-  it("enables mouse drag scroll by default", () => {
+  it("defaults mouse input mode to pan and migrates mouseDragScroll", () => {
+    expect(DEFAULT_SETTINGS.mouseInputMode).toBe("pan");
     expect(DEFAULT_SETTINGS.mouseDragScroll).toBe(true);
-    expect({ ...DEFAULT_SETTINGS, mouseDragScroll: false }.mouseDragScroll).toBe(false);
+    expect(mergeSettings({ mouseDragScroll: false }).mouseInputMode).toBe("native");
+    expect(mergeSettings({ mouseDragScroll: false }).mouseDragScroll).toBe(false);
+    expect(mergeSettings({ mouseInputMode: "annotate" }).mouseDragScroll).toBe(false);
+    expect(mergeSettings({ mouseInputMode: "annotate" }).mouseInputMode).toBe("annotate");
   });
 
-  it("drops the retired finger-draw preference (Draw mode is mouse/stylus ink; fingers scroll)", () => {
+  it("drops the retired finger-draw preference (fingers stay native; stylus annotates)", () => {
     const merged = mergeSettings({ fingerDraw: true } as Partial<typeof DEFAULT_SETTINGS> & Record<string, unknown>);
     expect(merged).not.toHaveProperty("fingerDraw");
   });

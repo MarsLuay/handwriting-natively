@@ -8,7 +8,7 @@ import { laserMenu } from "./LaserDropdown";
 import { lassoOptions } from "./LassoDropdown";
 import { SaveStatusIndicator } from "./SaveStatusIndicator";
 import { textMenu, type TextStyleChange } from "./TextDropdown";
-import { createDetachedDiv, createDetachedEl, createDetachedSpan } from "../vendor/createDetached";
+import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { setToolbarColorSwatch, setToolbarIcon, type ToolbarIcon } from "./ToolbarIcon";
 
 const DRAWING_LABELS: Record<DrawingTool, string> = {
@@ -34,7 +34,6 @@ export interface AnnotationToolbarCallbacks {
   /** Runs before the toolbar takes focus, preserving a contenteditable range. */
   onTextFormatPointerDown?(): void;
   activeTextStyle?(): TextStyle | undefined;
-  onDrawModeChange?(enabled: boolean): void;
   onUndo?(): void;
   onRedo?(): void;
   onSave?(): void | Promise<void>;
@@ -45,7 +44,6 @@ export interface AnnotationToolbarCallbacks {
 export interface AnnotationToolbarOptions {
   preferences: ToolPreferences;
   autosave: boolean;
-  drawEnabled?: boolean;
   callbacks: AnnotationToolbarCallbacks;
   supportedMoreActions?: MoreAction[];
   ownerDocument?: Document;
@@ -80,7 +78,6 @@ export class AnnotationToolbar {
     this.controls = createDetachedDiv(this.ownerDocument);
     this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
-    this.controls.append(this.drawToggle(options.drawEnabled ?? false));
     this.controls.append(this.colorButton());
     this.controls.append(this.groupedTool("drawing", () => this.drawingMenu()));
     this.controls.append(this.groupedTool("eraser", () => this.eraserMenuOptions()));
@@ -153,27 +150,6 @@ export class AnnotationToolbar {
     button.addEventListener("click", action, { signal: this.abort.signal });
     this.buttons.set(id, button);
     return button;
-  }
-
-  private drawToggle(enabled: boolean): HTMLLabelElement {
-    const label = createDetachedEl(this.ownerDocument, 'label');
-    label.className = "native-pdf-handwriting-draw-toggle";
-    label.setAttribute("aria-label", "Turn on to draw, erase, or select annotations. Leave off for normal PDF controls.");
-    label.removeAttribute("title");
-    const input = createDetachedEl(this.ownerDocument, 'input');
-    input.type = "checkbox";
-    input.checked = enabled;
-    input.dataset.control = "draw";
-    input.addEventListener("change", () => {
-      label.dataset.enabled = String(input.checked);
-      this.callbacks.onDrawModeChange?.(input.checked);
-    }, { signal: this.abort.signal });
-    label.dataset.enabled = String(enabled);
-    const text = createDetachedSpan(this.ownerDocument);
-    text.className = "native-pdf-handwriting-draw-toggle-label";
-    text.textContent = "Draw";
-    label.append(input, text);
-    return label;
   }
 
   private presentButton(button: HTMLButtonElement, label: string, icon: ToolbarIcon): void {
