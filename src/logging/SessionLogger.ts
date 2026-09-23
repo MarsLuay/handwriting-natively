@@ -1,6 +1,8 @@
 import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
 import type { VaultLogSink } from "./VaultLogSink";
 
+export const PROFILE_SCHEMA_VERSION = 2;
+
 const PREFIX = "[Handwriting Natively]";
 
 export type ViewStateSource =
@@ -140,7 +142,8 @@ export class SessionLogger {
   constructor(
     private readonly documentPath: string,
     private readonly vaultLog?: VaultLogSink,
-    private readonly debugEnabled: () => boolean = () => true
+    private readonly debugEnabled: () => boolean = () => true,
+    private readonly pluginVersion = "unknown"
   ) {}
 
   isEnabled(): boolean { return this.debugEnabled(); }
@@ -316,6 +319,56 @@ export class SessionLogger {
       ...(details.compositeMatched !== undefined ? { compositeMatched: details.compositeMatched } : {}),
       ...(details.stabilization !== undefined ? { stabilization: details.stabilization } : {}),
       ...(details.draftResized !== undefined ? { draftResized: details.draftResized } : {})
+    });
+  }
+
+  /** One bounded event for each effective drawing capability transition. */
+  drawStateChanged(details: Record<string, unknown>): void {
+    this.emit("info", "draw state changed", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      at: new Date().toISOString(),
+      ...details
+    });
+  }
+
+  /** One bounded summary per completed handwriting stroke. */
+  inkStrokeProfile(details: Record<string, unknown>): void {
+    this.emit("info", "ink stroke profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
+  /** One bounded summary per completed plugin-participating pan burst. */
+  panProfile(details: Record<string, unknown>): void {
+    this.emit("info", "ink pan profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
+  /** Major synchronous render work, never one event per pointer sample/frame. */
+  renderProfile(details: Record<string, unknown>): void {
+    this.emit("info", "ink render profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
+  /** Persistence timing summary kept separate from sidecar contents. */
+  persistProfile(details: Record<string, unknown>): void {
+    this.emit("info", "sidecar persist profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
     });
   }
 
@@ -628,6 +681,13 @@ export class SessionLogger {
     updatedAt: string;
     skipped?: string;
     error?: string;
+    serializedBytes?: number;
+    serializeMs?: number;
+    recoveryWriteMs?: number | null;
+    sidecarWriteMs?: number | null;
+    recoveryClearMs?: number | null;
+    totalMs?: number;
+    overlappedActiveGesture?: boolean;
   }): void {
     this.emit(details.error || details.skipped ? "warn" : "info", "sidecar persist", {
       document: this.documentPath,
@@ -702,6 +762,8 @@ export class SessionLogger {
   zoomProfile(details: Record<string, unknown> = {}): void {
     this.emit("info", "ink zoom profile", {
       document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
       ...details
     });
   }

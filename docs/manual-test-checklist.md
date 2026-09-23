@@ -4,15 +4,14 @@
 
 - Desktop mouse: PDF links, text selection, scroll, zoom work until edit tool active.
 - Drawing tablet and Apple Pencil: pen input draws; pressure values update in vault debug log when enabled.
-- Draw off: one finger scrolls. Draw on (default): fingers scroll/pinch; stylus inks. With **Draw with finger** on: one finger inks; two fingers still zoom/pan. Trackpad behavior remains native.
+- Stylus-first input: fingers scroll/pinch natively; stylus inks with the selected tool; mouse follows the configured input policy. Trackpad behavior remains native.
 - Note PDF embed (`![[file.pdf|alias]]`) shows an **Annotate** button left of ⋮; click opens the PDF in a new tab (ink attaches on that leaf).
 - Direct / tab PDF overlay stays aligned across zoom, scroll, resize, page change, rotation.
 - Note switching, embed removal, PDF close, plugin disable/re-enable leave no stray Annotate chrome.
 
 ## Tools and toolbar
 
-- Draw starts unchecked in native PDF toolbars. While off, Sidecar Apple Pencil-as-mouse can click, select, drag, scroll, and use PDF controls without creating ink.
-- Check Draw, then verify Sidecar Apple Pencil-as-mouse can draw, erase, and lasso. Uncheck it and confirm native PDF interaction returns immediately.
+- Select an ink tool in the native PDF toolbar, then verify Sidecar Apple Pencil-as-mouse can draw, erase, and lasso. Switch back to a navigation/tool state and confirm mouse PDF interaction returns immediately.
 - Open every dropdown with mouse, touch, stylus, keyboard.
 - Click outside and Escape close dropdown; focus returns to button.
 - Dropdown fits above/below toolbar at phone, tablet, desktop widths.
