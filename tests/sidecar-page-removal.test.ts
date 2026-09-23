@@ -84,9 +84,12 @@ describe("sidecar page removal", () => {
 
     const result = insertPagesIntoSidecar(sidecar, 2, 3, "2026-02-01");
 
+    expect(result.updatedAt).toBe("2026-02-01");
     expect(result.pages.map((page) => page.page)).toEqual([1, 7]);
     expect(result.pages[1]?.strokes[0]?.page).toBe(7);
     expect(result.pages[1]?.texts?.[0]?.page).toBe(7);
     expect(sidecar.pages[1]?.page).toBe(4);
+    expect(() => insertPagesIntoSidecar(sidecar, 2, 0)).toThrow("positive integer");
+    expect(insertPageIntoSidecar(sidecar, 2).pages[1]?.page).toBe(5);
   });
 });

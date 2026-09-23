@@ -7,10 +7,12 @@ function textElement(tag: string): HTMLElement {
   return element;
 }
 
+export type App = unknown;
+
 export class Modal {
   readonly titleEl = textElement("h2");
   readonly contentEl = document.createElement("div");
-  constructor(readonly app: any) {}
+  constructor(readonly app: App) {}
   open(): this { this.onOpen(); return this; }
   close(): void { this.onClose(); }
   onOpen(): void {}

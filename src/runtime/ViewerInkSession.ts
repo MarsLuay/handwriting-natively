@@ -77,6 +77,7 @@ import {
   type HnDevProbeDiagnostic,
   type HnDevProbeMetric
 } from "./DevProbeDiagnostics";
+import type { ScanDocumentPage } from "../scanning/ScanDocument";
 
 const INPUT_OWNER_REGISTRY_KEY = "__nativePdfHandwritingInputOwners";
 const detachedInputOwners = new WeakMap<HTMLElement, ViewerInkSession>();
@@ -366,6 +367,10 @@ export interface ViewerInkSessionOptions {
   onInsertPage?(requestedPageNumber: number): Promise<number>;
   /** Opens the source picker and prepares an imported-page PDF without writing it. */
   onImportPages?(afterPage: number): Promise<ImportedPdfPages | null>;
+  /** Opens the action-time camera/document review flow. */
+  openScanDocument?(): Promise<readonly ScanDocumentPage[] | null>;
+  /** Inserts confirmed scanned pages at the requested one-indexed position. */
+  onInsertScannedPages?(requestedPageNumber: number, pages: readonly ScanDocumentPage[]): Promise<number>;
   /** Removes one source-PDF page and remaps its persisted annotations. */
   onDeletePage?(pageNumber: number): Promise<void>;
   /** Removes multiple source-PDF pages and remaps persisted annotations once. */
@@ -749,6 +754,9 @@ export class ViewerInkSession {
         "export",
         "export-editable",
         ...(options.onImportPages && options.writeSourcePdf ? ["import-page" as const] : []),
+        ...(options.openScanDocument && options.onInsertScannedPages && (options.runtimePlatform?.().mobile ?? false)
+          ? ["scan-document" as const]
+          : []),
         ...((options.runtimePlatform?.().mobile ?? false)
           ? ["toolbar-left", "toolbar-right"] as const
           : ["toolbar-main", "toolbar-left", "toolbar-right"] as const)
@@ -887,7 +895,7 @@ export class ViewerInkSession {
     this.pullToAddPage = options.onInsertPage
       ? new PullToAddPageGesture(adapter.host.ownerDocument, {
         enabled: () => !this.destroyed && typeof this.options.onInsertPage === "function",
-        isBusy: () => Boolean(this.pageMutationShield) || this.pendingInsertedPageFocus !== null,
+        isBusy: () => this.pageMutationInFlight || Boolean(this.pageMutationShield) || this.pendingInsertedPageFocus !== null,
         isDrawing: () => this.hasActiveAnnotationGesture(),
         scrollRoot: () => adapter.scrollElement(),
         host: () => adapter.root,
@@ -3445,6 +3453,52 @@ export class ViewerInkSession {
     }
   }
 
+  private async scanDocument(): Promise<void> {
+    if (!this.options.openScanDocument || !this.options.onInsertScannedPages) return;
+    if (this.pageMutationInFlight) {
+      this.logger.pdfPageAction("scan-cancel", { reason: "page-mutation-in-flight" });
+      return;
+    }
+    this.pageMutationInFlight = true;
+    const currentPage = this.options.adapter.getViewState().pageNumber;
+    const requestedPageNumber = Math.max(1, currentPage + 1);
+    this.logger.pdfPageAction("scan-start", { requestedPageNumber, dirty: this.isDirty() });
+    try {
+      const pages = await this.options.openScanDocument();
+      if (!pages?.length) {
+        this.logger.pdfPageAction("scan-cancel", { requestedPageNumber, reason: "capture-canceled" });
+        return;
+      }
+      if (this.isDirty()) await this.manualSave();
+      const before = this.snapshot();
+      this.pendingInsertedPageFocus = {
+        pageNumber: requestedPageNumber,
+        expectedPageCount: this.options.adapter.pages().length + pages.length
+      };
+      await this.armPageMutationShield("insert", requestedPageNumber);
+      const insertedPage = await this.options.onInsertScannedPages(requestedPageNumber, pages);
+      if (this.pendingInsertedPageFocus) this.pendingInsertedPageFocus.pageNumber = insertedPage;
+      this.applyInsertedPagesToSession(before, insertedPage, pages.length);
+      this.focusInsertedPageIfReady("scan-complete", this.options.adapter.pages());
+      this.logger.pdfPageAction("scan-complete", {
+        requestedPageNumber,
+        insertedPage,
+        count: pages.length
+      });
+      this.options.notice(`Inserted ${pages.length} scanned page${pages.length === 1 ? "" : "s"} after page ${currentPage}.`);
+    } catch (error) {
+      this.pendingInsertedPageFocus = null;
+      this.releasePageMutationShield("scan-error");
+      this.logger.pdfPageAction("scan-error", {
+        requestedPageNumber,
+        error: this.errorMessage(error)
+      });
+      this.options.notice(`Could not scan document: ${this.errorMessage(error)}`);
+    } finally {
+      this.pageMutationInFlight = false;
+    }
+  }
+
   /** Focus only once native PDF.js has published the post-insert page count. */
   private focusInsertedPageIfReady(reason: string, pages: PdfPageInfo[]): void {
     const pending = this.pendingInsertedPageFocus;
@@ -3456,13 +3510,17 @@ export class ViewerInkSession {
 
   /** Keep live ink/text state synchronized with the remapped on-disk sidecar. */
   private applyInsertedPageToSession(before: SidecarSchemaV1, insertedPage: number): void {
+    this.applyInsertedPagesToSession(before, insertedPage, 1);
+  }
+
+  private applyInsertedPagesToSession(before: SidecarSchemaV1, insertedPage: number, count: number): void {
     this.commitActiveTextEditor("page-insert");
     this.cancelTextBoxTransform("page-insert", false);
-    const remapped = insertPageIntoSidecar(before, insertedPage);
+    const remapped = insertPagesIntoSidecar(before, insertedPage, count);
     this.hydrateSidecarSnapshot(remapped);
     const metrics = [...this.pageMetrics.entries()];
     this.pageMetrics.clear();
-    for (const [page, value] of metrics) this.pageMetrics.set(page >= insertedPage ? page + 1 : page, value);
+    for (const [page, value] of metrics) this.pageMetrics.set(page >= insertedPage ? page + count : page, value);
     this.history.clear();
     this.historyDirtyPages.clear();
     this.historyPaintedPages.clear();
@@ -8439,6 +8497,10 @@ export class ViewerInkSession {
   private async handleMore(action: MoreAction): Promise<void> {
     if (action === "import-page") {
       await this.importPagesAfter(this.options.adapter.getViewState().pageNumber);
+      return;
+    }
+    if (action === "scan-document") {
+      await this.scanDocument();
       return;
     }
     if (action === "export") {
