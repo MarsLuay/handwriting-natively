@@ -349,6 +349,25 @@ describe("SessionLogger", () => {
     expect(writes[5]?.payload).toMatchObject({ serializedBytes: 100, totalMs: 4, overlappedActiveGesture: false });
   });
 
+  it("logs bounded post-UI probe stages with the plugin and profile identity", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
+    }, () => true, "0.1.60");
+
+    logger.postUiProbe("document", { correlationId: "post-ui-1-contact-1", pointerType: "pen" });
+    logger.postUiProbe("terminal", { correlationId: "post-ui-1-contact-1", outcome: "post-ui-pen-success" });
+
+    expect(writes.map((entry) => entry.event)).toEqual(["post-ui input probe", "post-ui input probe"]);
+    expect(writes[0]?.payload).toMatchObject({
+      phase: "document",
+      pluginVersion: "0.1.60",
+      profileSchema: 2,
+      correlationId: "post-ui-1-contact-1"
+    });
+    expect(writes[1]?.payload).toMatchObject({ phase: "terminal", outcome: "post-ui-pen-success" });
+  });
+
   it("avoids diagnostics and their input-path sampling work when debug is disabled", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const write = vi.fn();
@@ -356,6 +375,7 @@ describe("SessionLogger", () => {
 
     expect(logger.shouldLogPositionAlign("move")).toBe(false);
     logger.pointerRoute("draw", { page: 1 });
+    logger.postUiProbe("document", { correlationId: "hidden" });
     logger.inputPaint(1, 24, "draw", 12);
 
     expect(debug).not.toHaveBeenCalled();

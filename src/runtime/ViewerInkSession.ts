@@ -8,6 +8,7 @@ import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMen
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
+import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
 import {
   canAnnotatePointer,
@@ -190,6 +191,12 @@ type ObsidianUiShellKind =
 interface ObsidianUiShellRef {
   kind: ObsidianUiShellKind;
   shell: Element;
+}
+
+interface ObsidianUiShellSnapshot {
+  kind: ObsidianUiShellKind;
+  active: boolean;
+  details: Record<string, unknown>;
 }
 
 function classifyObsidianUiShell(shell: Element): ObsidianUiShellKind {
@@ -637,6 +644,8 @@ interface ShapeResize {
 }
 
 export class ViewerInkSession {
+  private static nextViewerGeneration = 1;
+  private readonly viewerGeneration = ViewerInkSession.nextViewerGeneration++;
   private readonly ink = new InkSession();
   private readonly texts = new TextAnnotationSession();
   private readonly identity;
@@ -675,6 +684,10 @@ export class ViewerInkSession {
   /** Last Obsidian drawer/modal/menu class mutation — occlusion anomaly telemetry. */
   private lastUiShellMutationAt = 0;
   private uiShellMutationObserver: MutationObserver | null = null;
+  private readonly uiShellSnapshots = new Map<Element, ObsidianUiShellSnapshot>();
+  private readonly postUiInputProbe = new PostUiInputProbe();
+  private postUiProbeTimer: number | null = null;
+  private postUiPendingPersistence: { correlationId: string; page: number | null } | null = null;
   /** Dedup key → last emit time for pen occlusion anomaly bursts. */
   private lastPenOcclusionAnomalyAt = 0;
   private lastPenOcclusionAnomalyKey = "";
@@ -959,6 +972,15 @@ export class ViewerInkSession {
         const panStarted = performance.now();
         this.observePan(phase, event, details);
         this.logMousePan(phase, event, details);
+        if (phase !== "move" && phase !== "pending") {
+          this.recordPostUiProbeStage(event, "pan", {
+            phase,
+            accepted: phase === "start" || phase === "activate",
+            scrollBefore: details.scrollBefore ?? null,
+            scrollAfter: details.scrollAfter ?? null,
+            ...details
+          });
+        }
         if (event.pointerType === "pen" && (phase === "start" || phase === "activate" || phase === "move")) {
           this.logger.inputInvariantViolation("pen-entered-mouse-pan", {
             phase,
@@ -970,6 +992,12 @@ export class ViewerInkSession {
         }
         this.feedPullToAddFromPan(phase, details);
         if (this.panProfile) this.panProfile.maxPluginCallbackMs = Math.max(this.panProfile.maxPluginCallbackMs, performance.now() - panStarted);
+      },
+      onPanClaim: (event, details) => {
+        this.recordPostUiProbeStage(event, "claim", {
+          claimOwner: "mouse-pan",
+          ...details
+        });
       }
     });
     this.pullToAddPage = options.onInsertPage
@@ -1043,28 +1071,216 @@ export class ViewerInkSession {
 
   private installUiShellMutationWatch(doc: Document): void {
     this.uiShellMutationObserver?.disconnect();
+    this.uiShellSnapshots.clear();
+    this.captureUiShellSnapshots(doc);
     if (typeof MutationObserver !== "function") return;
     const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
+      const relevant = mutations.some((mutation) => {
         const target = mutation.target;
-        if (!isElement(target)) continue;
-        if (
+        if (isElement(target) && (
           target.matches?.(OBSIDIAN_UI_SHELL_SELECTOR)
           || target.closest?.(OBSIDIAN_UI_SHELL_SELECTOR)
-        ) {
-          this.lastUiShellMutationAt = Date.now();
-          return;
+        )) return true;
+        return mutation.type === "childList";
+      });
+      if (!relevant) return;
+      this.lastUiShellMutationAt = Date.now();
+      const removedShells: Element[] = [];
+      for (const mutation of mutations) {
+        for (const removed of [...mutation.removedNodes]) {
+          if (!isElement(removed)) continue;
+          const shell = removed.matches(OBSIDIAN_UI_SHELL_SELECTOR)
+            ? removed
+            : removed.querySelector(OBSIDIAN_UI_SHELL_SELECTOR);
+          if (shell) removedShells.push(shell);
         }
       }
+      this.captureUiShellSnapshots(doc, true, removedShells);
     });
     const root = doc.body ?? doc.documentElement;
     if (!root) return;
     observer.observe(root, {
       subtree: true,
+      childList: true,
       attributes: true,
       attributeFilter: ["class", "aria-hidden", "inert", "hidden", "style"]
     });
     this.uiShellMutationObserver = observer;
+  }
+
+  private captureUiShellSnapshots(doc: Document, armOnTransition = false, removedShells: readonly Element[] = []): void {
+    const next = new Map<Element, ObsidianUiShellSnapshot>();
+    const transitions: Record<string, unknown>[] = [];
+    for (const shell of [...doc.querySelectorAll(OBSIDIAN_UI_SHELL_SELECTOR)]) {
+      const kind = classifyObsidianUiShell(shell);
+      const active = isActiveObsidianUiShell(shell, kind);
+      const snapshot: ObsidianUiShellSnapshot = {
+        kind,
+        active,
+        details: hitElementDetails(shell) ?? {}
+      };
+      next.set(shell, snapshot);
+      const previous = this.uiShellSnapshots.get(shell);
+      if (armOnTransition && previous?.active && !active) {
+        transitions.push({
+          kind,
+          reason: "active-to-closed",
+          before: previous.details,
+          after: snapshot.details
+        });
+      }
+    }
+    if (armOnTransition) {
+      for (const [shell, previous] of this.uiShellSnapshots) {
+        if (!previous.active || next.has(shell)) continue;
+        transitions.push({
+          kind: previous.kind,
+          reason: "removed",
+          before: previous.details,
+          after: { connected: false }
+        });
+      }
+      for (const shell of removedShells) {
+        if (this.uiShellSnapshots.has(shell)) continue;
+        transitions.push({
+          kind: classifyObsidianUiShell(shell),
+          reason: "removed",
+          before: hitElementDetails(shell) ?? {},
+          after: { connected: false }
+        });
+      }
+      const transition = transitions.at(-1);
+      if (transition) this.armPostUiProbe(doc, transition);
+    }
+    this.uiShellSnapshots.clear();
+    for (const [shell, snapshot] of next) this.uiShellSnapshots.set(shell, snapshot);
+  }
+
+  private armPostUiProbe(doc: Document, transition: Record<string, unknown>): void {
+    if (this.destroyed || !(this.options.debugEnabled?.() ?? false)) return;
+    this.clearPostUiProbeTimer();
+    const view = this.options.adapter.getViewState();
+    const generations = [...this.surfaces.values()]
+      .map((surface) => surface.router?.generation ?? null)
+      .filter((generation): generation is number => generation !== null);
+    const context: PostUiProbeArmContext = {
+      sessionId: this.identity.id,
+      viewerGeneration: this.viewerGeneration,
+      pageGeneration: generations.length ? Math.max(...generations) : null,
+      mountedPages: [...this.surfaces.keys()].sort((a, b) => a - b),
+      documentPath: this.options.pdfPath,
+      transition
+    };
+    const now = Date.now();
+    const arm = this.postUiInputProbe.arm(now, context);
+    this.logger.postUiProbe("armed", {
+      armId: arm.armId,
+      expiresAt: arm.expiresAt,
+      sessionId: context.sessionId,
+      viewerGeneration: context.viewerGeneration,
+      pageGeneration: context.pageGeneration,
+      mountedPages: context.mountedPages,
+      currentPdfPage: view.pageNumber,
+      currentScale: view.scale,
+      transition
+    });
+    const timerView = doc.defaultView;
+    if (!timerView) return;
+    this.postUiProbeTimer = timerView.setTimeout(() => {
+      this.postUiProbeTimer = null;
+      this.expirePostUiProbe();
+    }, Math.max(0, arm.expiresAt - now) + 1);
+  }
+
+  private expirePostUiProbe(): void {
+    const now = Date.now();
+    for (const result of this.postUiInputProbe.expire(now)) this.logPostUiProbeResult(result);
+  }
+
+  private clearPostUiProbeTimer(): void {
+    if (this.postUiProbeTimer === null) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    (view?.clearTimeout ?? window.clearTimeout)(this.postUiProbeTimer);
+    this.postUiProbeTimer = null;
+  }
+
+  private recordPostUiProbeDocument(event: PointerEvent, hitTest: PointerHitTest): void {
+    if (!(this.options.debugEnabled?.() ?? false)) return;
+    const contact = this.postUiInputProbe.pointerDown(Date.now(), event.pointerId, event.pointerType || "(empty)");
+    if (!contact) return;
+    this.logger.postUiProbe("document", {
+      ...contact,
+      targetId: getDebugNodeId(event.target),
+      target: describeTarget(event.target),
+      page: hitTest.geometricPage?.pageNumber ?? null,
+      withinViewer: hitTest.details.targetWithinViewer ?? null
+    });
+    this.recordPostUiProbeStage(event, "hit-test", {
+      page: hitTest.geometricPage?.pageNumber ?? null,
+      targetWithinViewer: hitTest.details.targetWithinViewer ?? null,
+      pageOccludedByUi: hitTest.pageOccludedByUi,
+      safeRecoveryPage: hitTest.safeRecoveryPage?.pageNumber ?? null,
+      topHitIsPdfPage: hitTest.details.topHitIsPdfPage ?? null,
+      firstInteractiveHitBelongsToPage: hitTest.firstInteractiveHitBelongsToPage,
+      staleOutsideHit: hitTest.details.staleOutsideHit ?? null
+    });
+  }
+
+  private recordPostUiProbeStage(
+    event: PointerEvent,
+    stage: PostUiProbeStage,
+    details: Record<string, unknown> = {}
+  ): void {
+    if (!(this.options.debugEnabled?.() ?? false)) return;
+    const contact = this.postUiInputProbe.stage(Date.now(), event.pointerId, stage, details);
+    if (!contact) return;
+    this.logger.postUiProbe(stage, {
+      ...contact,
+      pointerType: event.pointerType || "(empty)",
+      targetId: getDebugNodeId(event.target),
+      ...details
+    });
+  }
+
+  private finishPostUiProbe(
+    event: PointerEvent,
+    terminal: string,
+    details: Record<string, unknown> = {}
+  ): void {
+    const result = this.postUiInputProbe.finish(Date.now(), event.pointerId, terminal, details);
+    if (!result) return;
+    this.logPostUiProbeResult(result);
+    if (result.outcome === "post-ui-pen-success") {
+      this.postUiPendingPersistence = {
+        correlationId: result.correlationId!,
+        page: result.contact?.page ?? null
+      };
+      this.clearPostUiProbeTimer();
+    }
+  }
+
+  private finishPostUiProbeWithOutcome(
+    event: PointerEvent,
+    outcome: PostUiProbeOutcome,
+    details: Record<string, unknown> = {}
+  ): void {
+    const result = this.postUiInputProbe.finishWithOutcome(Date.now(), event.pointerId, outcome, details);
+    if (!result) return;
+    this.logPostUiProbeResult(result);
+  }
+
+  private logPostUiProbeResult(result: PostUiProbeResult): void {
+    this.logger.postUiProbe("terminal", {
+      armId: result.armId,
+      correlationId: result.correlationId,
+      outcome: result.outcome,
+      elapsedMs: result.elapsedMs,
+      pointerDownCount: result.pointerDownCount,
+      observedPointerTypes: result.observedPointerTypes,
+      contactCount: result.contactCount,
+      contact: result.contact,
+      details: result.details
+    });
   }
 
   private installPointerDownProbes(
@@ -1077,6 +1293,7 @@ export class ViewerInkSession {
       const hitTest = this.shouldFallbackRoutePointer(e)
         ? this.inspectPointerHit(e, hitPage, within(e.target))
         : emptyPointerHitTest(hitPage);
+      this.recordPostUiProbeDocument(e, hitTest);
       this.logger.inputLifecycleEvent("pointerdown", {
         pointerType: e.pointerType || "(empty)",
         pointerId: e.pointerId,
@@ -4477,6 +4694,8 @@ export class ViewerInkSession {
     this.thumbnailSidebarActions?.destroy();
     this.findBridge.destroy();
     this.handledDrawPointers.clear();
+    this.clearPostUiProbeTimer();
+    this.uiShellSnapshots.clear();
     this.uiShellMutationObserver?.disconnect();
     this.uiShellMutationObserver = null;
     this.pointerProbeAbort.abort();
@@ -4782,6 +5001,13 @@ export class ViewerInkSession {
           this.commitActiveDrawBeforeSurfaceLoss(surface, "router-rebind-recovery");
         }
         this.pointerStart(surface, samples, route, event);
+        if (route === "draw" && surface.builder) {
+          this.recordPostUiProbeStage(event, "stroke-start", {
+            page: surface.page.pageNumber,
+            pointCount: surface.builder.preview(this.simplifyStrokesEnabled()).length,
+            inputType: event.pointerType || "(empty)"
+          });
+        }
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-start");
         this.logger.inputLifecycleEvent("route-decision", {
           page: surface.page.pageNumber,
@@ -4812,6 +5038,13 @@ export class ViewerInkSession {
         if (hadPenStroke) {
           this.logger.inputStroke("end", { page: surface.page.pageNumber, routerGeneration: surface.router?.generation ?? null });
         }
+        this.finishPostUiProbe(event, "pointerup", {
+          page: surface.page.pageNumber,
+          visibleStrokePoints: hadPenStroke ? (this.ink.page(surface.page.pageNumber).at(-1)?.points.length ?? 0) : 0,
+          persistedStrokePoints: null,
+          route,
+          routerGeneration: surface.router?.generation ?? null
+        });
       },
       onCancel: (route, event) => {
         this.logger.inputLifecycleEvent("pointer-cancel", {
@@ -4821,9 +5054,22 @@ export class ViewerInkSession {
           routerGeneration: surface.router?.generation ?? null
         });
         this.pointerCancel(surface, route, event);
+        this.finishPostUiProbe(event, "pointercancel", {
+          page: surface.page.pageNumber,
+          visibleStrokePoints: 0,
+          persistedStrokePoints: null,
+          route,
+          routerGeneration: surface.router?.generation ?? null
+        });
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-cancel");
       },
       onRouterReceived: (event, generation) => {
+        this.recordPostUiProbeStage(event, "router-received", {
+          page: surface.page.pageNumber,
+          routerGeneration: generation,
+          routerAlive: Boolean(surface.router?.isAlive()),
+          routerBindsToPage: Boolean(surface.router?.bindsTo(surface.page.element))
+        });
         this.logger.inputLifecycleEvent("router-received", {
           page: surface.page.pageNumber,
           listenerGeneration: generation,
@@ -4853,6 +5099,12 @@ export class ViewerInkSession {
         }
       },
       onPointerRejected: (reason, event, generation) => {
+        this.recordPostUiProbeStage(event, "router-rejected", {
+          page: surface.page.pageNumber,
+          routerGeneration: generation,
+          rejection: reason,
+          staleRouter: reason === "inactive-owner"
+        });
         const pageElement = surface.page.element;
         this.logger.inputLifecycleEvent("router-rejected", {
           page: surface.page.pageNumber,
@@ -4904,6 +5156,30 @@ export class ViewerInkSession {
           ...(route === "draw" ? { pressureProfile: this.pressureProfile() } : {}),
           clientX: Math.round(event.clientX),
           clientY: Math.round(event.clientY)
+        });
+      },
+      onRouteDecision: (route, reason, event) => {
+        this.recordPostUiProbeStage(event, "route", {
+          page: surface.page.pageNumber,
+          route,
+          routeReason: reason,
+          routerGeneration: surface.router?.generation ?? null
+        });
+        if (event.pointerType === "pen" && route === "native") {
+          this.finishPostUiProbeWithOutcome(event, "post-ui-pen-routed-native", {
+            page: surface.page.pageNumber,
+            route,
+            routeReason: reason,
+            routerGeneration: surface.router?.generation ?? null
+          });
+        }
+      },
+      onPointerClaim: (route, event, details) => {
+        this.recordPostUiProbeStage(event, "claim", {
+          page: surface.page.pageNumber,
+          route,
+          claimFailed: !details.preventDefaultCalled || !details.propagationStopped || !details.captureSucceeded,
+          ...details
         });
       },
       onTouchLifecycle: (phase, event, details) => {
@@ -5209,6 +5485,18 @@ export class ViewerInkSession {
       occluderShell: hitTest.details.occluderShell ?? null
     });
     if (event.pointerType === "pen" && hitTest.geometricPage) {
+      this.recordPostUiProbeStage(event, "hit-test", {
+        page: hitTest.geometricPage.pageNumber,
+        pageOccludedByUi: true,
+        occluded: true,
+        occluderShell: hitTest.details.occluderShell ?? null
+      });
+      this.finishPostUiProbeWithOutcome(event, "post-ui-pen-ui-occluded", {
+        page: hitTest.geometricPage.pageNumber,
+        pageOccludedByUi: true,
+        occluded: true,
+        occluderShell: hitTest.details.occluderShell ?? null
+      });
       this.logPenOcclusionAnomaly(event, hitTest);
     }
     return true;
@@ -8929,6 +9217,22 @@ export class ViewerInkSession {
         strokeCount,
         textCount
       });
+      const pendingProbe = this.postUiPendingPersistence;
+      if (pendingProbe) {
+        const persisted = outcome === "saved";
+        const persistedStrokePoints = persisted
+          ? snapshot.pages
+            .filter((page) => pendingProbe.page === null || page.page === pendingProbe.page)
+            .reduce((total, page) => total + page.strokes.reduce((pageTotal, stroke) => pageTotal + stroke.points.length, 0), 0)
+          : 0;
+        this.logger.postUiProbe("persisted", {
+          correlationId: pendingProbe.correlationId,
+          persisted,
+          persistedStrokePoints,
+          persistenceOutcome: outcome
+        });
+        this.postUiPendingPersistence = null;
+      }
     };
     if (!this.stillOwnsPersist()) {
       this.logger.sidecarPersist({

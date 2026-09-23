@@ -1187,6 +1187,12 @@ describe("viewer runtime tracer", () => {
 
       // Close modal: remove from DOM so pen can draw again.
       modal.remove();
+      // Let the bounded UI-shell observer arm the post-Settings trace.
+      await Promise.resolve();
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: "post-ui input probe",
+        payload: expect.objectContaining({ phase: "armed", transition: expect.objectContaining({ reason: "removed" }) })
+      }));
       Object.defineProperty(document, "elementFromPoint", {
         configurable: true,
         value: () => adapter.pageElement
@@ -1200,7 +1206,15 @@ describe("viewer runtime tracer", () => {
       expect(draw.defaultPrevented).toBe(true);
       adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 1174 }));
 
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: "post-ui input probe",
+        payload: expect.objectContaining({ phase: "terminal", outcome: "post-ui-pen-success", contact: expect.objectContaining({ pointerType: "pen" }) })
+      }));
       await session.manualSave();
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: "post-ui input probe",
+        payload: expect.objectContaining({ phase: "persisted", persisted: true, persistedStrokePoints: expect.any(Number) })
+      }));
       const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
       expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
     } finally {
