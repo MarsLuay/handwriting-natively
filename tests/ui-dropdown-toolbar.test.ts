@@ -120,6 +120,27 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
+  it("selects and edits bounded drawing presets without a separate draw mode", () => {
+    const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    const changed = vi.fn();
+    const toolbar = new AnnotationToolbar({ preferences, autosave: true, callbacks: { onPreferencesChange: changed }, ownerDocument: document });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
+    document.querySelector<HTMLButtonElement>("[data-option-id='preset-blue-pen']")?.click();
+    expect(preferences.activePresetId).toBe("blue-pen");
+    expect(preferences.activeTool).toBe("pen");
+    expect(preferences.pen.color).toBe("#2563eb");
+
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
+    const name = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-preset-editor input");
+    if (!name) throw new Error("preset name input missing");
+    name.value = "Meeting pen";
+    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-preset-editor button")?.click();
+    expect(preferences.presets.find((preset) => preset.id === "blue-pen")?.name).toBe("Meeting pen");
+    expect(changed).toHaveBeenCalled();
+    toolbar.destroy();
+  });
+
   it("orders draw, color, pen, eraser, then laser on the toolbar", () => {
     const toolbar = new AnnotationToolbar({
       preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),

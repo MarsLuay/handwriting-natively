@@ -14,7 +14,7 @@ Handwriting Natively adds one annotation system to Obsidian's direct and embedde
 - `history/`: commands used by edits, undo, redo, autosave scheduling.
 - `ui/`: one accessible toolbar and dropdown system used by both viewing routes.
 
-Private viewer changes should require edits only in `integration/`. Engine tests run without Obsidian.
+Private viewer changes should require edits only in `integration/`. Engine tests run without Obsidian. The open-issue evidence boundary and remaining hardware gates are tracked in `docs/issue-resolution-matrix.md`.
 
 ## Canonical data
 
@@ -34,7 +34,13 @@ Each attached viewer owns one disposable session. Closing PDF, removing embed, s
 
 ## First use
 
-Open PDF, enable Draw, select Pen, Pencil, Highlighter, or Laser. Pen/pencil/highlighter persist to the sidecar. Laser trails fade away after a short hold and are never saved. Mouse/touch keep normal PDF controls until Draw is on. Status reads `Saved`, `Saving…`, `Unsaved changes`, or `Save failed`.
+Open PDF, select Pen, Pencil, Highlighter, or Laser. Pen/pencil/highlighter persist to the sidecar. Laser trails fade away after a short hold and are never saved. Stylus input annotates directly, touch keeps native PDF navigation, and mouse behavior follows the selected input policy. Status reads `Saved`, `Saving…`, `Unsaved changes`, or `Save failed`.
+
+## Coordinate and input invariants
+
+- Persisted annotation geometry is page-space data; viewport CSS pixels, scroll offsets, zoom, rotation, and device-pixel-ratio are render-time inputs only.
+- Pointer Events are the authoritative input stream when available. Pen ownership is plugin-local, touch remains native PDF navigation, and no global `touch-action: none` is applied.
+- Viewer/page generations invalidate stale async work. A replacement page is revalidated before an overlay accepts input.
 
 ## Offline behavior
 
