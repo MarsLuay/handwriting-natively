@@ -942,7 +942,7 @@ describe("viewer runtime tracer", () => {
       }
     });
     const drawer = document.createElement("div");
-    drawer.className = "workspace-drawer mod-left";
+    drawer.className = "workspace-drawer mod-left is-shown";
     const uiTarget = document.createElement("div");
     uiTarget.className = "setting-item";
     drawer.append(uiTarget);
@@ -989,6 +989,14 @@ describe("viewer runtime tracer", () => {
           firstInteractiveHit: expect.objectContaining({ classes: expect.arrayContaining(["setting-item"]) })
         })
       }));
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: "ink input anomaly",
+        payload: expect.objectContaining({
+          reason: "pen-occlusion-anomaly",
+          pageOccludedByUi: true,
+          occluderShell: expect.objectContaining({ kind: "drawer", active: true })
+        })
+      }));
 
       await session.manualSave();
       const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
@@ -999,6 +1007,208 @@ describe("viewer runtime tracer", () => {
       if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
       else delete (document as Partial<Document>).elementsFromPoint;
       drawer.remove();
+      await session.destroy();
+    }
+  });
+
+  it("draws through a closed drawer leftover that still appears in the hit stack", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+    // Closed mobile drawer: still in DOM, no is-shown / is-pinned.
+    const drawer = document.createElement("div");
+    drawer.className = "workspace-drawer mod-left";
+    const staleHit = document.createElement("div");
+    staleHit.className = "workspace-drawer-header";
+    drawer.append(staleHit);
+    document.body.append(drawer);
+    const originalElementFromPoint = document.elementFromPoint;
+    const originalElementsFromPoint = document.elementsFromPoint;
+
+    try {
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => staleHit
+      });
+      Object.defineProperty(document, "elementsFromPoint", {
+        configurable: true,
+        value: () => [staleHit, adapter.pageElement]
+      });
+
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 1171 });
+      staleHit.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 1171 }));
+
+      expect(logs).not.toContainEqual(expect.objectContaining({
+        event: "page router",
+        payload: expect.objectContaining({ reason: "ui-occluded" })
+      }));
+
+      await session.manualSave();
+      const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+      expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    } finally {
+      if (originalElementFromPoint) document.elementFromPoint = originalElementFromPoint;
+      else delete (document as Partial<Document>).elementFromPoint;
+      if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
+      else delete (document as Partial<Document>).elementsFromPoint;
+      drawer.remove();
+      await session.destroy();
+    }
+  });
+
+  it("does not treat bare .vertical-tab-content as a pen occluder", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+    const layout = document.createElement("div");
+    layout.className = "vertical-tab-content";
+    document.body.append(layout);
+    const originalElementFromPoint = document.elementFromPoint;
+    const originalElementsFromPoint = document.elementsFromPoint;
+
+    try {
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => layout
+      });
+      Object.defineProperty(document, "elementsFromPoint", {
+        configurable: true,
+        value: () => [layout, adapter.pageElement]
+      });
+
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 1172 });
+      layout.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 1172 }));
+
+      expect(logs).not.toContainEqual(expect.objectContaining({
+        event: "page router",
+        payload: expect.objectContaining({ reason: "ui-occluded" })
+      }));
+
+      await session.manualSave();
+      const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+      expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    } finally {
+      if (originalElementFromPoint) document.elementFromPoint = originalElementFromPoint;
+      else delete (document as Partial<Document>).elementFromPoint;
+      if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
+      else delete (document as Partial<Document>).elementsFromPoint;
+      layout.remove();
+      await session.destroy();
+    }
+  });
+
+  it("keeps occluding an open settings modal after open/close churn", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+    const modal = document.createElement("div");
+    modal.className = "modal-container";
+    const tabContent = document.createElement("div");
+    tabContent.className = "vertical-tab-content";
+    const setting = document.createElement("div");
+    setting.className = "setting-item-description";
+    tabContent.append(setting);
+    modal.append(tabContent);
+    document.body.append(modal);
+    const originalElementFromPoint = document.elementFromPoint;
+    const originalElementsFromPoint = document.elementsFromPoint;
+
+    try {
+      // Simulate Settings open → close → open again.
+      modal.classList.add("mod-open");
+      modal.classList.remove("mod-open");
+      modal.classList.add("mod-open");
+
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => setting
+      });
+      Object.defineProperty(document, "elementsFromPoint", {
+        configurable: true,
+        value: () => [setting, tabContent, modal]
+      });
+
+      const blocked = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 1173 });
+      setting.dispatchEvent(blocked);
+      expect(blocked.defaultPrevented).toBe(false);
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: "page router",
+        payload: expect.objectContaining({ reason: "ui-occluded", pageOccludedByUi: true })
+      }));
+
+      // Close modal: remove from DOM so pen can draw again.
+      modal.remove();
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => adapter.pageElement
+      });
+      Object.defineProperty(document, "elementsFromPoint", {
+        configurable: true,
+        value: () => [adapter.pageElement]
+      });
+      const draw = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 1174 });
+      adapter.pageElement.dispatchEvent(draw);
+      expect(draw.defaultPrevented).toBe(true);
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "pen", pointerId: 1174 }));
+
+      await session.manualSave();
+      const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+      expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
+    } finally {
+      if (originalElementFromPoint) document.elementFromPoint = originalElementFromPoint;
+      else delete (document as Partial<Document>).elementFromPoint;
+      if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
+      else delete (document as Partial<Document>).elementsFromPoint;
+      modal.remove();
       await session.destroy();
     }
   });
