@@ -10,7 +10,7 @@ Handwriting Natively adds one annotation system to Obsidian's direct and embedde
 - `ink/`: strokes, filtering, rendering, simplification, hit testing. Coordinates use PDF page space.
 - `tools/`: tool state and behavior. Preferences stay outside annotation documents.
 - `storage/`: versioned sidecars, identity, serialized autosave, manual save, recovery, atomic writes.
-- `pdf/`: coordinate mapping and annotated-copy export.
+- `pdf/`: page transforms, explicit source-PDF page mutations, coordinate mapping, and annotated-copy export.
 - `history/`: commands used by edits, undo, redo, autosave scheduling.
 - `ui/`: one accessible toolbar and dropdown system used by both viewing routes.
 
@@ -18,7 +18,7 @@ Private viewer changes should require edits only in `integration/`. Engine tests
 
 ## Canonical data
 
-Sidecar JSON is canonical editable annotation data. Screen coordinates are transient. Original PDF stays unchanged. `Export PDF` creates a separate annotated copy; there is no in-place source-PDF write path.
+Sidecar JSON is canonical editable annotation data. Screen coordinates are transient. Annotation edits remain sidecar-only. Explicit Add page, Delete page, Import page, and Scan document actions rewrite the open source PDF together with remapped sidecar/recovery stores through one compensating transaction. `Export PDF` still creates a separate annotated copy.
 
 ## Lifecycle
 

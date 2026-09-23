@@ -26,18 +26,19 @@ import { VaultDebugLog } from "./logging/VaultDebugLog";
 import {
   createGoodNotesNotebook,
   createPdfFromTemplate,
-  createUnsupportedPdfPageMutationCallbacks,
+  deletePdfPages,
   getPdfPageCount,
   importPdfPages,
   insertScannedPages,
+  insertMatchingBlankPage,
   type ImportedPdfPages
 } from "./pdf/PdfNoteService";
 import { writePdfAndAnnotationStoresAtomic } from "./pdf/PdfPageMutation";
 import { PdfImportFilePicker, PdfPageSelectionModal } from "./ui/PdfPageImport";
 import { mergeSettings, NativePdfInkSettingTab, type CopiedLogDiagnostics } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
-import { createDocumentIdentity } from "./storage/DocumentIdentity";
-import { insertPagesIntoSidecar } from "./storage/SidecarPageRemoval";
+import { createDocumentIdentity, hashDocumentContent } from "./storage/DocumentIdentity";
+import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "./storage/SidecarPageRemoval";
 import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
 import type { PluginSettings, ToolPreferences } from "./model";
@@ -702,11 +703,13 @@ export default class NativePdfInkPlugin extends Plugin {
       writeSourcePdf: async (bytes) => {
         await this.app.vault.modifyBinary(file, bytes.slice().buffer);
       },
+      onInsertPage: (pageNumber) => this.insertPageInPlace(file, pageNumber),
       onImportPages: (afterPage) => this.prepareImportedPages(file, afterPage),
       openScanDocument: () => new Promise((resolve) => new ScanDocumentModal(this.app, resolve).open()),
       onInsertScannedPages: (pageNumber, pages) => this.insertScannedPagesInPlace(file, pageNumber, pages),
       writeExport: async (name, bytes) => this.writeAndOpenExport(file, name, bytes),
-      ...createUnsupportedPdfPageMutationCallbacks(),
+      onDeletePage: (pageNumber) => this.deletePageInPlace(file, pageNumber),
+      onDeletePages: (pageNumbers) => this.deletePagesInPlace(file, pageNumbers),
       writeSvgExport: async (name, svg) => this.writeSvgExport(file, name, svg),
       notice: (message) => new Notice(message),
       decideUnsaved: () => this.decideUnsaved(),
@@ -932,6 +935,135 @@ export default class NativePdfInkPlugin extends Plugin {
 
   private templateLogValue(): string {
     return this.inkSettings.pdfTemplatePath.trim() || "blank-us-letter";
+  }
+
+  /** Insert a blank page in place and remap persisted page-numbered stores. */
+  private async insertPageInPlace(file: TFile, requestedPageNumber: number): Promise<number> {
+    const source = new Uint8Array(await this.app.vault.readBinary(file));
+    const inserted = await insertMatchingBlankPage(source, requestedPageNumber);
+    const files = createVaultFsTextAdapter(this.app.vault);
+    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
+    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
+    const identityInput = { vaultPath: file.path, contentHash: hashDocumentContent(source) };
+    const sidecarBefore = await sidecars.loadForDocument(identityInput);
+    const recoveryBefore = await recovery.loadForDocument(identityInput);
+    const sidecarAfter = sidecarBefore ? insertPageIntoSidecar(sidecarBefore, inserted.pageNumber) : null;
+    const recoveryAfter = recoveryBefore ? insertPageIntoSidecar(recoveryBefore, inserted.pageNumber) : null;
+    let writeStage = "prepared";
+    try {
+      await this.vaultDebugLog.writeUrgent("info", "pdf-page-insert-start", {
+        document: file.path,
+        page: inserted.pageNumber,
+        requestedPage: requestedPageNumber,
+        hasSidecar: Boolean(sidecarBefore),
+        hasRecovery: Boolean(recoveryBefore)
+      });
+      await writePdfAndAnnotationStoresAtomic({
+        sourceBytes: source,
+        updatedBytes: inserted.bytes,
+        sidecarBefore,
+        sidecarAfter,
+        recoveryBefore,
+        recoveryAfter,
+        writePdf: async (bytes) => this.app.vault.modifyBinary(file, bytes.slice().buffer),
+        saveSidecar: (value) => sidecars.save(value),
+        saveRecovery: (value) => recovery.save(value),
+        onStage: (stage) => { writeStage = stage; }
+      });
+      await this.vaultDebugLog.writeUrgent("info", "pdf-page-insert-complete", {
+        document: file.path,
+        page: inserted.pageNumber,
+        requestedPage: requestedPageNumber,
+        sourceBytes: source.byteLength,
+        resultBytes: inserted.bytes.byteLength,
+        sidecarRemapped: Boolean(sidecarAfter),
+        recoveryRemapped: Boolean(recoveryAfter)
+      });
+      return inserted.pageNumber;
+    } catch (error) {
+      await this.vaultDebugLog.writeUrgent("error", "pdf-page-insert-failed", {
+        document: file.path,
+        page: inserted.pageNumber,
+        requestedPage: requestedPageNumber,
+        writeStage,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
+  }
+
+  /** Delete one source page and remap persisted page-numbered stores. */
+  private async deletePageInPlace(file: TFile, pageNumber: number): Promise<void> {
+    await this.deletePagesInPlace(file, [pageNumber]);
+  }
+
+  /** Delete one or more source pages in one PDF/store transaction. */
+  private async deletePagesInPlace(file: TFile, requestedPageNumbers: readonly number[]): Promise<void> {
+    const source = new Uint8Array(await this.app.vault.readBinary(file));
+    const deletion = await deletePdfPages(source, requestedPageNumbers);
+    const files = createVaultFsTextAdapter(this.app.vault);
+    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
+    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
+    const identityInput = { vaultPath: file.path, contentHash: hashDocumentContent(source) };
+    const sidecarBefore = await sidecars.loadForDocument(identityInput);
+    const recoveryBefore = await recovery.loadForDocument(identityInput);
+    const sidecarAfter = sidecarBefore
+      ? deletion.pageNumbers.reduce((sidecar, pageNumber) => removePageFromSidecar(sidecar, pageNumber), sidecarBefore)
+      : null;
+    const recoveryAfter = recoveryBefore
+      ? deletion.pageNumbers.reduce((recoverySnapshot, pageNumber) => removePageFromSidecar(recoverySnapshot, pageNumber), recoveryBefore)
+      : null;
+    const range = deletion.pageNumbers.length > 1;
+    const eventPrefix = range ? "pdf-pages-delete" : "pdf-page-delete";
+    let writeStage = "prepared";
+    try {
+      await this.vaultDebugLog.writeUrgent("info", `${eventPrefix}-start`, {
+        document: file.path,
+        page: deletion.pageNumbers[0],
+        pageNumbers: deletion.pageNumbers,
+        count: deletion.pageNumbers.length,
+        firstPage: deletion.pageNumbers.at(-1),
+        lastPage: deletion.pageNumbers[0],
+        pageCountBefore: deletion.pageCountBefore,
+        pageCountAfter: deletion.pageCountAfter,
+        hasSidecar: Boolean(sidecarBefore),
+        hasRecovery: Boolean(recoveryBefore)
+      });
+      await writePdfAndAnnotationStoresAtomic({
+        sourceBytes: source,
+        updatedBytes: deletion.bytes,
+        sidecarBefore,
+        sidecarAfter,
+        recoveryBefore,
+        recoveryAfter,
+        writePdf: async (bytes) => this.app.vault.modifyBinary(file, bytes.slice().buffer),
+        saveSidecar: (value) => sidecars.save(value),
+        saveRecovery: (value) => recovery.save(value),
+        onStage: (stage) => { writeStage = stage; }
+      });
+      await this.vaultDebugLog.writeUrgent("info", `${eventPrefix}-complete`, {
+        document: file.path,
+        page: deletion.pageNumbers[0],
+        pageNumbers: deletion.pageNumbers,
+        count: deletion.pageNumbers.length,
+        firstPage: deletion.pageNumbers.at(-1),
+        lastPage: deletion.pageNumbers[0],
+        sourceBytes: source.byteLength,
+        resultBytes: deletion.bytes.byteLength,
+        sidecarRemapped: Boolean(sidecarAfter),
+        recoveryRemapped: Boolean(recoveryAfter)
+      });
+    } catch (error) {
+      await this.vaultDebugLog.writeUrgent("error", `${eventPrefix}-failed`, {
+        document: file.path,
+        page: deletion.pageNumbers[0],
+        pageNumbers: deletion.pageNumbers,
+        count: deletion.pageNumbers.length,
+        writeStage,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
   }
 
   /** Inserts confirmed scanner pages and remaps all persisted page stores once. */

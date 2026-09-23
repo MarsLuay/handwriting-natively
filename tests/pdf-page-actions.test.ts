@@ -1,10 +1,8 @@
 import { PDFDocument } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import {
-  createUnsupportedPdfPageMutationCallbacks,
   deletePdfPages,
-  insertMatchingBlankPage,
-  PdfPageMutationUnsupportedError
+  insertMatchingBlankPage
 } from "../src/pdf/PdfNoteService";
 
 async function createSourcePdf(): Promise<Uint8Array> {
@@ -15,29 +13,27 @@ async function createSourcePdf(): Promise<Uint8Array> {
 }
 
 describe("PDF page actions", () => {
-  it("rejects source-PDF insertion without an attempted write", async () => {
-    const callbacks = createUnsupportedPdfPageMutationCallbacks();
+  it("inserts a matching page at the requested thumbnail position", async () => {
+    const source = await createSourcePdf();
+    const inserted = await insertMatchingBlankPage(source, 2);
+    const result = await PDFDocument.load(inserted.bytes);
 
-    await expect(callbacks.onInsertPage(2)).rejects.toMatchObject({
-      name: "PdfPageMutationUnsupportedError",
-      code: "source-pdf-page-mutation-unsupported",
-      action: "insert"
-    });
-    await expect(callbacks.onInsertPage(2)).rejects.toBeInstanceOf(PdfPageMutationUnsupportedError);
-    await expect(callbacks.onInsertPage(2)).rejects.toThrow("original PDFs are read-only");
+    expect(inserted.pageNumber).toBe(2);
+    expect(result.getPageCount()).toBe(3);
+    expect(result.getPage(1).getWidth()).toBe(400);
+    expect(result.getPage(1).getHeight()).toBe(600);
   });
 
-  it("rejects single and range source-PDF deletion explicitly", async () => {
-    const callbacks = createUnsupportedPdfPageMutationCallbacks();
+  it("deletes a single page and preserves the remaining page order", async () => {
+    const source = await createSourcePdf();
+    const deleted = await deletePdfPages(source, [1]);
+    const result = await PDFDocument.load(deleted.bytes);
 
-    await expect(callbacks.onDeletePage(1)).rejects.toMatchObject({
-      code: "source-pdf-page-mutation-unsupported",
-      action: "delete"
-    });
-    await expect(callbacks.onDeletePages([2, 1])).rejects.toMatchObject({
-      code: "source-pdf-page-mutation-unsupported",
-      action: "delete"
-    });
+    expect(deleted.pageNumbers).toEqual([1]);
+    expect(deleted.pageCountBefore).toBe(2);
+    expect(deleted.pageCountAfter).toBe(1);
+    expect(result.getPageCount()).toBe(1);
+    expect(result.getPage(0).getWidth()).toBe(500);
   });
 
   it("keeps pure derived page transforms separate from the source bytes", async () => {
