@@ -28,7 +28,8 @@ const diagnostics = {
   appMode: "desktop",
   runtime: "Chromium test runtime",
   userAgent: "TestRuntime/1.0",
-  devicePixelRatio: 1.25
+  devicePixelRatio: 1.25,
+  profileSchemaVersion: 2
 };
 
 describe("safe defaults", () => {
@@ -45,6 +46,7 @@ describe("safe defaults", () => {
     expect(copied).toContain("Runtime: Chromium test runtime");
     expect(copied).toContain("User agent: TestRuntime/1.0");
     expect(copied).toContain("Device pixel ratio: 1.25");
+    expect(copied).toContain("Performance profile schema: 2");
   });
 
   it("reserves diagnostics space before taking the newest log tail", () => {
