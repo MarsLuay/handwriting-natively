@@ -3030,6 +3030,8 @@ describe("viewer runtime tracer", () => {
       recovery: new RecoveryRepository(files, "recovery"),
       saveSettings: async () => undefined,
       readSourcePdf: async () => new Uint8Array(),
+      writeSourcePdf: async () => undefined,
+      onImportPages: async () => null,
       writeExport: async () => undefined,
       openScanDocument: async () => [
         { bytes: new Uint8Array([1]), mimeType: "image/jpeg", width: 100, height: 200 },
@@ -3054,7 +3056,7 @@ describe("viewer runtime tracer", () => {
     const more = adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='more']");
     more?.click();
     expect(document.querySelector<HTMLButtonElement>("[data-option-id='scan-document']")?.textContent).toBe("Scan document");
-    expect(document.querySelector<HTMLButtonElement>("[data-option-id='import-page']")).toBeNull();
+    expect(document.querySelector<HTMLButtonElement>("[data-option-id='import-page']")?.textContent).toBe("Import page");
     await (session as unknown as { scanDocument(): Promise<void> }).scanDocument();
 
     expect(requestedPage).toBe(2);
