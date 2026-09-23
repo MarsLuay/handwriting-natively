@@ -13,6 +13,10 @@ function remapText(text: PdfTextAnnotation, deletedPage: number): PdfTextAnnotat
   return text.page > deletedPage ? { ...text, page: remapPageNumber(text.page, deletedPage) } : text;
 }
 
+function shiftPageNumberByCount(page: number, insertedPage: number, count: number): number {
+  return page >= insertedPage ? page + count : page;
+}
+
 /** Drops annotations on a deleted PDF page and shifts every later page down one. */
 export function removePageFromSidecar(
   sidecar: SidecarSchemaV1,
@@ -59,11 +63,13 @@ export function insertPagesIntoSidecar(
     ...sidecar,
     pages: sidecar.pages.map((page) => ({
       ...page,
-      page: shift(page.page),
-      strokes: page.strokes.map((stroke) => stroke.page >= insertedPage ? { ...stroke, page: shift(stroke.page) } : stroke),
-      ...(page.texts ? {
-        texts: page.texts.map((text) => text.page >= insertedPage ? { ...text, page: shift(text.page) } : text)
-      } : {})
+      page: shiftPageNumberByCount(page.page, insertedPage, count),
+      strokes: page.strokes.map((stroke) => stroke.page >= insertedPage
+        ? { ...stroke, page: shiftPageNumberByCount(stroke.page, insertedPage, count) }
+        : stroke),
+      ...(page.texts ? { texts: page.texts.map((text) => text.page >= insertedPage
+        ? { ...text, page: shiftPageNumberByCount(text.page, insertedPage, count) }
+        : text) } : {})
     })),
     updatedAt
   };

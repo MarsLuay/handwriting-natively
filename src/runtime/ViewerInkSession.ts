@@ -4005,7 +4005,12 @@ export class ViewerInkSession {
     this.commitActiveTextEditor("page-insert");
     this.cancelTextBoxTransform("page-insert", false);
     const remapped = insertPagesIntoSidecar(before, insertedPage, count);
-    this.hydrateSidecarSnapshot(remapped);
+    this.ink.clear();
+    this.texts.clear();
+    for (const page of remapped.pages) {
+      for (const stroke of page.strokes) this.ink.add(stroke);
+      for (const text of page.texts ?? []) this.texts.add(text);
+    }
     const metrics = [...this.pageMetrics.entries()];
     this.pageMetrics.clear();
     for (const [page, value] of metrics) this.pageMetrics.set(page >= insertedPage ? page + count : page, value);

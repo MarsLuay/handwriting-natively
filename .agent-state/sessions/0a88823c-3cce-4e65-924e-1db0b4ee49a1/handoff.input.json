@@ -1,0 +1,59 @@
+﻿{
+    "schema_version":  2,
+    "task_goal":  "Implement exactly MarsLuay/handwriting-natively#111 in the assigned issue-accept worktree.",
+    "acceptance_criteria":  [
+                                "mobile/tablet Scan document action",
+                                "action-time rear-camera capture with review/crop/perspective/rotate/retake/confirm",
+                                "single and multi-page source-PDF insertion after current page",
+                                "sidecar remap and atomic cancel/error cleanup",
+                                "focused tests plus npm test and npm run build"
+                            ],
+    "confirmed_facts":  [
+
+                        ],
+    "assumptions":  [
+                        "handoff written from session wrapper"
+                    ],
+    "important_files":  [
+                            "src/ui/AnnotationToolbar.ts"
+                        ],
+    "important_symbols":  [
+
+                          ],
+    "decisions":  [
+                      {
+                          "decision":  "snapshot via agent-session-start",
+                          "rationale":  "Pre-edit baseline captured; isolated worktree created from origin/main; required instructions and project-memory sources read."
+                      }
+                  ],
+    "files_changed":  [
+                          "src/ui/AnnotationToolbar.ts"
+                      ],
+    "verification_performed":  [
+                                   "baseline: not yet run"
+                               ],
+    "baseline_failures":  [
+
+                          ],
+    "current_failures":  [
+
+                         ],
+    "unresolved_risks":  [
+
+                         ],
+    "remaining_steps":  [
+
+                        ],
+    "next_recommended_action":  "Trace existing More action, page insertion, sidecar remap, and PDF mutation seams; add focused failing tests before implementation.",
+    "source_session_id":  "0a88823c-3cce-4e65-924e-1db0b4ee49a1",
+    "active_subproject":  ".",
+    "raw_artifact_refs":  [
+
+                          ],
+    "contract_id":  "native-pdf-handwriting-context-v1",
+    "contract_hash":  "src/runtime/ViewerInkSession.ts",
+    "route_id":  "project-memory",
+    "context_packet_hash":  "src/main.ts",
+    "recovery_disposition":  "new isolated worktree; canonical checkout preserved; user-supplied session and plan identity",
+    "trigger":  "issue-accept"
+}

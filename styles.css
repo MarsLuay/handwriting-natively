@@ -892,25 +892,6 @@
   text-decoration: underline;
 }
 
-.native-pdf-handwriting-confirm-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.native-pdf-handwriting-import-count {
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-  margin: 8px 0 0;
-}
-
-.native-pdf-handwriting-import-error {
-  color: var(--text-error, #c0392b);
-  font-size: var(--font-ui-small);
-  margin: 8px 0 0;
-  min-height: 1.2em;
-}
 .native-pdf-handwriting-scan-input { display: none; }
 .native-pdf-handwriting-scan-body { min-width: min(520px, 78vw); }
 .native-pdf-handwriting-scan-preview {
