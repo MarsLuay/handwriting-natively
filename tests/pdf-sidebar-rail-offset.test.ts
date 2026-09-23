@@ -3,6 +3,7 @@ import { NativePdfViewAdapter } from "../src/integration/NativePdfViewAdapter";
 import {
   INK_PDF_SIDEBAR_OFFSET_VAR,
   isPdfSidebarOpen,
+  mutationTogglesPdfSidebarOpen,
   pdfSidebarOverlapOffset,
   syncLeftChromeWithPdfSidebar
 } from "../src/integration/PdfSidebarRailOffset";
@@ -23,6 +24,13 @@ function rect(left: number, width: number, top = 0, height = 600) {
   };
 }
 
+async function flushFrames(count = 2): Promise<void> {
+  for (let i = 0; i < count; i += 1) {
+    await Promise.resolve();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+}
+
 describe("pdf sidebar rail offset", () => {
   it("treats sidebarOpen as open even when width is modest", () => {
     const content = document.createElement("div");
@@ -31,6 +39,27 @@ describe("pdf sidebar rail offset", () => {
     sidebar.className = "pdf-sidebar-container";
     expect(isPdfSidebarOpen(content, sidebar)).toBe(true);
     expect(isPdfSidebarOpen(document.createElement("div"), null)).toBe(false);
+  });
+
+  it("detects sidebarOpen class flips from mutation records", () => {
+    const content = document.createElement("div");
+    content.className = "pdf-content-container";
+    const open = {
+      type: "attributes",
+      attributeName: "class",
+      oldValue: "pdf-content-container",
+      target: content
+    } as unknown as MutationRecord;
+    content.classList.add("sidebarOpen");
+    expect(mutationTogglesPdfSidebarOpen([open])).toBe(true);
+
+    const styleOnly = {
+      type: "attributes",
+      attributeName: "style",
+      oldValue: "",
+      target: content
+    } as unknown as MutationRecord;
+    expect(mutationTogglesPdfSidebarOpen([styleOnly])).toBe(false);
   });
 
   it("returns 0 when the content pane is already clear of the sidebar", () => {
@@ -205,12 +234,89 @@ describe("pdf sidebar rail offset", () => {
     content.dispatchEvent(new Event("transitionend"));
     // MutationObserver + rAF — flush both.
     await Promise.resolve();
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await flushFrames(2);
 
     syncLeftChromeWithPdfSidebar(chrome!, host);
     expect(chrome!.style.getPropertyValue(INK_PDF_SIDEBAR_OFFSET_VAR)).toBe("220px");
     expect(scroll.contains(host.querySelector(".native-pdf-handwriting-rail")!)).toBe(false);
+    adapter.destroy();
+  });
+
+  it("suppresses non-authoritative sidebar follow during an active zoom burst", async () => {
+    const debug = vi.fn();
+    const host = document.createElement("div");
+    host.className = "pdf-container workspace-leaf";
+    const toolbarHost = document.createElement("div");
+    toolbarHost.className = "pdf-toolbar";
+    const content = document.createElement("div");
+    content.className = "pdf-content-container";
+    const sidebar = document.createElement("div");
+    sidebar.className = "pdf-sidebar-container";
+    let sidebarWidth = 0;
+    Object.defineProperty(sidebar, "offsetWidth", { configurable: true, get: () => sidebarWidth });
+    Object.defineProperty(sidebar, "offsetHeight", { value: 600 });
+    sidebar.getBoundingClientRect = () => rect(0, sidebarWidth);
+    const scroll = document.createElement("div");
+    scroll.className = "pdf-viewer-scroll-container";
+    Object.defineProperty(scroll, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(scroll, "clientHeight", { value: 600, configurable: true });
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const page = document.createElement("div");
+    page.className = "page";
+    page.dataset.pageNumber = "1";
+    page.dataset.scale = "1";
+    page.dataset.rotation = "0";
+    page.append(document.createElement("canvas"));
+    viewer.append(page);
+    scroll.append(viewer);
+    content.append(sidebar, scroll);
+    host.append(toolbarHost, content);
+    document.body.append(host);
+
+    const adapter = await NativePdfViewAdapter.attach(host, {
+      onDebugLog: (level, event, payload) => debug(level, event, payload)
+    });
+    const toolbar = document.createElement("div");
+    toolbar.className = "native-pdf-handwriting-toolbar";
+    adapter.mountToolbar(toolbar, "left");
+    const chrome = host.querySelector<HTMLElement>(".native-pdf-handwriting-chrome")!;
+    chrome.getBoundingClientRect = () => rect(0, 1000);
+    // Let mount/resize follow settle before the zoom burst gate.
+    await flushFrames(30);
+
+    const followStartsBeforeZoom = debug.mock.calls.filter(
+      (call) => call[1] === "pdf sidebar rail follow start"
+    ).length;
+
+    adapter.setInkZoomBurstActive(true);
+    content.style.transform = "scale(1.2)";
+    content.dispatchEvent(new Event("transitionend"));
+    await flushFrames(3);
+
+    const suppressed = debug.mock.calls.filter((call) => call[1] === "pdf sidebar rail follow suppressed during zoom");
+    expect(suppressed.length).toBeGreaterThanOrEqual(1);
+    expect(
+      debug.mock.calls.filter((call) => call[1] === "pdf sidebar rail follow start").length
+    ).toBe(followStartsBeforeZoom);
+
+    const metricsDuring = adapter.consumeSidebarFollowZoomMetrics();
+    expect(metricsDuring.sidebarFollowSuppressedTriggers).toBeGreaterThanOrEqual(1);
+
+    // Real open/close still applies an offset sync during the burst.
+    sidebarWidth = 220;
+    content.classList.add("sidebarOpen");
+    await flushFrames(3);
+    expect(chrome.style.getPropertyValue(INK_PDF_SIDEBAR_OFFSET_VAR)).toBe("220px");
+
+    adapter.setInkZoomBurstActive(false);
+    await flushFrames(3);
+    const settleFollow = debug.mock.calls.filter(
+      (call) => call[1] === "pdf sidebar rail follow start"
+        && (call[2] as { trigger?: string }).trigger === "zoom-settle-sync"
+    );
+    expect(settleFollow.length).toBeGreaterThanOrEqual(1);
+
     adapter.destroy();
   });
 });

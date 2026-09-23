@@ -1,0 +1,11 @@
+# Decisions
+
+- Keep undocumented Obsidian PDF integration behind the adapter boundary in `src/integration/`; the annotation engine and tests should not depend on private host objects.
+- Treat sidecar JSON as the canonical editable annotation data, with page-space coordinates; use separate recovery data for crash recovery and separate files for exports.
+- Pencil-first / device-aware input: stylus (`pointerType === "pen"`) annotates with the active tool immediately; finger touch stays native PDF pan/pinch (never inks); desktop primary mouse starts annotation only when the gesture begins over a PDF page, while empty viewer space retains the configured `mouseInputMode` (`pan` | `annotate` | `native`) behavior. Do not globally apply `touch-action: none`.
+- Default autosave on. Completed annotation commands schedule persistence after the documented 750 ms debounce; closing a PDF flushes, and manual-save mode requires an explicit save/discard/cancel choice when dirty.
+- Keep operation local to the vault/device: no telemetry, hosted service, CDN, remote AI, OCR, or handwriting recognition.
+- Share one toolbar, tool state, history, storage, autosave, export, and recovery path between direct and embedded PDF views.
+- Import page (More menu): copy selected native pages via `PDFDocument.copyPages` into the open PDF after the current page in one source-PDF write, then shift later sidecar page indices by the imported count. Destination and source bytes load independently so self-import cannot corrupt the open document; picker cancel and load failures leave PDF+sidecar unchanged.
+- Scan document (More menu, mobile/tablet): request rear-camera capture at action time, review crop/perspective/rotate/retake, then insert one or more image-backed pages after the current page in one atomic PDF+sidecar+recovery write (`writePdfAndAnnotationStoresAtomic` / `insertScannedPages`). Cancel or permission deny leaves the open PDF unchanged; desktop omits the action.
+- Page structure actions are an explicit source-PDF mutation boundary: Add page, Delete page, Import page, and Scan document rewrite the open PDF only through `writePdfAndAnnotationStoresAtomic`, remap sidecar/recovery page numbers, and compensate the PDF/store writes on failure. Ordinary annotation edits and Export PDF remain non-destructive.

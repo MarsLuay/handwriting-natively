@@ -1,4 +1,5 @@
 import type { DrawingToolPreferences, PdfPoint } from "../model";
+import { normalizedCoordinateScale } from "../util/math";
 
 export interface HighlighterPoint {
   x: number;
@@ -42,10 +43,6 @@ function widthAt(options: HighlighterStrokeOptions, point: HighlighterPoint): nu
     { x: point.x, y: point.y, pressure: point.pressure, time: 0 },
     options.coordinateScale
   );
-}
-
-function normalizedCoordinateScale(value: number | undefined): number {
-  return Number.isFinite(value) && value! > 0 ? value! : 1;
 }
 
 interface Vec2 {
@@ -195,6 +192,95 @@ export function drawHighlighterStroke(
   context.fill();
 
   context.restore();
+}
+
+export interface HighlighterEraseMaskView {
+  points: readonly { x: number; y: number }[];
+  /** Radius in the same space as `points`. */
+  radius: number;
+}
+
+/**
+ * Draw highlighter then punch erase masks in an isolated layer so holes do not
+ * erase other strokes on the shared ink canvas.
+ */
+export function drawHighlighterStrokeWithMasks(
+  context: CanvasRenderingContext2D,
+  points: readonly HighlighterPoint[],
+  options: HighlighterStrokeOptions,
+  eraseMasks: readonly HighlighterEraseMaskView[]
+): void {
+  if (!points.length) return;
+  if (!eraseMasks.length) {
+    drawHighlighterStroke(context, points, options);
+    return;
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  const include = (x: number, y: number, radius: number): void => {
+    minX = Math.min(minX, x - radius);
+    minY = Math.min(minY, y - radius);
+    maxX = Math.max(maxX, x + radius);
+    maxY = Math.max(maxY, y + radius);
+  };
+  const paintPad = Math.max(options.width, 1);
+  for (const point of points) include(point.x, point.y, paintPad);
+  for (const mask of eraseMasks) {
+    for (const point of mask.points) include(point.x, point.y, Math.max(mask.radius, 0.5));
+  }
+  const pad = 2;
+  minX = Math.floor(minX - pad);
+  minY = Math.floor(minY - pad);
+  maxX = Math.ceil(maxX + pad);
+  maxY = Math.ceil(maxY + pad);
+  const width = Math.max(1, maxX - minX);
+  const height = Math.max(1, maxY - minY);
+  const dpr = typeof window !== "undefined" ? Math.min(2, window.devicePixelRatio || 1) : 1;
+  if (typeof document === "undefined") {
+    drawHighlighterStroke(context, points, options);
+    return;
+  }
+
+  const scratch = createEl("canvas");
+  scratch.width = Math.ceil(width * dpr);
+  scratch.height = Math.ceil(height * dpr);
+  const offscreen = scratch.getContext("2d");
+  if (!offscreen) {
+    drawHighlighterStroke(context, points, options);
+    return;
+  }
+  offscreen.setTransform(dpr, 0, 0, dpr, 0, 0);
+  offscreen.clearRect(0, 0, width, height);
+  offscreen.translate(-minX, -minY);
+  drawHighlighterStroke(offscreen, points, options);
+  offscreen.globalCompositeOperation = "destination-out";
+  offscreen.globalAlpha = 1;
+  offscreen.strokeStyle = "#000";
+  offscreen.fillStyle = "#000";
+  offscreen.lineCap = "round";
+  offscreen.lineJoin = "round";
+  for (const mask of eraseMasks) {
+    const radius = Math.max(0.5, mask.radius);
+    const maskPoints = mask.points;
+    if (maskPoints.length === 0) continue;
+    if (maskPoints.length === 1) {
+      offscreen.beginPath();
+      offscreen.arc(maskPoints[0]!.x, maskPoints[0]!.y, radius, 0, Math.PI * 2);
+      offscreen.fill();
+      continue;
+    }
+    offscreen.lineWidth = radius * 2;
+    offscreen.beginPath();
+    offscreen.moveTo(maskPoints[0]!.x, maskPoints[0]!.y);
+    for (let index = 1; index < maskPoints.length; index += 1) {
+      offscreen.lineTo(maskPoints[index]!.x, maskPoints[index]!.y);
+    }
+    offscreen.stroke();
+  }
+  context.drawImage(scratch, 0, 0, scratch.width, scratch.height, minX, minY, width, height);
 }
 
 function angleDelta(from: number, to: number): number {

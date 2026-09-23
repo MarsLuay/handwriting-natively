@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation
 import { highlighterSampleWidth, highlighterSegmentWidths } from "../tools/HighlighterTool";
 import { graphiteStampCircles, seedFromId } from "../tools/PencilTool";
 import { penSampleWidth, penSegmentWidths } from "../tools/PenTool";
+import { escapeXml } from "../util/escapeXml";
 
 export interface PdfExportPageMetrics {
   page: number;
@@ -504,8 +505,16 @@ function richTextContents(runs: readonly PdfTextRun[]): string {
   return `<body xmlns="http://www.w3.org/1999/xhtml"><p>${spans}</p></body>`;
 }
 
-function escapeXml(text: string): string {
-  return text.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&apos;" })[character]!);
+function escapeCssString(value: string): string {
+  return value.replace(/["\\]/g, '\\$&').replace(/[\n\r]/g, "");
+}
+
+function sanitizeCssColor(value: string): string {
+  const trimmed = value.trim();
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(trimmed)) return trimmed;
+  if (/^(rgb|rgba|hsl|hsla)\(\s*[\d.%\s,/]+\)$/i.test(trimmed)) return trimmed;
+  if (/^[a-zA-Z]{1,32}$/.test(trimmed)) return trimmed;
+  return "";
 }
 
 function textStyleDeclaration(
@@ -513,9 +522,9 @@ function textStyleDeclaration(
   decoration = ""
 ): string {
   return [
-    `font-family:${run.fontFamily}`,
+    `font-family:"${escapeCssString(run.fontFamily)}"`,
     `font-size:${formatPdfNumber(run.fontSize)}pt`,
-    `color:${run.color}`,
+    `color:${sanitizeCssColor(run.color)}`,
     run.bold ? "font-weight:bold" : "",
     run.italic ? "font-style:italic" : "",
     decoration

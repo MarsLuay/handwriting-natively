@@ -111,4 +111,20 @@ describe("VaultDebugLog", () => {
     expect(events.map((event) => event.event)).toEqual(["one-hour-old", "recent", "new"]);
     log.destroy();
   });
+
+  it("drops non-JSON log lines instead of retaining them or crashing", async () => {
+    const { vault, files } = createVault();
+    const now = new Date("2026-07-27T12:00:00.000Z");
+    files.set("debug.md", "this is plain text, not JSON\n");
+    const log = new VaultDebugLog(() => vault, () => "debug.md", () => true, () => ({}), () => now);
+
+    log.write("info", "new");
+    await log.flush();
+
+    const result = files.get("debug.md") ?? "";
+    expect(result).not.toContain("this is plain text");
+    const events = result.trim().split("\n").map((line) => JSON.parse(line) as { event: string });
+    expect(events.map((event) => event.event)).toEqual(["new"]);
+    log.destroy();
+  });
 });

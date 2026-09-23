@@ -53,27 +53,7 @@ describe("DropdownController", () => {
 });
 
 describe("AnnotationToolbar", () => {
-  it("defaults Draw off and reports explicit checkbox changes", () => {
-    const drawChanged = vi.fn();
-    const toolbar = new AnnotationToolbar({
-      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
-      autosave: true,
-      drawEnabled: false,
-      callbacks: { onPreferencesChange: vi.fn(), onDrawModeChange: drawChanged },
-      ownerDocument: document
-    });
-    document.body.append(toolbar.element);
-    const draw = toolbar.element.querySelector<HTMLInputElement>("[data-control='draw']");
-    expect(draw).toMatchObject({ checked: false, type: "checkbox" });
-    expect(draw?.labels?.[0]?.querySelector(".native-pdf-handwriting-draw-toggle-label")?.textContent).toBe("Draw");
-    expect(toolbar.element.querySelector(".native-pdf-handwriting-toolbar-controls")?.firstElementChild).toBe(draw?.labels?.[0]);
-    draw?.click();
-    expect(draw).toMatchObject({ checked: true });
-    expect(drawChanged).toHaveBeenCalledWith(true);
-    toolbar.destroy();
-  });
-
-  it("keeps Draw label in the DOM for main toolbar and aria title", () => {
+  it("has no Draw checkbox; tool controls still mount", () => {
     const toolbar = new AnnotationToolbar({
       preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
       autosave: true,
@@ -81,9 +61,24 @@ describe("AnnotationToolbar", () => {
       ownerDocument: document
     });
     document.body.append(toolbar.element);
-    expect(toolbar.element.querySelector(".native-pdf-handwriting-draw-toggle-label")?.textContent).toBe("Draw");
-    toolbar.element.classList.add("is-sidebar-left");
-    expect(toolbar.element.classList.contains("is-sidebar-left")).toBe(true);
+    expect(toolbar.element.querySelector("[data-control='draw']")).toBeNull();
+    expect(toolbar.element.textContent ?? "").not.toMatch(/\bDraw\b/);
+    expect(toolbar.element.querySelector("[data-control='drawing']")).toBeTruthy();
+    expect(toolbar.element.querySelector("[data-control='eraser']")).toBeTruthy();
+    expect(toolbar.element.querySelector("[data-control='color']")).toBeTruthy();
+    toolbar.destroy();
+  });
+
+  it("exposes tool aria labels without a Draw toggle", () => {
+    const toolbar = new AnnotationToolbar({
+      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
+      autosave: true,
+      callbacks: { onPreferencesChange: vi.fn() },
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    expect(toolbar.element.querySelector(".native-pdf-handwriting-draw-toggle")).toBeNull();
+    expect(toolbar.element.getAttribute("aria-label")).toBe("PDF annotation tools");
     toolbar.destroy();
   });
 
@@ -122,6 +117,27 @@ describe("AnnotationToolbar", () => {
     expect(toolbar.saveStatus.element.querySelector(".native-pdf-handwriting-save-status-dot")).not.toBeNull();
     expect(toolbar.saveStatus.element.parentElement).toBe(toolbar.element);
     expect(toolbar.saveStatus.element.previousElementSibling?.classList.contains("native-pdf-handwriting-toolbar-controls")).toBe(true);
+    toolbar.destroy();
+  });
+
+  it("selects and edits bounded drawing presets without a separate draw mode", () => {
+    const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    const changed = vi.fn();
+    const toolbar = new AnnotationToolbar({ preferences, autosave: true, callbacks: { onPreferencesChange: changed }, ownerDocument: document });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
+    document.querySelector<HTMLButtonElement>("[data-option-id='preset-blue-pen']")?.click();
+    expect(preferences.activePresetId).toBe("blue-pen");
+    expect(preferences.activeTool).toBe("pen");
+    expect(preferences.pen.color).toBe("#2563eb");
+
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
+    const name = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-preset-editor input");
+    if (!name) throw new Error("preset name input missing");
+    name.value = "Meeting pen";
+    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-preset-editor button")?.click();
+    expect(preferences.presets.find((preset) => preset.id === "blue-pen")?.name).toBe("Meeting pen");
+    expect(changed).toHaveBeenCalled();
     toolbar.destroy();
   });
 
@@ -180,6 +196,45 @@ describe("AnnotationToolbar", () => {
     more?.click();
     expect(document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-left']")?.getAttribute("aria-checked")).toBe("true");
     expect(document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']")?.getAttribute("aria-checked")).toBe("false");
+    toolbar.destroy();
+  });
+
+  it("shows Import page in More and reports its selection", () => {
+    const selected = vi.fn();
+    const toolbar = new AnnotationToolbar({
+      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
+      autosave: true,
+      callbacks: { onPreferencesChange: vi.fn(), onMore: selected },
+      supportedMoreActions: ["import-page"],
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
+    const importOption = document.querySelector<HTMLButtonElement>("[data-option-id='import-page']");
+    expect(importOption?.textContent).toBe("Import page");
+    importOption?.click();
+    expect(selected).toHaveBeenCalledWith("import-page");
+    toolbar.destroy();
+  });
+
+  it("exposes Scan document as a More action", () => {
+    const selected: string[] = [];
+    const toolbar = new AnnotationToolbar({
+      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
+      autosave: true,
+      callbacks: {
+        onPreferencesChange: vi.fn(),
+        onMore: (action) => selected.push(action)
+      },
+      supportedMoreActions: ["scan-document"],
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
+    const scan = document.querySelector<HTMLButtonElement>("[data-option-id='scan-document']");
+    expect(scan?.textContent).toBe("Scan document");
+    scan?.click();
+    expect(selected).toEqual(["scan-document"]);
     toolbar.destroy();
   });
 

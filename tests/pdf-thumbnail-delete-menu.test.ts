@@ -69,12 +69,13 @@ function rect(top: number, height = 40): DOMRect {
   };
 }
 
-function thumbnailHost(): {
+function thumbnailHost(pageNumbers: number[] = [3]): {
   host: HTMLElement;
   sidebar: HTMLElement;
   thumbnailView: HTMLElement;
   thumbnail: HTMLElement;
   page: HTMLElement;
+  thumbnails: HTMLElement[];
 } {
   const host = document.createElement("div");
   const sidebar = document.createElement("div");
@@ -83,21 +84,90 @@ function thumbnailHost(): {
   pane.className = "pdf-thumbnail-view";
   const thumbnailView = document.createElement("div");
   thumbnailView.id = "thumbnailView";
-  const thumbnail = document.createElement("div");
-  thumbnail.className = "thumbnail selected";
-  thumbnail.dataset.pageNumber = "3";
-  thumbnail.getBoundingClientRect = () => rect(100);
+  const thumbnails = pageNumbers.map((pageNumber, index) => {
+    const thumbnail = document.createElement("div");
+    thumbnail.className = index === 0 ? "thumbnail selected" : "thumbnail";
+    thumbnail.dataset.pageNumber = String(pageNumber);
+    thumbnail.getBoundingClientRect = () => rect(100 + index * 40);
+    thumbnailView.append(thumbnail);
+    return thumbnail;
+  });
+  const thumbnail = thumbnails[0]!;
   const page = document.createElement("span");
   thumbnail.append(page);
-  thumbnailView.append(thumbnail);
   pane.append(thumbnailView);
   sidebar.append(pane);
   host.append(sidebar);
   document.body.append(host);
-  return { host, sidebar, thumbnailView, thumbnail, page };
+  return { host, sidebar, thumbnailView, thumbnail, page, thumbnails };
 }
 
 describe("PDF thumbnail sidebar actions", () => {
+  it("selects an inclusive thumbnail range on Shift-click and resets it on a normal click", () => {
+    const { host, thumbnails } = thumbnailHost([3, 4, 5, 6]);
+    const menuEvents = vi.fn();
+    const actions = new PdfThumbnailSidebarActions(host, {
+      onAddPage: vi.fn(),
+      onDeletePage: vi.fn(),
+      onMenuEvent: menuEvents
+    });
+
+    thumbnails[0]!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    thumbnails[3]!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, shiftKey: true }));
+
+    expect(thumbnails.map((thumbnail) => thumbnail.classList.contains("native-pdf-handwriting-thumbnail-range-selected")))
+      .toEqual([true, true, true, true]);
+    expect(menuEvents).toHaveBeenCalledWith("range-selected", {
+      anchorPage: 3,
+      pageNumber: 6,
+      firstPage: 3,
+      lastPage: 6,
+      count: 4
+    });
+
+    thumbnails[1]!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    expect(thumbnails.some((thumbnail) => thumbnail.classList.contains("native-pdf-handwriting-thumbnail-range-selected"))).toBe(false);
+    thumbnails[3]!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, shiftKey: true }));
+    expect(thumbnails.map((thumbnail) => thumbnail.classList.contains("native-pdf-handwriting-thumbnail-range-selected")))
+      .toEqual([false, true, true, true]);
+    actions.destroy();
+  });
+
+  it("deletes the selected thumbnail range once in descending source-page order", async () => {
+    const { host, thumbnails } = thumbnailHost([3, 4, 5, 6]);
+    const deleted = vi.fn();
+    let finishDelete: (() => void) | undefined;
+    const deleting = new Promise<void>((resolve) => { finishDelete = resolve; });
+    const deletedPages = vi.fn(() => deleting);
+    const menuEvents = vi.fn();
+    const actions = new PdfThumbnailSidebarActions(host, {
+      onAddPage: vi.fn(),
+      onDeletePage: deleted,
+      onDeletePages: deletedPages,
+      onMenuEvent: menuEvents
+    });
+
+    thumbnails[0]!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    thumbnails[3]!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, shiftKey: true }));
+    expect(actions.handleKeyDown(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }))).toBe(true);
+    expect(actions.handleKeyDown(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }))).toBe(true);
+
+    expect(deletedPages).toHaveBeenCalledTimes(1);
+    expect(deletedPages).toHaveBeenCalledWith([6, 5, 4, 3]);
+    expect(deleted).not.toHaveBeenCalled();
+    expect(menuEvents).toHaveBeenCalledWith("range-delete-requested", {
+      via: "keyboard",
+      pageNumbers: [6, 5, 4, 3],
+      firstPage: 3,
+      lastPage: 6,
+      count: 4
+    });
+    expect(thumbnails.some((thumbnail) => thumbnail.classList.contains("native-pdf-handwriting-thumbnail-range-selected"))).toBe(false);
+    finishDelete?.();
+    await deleting;
+    actions.destroy();
+  });
+
   it("appends Delete page to the native thumbnail menu", async () => {
     const { host, thumbnail, page } = thumbnailHost();
     const deleted = vi.fn();

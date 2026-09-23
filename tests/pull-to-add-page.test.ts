@@ -14,14 +14,56 @@ import {
   isMomentumScrollTick,
   isScrollAtBottom,
   pullProgressFromRaw,
+  resolveLastPdfPage,
   smoothPullToward,
   stretchPixelsForPull,
-  visualPullFromRaw
+  visualPullFromRaw,
+  resolvePullStretchTarget
 } from "../src/input/PullToAddPageGesture";
 
 afterEach(() => {
   document.body.replaceChildren();
   vi.useRealTimers();
+});
+
+describe("resolvePullStretchTarget", () => {
+  it("returns the element with class .pdfViewer if it exists", () => {
+    const root = document.createElement("div");
+    const viewer = document.createElement("div");
+    viewer.className = "pdfViewer";
+    root.appendChild(viewer);
+    expect(resolvePullStretchTarget(root)).toBe(viewer);
+  });
+
+  it("returns the element with class .pdf-viewer if it exists", () => {
+    const root = document.createElement("div");
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    root.appendChild(viewer);
+    expect(resolvePullStretchTarget(root)).toBe(viewer);
+  });
+
+  it("returns the element with id #viewer if it exists", () => {
+    const root = document.createElement("div");
+    const viewer = document.createElement("div");
+    viewer.id = "viewer";
+    root.appendChild(viewer);
+    expect(resolvePullStretchTarget(root)).toBe(viewer);
+  });
+
+  it("returns the first child element if specific selectors do not match", () => {
+    const root = document.createElement("div");
+    const child = document.createElement("div");
+    child.className = "some-other-class";
+    root.appendChild(child);
+    expect(resolvePullStretchTarget(root)).toBe(child);
+  });
+
+  it("returns the scrollRoot itself if no HTML element children exist", () => {
+    const root = document.createElement("div");
+    root.appendChild(document.createTextNode("Just text"));
+    expect(resolvePullStretchTarget(root)).toBe(root);
+  });
 });
 
 describe("pull-to-add math", () => {
@@ -376,5 +418,139 @@ describe("PullToAddPageGesture", () => {
     expect(gesture.snapshot().rawPull).toBeGreaterThan(0);
     expect(logs.some((entry) => entry.phase === "lockout")).toBe(false);
     gesture.destroy();
+  });
+
+  function pointer(
+    type: string,
+    pointerId: number,
+    extra: Record<string, unknown> = {}
+  ): PointerEvent {
+    const event = new Event((extra.eventType as string) || "pointerdown", {
+      bubbles: true,
+      cancelable: true
+    }) as PointerEvent;
+    Object.defineProperties(event, {
+      pointerType: { value: type },
+      pointerId: { value: pointerId },
+      button: { value: extra.button ?? 0 },
+      buttons: { value: extra.buttons ?? 1 },
+      isPrimary: { value: extra.isPrimary ?? true },
+      clientX: { value: extra.clientX ?? 100 },
+      clientY: { value: extra.clientY ?? 400 },
+      target: { value: extra.target ?? document.body }
+    });
+    return event;
+  }
+
+  it("blocks mouse and pen pull starts in Draw mode but still allows finger pull", () => {
+    const root = mountScrollRoot(true);
+    const canvas = root.querySelector("canvas")!;
+    const logs: Array<{ phase: string; details: Record<string, unknown> }> = [];
+    let drawing = true;
+    const gesture = new PullToAddPageGesture(document, {
+      enabled: () => true,
+      isDrawing: () => drawing,
+      scrollRoot: () => root,
+      host: () => root,
+      withinTarget: () => true,
+      onCommit: async () => undefined,
+      onLog: (phase, details) => logs.push({ phase, details })
+    });
+
+    document.dispatchEvent(pointer("mouse", 11, { target: canvas, clientY: 500 }));
+    expect(logs.some((e) => e.phase === "pointer-start")).toBe(false);
+    expect(logs.some((e) => e.phase === "blocked" && e.details.reason === "draw-mode-ink-pointer")).toBe(true);
+
+    logs.length = 0;
+    document.dispatchEvent(pointer("pen", 12, { target: canvas, clientY: 500 }));
+    expect(logs.some((e) => e.phase === "pointer-start")).toBe(false);
+    expect(logs.some((e) => e.details.reason === "draw-mode-ink-pointer")).toBe(true);
+
+    logs.length = 0;
+    document.dispatchEvent(pointer("touch", 13, { target: canvas, clientY: 500 }));
+    expect(logs.some((e) => e.phase === "pointer-start")).toBe(true);
+
+    drawing = false;
+    logs.length = 0;
+    document.dispatchEvent(pointer("mouse", 14, { target: canvas, clientY: 500 }));
+    expect(logs.some((e) => e.phase === "pointer-start")).toBe(true);
+    gesture.destroy();
+  });
+});
+
+describe("resolveLastPdfPage", () => {
+  function createPage(pageNumber: string | null, isChrome = false): HTMLDivElement {
+    const el = document.createElement("div");
+    el.className = "page";
+    if (pageNumber !== null) {
+      el.dataset.pageNumber = pageNumber;
+    }
+    if (isChrome) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "native-pdf-handwriting-page-overlay";
+      wrapper.appendChild(el);
+      return el; // While it returns el, we need to append wrapper to root for isHandwritingPageChrome to work
+    }
+    return el;
+  }
+
+  it("returns null when no PDF pages exist in the root element", () => {
+    const root = document.createElement("div");
+    expect(resolveLastPdfPage(root)).toBeNull();
+  });
+
+  it("returns the only page when just one page exists", () => {
+    const root = document.createElement("div");
+    const page = createPage("1");
+    root.appendChild(page);
+    expect(resolveLastPdfPage(root)).toBe(page);
+  });
+
+  it("returns the page with the highest data-page-number", () => {
+    const root = document.createElement("div");
+    const page1 = createPage("1");
+    const page2 = createPage("2");
+    const page3 = createPage("3");
+    root.append(page1, page2, page3);
+
+    expect(resolveLastPdfPage(root)).toBe(page3);
+  });
+
+  it("correctly identifies the highest page number even if the DOM order is mixed up", () => {
+    const root = document.createElement("div");
+    const page1 = createPage("1");
+    const page3 = createPage("3");
+    const page2 = createPage("2");
+    root.append(page1, page3, page2);
+
+    expect(resolveLastPdfPage(root)).toBe(page3);
+  });
+
+  it("gracefully handles missing or invalid data-page-number attributes", () => {
+    const root = document.createElement("div");
+    const pageValid = createPage("1");
+    const pageMissing = createPage(null);
+    pageMissing.className = "page";
+    // We need to give it data-page-number but invalid to test the || 0
+    const pageInvalid = createPage("not-a-number");
+
+    root.append(pageInvalid, pageValid, pageMissing);
+
+    // pageValid has "1" which is > 0
+    expect(resolveLastPdfPage(root)).toBe(pageValid);
+  });
+
+  it("ignores handwriting chrome elements", () => {
+    const root = document.createElement("div");
+    const page1 = createPage("1");
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "native-pdf-handwriting-page-overlay";
+    const chromePage = createPage("999");
+    wrapper.appendChild(chromePage);
+
+    root.append(page1, wrapper);
+
+    expect(resolveLastPdfPage(root)).toBe(page1);
   });
 });

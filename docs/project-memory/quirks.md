@@ -1,0 +1,10 @@
+# Quirks
+
+- Laser pointer trails fade and are never saved. Pen, pencil, highlighter, and typed text are sidecar-backed; typed text is searchable through the viewer-only bridge, while freehand ink is not searchable.
+- The adapter checks known viewer/page selectors and falls back to DOM page bounds. A missing viewer root or page is a hard compatibility error; a missing native toolbar is a warning because the shared toolbar can mount beside the viewer.
+- Pointer samples update in-memory strokes. Completed commands—not every pointer sample—mark the document dirty and schedule persistence. One queue entry serializes writes per document; newer snapshots follow an in-flight write.
+- Pointer capture cleanup handles `lostpointercapture` for mouse ink as well as pen ink. The capability probe reports pen remapping after hover, off-host wheel panning, and that real `TouchEvent`s are still required for companion/multi-touch behavior.
+- MacBook Force Touch pressure is unavailable through Obsidian/Electron; stylus pressure works only when exposed by the host OS.
+- Shape recognition is enabled by default in each drawing tool's Advanced settings and uses a 0.5-second hold for confident supported shapes; ambiguous writing remains ink.
+- Pen occlusion: only active Obsidian shells (open/pinned drawers, modals, menus) block geometric pen recovery. Closed drawers and bare layout nodes such as `.vertical-tab-content` / `.setting-item` that linger in `elementsFromPoint()` after Settings close do not count as `ui-occluded`. Genuine open UI still skips with `ui-occluded` and emits a deduped `pen-occlusion-anomaly` record.
+- Mobile pinch zoom: left-rail sidebar follow from PDF.js style/resize/inner-content mutations is suppressed for the active zoom burst so the 480 ms rail loop cannot fight the zoom compositor; real sidebar open/close (`sidebarOpen`, eventBus, click) still syncs, and one coalesced rail sync runs after settle.

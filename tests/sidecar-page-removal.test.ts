@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { InkStroke, PdfTextAnnotation } from "../src/model";
-import { insertPageIntoSidecar, removePageFromSidecar } from "../src/storage/SidecarPageRemoval";
+import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "../src/storage/SidecarPageRemoval";
 import type { SidecarSchemaV1 } from "../src/storage/SidecarSchema";
 
 function stroke(id: string, page: number): InkStroke {
@@ -68,5 +68,28 @@ describe("sidecar page removal", () => {
     expect(result.pages[0]?.strokes[0]?.page).toBe(1);
     expect(result.pages[1]?.strokes[0]?.page).toBe(3);
     expect(result.pages[1]?.texts?.[0]?.page).toBe(3);
+  });
+
+  it("shifts later annotations by the full imported-page count", () => {
+    const sidecar: SidecarSchemaV1 = {
+      schemaVersion: 1,
+      document: { id: "pdf-a", vaultPath: "note.pdf" },
+      pages: [
+        { page: 1, width: 400, height: 600, rotation: 0, strokes: [stroke("one", 1)] },
+        { page: 4, width: 500, height: 700, rotation: 90, strokes: [stroke("four", 4)], texts: [text("four-text", 4)] }
+      ],
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01"
+    };
+
+    const result = insertPagesIntoSidecar(sidecar, 2, 3, "2026-02-01");
+
+    expect(result.updatedAt).toBe("2026-02-01");
+    expect(result.pages.map((page) => page.page)).toEqual([1, 7]);
+    expect(result.pages[1]?.strokes[0]?.page).toBe(7);
+    expect(result.pages[1]?.texts?.[0]?.page).toBe(7);
+    expect(sidecar.pages[1]?.page).toBe(4);
+    expect(() => insertPagesIntoSidecar(sidecar, 2, 0)).toThrow("positive integer");
+    expect(insertPageIntoSidecar(sidecar, 2).pages[1]?.page).toBe(5);
   });
 });

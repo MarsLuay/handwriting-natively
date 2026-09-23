@@ -1,7 +1,9 @@
 import { isHTMLElement } from "../dom/typeGuards";
+import { describeTarget } from "../dom/describeElement";
 import { scrollPdfByDetailed, describeScrollElement } from "../integration/PdfScrollRoot";
+import { ActiveTouches } from "./ActiveTouches";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
-import { isAnnotationChromeTarget, isDragPanPointer } from "./PointerRouter";
+import { isAnnotationChromeTarget } from "./PointerRouter";
 
 interface PanGesture {
   startX: number;
@@ -19,17 +21,23 @@ interface PanGesture {
 
 export type MousePanPhase = "probe" | "start" | "pending" | "activate" | "move" | "end" | "cancel" | "abort" | "skip";
 
-export { isDragPanPointer };
+/** Real pen never enters drag-pan; only primary mouse (and optional touch via touchPanEnabled). */
+export function isDragPanPointer(event: Pick<PointerEvent, "pointerType" | "button">): boolean {
+  if (event.button !== 0) return false;
+  return event.pointerType === "mouse";
+}
 
 export function isFingerPanPointer(event: Pick<PointerEvent, "pointerType" | "button">): boolean {
   return event.pointerType === "touch" && event.button === 0;
 }
 
 export interface ViewerMousePanCallbacks {
-  /** Mouse/stylus drag-scroll when Draw is off. */
+  /** Mouse drag-scroll when mouse policy is pan. */
   enabled(): boolean;
   /** Finger drag-scroll. Default off — leave movement to native PDF viewer. */
   touchPanEnabled?(): boolean;
+  /** Optional position gate for the primary mouse pan gesture. */
+  allowMousePan?(event: PointerEvent): boolean;
   scrollRoot(): HTMLElement;
   withinTarget?(target: EventTarget | null): boolean;
   captureElement?(): HTMLElement;
@@ -38,7 +46,7 @@ export interface ViewerMousePanCallbacks {
 
 export class ViewerMousePan {
   private readonly panning = new Map<number, PanGesture>();
-  private readonly activeTouches = new Set<number>();
+  private readonly activeTouches = new ActiveTouches();
   private readonly abort = new AbortController();
 
   constructor(
@@ -107,20 +115,14 @@ export class ViewerMousePan {
     const tip = isDragPanPointer(event);
 
     if (event.pointerType === "touch") {
-      this.activeTouches.add(event.pointerId);
+      this.activeTouches.add(event);
       // Second finger → release one-finger pan so native pinch/zoom can run.
-      // Primary down clears stale IDs left when terminal events were dropped
-      // (common on iPad after pinch / drawer / modal transitions).
-      if (event.isPrimary && this.activeTouches.size > 1) {
-        this.activeTouches.clear();
-        this.activeTouches.add(event.pointerId);
-      }
       if (this.activeTouches.size >= 2) {
         this.abortTouchPans(event, "multi-touch");
         this.callbacks.onPan?.("skip", event, {
           reason: "multi-touch",
           touches: this.activeTouches.size,
-          target: targetLabel(event.target)
+          target: describeTarget(event.target)
         });
         return;
       }
@@ -130,48 +132,64 @@ export class ViewerMousePan {
       this.callbacks.onPan?.("probe", event, {
         inBoundary,
         enabled: finger ? this.touchPanAllowed() : this.callbacks.enabled(),
-        target: targetLabel(event.target),
+        target: describeTarget(event.target),
         pointerType: event.pointerType
       });
     }
 
+    if (event.pointerType === "pen") {
+      this.callbacks.onPan?.("skip", event, {
+        reason: "pen-not-pan-pointer",
+        pointerType: event.pointerType,
+        target: describeTarget(event.target)
+      });
+      return;
+    }
+
     if (!finger && !tip) {
-      if (inBoundary && (event.pointerType === "mouse" || event.pointerType === "pen")) {
+      if (inBoundary && event.pointerType === "mouse") {
         this.callbacks.onPan?.("skip", event, {
           reason: "button",
           button: event.button,
           pointerType: event.pointerType,
-          target: targetLabel(event.target)
+          target: describeTarget(event.target)
         });
       }
       return;
     }
     if (!inBoundary) {
-      this.callbacks.onPan?.("skip", event, { reason: "outside-boundary", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "outside-boundary", target: describeTarget(event.target) });
       return;
     }
     if (isAnnotationChromeTarget(event.target)) {
-      this.callbacks.onPan?.("skip", event, { reason: "annotation-chrome", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "annotation-chrome", target: describeTarget(event.target) });
       return;
     }
     if (event.target instanceof Element && event.target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown")) {
-      this.callbacks.onPan?.("skip", event, { reason: "toolbar", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "toolbar", target: describeTarget(event.target) });
       return;
     }
-    // Mouse/stylus on PDF text → native selection. Finger still pans when touch pan is enabled.
+    // The fixed desktop page policy reserves primary mouse drags over PDF pages
+    // for the active handwriting tool. Empty viewer space can still use the
+    // configured pan behavior.
+    if (tip && this.callbacks.allowMousePan && !this.callbacks.allowMousePan(event)) {
+      this.callbacks.onPan?.("skip", event, { reason: "pdf-page-annotation", target: describeTarget(event.target) });
+      return;
+    }
+    // Mouse on PDF text → native selection. Finger still pans when touch pan is enabled.
     if (!finger && isSelectablePdfTarget(event.target)) {
-      this.callbacks.onPan?.("skip", event, { reason: "selectable", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "selectable", target: describeTarget(event.target) });
       return;
     }
 
-    // Finger only if touchPanEnabled. Mouse/stylus only when Draw is off (enabled).
+    // Finger only if touchPanEnabled. Mouse only when mouse policy is pan.
     if (finger) {
       if (!this.touchPanAllowed()) {
-        this.callbacks.onPan?.("skip", event, { reason: "touch-disabled", target: targetLabel(event.target) });
+        this.callbacks.onPan?.("skip", event, { reason: "touch-disabled", target: describeTarget(event.target) });
         return;
       }
     } else if (!this.callbacks.enabled()) {
-      this.callbacks.onPan?.("skip", event, { reason: "disabled", target: targetLabel(event.target) });
+      this.callbacks.onPan?.("skip", event, { reason: "disabled", target: describeTarget(event.target) });
       return;
     }
 
@@ -190,15 +208,15 @@ export class ViewerMousePan {
       claimed: false
     });
     // Finger custom pan must claim immediately or native scroll wins.
-    // Mouse/stylus: wait for activate so clicks / text / links stay native until a real drag.
+    // Mouse: wait for activate so clicks / text / links stay native until a real drag.
     if (finger) {
       const pan = this.panning.get(event.pointerId)!;
       this.claimGesture(event, pan);
     }
     this.callbacks.onPan?.("start", event, {
-      target: targetLabel(event.target),
+      target: describeTarget(event.target),
       scrollRoot: describeScrollElement(scrollRoot),
-      captureHost: targetLabel(captureTarget),
+      captureHost: describeTarget(captureTarget),
       pointerType: event.pointerType,
       deferredClaim: !finger
     });
@@ -211,7 +229,7 @@ export class ViewerMousePan {
   };
 
   private readonly onEnd = (event: PointerEvent): void => {
-    if (event.pointerType === "touch") this.activeTouches.delete(event.pointerId);
+    if (event.pointerType === "touch") this.activeTouches.delete(event);
     const pan = this.panning.get(event.pointerId);
     if (!pan) return;
     if (pan.active) {
@@ -224,7 +242,7 @@ export class ViewerMousePan {
       this.callbacks.onPan?.("cancel", event, {
         dx: event.clientX - pan.startX,
         dy: event.clientY - pan.startY,
-        target: targetLabel(event.target),
+        target: describeTarget(event.target),
         pointerType: pan.pointerType
       });
     }
@@ -246,7 +264,7 @@ export class ViewerMousePan {
         }
         return;
       }
-      // Mouse/stylus: keep a soft vertical-bias gate so sideways drags stay native (e.g. selection).
+      // Mouse: keep a soft vertical-bias gate so sideways drags stay native (e.g. selection).
       // Fingers (when enabled): free drag.
       if (pan.pointerType !== "touch" && Math.abs(dx) > Math.max(12, Math.abs(dy) * 2)) {
         this.callbacks.onPan?.("abort", event, { reason: "horizontal-dominant", dx, dy });
@@ -270,7 +288,7 @@ export class ViewerMousePan {
     event.preventDefault();
     // Invert: drag down/right pulls the page with the pointer (grab feel).
     const scroll = scrollPdfByDetailed(root, -deltaY, event.clientX, event.clientY);
-    // Mouse/stylus also get X when zoomed; fingers already did.
+    // Mouse also gets X when zoomed; fingers already did.
     if (deltaX !== 0) {
       if (typeof root.scrollBy === "function") root.scrollBy(-deltaX, 0);
       else root.scrollLeft -= deltaX;
@@ -290,12 +308,4 @@ export class ViewerMousePan {
       pointerType: pan.pointerType
     });
   }
-}
-
-function targetLabel(target: EventTarget | null): string {
-  if (target === null) return "null";
-  if (!(target instanceof Element)) return Object.prototype.toString.call(target);
-  const tag = target.tagName.toLowerCase();
-  const classes = [...target.classList].slice(0, 3).join(".");
-  return classes ? `${tag}.${classes}` : tag;
 }

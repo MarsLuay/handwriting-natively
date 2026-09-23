@@ -1,4 +1,5 @@
 import type { InkStroke, PdfPoint } from "../model";
+import { escapeXml } from "../util/escapeXml";
 
 export interface SvgInkExportPageMetrics {
   page: number;
@@ -302,14 +303,4 @@ function clamp01(value: number): number {
 function formatNumber(value: number): string {
   const normalized = Math.abs(value) < 0.0000005 ? 0 : Math.round(value * 1_000_000) / 1_000_000;
   return normalized.toFixed(6).replace(/(?:\.0+|(?<fraction>\.\d*?)0+)$/, "$1");
-}
-
-function escapeXml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&apos;"
-  })[character]!);
 }

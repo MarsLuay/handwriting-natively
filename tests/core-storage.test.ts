@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { InkStroke, PdfTextAnnotation } from "../src/model";
-import { createDocumentIdentity } from "../src/storage/DocumentIdentity";
+import { createDocumentIdentity, createLegacyPathIdentity } from "../src/storage/DocumentIdentity";
 import { MigrationManager } from "../src/storage/MigrationManager";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
-import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
+import { SidecarConflictError, SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
 import { parseSidecar, pickNewerSidecar, serializeSidecar, type SidecarSchemaV1 } from "../src/storage/SidecarSchema";
 
 const stroke: InkStroke = { id: "s1", page: 1, tool: "pen", color: "#000000", width: 2, opacity: 1, inputType: "pen", points: [{ x: 1, y: 2, pressure: 0.5, time: 3 }], createdAt: "2026-01-01", updatedAt: "2026-01-01" };
@@ -34,6 +34,10 @@ class MemoryFiles implements TextFileAdapter {
     this.data.delete(from);
   }
   async remove(path: string) { this.data.delete(path); }
+  async list(folder: string) {
+    const prefix = `${folder.replace(/[\\/]$/, "")}/`;
+    return [...this.data.keys()].filter((path) => path.startsWith(prefix));
+  }
 }
 
 describe("sidecar storage", () => {
@@ -54,6 +58,19 @@ describe("sidecar storage", () => {
     const doc = sidecar();
     doc.pages[0]!.strokes = [highlight];
     expect(parseSidecar(serializeSidecar(doc)).pages[0]?.strokes[0]?.tool).toBe("highlighter");
+  });
+
+  it("round-trips highlighter erase masks", () => {
+    const highlight: InkStroke = {
+      ...stroke,
+      id: "hl-mask",
+      tool: "highlighter",
+      width: 40,
+      eraseMasks: [{ points: [{ x: 5, y: 5 }], radius: 8 }]
+    };
+    const doc = sidecar();
+    doc.pages[0]!.strokes = [highlight];
+    expect(parseSidecar(serializeSidecar(doc)).pages[0]?.strokes[0]?.eraseMasks).toEqual(highlight.eraseMasks);
   });
 
   it("round-trips editable text annotations and normalizes PR-era text geometry", () => {
@@ -84,9 +101,17 @@ describe("sidecar storage", () => {
     expect(migrated.pages[0]?.strokes).toEqual([stroke]);
   });
 
-  it("uses fingerprint/content hash identity across renames and path fallback otherwise", () => {
-    expect(createDocumentIdentity({ vaultPath: "old.pdf", fingerprint: "fp" }).id).toBe(createDocumentIdentity({ vaultPath: "new.pdf", fingerprint: "fp" }).id);
-    expect(createDocumentIdentity({ vaultPath: "old.pdf" }).id).not.toBe(createDocumentIdentity({ vaultPath: "new.pdf" }).id);
+  it("canonicalizes legacy content identities while preserving their path metadata", () => {
+    const migrated = new MigrationManager().migrate({
+      schemaVersion: 1,
+      document: { id: createLegacyPathIdentity("old/a.pdf").id, vaultPath: "old/a.pdf", contentHash: "ABC" },
+      pages: [],
+      createdAt: "now",
+      updatedAt: "now"
+    });
+    expect(migrated.document.id).toBe(createDocumentIdentity({ vaultPath: "old/a.pdf", contentHash: "abc" }).id);
+    expect(migrated.document.vaultPath).toBe("old/a.pdf");
+    expect(migrated.document.contentHash).toBe("abc");
   });
 
   it("prefers the newer sidecar or recovery snapshot when both exist", () => {
@@ -109,7 +134,109 @@ describe("sidecar storage", () => {
     changed.updatedAt = "later";
     await repository.save(changed);
     expect(parseSidecar(await files.read("annotations/doc.json")).updatedAt).toBe("later");
+    expect(parseSidecar(await files.read("annotations/doc.json.last-good")).updatedAt).toBe("2026-01-01");
     expect(files.data.has("annotations/doc.json.tmp")).toBe(false);
+  });
+
+  it("finds a moved legacy sidecar and reports the explicit path rebind", async () => {
+    const files = new MemoryFiles();
+    const repository = new SidecarRepository(files, "annotations");
+    const content = createDocumentIdentity({ vaultPath: "old/a.pdf", contentHash: "same" });
+    const legacyPath = createLegacyPathIdentity("old/a.pdf").id;
+    const legacy = sidecar();
+    legacy.document = { ...content, id: legacyPath };
+    await files.write(repository.pathFor(legacyPath), serializeSidecar(legacy));
+
+    const result = await repository.loadForDocumentWithStatus({ vaultPath: "new/a.pdf", contentHash: "same" });
+    expect(result.data).toMatchObject({
+      document: { id: content.id, vaultPath: "old/a.pdf", contentHash: "same", legacyIds: [legacyPath] },
+      pages: legacy.pages
+    });
+    expect(result.identity).toMatchObject({ matchedBy: "content", requiresPathRebind: true });
+    expect(result.identity?.sourcePath).toBe(repository.pathFor(legacyPath));
+  });
+
+  it("finds a legacy recovery snapshot through the known prior path", async () => {
+    const files = new MemoryFiles();
+    const repository = new RecoveryRepository(files, "recovery");
+    const legacyPath = createLegacyPathIdentity("old/a.pdf").id;
+    const legacy = sidecar();
+    legacy.document = { ...createDocumentIdentity({ vaultPath: "old/a.pdf", contentHash: "same" }), id: legacyPath };
+    await files.write(repository.pathFor(legacyPath), serializeSidecar(legacy));
+
+    const result = await repository.loadForDocumentWithStatus({
+      vaultPath: "new/a.pdf",
+      contentHash: "same",
+      legacyPaths: ["old/a.pdf"]
+    });
+
+    expect(result.data).toMatchObject({
+      document: { id: createDocumentIdentity({ vaultPath: "old/a.pdf", contentHash: "same" }).id, vaultPath: "old/a.pdf", contentHash: "same", legacyIds: [legacyPath] },
+      pages: legacy.pages
+    });
+    expect(result.identity).toMatchObject({ matchedBy: "path", requiresPathRebind: true });
+    expect(result.identity?.sourcePath).toBe(repository.pathFor(legacyPath));
+  });
+
+  it("does not merge two distinct sidecars for duplicate content", async () => {
+    const files = new MemoryFiles();
+    const repository = new SidecarRepository(files, "annotations");
+    const first = sidecar();
+    first.document = { ...createDocumentIdentity({ vaultPath: "one.pdf", contentHash: "same" }), id: createLegacyPathIdentity("one.pdf").id };
+    const second = structuredClone(first);
+    second.document = { ...createDocumentIdentity({ vaultPath: "two.pdf", contentHash: "same" }), id: createLegacyPathIdentity("two.pdf").id };
+    second.pages[0]!.strokes[0]!.id = "different";
+    await files.write(repository.pathFor(first.document.id), serializeSidecar(first));
+    await files.write(repository.pathFor(second.document.id), serializeSidecar(second));
+
+    const result = await repository.loadForDocumentWithStatus({ vaultPath: "current.pdf", contentHash: "same" });
+    expect(result.data).toBeNull();
+    expect(result.conflict).toMatchObject({ reason: "duplicate-content" });
+  });
+
+  it("filters a content candidate whose stored hash does not match the opened PDF", async () => {
+    const files = new MemoryFiles();
+    const repository = new SidecarRepository(files, "annotations");
+    const candidateId = createDocumentIdentity({ vaultPath: "current.pdf", contentHash: "same" }).id;
+    const wrong = sidecar();
+    wrong.document = createDocumentIdentity({ vaultPath: "other.pdf", contentHash: "different" });
+    await files.write(repository.pathFor(candidateId), serializeSidecar(wrong));
+
+    const result = await repository.loadForDocumentWithStatus({ vaultPath: "current.pdf", contentHash: "same" });
+    expect(result.data).toBeNull();
+    expect(result.identity).toBeUndefined();
+  });
+
+  it("checks listed duplicates even when the canonical content candidate exists", async () => {
+    const files = new MemoryFiles();
+    const repository = new SidecarRepository(files, "annotations");
+    const canonical = sidecar();
+    canonical.document = createDocumentIdentity({ vaultPath: "one.pdf", contentHash: "same" });
+    const duplicate = structuredClone(canonical);
+    duplicate.document = { ...createDocumentIdentity({ vaultPath: "two.pdf", contentHash: "same" }), legacyIds: [createLegacyPathIdentity("two.pdf").id] };
+    await files.write(repository.pathFor(canonical.document.id), serializeSidecar(canonical));
+    await files.write(repository.pathFor(createLegacyPathIdentity("two.pdf").id), serializeSidecar(duplicate));
+
+    const result = await repository.loadForDocumentWithStatus({ vaultPath: "one.pdf", contentHash: "same" });
+    expect(result.data).toBeNull();
+    expect(result.conflict).toMatchObject({ reason: "duplicate-content" });
+  });
+
+  it("preserves an external sidecar change in a conflict file instead of overwriting it", async () => {
+    const files = new MemoryFiles();
+    const now = () => new Date("2026-02-01T03:04:05.678Z");
+    const repository = new SidecarRepository(files, "annotations", { now });
+    await repository.save(sidecar());
+    await repository.load("doc");
+    const external = sidecar();
+    external.updatedAt = "external";
+    external.pages[0]!.strokes[0]!.id = "external";
+    await files.write(repository.pathFor("doc"), serializeSidecar(external));
+    const local = sidecar();
+    local.updatedAt = "local";
+    await expect(repository.save(local)).rejects.toBeInstanceOf(SidecarConflictError);
+    expect(parseSidecar(await files.read(repository.pathFor("doc"))).pages[0]!.strokes[0]!.id).toBe("external");
+    expect([...files.data.keys()]).toContain(`${repository.pathFor("doc")}.conflict-20260201T030405678Z`);
   });
 
   it("preserves the last valid sidecar when the first rename fails", async () => {
@@ -131,6 +258,7 @@ describe("sidecar storage", () => {
     changed.updatedAt = "later";
     await expect(repository.save(changed)).rejects.toThrow("write failed");
     expect(await files.read("annotations/doc.json")).toBe(original);
+    expect(await files.read("annotations/doc.json.last-good")).toBe(original);
     expect(files.data.has("annotations/doc.json.tmp")).toBe(false);
   });
 

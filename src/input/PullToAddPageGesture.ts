@@ -1,6 +1,7 @@
 import { isHTMLElement, setElementCssProps } from "../dom/typeGuards";
 import { queryPdfPageNodes } from "../integration/pdfPageSelectors";
 import { createDetachedDiv, createDetachedEl, createDetachedSvg } from "../vendor/createDetached";
+import { ActiveTouches } from "./ActiveTouches";
 import { isAnnotationChromeTarget } from "./PointerRouter";
 
 /** Ignored overscroll before the cue engages — casual bottom-scroll stays inert. */
@@ -38,7 +39,7 @@ export interface PullToAddPageCallbacks {
   enabled(): boolean;
   /** Block while drawing ink, saving, or inserting. */
   isBusy?(): boolean;
-  /** True while Draw mode is using the stylus for ink (fingers may still pull). */
+  /** True while Draw mode is on — ink pointers (pen/mouse) must not start pull. */
   isDrawing?: () => boolean;
   scrollRoot(): HTMLElement;
   /** Overlay mounts relative to this host (PDF leaf / adapter root). */
@@ -174,7 +175,7 @@ export class PullToAddPageGesture {
   private displayPull = 0;
   private displayStretch = 0;
   private smoothFrame: number | null = null;
-  private readonly activeTouches = new Set<number>();
+  private readonly activeTouches = new ActiveTouches();
   private crossedArm = false;
   private wasAtBottom = false;
   private approachingFast = false;
@@ -401,11 +402,7 @@ export class PullToAddPageGesture {
 
   private onPointerDown(event: PointerEvent): void {
     if (event.pointerType === "touch") {
-      this.activeTouches.add(event.pointerId);
-      if (event.isPrimary && this.activeTouches.size > 1) {
-        this.activeTouches.clear();
-        this.activeTouches.add(event.pointerId);
-      }
+      this.activeTouches.add(event);
       if (this.activeTouches.size >= 2) {
         this.abortActivePointer("multi-touch");
         return;
@@ -417,8 +414,12 @@ export class PullToAddPageGesture {
     if (event.target instanceof Element && event.target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown")) {
       return;
     }
-    // Stylus ink owns the gesture in Draw mode; fingers / mouse still overscroll.
-    if (event.pointerType === "pen" && this.callbacks.isDrawing?.()) return;
+    // Ink pointers (pen + mouse) own the gesture in Draw mode. Fingers may still
+    // overscroll/pull — mouse is an ink device here (see debug: draw+pull overlap).
+    if (this.shouldYieldToInk(event)) {
+      this.log("blocked", { reason: "draw-mode-ink-pointer", pointerType: event.pointerType }, true);
+      return;
+    }
 
     const root = this.callbacks.scrollRoot();
     if (!isScrollAtBottom(root)) return;
@@ -440,6 +441,10 @@ export class PullToAddPageGesture {
       return;
     }
     if (this.activePointerId !== event.pointerId || !this.live()) return;
+    if (this.shouldYieldToInk(event)) {
+      this.abortActivePointer("draw-mode-ink-pointer");
+      return;
+    }
 
     const deltaY = event.clientY - this.lastClientY;
     this.lastClientY = event.clientY;
@@ -478,7 +483,7 @@ export class PullToAddPageGesture {
   }
 
   private onPointerUp(event: PointerEvent): void {
-    if (event.pointerType === "touch") this.activeTouches.delete(event.pointerId);
+    if (event.pointerType === "touch") this.activeTouches.delete(event);
     if (this.activePointerId !== event.pointerId) return;
     if (this.claimed && event.target instanceof Element && event.target.hasPointerCapture?.(event.pointerId)) {
       event.target.releasePointerCapture?.(event.pointerId);
@@ -543,10 +548,18 @@ export class PullToAddPageGesture {
   }
 
   private abortActivePointer(reason: string): void {
-    void reason;
+    if (this.activePointerId !== null || this.rawPull > 0 || this.displayPull > 0) {
+      this.log("blocked", { reason, hadPointer: this.activePointerId !== null, rawPull: this.rawPull }, true);
+    }
     this.activePointerId = null;
     this.claimed = false;
     if (this.rawPull > 0 || this.displayPull > 0 || this.displayStretch > 0) this.animateRelease();
+  }
+
+  /** Pen and mouse ink in Draw mode; touch may still pull/overscroll. */
+  private shouldYieldToInk(event: PointerEvent): boolean {
+    if (!this.callbacks.isDrawing?.()) return false;
+    return event.pointerType === "pen" || event.pointerType === "mouse";
   }
 
   private setRawPull(next: number): void {
@@ -597,6 +610,10 @@ export class PullToAddPageGesture {
       || this.releasing;
   }
 
+  private get isReleasingAndReset(): boolean {
+    return this.releasing && this.displayPull <= 0.3 && this.displayStretch <= 0.5 && this.rawPull <= 0;
+  }
+
   private paintDisplayPull(): void {
     // Never paint the cue / stretch unless the scroll root is still at the edge
     // (or we are already mid-gesture / releasing — cue height can confuse slack).
@@ -634,7 +651,7 @@ export class PullToAddPageGesture {
     }
     this.renderVisual(visualState, this.displayStretch);
 
-    if (this.releasing && this.displayPull <= 0.3 && this.displayStretch <= 0.5 && this.rawPull <= 0) {
+    if (this.isReleasingAndReset) {
       this.displayPull = 0;
       this.displayStretch = 0;
       this.releasing = false;

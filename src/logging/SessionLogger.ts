@@ -2,6 +2,8 @@ import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
 import type { VaultLogSink } from "./VaultLogSink";
 
 const PREFIX = "[Handwriting Natively]";
+/** Schema for copied bounded performance and draw-state diagnostics. */
+export const PROFILE_SCHEMA_VERSION = 2 as const;
 
 export type ViewStateSource =
   | "scalechanging"
@@ -56,12 +58,16 @@ export interface ZoomRepaintLog {
   canvasesResized: number;
   strokesRedrawn: number;
   skippedDisconnected: number;
+  skippedCulled?: number;
+  skippedBlitOnly?: number;
   msSinceLastRepaint?: number | null;
   burstTicks?: number;
   burstDurationMs?: number;
   scaleStart?: number;
   scaleEnd?: number;
   scale?: number;
+  /** True when HQ settle painted one page per frame. */
+  sliced?: boolean;
 }
 
 export interface ZoomTickLog {
@@ -69,10 +75,25 @@ export interface ZoomTickLog {
   tick: number;
   source?: string;
   scale?: number;
+  settleMs?: number;
   msSinceLastTick?: number | null;
 }
 
+interface InputStrokeHeartbeat {
+  lastStartAt: string | null;
+  lastEndAt: string | null;
+  lastPage: number | null;
+  lastRouterGeneration: number | null;
+}
+
+interface InputLifecycleRecord {
+  at: string;
+  event: string;
+  details: Record<string, unknown>;
+}
+
 export class SessionLogger {
+  private static readonly INPUT_LIFECYCLE_LIMIT = 40;
   private lastViewState: PdfViewState | null = null;
   private refreshWindowStart = 0;
   private refreshWindowCount = 0;
@@ -84,6 +105,14 @@ export class SessionLogger {
   private alignMoveCount = 0;
   private shapeResizeMoveCount = 0;
   private readonly textToolHotCounts = new Map<string, number>();
+  private readonly inputLifecycle: InputLifecycleRecord[] = [];
+  private readonly inputHeartbeat: InputStrokeHeartbeat = {
+    lastStartAt: null,
+    lastEndAt: null,
+    lastPage: null,
+    lastRouterGeneration: null
+  };
+  private firstFailedPenDown: Record<string, unknown> | null = null;
   /** High-frequency text phases — sample so vault debug does not flood disk I/O. */
   private static readonly TEXT_TOOL_HOT_PHASES = new Set([
     "render",
@@ -113,7 +142,8 @@ export class SessionLogger {
   constructor(
     private readonly documentPath: string,
     private readonly vaultLog?: VaultLogSink,
-    private readonly debugEnabled: () => boolean = () => true
+    private readonly debugEnabled: () => boolean = () => true,
+    private readonly pluginVersion = "unknown"
   ) {}
 
   isEnabled(): boolean { return this.debugEnabled(); }
@@ -184,6 +214,8 @@ export class SessionLogger {
       pageNumber: state.pageNumber,
       previousScale,
       scale: state.scale,
+      scaleDelta: Number(delta.toFixed(4)),
+      largeJump: Math.abs(delta) > 1,
       rotation: state.rotation,
       scrollFraction: Number(state.scrollFraction.toFixed(4))
     });
@@ -262,14 +294,81 @@ export class SessionLogger {
   }
 
   /** Slow live input frames are actionable; normal frames remain silent. */
-  inputPaint(page: number, durationMs: number, kind: "draw" | "edit", sampleCount: number): void {
+  inputPaint(
+    page: number,
+    durationMs: number,
+    kind: "draw" | "edit",
+    sampleCount: number,
+    details: {
+      draftPoints?: number;
+      incremental?: boolean;
+      compositeMatched?: boolean;
+      stabilization?: string;
+      draftResized?: boolean;
+    } = {}
+  ): void {
     if (!this.isEnabled() || durationMs < 8) return;
     this.emit(durationMs >= 16 ? "warn" : "info", "ink input paint", {
       document: this.documentPath,
       page,
       kind,
       durationMs: round(durationMs),
-      sampleCount
+      sampleCount,
+      ...(details.draftPoints !== undefined ? { draftPoints: details.draftPoints } : {}),
+      ...(details.incremental !== undefined ? { incremental: details.incremental } : {}),
+      ...(details.compositeMatched !== undefined ? { compositeMatched: details.compositeMatched } : {}),
+      ...(details.stabilization !== undefined ? { stabilization: details.stabilization } : {}),
+      ...(details.draftResized !== undefined ? { draftResized: details.draftResized } : {})
+    });
+  }
+
+  /** One bounded event for each effective drawing capability transition. */
+  drawStateChanged(details: Record<string, unknown>): void {
+    this.emit("info", "draw state changed", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      at: new Date().toISOString(),
+      ...details
+    });
+  }
+
+  /** One bounded summary per completed handwriting stroke. */
+  inkStrokeProfile(details: Record<string, unknown>): void {
+    this.emit("info", "ink stroke profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
+  /** One bounded summary per completed plugin-participating pan burst. */
+  panProfile(details: Record<string, unknown>): void {
+    this.emit("info", "ink pan profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
+  /** Major synchronous render work, never one event per pointer sample/frame. */
+  renderProfile(details: Record<string, unknown>): void {
+    this.emit("info", "ink render profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
+  /** Persistence timing summary kept separate from sidecar contents. */
+  persistProfile(details: Record<string, unknown>): void {
+    this.emit("info", "sidecar persist profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
     });
   }
 
@@ -299,11 +398,80 @@ export class SessionLogger {
     });
   }
 
+  /**
+   * Page-bound PointerRouter health. Distinguishes healthy skip vs rebind after
+   * zoom recycle / aborted listeners (zero `pointer route` while probe still fires).
+   */
+  pageRouter(
+    phase: "rebind" | "unavailable" | "received" | "fallback" | "rejected",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit("info", "page router", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   /** Raw pointer/touch probe — every type (mouse/pen/touch/…) for diagnosis. */
   pointerSeen(details: Record<string, unknown>): void {
     this.emit("info", "pointer seen", {
       document: this.documentPath,
       ...details
+    });
+  }
+
+  /** Keep bounded input history in memory; dump it only for a routed-input anomaly. */
+  inputLifecycleEvent(event: string, details: Record<string, unknown> = {}): void {
+    this.inputLifecycle.push({ at: new Date().toISOString(), event, details: { ...details } });
+    if (this.inputLifecycle.length > SessionLogger.INPUT_LIFECYCLE_LIMIT) {
+      this.inputLifecycle.splice(0, this.inputLifecycle.length - SessionLogger.INPUT_LIFECYCLE_LIMIT);
+    }
+  }
+
+  /** Last successful pen stroke heartbeat, used to correlate the first failed down. */
+  inputStroke(phase: "start" | "end", details: { page: number; routerGeneration?: number | null }): void {
+    const at = new Date().toISOString();
+    if (phase === "start") {
+      this.inputHeartbeat.lastStartAt = at;
+    } else {
+      this.inputHeartbeat.lastEndAt = at;
+    }
+    this.inputHeartbeat.lastPage = details.page;
+    this.inputHeartbeat.lastRouterGeneration = details.routerGeneration ?? null;
+    this.inputLifecycleEvent(`stroke-${phase}`, {
+      page: details.page,
+      routerGeneration: details.routerGeneration ?? null
+    });
+  }
+
+  timeSinceLastSuccessfulStrokeMs(): number | null {
+    if (!this.inputHeartbeat.lastEndAt) return null;
+    const endedAt = Date.parse(this.inputHeartbeat.lastEndAt);
+    return Number.isFinite(endedAt) ? Math.max(0, Date.now() - endedAt) : null;
+  }
+
+  inputInvariantViolation(reason: string, details: Record<string, unknown> = {}): void {
+    this.emit("warn", "ink input invariant violation", {
+      document: this.documentPath,
+      reason,
+      ...details
+    });
+  }
+
+  /** Emit the bounded, high-signal snapshot requested for visible-page routing failures. */
+  inputAnomaly(details: Record<string, unknown>): void {
+    const failedAt = new Date().toISOString();
+    if (!this.firstFailedPenDown) {
+      this.firstFailedPenDown = { at: failedAt, ...details };
+    }
+    this.inputLifecycleEvent("ink-input-anomaly", { reason: details.reason ?? "unknown" });
+    this.emit("warn", "ink input anomaly", {
+      document: this.documentPath,
+      ...details,
+      firstFailedPenDown: this.firstFailedPenDown,
+      lastSuccessfulStroke: { ...this.inputHeartbeat },
+      lifecycle: this.inputLifecycle.slice()
     });
   }
 
@@ -371,7 +539,7 @@ export class SessionLogger {
 
   /** A finger route must either finish or leave a terminal breadcrumb. */
   touchInput(
-    phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture",
+    phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block" | "pen-state" | "touchend" | "touchcancel" | "axis-lock",
     details: Record<string, unknown> = {}
   ): void {
     this.emit("info", "touch input", {
@@ -381,9 +549,20 @@ export class SessionLogger {
     });
   }
 
+  touchPan(
+    phase: "probe" | "activate" | "move" | "skip" | "abort" | "end" | "lostpointercapture" | "pointercancel" | "pointerup" | "touchcancel" | "touchend" | "start",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit("info", "touch pan", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   /** Confirms whether a sidebar action augmented Obsidian's existing menu. */
   thumbnailMenu(
-    phase: "context-seen" | "context-ignored" | "menu-scan" | "native-template-armed" | "native-template-appended" | "native-template-unavailable" | "native-menu-appended" | "native-menu-missing" | "standalone-add",
+    phase: "context-seen" | "context-ignored" | "menu-scan" | "native-template-armed" | "native-template-appended" | "native-template-unavailable" | "native-menu-appended" | "native-menu-missing" | "standalone-add" | "range-selected" | "range-delete-requested" | "keyboard-delete-error",
     details: Record<string, unknown> = {}
   ): void {
     this.emit(phase === "native-menu-missing" ? "warn" : "info", "thumbnail menu", {
@@ -406,13 +585,21 @@ export class SessionLogger {
   pdfPageAction(
     phase:
       | "insert-start"
+      | "insert-cancel"
       | "insert-complete"
       | "insert-error"
       | "insert-focus"
+      | "scan-start"
+      | "scan-cancel"
+      | "scan-complete"
+      | "scan-error"
       | "delete-start"
       | "delete-cancel"
       | "delete-complete"
       | "delete-error"
+      | "delete-range-start"
+      | "delete-range-complete"
+      | "delete-range-error"
       | "page-shield-captured"
       | "page-shield-skipped"
       | "page-shield-window-captured"
@@ -434,7 +621,11 @@ export class SessionLogger {
     scrollRoot: string;
     panCapture: string;
     panBoundary?: string;
-    drawEnabled?: boolean;
+    stylusPolicy?: string;
+    touchPolicy?: string;
+    mousePolicy?: string;
+    activeTool?: string;
+    runtimePlatform?: string;
     mouseDragScroll?: boolean;
     toolbarPlacement?: string;
     loadedStrokes?: number;
@@ -478,7 +669,7 @@ export class SessionLogger {
     this.emit("warn", "sidecar quarantined", {
       document: this.documentPath,
       ...details
-    });
+    }, true);
   }
 
   sidecarPersist(details: {
@@ -490,6 +681,13 @@ export class SessionLogger {
     updatedAt: string;
     skipped?: string;
     error?: string;
+    serializedBytes?: number;
+    serializeMs?: number;
+    recoveryWriteMs?: number | null;
+    sidecarWriteMs?: number | null;
+    recoveryClearMs?: number | null;
+    totalMs?: number;
+    overlappedActiveGesture?: boolean;
   }): void {
     this.emit(details.error || details.skipped ? "warn" : "info", "sidecar persist", {
       document: this.documentPath,
@@ -560,9 +758,27 @@ export class SessionLogger {
     });
   }
 
+  /** One bounded summary for a completed native pinch/zoom burst. */
+  zoomProfile(details: Record<string, unknown> = {}): void {
+    this.emit("info", "ink zoom profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
   /** Tracks the compositor handoff around a zoom-settle repaint. */
   zoomComposite(
-    phase: "begin" | "settle-paint" | "native-content" | "release-scheduled" | "final-canonical" | "release",
+    phase:
+      | "begin"
+      | "settle-paint"
+      | "settle-slice"
+      | "settle-deferred"
+      | "native-content"
+      | "release-scheduled"
+      | "final-canonical"
+      | "release",
     details: Record<string, unknown> = {}
   ): void {
     this.emit("info", "ink zoom composite", {
@@ -584,8 +800,8 @@ export class SessionLogger {
     });
   }
 
-  private emit(level: "info" | "warn", event: string, payload: Record<string, unknown>): void {
-    if (!this.isEnabled()) return;
+  private emit(level: "info" | "warn", event: string, payload: Record<string, unknown>, force = false): void {
+    if (!this.isEnabled() && !force) return;
     if (level === "info") console.debug(PREFIX, event, payload);
     else console.warn(PREFIX, event, payload);
     this.vaultLog?.write(level, event, payload);

@@ -44,7 +44,12 @@ export interface ObsidianPdfAdapter {
   eventBus?(): import("./PdfViewerCompatibility").PdfJsEventBus | null;
   /** Subscribe to PDF.js events used by the annotation find bridge. */
   onPdfEvent?(name: string, handler: (event: unknown) => void): () => void;
-  compatibilityReport(): { errors: string[]; warnings: string[] };
+  compatibilityReport(): {
+    errors: string[];
+    warnings: string[];
+    profile?: import("./PdfViewerCompatibility").PdfIntegrationProfile;
+    platform?: import("./PlatformCapabilities").PlatformCapabilityReport;
+  };
   destroy(): void;
 }
 

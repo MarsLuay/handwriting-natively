@@ -98,4 +98,130 @@ describe("PdfPageLocator", () => {
     expect(info.width).toBeGreaterThan(900);
     expect(info.width).toBeLessThan(1100);
   });
+
+  it("prefers live viewer scale when stale high data-scale still matches leftover canvas", () => {
+    // Zoom-out lag: canvas + data-scale still at ~8.5 while PDF.js is already 0.75.
+    const page = pageElement({
+      scale: "8.5",
+      rect: { width: 5202, height: 6732 },
+      canvas: { width: 5202, height: 6732 }
+    });
+    Object.defineProperty(page.querySelector("canvas")!, "clientWidth", { value: 5202 });
+    Object.defineProperty(page.querySelector("canvas")!, "clientHeight", { value: 6732 });
+    page.querySelector("canvas")!.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 5202, bottom: 6732, width: 5202, height: 6732, toJSON: () => ({})
+    });
+    const wrapper = document.createElement("div");
+    wrapper.className = "canvasWrapper";
+    wrapper.append(page.querySelector("canvas")!);
+    page.append(wrapper);
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    viewer.append(page);
+    const locator = new PdfPageLocator(viewer, { currentScale: 0.75 });
+    const info = locator.pages()[0]!;
+    expect(info.scale).toBeCloseTo(0.75, 2);
+  });
+
+  it("does not resolve HN overlay when .page lacks data-page-number", () => {
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const page = document.createElement("div");
+    page.className = "page";
+    Object.defineProperty(page, "getBoundingClientRect", {
+      value: () => ({ width: 600, height: 800, top: 0, left: 0, right: 600, bottom: 800, x: 0, y: 0, toJSON: () => ({}) })
+    });
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    wrap.append(document.createElement("canvas"));
+    const overlay = document.createElement("div");
+    overlay.className = "native-pdf-handwriting-page-overlay";
+    overlay.dataset.pageNumber = "1";
+    const ink = document.createElement("canvas");
+    ink.className = "native-pdf-handwriting-canvas";
+    overlay.append(ink);
+    page.append(wrap, overlay);
+    viewer.append(page);
+    document.body.append(viewer);
+
+    const locator = new PdfPageLocator(viewer);
+    const info = locator.page(1);
+    expect(info?.element).toBe(page);
+    expect(info?.element.classList.contains("native-pdf-handwriting-page-overlay")).toBe(false);
+  });
+
+  it("prefers the later duplicate page shell that still hosts a PDF canvas", () => {
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const stale = pageElement({ scale: "1", rect: { width: 600, height: 800 } });
+    stale.className = "page";
+    const live = pageElement({
+      scale: "2",
+      rect: { width: 1200, height: 1600 },
+      canvas: { width: 1200, height: 1600 }
+    });
+    live.className = "page";
+    const wrap = document.createElement("div");
+    wrap.className = "canvasWrapper";
+    wrap.append(live.querySelector("canvas")!);
+    live.append(wrap);
+    viewer.append(stale, live);
+    document.body.append(viewer);
+
+    const locator = new PdfPageLocator(viewer, { currentScale: 2 });
+    expect(locator.page(1)?.element).toBe(live);
+    expect(locator.pages()).toHaveLength(1);
+    expect(locator.pages()[0]?.element).toBe(live);
+  });
+
+  it("prefers the hit-receiving duplicate shell when both keep a PDF canvas", () => {
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const first = pageElement({
+      scale: "1",
+      rect: { width: 600, height: 800 },
+      canvas: { width: 600, height: 800 }
+    });
+    first.className = "page";
+    const firstWrap = document.createElement("div");
+    firstWrap.className = "canvasWrapper";
+    const firstCanvas = first.querySelector("canvas")!;
+    firstWrap.append(firstCanvas);
+    first.append(firstWrap);
+    firstCanvas.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 800, width: 600, height: 800, toJSON: () => ({})
+    });
+
+    const second = pageElement({
+      scale: "2",
+      rect: { width: 1200, height: 1600 },
+      canvas: { width: 1200, height: 1600 }
+    });
+    second.className = "page";
+    const secondWrap = document.createElement("div");
+    secondWrap.className = "canvasWrapper";
+    const secondCanvas = second.querySelector("canvas")!;
+    secondWrap.append(secondCanvas);
+    second.append(secondWrap);
+    secondCanvas.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 1200, bottom: 1600, width: 1200, height: 1600, toJSON: () => ({})
+    });
+
+    viewer.append(first, second);
+    document.body.append(viewer);
+    // Paint order: first shell's canvas is topmost despite second being DOM-last.
+    const original = document.elementFromPoint;
+    document.elementFromPoint = ((x: number, y: number) => {
+      if (x >= 0 && x <= 600 && y >= 0 && y <= 800) return firstCanvas;
+      return original?.call(document, x, y) ?? null;
+    }) as typeof document.elementFromPoint;
+
+    try {
+      const locator = new PdfPageLocator(viewer, { currentScale: 2 });
+      expect(locator.page(1)?.element).toBe(first);
+      expect(locator.pages()[0]?.element).toBe(first);
+    } finally {
+      document.elementFromPoint = original ?? (() => null);
+    }
+  });
 });

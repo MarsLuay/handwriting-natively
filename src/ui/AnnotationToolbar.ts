@@ -1,4 +1,4 @@
-import type { DrawingTool, SaveStatus, TextStyle, ToolId, ToolPreferences } from "../model";
+import type { DrawingTool, DrawingPreset, SaveStatus, TextStyle, ToolId, ToolPreferences } from "../model";
 import { isDrawingTool, resolveDrawingTool } from "../model";
 import { colorOptions } from "./ColorPicker";
 import { DropdownController, type DropdownOpenOptions, type DropdownOption } from "./DropdownController";
@@ -8,7 +8,7 @@ import { laserMenu } from "./LaserDropdown";
 import { lassoOptions } from "./LassoDropdown";
 import { SaveStatusIndicator } from "./SaveStatusIndicator";
 import { textMenu, type TextStyleChange } from "./TextDropdown";
-import { createDetachedDiv, createDetachedEl, createDetachedSpan } from "../vendor/createDetached";
+import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { setToolbarColorSwatch, setToolbarIcon, type ToolbarIcon } from "./ToolbarIcon";
 
 const DRAWING_LABELS: Record<DrawingTool, string> = {
@@ -20,6 +20,8 @@ const DRAWING_LABELS: Record<DrawingTool, string> = {
 export type MoreAction =
   | "export"
   | "export-editable"
+  | "import-page"
+  | "scan-document"
   | "toolbar-main"
   | "toolbar-left"
   | "toolbar-right";
@@ -34,7 +36,6 @@ export interface AnnotationToolbarCallbacks {
   /** Runs before the toolbar takes focus, preserving a contenteditable range. */
   onTextFormatPointerDown?(): void;
   activeTextStyle?(): TextStyle | undefined;
-  onDrawModeChange?(enabled: boolean): void;
   onUndo?(): void;
   onRedo?(): void;
   onSave?(): void | Promise<void>;
@@ -45,7 +46,6 @@ export interface AnnotationToolbarCallbacks {
 export interface AnnotationToolbarOptions {
   preferences: ToolPreferences;
   autosave: boolean;
-  drawEnabled?: boolean;
   callbacks: AnnotationToolbarCallbacks;
   supportedMoreActions?: MoreAction[];
   ownerDocument?: Document;
@@ -80,7 +80,6 @@ export class AnnotationToolbar {
     this.controls = createDetachedDiv(this.ownerDocument);
     this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
-    this.controls.append(this.drawToggle(options.drawEnabled ?? false));
     this.controls.append(this.colorButton());
     this.controls.append(this.groupedTool("drawing", () => this.drawingMenu()));
     this.controls.append(this.groupedTool("eraser", () => this.eraserMenuOptions()));
@@ -155,27 +154,6 @@ export class AnnotationToolbar {
     return button;
   }
 
-  private drawToggle(enabled: boolean): HTMLLabelElement {
-    const label = createDetachedEl(this.ownerDocument, 'label');
-    label.className = "native-pdf-handwriting-draw-toggle";
-    label.setAttribute("aria-label", "Turn on to draw, erase, or select annotations. Leave off for normal PDF controls.");
-    label.removeAttribute("title");
-    const input = createDetachedEl(this.ownerDocument, 'input');
-    input.type = "checkbox";
-    input.checked = enabled;
-    input.dataset.control = "draw";
-    input.addEventListener("change", () => {
-      label.dataset.enabled = String(input.checked);
-      this.callbacks.onDrawModeChange?.(input.checked);
-    }, { signal: this.abort.signal });
-    label.dataset.enabled = String(enabled);
-    const text = createDetachedSpan(this.ownerDocument);
-    text.className = "native-pdf-handwriting-draw-toggle-label";
-    text.textContent = "Draw";
-    label.append(input, text);
-    return label;
-  }
-
   private presentButton(button: HTMLButtonElement, label: string, icon: ToolbarIcon): void {
     button.setAttribute("aria-label", label);
     // No native title — Obsidian already tooltips clickable-icon from aria-label (double bubble otherwise).
@@ -211,19 +189,82 @@ export class AnnotationToolbar {
     const content = createDetachedDiv(this.ownerDocument);
     const options = drawingOptions(this.preferences, (tool) => {
       this.preferences.activeTool = tool;
+      this.preferences.activePresetId = null;
       this.lastDrawingTool = tool;
       this.changed("tool");
     }, (width) => {
       this.preferences[this.lastDrawingTool].width = width;
       this.preferences.activeTool = this.lastDrawingTool;
+      this.preferences.activePresetId = null;
       this.changed();
+    }, (preset) => {
+      this.applyDrawingPreset(preset);
     });
     const tools = options.filter((option) => !option.id.startsWith("width-"));
     const widths = options.filter((option) => option.id.startsWith("width-"));
     for (const option of tools) content.append(this.inlineOption(option));
     for (const option of widths) content.append(this.inlineOption(option));
+    content.append(this.presetEditor());
     content.append(drawingAdvanced(this.ownerDocument, this.preferences, () => this.changed(), this.abort.signal));
     return { label: "Drawing options", content };
+  }
+
+  private applyDrawingPreset(preset: DrawingPreset): void {
+    Object.assign(this.preferences[preset.tool], preset.settings);
+    this.preferences.activeTool = preset.tool;
+    this.preferences.activePresetId = preset.id;
+    this.lastDrawingTool = preset.tool;
+    this.changed("tool");
+  }
+
+  private presetEditor(): HTMLElement {
+    const wrapper = createDetachedDiv(this.ownerDocument);
+    wrapper.className = "native-pdf-handwriting-preset-editor";
+    const label = createDetachedEl(this.ownerDocument, "label");
+    label.textContent = "Save current drawing settings as preset";
+    const input = createDetachedEl(this.ownerDocument, "input");
+    input.type = "text";
+    input.maxLength = 80;
+    input.placeholder = `${DRAWING_LABELS[this.lastDrawingTool]} preset`;
+    const save = createDetachedEl(this.ownerDocument, "button");
+    save.type = "button";
+    save.textContent = "Save";
+    save.addEventListener("click", () => {
+      const tool = this.lastDrawingTool;
+      const name = input.value.trim() || `${DRAWING_LABELS[tool]} preset`;
+      const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
+      if (selected) {
+        selected.name = name;
+        selected.tool = tool;
+        selected.settings = { ...this.preferences[tool] };
+      } else {
+        const idBase = `custom-${Date.now().toString(36)}`;
+        let id = idBase;
+        let suffix = 2;
+        while (this.preferences.presets.some((preset) => preset.id === id)) id = `${idBase}-${suffix++}`;
+        if (this.preferences.presets.length >= 8) this.preferences.presets.shift();
+        this.preferences.presets.push({ id, name, tool, settings: { ...this.preferences[tool] } });
+        this.preferences.activePresetId = id;
+      }
+      this.changed();
+    }, { signal: this.abort.signal });
+    label.append(input, save);
+    wrapper.append(label);
+    const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
+    if (selected) {
+      const remove = createDetachedEl(this.ownerDocument, "button");
+      remove.type = "button";
+      remove.textContent = "Delete selected preset";
+      remove.addEventListener("click", () => {
+        const index = this.preferences.presets.findIndex((preset) => preset.id === selected.id);
+        if (index < 0) return;
+        this.preferences.presets.splice(index, 1);
+        this.preferences.activePresetId = this.preferences.presets[0]?.id ?? null;
+        this.changed();
+      }, { signal: this.abort.signal });
+      wrapper.append(remove);
+    }
+    return wrapper;
   }
 
   private laserMenuOptions(): DropdownOpenOptions {
@@ -363,6 +404,8 @@ export class AnnotationToolbar {
     const labels: Record<MoreAction, string> = {
       export: "Export PDF",
       "export-editable": "Export editable PDF annotations",
+      "import-page": "Import page",
+      "scan-document": "Scan document",
       "toolbar-main": "Toolbar: PDF bar",
       "toolbar-left": "Toolbar: Left sidebar",
       "toolbar-right": "Toolbar: Right sidebar"

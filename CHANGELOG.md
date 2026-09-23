@@ -1,4 +1,145 @@
+## 0.1.53 — 2026-09-21
+
+- Recover long-lived handwriting after router teardown with generation-aware pointer ownership and inactive-session rejection.
+- Add input lifecycle diagnostics for stale routers, pointer ownership, and session rebinds.
+- Unblock release builds with strict TypeScript fixes for laser labels and page-coordinate test mocks.
+
+## 0.1.52 — 2026-08-06
+
+- Improve stylus handling after pen hover and keep palm contacts from interrupting drawing or touch gestures.
+- Keep two-finger wheel panning in PDF content while native PDF sidebar scrolling stays native.
+- Shift-click PDF thumbnails to select a page range, then use Delete or Backspace to remove the selected pages together.
+
+## 0.1.51 — 2026-08-01
+
+- Zoom settle focus: sync **blit-stretch** at full backing (no 58-stroke vector wall); defer focus HQ to the first settle rAF under the CSS mask, then cheap neighbors.
+- Skip draft-canvas warm alloc on cheap settle resizes; HQ warms draft when it runs.
+- Native remounts during deferred HQ stay layout-only (`handoffGuard` / settle-slice pending) — do not arm CSS release early.
+- `settle-slice` logs `path` (`blit-stretch` / `canonical-vector` / …) plus per-slice stroke/resize counts.
+
+## 0.1.50 — 2026-08-01
+
+- Zoom settle: paint the focused page HQ synchronously; defer neighbors under the CSS compositing mask (rAF cheap slices).
+- Neighbor settle uses lower backing + blit-stretch; `settleUpgradePending` upgrades to full HQ after handoff via idle viewport paint.
+- Shorter coalesce (120ms) only when burst scale delta is tiny (<0.02 abs and <1.5% relative); stepped trackpad bursts keep 560ms. Logs `settleMs`, `focusSync`, `tier`.
+
+## 0.1.49 — 2026-08-01
+
+- Causal stroke stabilization for live preview: prior smoothed points never move, so incremental draft stamps work with medium/high stab (no fast-draw spikes, no full-canvas redraw every frame).
+- Warm draft canvas when committed canvas resizes; skip redundant `clearRect` after draft alloc (stroke-start hitch on ~45MP backings).
+- Zoom settle paints one page per animation frame (largest visible first); hold CSS compositing until the queue finishes. Logs `settle-slice` + `sliced` on repaint/spike.
+- Skip discarded bitmap snapshot on canonical zoom settle resize (was alloc+copy then thrown away).
+
+## 0.1.48 — 2026-08-01
+
+- Live freehand draft: skip incremental stamps when stabilization is on (`low`/`medium`/`high`). `stabilizePoints` moves earlier preview coords each frame; tail-only stamps left stale spikes on fast strokes. Full clear+redraw while stabilized; incremental kept for `off`. Log `stabilization` on `ink input paint`.
+
+## 0.1.47 — 2026-08-01
+
+- While zoom CSS compositing is held (including live-ink `settle-deferred`), paint the live draft into the committed canvas backing so tip ink and soft committed ink share one CSS stretch (fixes residual mid-drag dual-scale glitch).
+- Clear the live draft only after committed paint finishes — keeps tip ink visible through settle resize/restamp (no blank flash between tip-up and settle-paint).
+- Log `compositeMatched` on `ink input paint` when draft matches the composited backing.
+
+## 0.1.46 — 2026-08-01
+
+- Defer zoom settle while a live stroke/edit is active (`settle-deferred`); keep CSS compositing and do not clear the draft or force-rebind routers mid-drag.
+- Zoom settle: strict viewport cull (root intersection only) so off-screen pages skip HQ stamp/resize; `viewportCullPending` + idle prefetch after handoff. Log `skippedCulled` / fix `pagesRepainted` to count real paints only.
+- Zoom settle blit-only when backing size + `backingScale` unchanged and ink layer is canonical (not burst-captured). Log `skippedBlitOnly`.
+- Live freehand draft paints incrementally (new segments only). Stops long strokes from clearing+re-stamping the full path on a huge draft canvas every frame (~10ms→45ms climb in logs).
+- Coalesce zoom settle: wait ~560ms after the last scale tick before HQ ink resize/redraw (was 120ms). Stops stepped trackpad/wheel zoom paying repeated 300–800ms full paints mid-gesture.
+- Clear Pencil contact on document pointerup/cancel/lostpointercapture, lost capture, stale-touch reconcile, and inactivity timeout (Ink finger-blocker pattern). Stops touch-while-pen locking fingers after tip lift.
+- Document `touchend`/`touchcancel` as gesture-end (Touch Events ignore pointer capture): clear finger bookkeeping; unlock only stale pens after the grace window.
+- Draw-mode single-finger axis lock after 4px (Ink): vertical claims PDF scroll; horizontal leaves native; second finger aborts for pinch.
+- Skip Pencil move samples with pressure ≤ 0.01 (Ink `PEN_HOVER_PRESSURE_EPSILON`) to avoid hover dots / zero-pressure glitches; pointerdown/up still kept.
+- Disable coalesced pointer intermediates by default (Ink): one sample per `pointermove` to avoid positional jitter → xor-fill notches; flag to re-enable later with path smoothing.
+- Early-stroke pressure floor 0.15 for ~1× brush length (Ink `PEN_MIN_START_PRESSURE`); settings Start pressure still controls the floor value.
+- Pull-to-add: do not track mouse/pen pointers while Draw is on (finger pull unchanged). Stops rubber-band / new-page cue stealing ink strokes at the bottom edge.
+- Raise ink canvas backing budget (2048 → 4096 edge) so moderate zoom stays sharp instead of CSS-stretching a soft bitmap.
+- Raise desktop ink backing further (8192 edge / ~50MP, mobile stays 4096); disable bitmap smoothing on ink blits so zoomed strokes stay solid.
+- Touch-action modes on the PDF page shell: `touch-none` while tip down, `touch-pan-xy` while Draw is on and tip is up, default when Draw is off (replaces binary `pen-capturing`).
+
 # Changelog
+
+## 0.1.57 — 2026-09-23
+
+- Restore thumbnail-sidebar Add page, Delete page, and selected-range deletion.
+- Rewrite explicit page-structure changes through one compensating PDF+sidecar+recovery transaction.
+- Keep annotation edits and Export PDF non-destructive while documenting the explicit source-PDF mutation boundary.
+
+## 0.1.45 — 2026-08-01
+
+- Draw mode: document capture sync-routes pen/mouse onto the page router even when binds/alive look healthy (page capture can stay deaf after zoom). Resolve hit page number via surface identity / ensure stamp when `data-page-number` is missing (loading shells). Fallback skip logs for missing page number / no surface.
+
+## 0.1.44 — 2026-08-01
+
+- After pinch zoom, prefer the hit-receiving PDF page shell (elementFromPoint), not merely the DOM-last shell with a canvas. Document capture remounts PointerRouter onto the hit `.page` when rebind health was a false positive; bubble fallback owns pen strokes the page listener missed. Fresh listener generation + node-id rebind logs.
+
+## 0.1.43 — 2026-08-01
+
+- After pinch zoom, remount ink + PointerRouter onto the live PDF page shell (duplicate/stale `.page` nodes no longer leave Draw mode deaf while the document probe still sees pen events). Locator prefers the shell that still hosts a PDF canvas.
+
+## 0.1.42 — 2026-07-31
+
+- iPad: while Apple Pencil tip is down, cancel companion TouchEvents and set transient `touch-action: none` so the PDF does not pan under the stylus. Finger scroll unchanged when no pen is active.
+
+## 0.1.41 — 2026-07-31
+
+- Highlighter erase punches holes in place (destination-out masks). No more split into two round-cap circles. Pen/pencil unchanged.
+- Draw mode uses `draw-hit-page` (not legacy `touch-draw-page`); rebind dead page routers when `bindsTo` still matches.
+
+## 0.1.40 — 2026-07-31
+
+- Highlighter erase hole-punches painted area (small eraser in middle of filled circle leaves outer ring). Pen/pencil unchanged.
+
+## 0.1.39 — 2026-07-31
+
+- Highlighter erase densifies paint into stamps so partial erase leaves remaining highlight (dabs no longer vanish as whole circles). Pen/pencil erase unchanged.
+
+## 0.1.38 — 2026-07-31
+
+- (reverted) Viewport-scale erase wiring; highlighter-only stamp erase ships in 0.1.39 instead.
+
+## 0.1.37 — 2026-07-31
+
+- Laser release head uses an outward polyline bulge in the ribbon outline (fixes white arc hole).
+
+## 0.1.36 — 2026-07-31
+
+- Laser release head is an outward semicircle in the same ribbon path (one fill, not a separate disc).
+
+## 0.1.35 — 2026-07-31
+
+- Fix laser release-head round cap punching a white hole through the trail body.
+
+## 0.1.34 — 2026-07-31
+
+- Round the laser trail head where the pointer lifts (fade tip stays sharp).
+
+## 0.1.33 — 2026-07-31
+
+- Restore prior laser trail tip rendering.
+
+## 0.1.32 — 2026-07-31
+
+- Restore prior highlighter stroke rendering (laser tip rounding only).
+
+## 0.1.31 — 2026-07-31
+
+- Round laser trail start/head (no sharp/flat tip).
+
+## 0.1.30 — 2026-07-31
+
+- Highlighter stroke start and end use round tip discs (no flat chisel start).
+
+## 0.1.29 — 2026-07-31
+
+- Fix empty ink surfaces after sidebar chrome mount: page discovery no longer treats descendants of `.native-pdf-handwriting-chrome` as plugin chrome (that wrapper owns the real PDF viewer).
+
+## 0.1.28 — 2026-07-31
+
+- Draw mode: mouse and stylus ink; fingers always keep native scroll/pinch (no finger ink).
+- Disable PDF text/annotation layer hits while Draw is on so mouse reaches the page router; do not set `touch-action: none`.
+- Rebuild/rebinding breadcrumbs (`page router`) so a stale router after zoom cannot swallow all `pointer route` events.
 
 ## 0.1.27 — 2026-07-31
 

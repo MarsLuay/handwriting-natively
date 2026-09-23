@@ -135,6 +135,53 @@ describe("circular segment eraser", () => {
     expect(second.kept).toHaveLength(3);
   });
 
+  it("highlighter dab erase leaves remaining paint instead of deleting the whole circle", () => {
+    const dab: InkStroke = {
+      ...stroke("dab", [point(0, 0)], 40),
+      tool: "highlighter"
+    };
+    const result = eraseStrokeSegments([dab], [point(14, 0)], 20, { now: () => "after" });
+    expect(result.erased).toEqual([dab]);
+    expect(result.fragments).toHaveLength(1);
+    expect(result.fragments[0]?.id).toBe("dab");
+    expect(result.fragments[0]?.points).toEqual(dab.points);
+    expect(result.fragments[0]?.eraseMasks).toHaveLength(1);
+    expect(result.fragments[0]?.eraseMasks?.[0]?.radius).toBe(10);
+  });
+
+  it("highlighter circle with smaller center erase keeps one stroke and punches a hole mask", () => {
+    const dab: InkStroke = {
+      ...stroke("circle", [point(0, 0)], 40),
+      tool: "highlighter"
+    };
+    const result = eraseStrokeSegments([dab], [point(0, 0)], 16, { now: () => "after" });
+    expect(result.erased).toEqual([dab]);
+    expect(result.fragments).toHaveLength(1);
+    expect(result.fragments[0]?.points).toEqual(dab.points);
+    expect(result.fragments[0]?.eraseMasks?.[0]).toEqual({
+      points: [{ x: 0, y: 0 }],
+      radius: 8
+    });
+  });
+
+  it("highlighter line erase keeps one stroke with mask; pen still uses centerline segment split", () => {
+    const highlight: InkStroke = {
+      ...stroke("hl", [point(0, 0), point(100, 0)], 40),
+      tool: "highlighter"
+    };
+    const pen = stroke("pen", [point(0, 0), point(100, 0)], 2);
+    const result = eraseStrokeSegments([highlight, pen], [point(50, 0)], 20, { now: () => "after" });
+    expect(result.erased.map((item) => item.id).sort()).toEqual(["hl", "pen"]);
+    const hlKept = result.kept.filter((item) => item.tool === "highlighter");
+    expect(hlKept).toHaveLength(1);
+    expect(hlKept[0]?.points).toEqual(highlight.points);
+    expect(hlKept[0]?.eraseMasks).toHaveLength(1);
+    const penFragments = result.fragments.filter((item) => item.tool === "pen");
+    expect(penFragments).toHaveLength(2);
+    expect(penFragments[0]?.points.at(-1)?.x).toBeCloseTo(39);
+    expect(penFragments[1]?.points[0]?.x).toBeCloseTo(61);
+  });
+
   it("rejects invalid size and coordinate scale", () => {
     expect(() => eraseStrokeSegments([], [], 0)).toThrow("positive");
     expect(() => eraseStrokeSegments([], [], 2, { scale: 0 })).toThrow("scale");

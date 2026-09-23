@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../src/model";
-import { AutosaveQueue, DEFAULT_AUTOSAVE_DELAY_MS } from "../src/storage/AutosaveQueue";
+import {
+  AutosaveQueue,
+  DEFAULT_AUTOSAVE_DELAY_MS,
+  DEFAULT_AUTOSAVE_MAX_RETRIES
+} from "../src/storage/AutosaveQueue";
 import { SaveCoordinator } from "../src/storage/SaveCoordinator";
 
 describe("autosave", () => {
@@ -18,6 +22,23 @@ describe("autosave", () => {
     await vi.advanceTimersByTimeAsync(49); expect(write).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(write).toHaveBeenCalledOnce(); expect(write).toHaveBeenCalledWith("doc", "two");
+    vi.useRealTimers();
+  });
+
+  it("bounds the dirty interval while commands keep arriving", async () => {
+    vi.useFakeTimers();
+    const write = vi.fn(async () => undefined);
+    const queue = new AutosaveQueue({ write, delayMs: 100, maxDirtyIntervalMs: 250 });
+    queue.schedule("doc", "one");
+    await vi.advanceTimersByTimeAsync(90);
+    queue.schedule("doc", "two");
+    await vi.advanceTimersByTimeAsync(90);
+    queue.schedule("doc", "three");
+    await vi.advanceTimersByTimeAsync(69);
+    expect(write).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(write).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledWith("doc", "three");
     vi.useRealTimers();
   });
 
@@ -42,6 +63,25 @@ describe("autosave", () => {
     await expect(queue.flush("doc")).rejects.toThrow("disk");
     expect(queue.getStatus("doc")).toBe("failed"); expect(queue.isDirty("doc")).toBe(true);
     await queue.retry("doc"); expect(queue.getStatus("doc")).toBe("saved"); expect(attempts).toBe(2);
+  });
+
+  it("caps automatic retries and leaves the document dirty for an explicit retry", async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const queue = new AutosaveQueue({
+      retryFailed: true,
+      retryDelayMs: 10,
+      maxRetries: 2,
+      write: async () => { attempts += 1; throw new Error("disk"); }
+    });
+    queue.schedule("doc", "latest");
+    await expect(queue.flush("doc")).rejects.toThrow("disk");
+    await vi.runAllTimersAsync();
+    expect(attempts).toBe(1 + 2);
+    expect(queue.getStatus("doc")).toBe("failed");
+    expect(queue.isDirty("doc")).toBe(true);
+    expect(DEFAULT_AUTOSAVE_MAX_RETRIES).toBeGreaterThan(0);
+    vi.useRealTimers();
   });
 
   it("flushes all documents on close", async () => {

@@ -5,21 +5,54 @@ export const PDF_PAGE_SELECTOR =
 /** Present before PDF.js stamps `data-page-number` (common on first mobile paint). */
 export const PDF_PAGE_CANDIDATE_SELECTOR = ".page, .pdf-page-view";
 
+/**
+ * HN mounts annotation chrome with `data-page-number` for its own bookkeeping.
+ * Those nodes must never win `querySelector("[data-page-number]")` over a real
+ * PDF.js `.page` — PointerRouter bound to the overlay (pointer-events: none,
+ * sibling of the PDF canvas) never sees stylus/finger hits.
+ *
+ * Do NOT treat `.native-pdf-handwriting-chrome` as chrome here: that wrapper
+ * owns the real PDF scroll/viewer tree after the sidebar rail mounts. Filtering
+ * its descendants empties `adapter.pages()` and leaves surfaces at 0.
+ */
+export function isHandwritingPageChrome(element: Element): boolean {
+  return Boolean(
+    element.closest(
+      ".native-pdf-handwriting-page-overlay, .native-pdf-handwriting-page-mutation-shield, .native-pdf-handwriting-rail, .native-pdf-handwriting-toolbar"
+    )
+  );
+}
+
 export function looksLikePdfPage(element: HTMLElement): boolean {
-  if (element.querySelector("canvas, .canvasWrapper, .textLayer, .annotationLayer")) return true;
+  if (isHandwritingPageChrome(element)) return false;
+  // Ink-only chrome under a mis-numbered shell must not count as a PDF page.
+  if (element.classList.contains("native-pdf-handwriting-page-overlay")) return false;
+  if (element.querySelector(":scope > .canvasWrapper, :scope > .textLayer, :scope > .annotationLayer")) {
+    return true;
+  }
+  const nativeCanvas = Array.from(element.querySelectorAll(":scope > canvas")).find(
+    (canvas) => !canvas.classList.contains("native-pdf-handwriting-canvas")
+      && !canvas.classList.contains("native-pdf-handwriting-draft-canvas")
+  );
+  if (nativeCanvas) return true;
+  if (element.querySelector(".native-pdf-handwriting-page-overlay, .native-pdf-handwriting-canvas")) {
+    return false;
+  }
   const rect = element.getBoundingClientRect();
   return rect.width >= 50 && rect.height >= 50;
 }
 
 export function queryPdfPageNodes(root: ParentNode): HTMLElement[] {
-  const numbered = Array.from(root.querySelectorAll<HTMLElement>(PDF_PAGE_SELECTOR));
+  const numbered = Array.from(root.querySelectorAll<HTMLElement>(PDF_PAGE_SELECTOR))
+    .filter((element) => !isHandwritingPageChrome(element));
   if (numbered.length > 0) return numbered;
   // Some Obsidian builds stamp data-page-number without .page / .pdf-page-view.
   return Array.from(root.querySelectorAll<HTMLElement>("[data-page-number]")).filter(looksLikePdfPage);
 }
 
 export function queryPdfPageCandidates(root: ParentNode): HTMLElement[] {
-  const candidates = Array.from(root.querySelectorAll<HTMLElement>(PDF_PAGE_CANDIDATE_SELECTOR));
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>(PDF_PAGE_CANDIDATE_SELECTOR))
+    .filter((element) => !isHandwritingPageChrome(element));
   if (candidates.length > 0) return candidates;
   return Array.from(root.querySelectorAll<HTMLElement>("[data-page-number]")).filter(looksLikePdfPage);
 }

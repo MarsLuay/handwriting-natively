@@ -148,5 +148,5 @@ Each session needs one disposal stack: PDF.js `off` callbacks, DOM listeners/`Ab
 3. Native viewer search, outline, zoom, navigation, links, and text layers remain authoritative; annotation input intercepts only confirmed editing gestures.
 4. Sidecar JSON is canonical and versioned. Autosave is command-triggered, debounced, per-document serialized, retryable, and flushable. UI/tool preferences and transient popover state are not sidecar data.
 5. Rendering libraries are replaceable. Canonical strokes retain normalized centerline points, pressure/tilt/tool metadata, page dimensions, and rotation; generated outlines are caches.
-6. Export is non-destructive. Annotated copies are written separately; source PDFs are never replaced by this plugin.
+6. Export is non-destructive. Annotated copies are written separately; explicit page-structure actions are the only workflows that replace the open source PDF, with sidecar/recovery remapping and compensation.
 7. Reversible cleanup is a release criterion: no session may retain patches, event-bus listeners, DOM listeners, observers, overlays, toolbar nodes, popovers, timers, pointer captures, pending writes, or viewer references after disposal.

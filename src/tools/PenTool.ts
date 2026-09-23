@@ -1,4 +1,5 @@
 import type { DrawingToolPreferences, PdfPoint } from "../model";
+import { normalizedCoordinateScale } from "../util/math";
 
 export interface PenPoint {
   x: number;
@@ -39,10 +40,6 @@ function widthAt(options: PenStrokeOptions, point: PenPoint): number {
     { x: point.x, y: point.y, pressure: point.pressure, time: 0 },
     options.coordinateScale
   );
-}
-
-function normalizedCoordinateScale(value: number | undefined): number {
-  return Number.isFinite(value) && value! > 0 ? value! : 1;
 }
 
 /** Variable-width pen: round stamps / segments so Thinning + Pressure affect the stroke. */

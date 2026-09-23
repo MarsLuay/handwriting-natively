@@ -75,14 +75,50 @@ describe("pdfPageSelectors", () => {
     expect(queryPdfPageNodes(root)).toHaveLength(1);
   });
 
-  it("accepts bare data-page-number nodes without .page class", () => {
+  it("does not treat handwriting overlay as a PDF page node", () => {
     const root = document.createElement("div");
+    root.className = "pdf-viewer";
     const page = document.createElement("div");
-    page.dataset.pageNumber = "2";
+    page.className = "page";
     Object.defineProperty(page, "getBoundingClientRect", {
-      value: () => ({ width: 300, height: 400, top: 0, left: 0, right: 300, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+      value: () => ({ width: 400, height: 600, top: 0, left: 0, right: 400, bottom: 600, x: 0, y: 0, toJSON: () => ({}) })
     });
+    const wrapper = document.createElement("div");
+    wrapper.className = "canvasWrapper";
+    wrapper.append(document.createElement("canvas"));
+    const overlay = document.createElement("div");
+    overlay.className = "native-pdf-handwriting-page-overlay";
+    overlay.dataset.pageNumber = "1";
+    const ink = document.createElement("canvas");
+    ink.className = "native-pdf-handwriting-canvas";
+    overlay.append(ink);
+    page.append(wrapper, overlay);
     root.append(page);
-    expect(queryPdfPageNodes(root)).toHaveLength(1);
+
+    expect(queryPdfPageNodes(root)).toHaveLength(0);
+    expect(queryPdfPageNodes(root).some((el) => el.classList.contains("native-pdf-handwriting-page-overlay"))).toBe(false);
+    expect(ensurePdfPageNumbers(root)).toBe(1);
+    expect(queryPdfPageNodes(root)[0]).toBe(page);
+  });
+
+  it("still finds .page nodes inside the sidebar chrome wrapper", () => {
+    // mountToolbar wraps the scroller in .native-pdf-handwriting-chrome; pages
+    // live under that node and must remain discoverable for ink surfaces.
+    const chrome = document.createElement("div");
+    chrome.className = "native-pdf-handwriting-chrome is-toolbar-right";
+    const root = document.createElement("div");
+    root.className = "pdf-viewer";
+    const page = document.createElement("div");
+    page.className = "page";
+    page.dataset.pageNumber = "1";
+    const text = document.createElement("div");
+    text.className = "textLayer";
+    page.append(text);
+    root.append(page);
+    chrome.append(root);
+    document.body.append(chrome);
+
+    expect(queryPdfPageNodes(root)).toEqual([page]);
+    expect(queryPdfPageNodes(chrome)).toEqual([page]);
   });
 });
