@@ -133,18 +133,6 @@
   touch-action: pan-y;
 }
 
-.native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-draw-toggle,
-.native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-draw-toggle {
-  justify-content: center;
-  padding: 0;
-  width: var(--ink-control-size);
-}
-
-.native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-draw-toggle-label,
-.native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-draw-toggle-label {
-  display: none;
-}
-
 .native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-save-status,
 .native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-save-status {
   border-left: 0;
@@ -222,23 +210,6 @@
   outline: 2px solid var(--interactive-accent, #2563eb);
   outline-offset: -2px;
 }
-
-.native-pdf-handwriting-draw-toggle {
-  align-items: center;
-  border-radius: 4px;
-  cursor: pointer;
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 6px;
-  min-height: var(--ink-control-size);
-  padding: 0 7px;
-  user-select: none;
-  white-space: nowrap;
-}
-.native-pdf-handwriting-draw-toggle:hover,
-.native-pdf-handwriting-draw-toggle[data-enabled="true"] { background: var(--background-modifier-hover, #e5e7eb); }
-.native-pdf-handwriting-draw-toggle input { margin: 0; }
-.native-pdf-handwriting-draw-toggle input:focus-visible { outline: 2px solid var(--interactive-accent, #2563eb); outline-offset: 2px; }
 
 .native-pdf-handwriting-dropdown {
   background: var(--background-primary, #fff);
@@ -355,6 +326,9 @@
 }
 .native-pdf-handwriting-advanced { border-top: 1px solid var(--background-modifier-border, #d1d5db); padding: 8px; }
 .native-pdf-handwriting-advanced label { align-items: center; display: flex; gap: 8px; justify-content: space-between; min-height: 36px; }
+.native-pdf-handwriting-preset-editor { border-top: 1px solid var(--background-modifier-border, #d1d5db); display: grid; gap: 6px; margin-top: 8px; padding: 8px; }
+.native-pdf-handwriting-preset-editor label { align-items: center; display: flex; gap: 6px; justify-content: space-between; }
+.native-pdf-handwriting-preset-editor input[type="text"] { flex: 1 1 auto; min-width: 0; }
 /* Collapsible settings: override Obsidian's flex setting-item so <details> is full width. */
 .setting-item.native-pdf-handwriting-settings-details-host {
   align-items: stretch;
@@ -532,13 +506,14 @@
 .pdfViewer .page.native-pdf-handwriting-touch-pan-xy,
 .pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-pan-xy,
 .pdfViewer .pdf-page-view.native-pdf-handwriting-touch-pan-xy {
-  touch-action: pan-x pan-y;
+  touch-action: pan-x pan-y pinch-zoom;
 }
 /* Legacy finger-draw class (pre-0.1.28). Kept inert so old sessions clear cleanly. */
 .pdf-viewer .native-pdf-handwriting-touch-draw-page,
 .pdfViewer .native-pdf-handwriting-touch-draw-page { touch-action: auto; }
 .native-pdf-handwriting-canvas,
 .native-pdf-handwriting-draft-canvas { display: block; height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; z-index: 1; }
+.native-pdf-handwriting-canvas.is-wet-hidden { visibility: hidden; }
 .native-pdf-handwriting-canvas.is-selection-chrome-raised { z-index: 3; }
 .native-pdf-handwriting-text-layer { inset: 0; pointer-events: none; position: absolute; z-index: 2; }
 .native-pdf-handwriting-text-box,
@@ -916,6 +891,71 @@
   color: var(--text-accent);
   text-decoration: underline;
 }
+
+.native-pdf-handwriting-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.native-pdf-handwriting-import-count {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  margin: 8px 0 0;
+}
+
+.native-pdf-handwriting-import-error {
+  color: var(--text-error, #c0392b);
+  font-size: var(--font-ui-small);
+  margin: 8px 0 0;
+  min-height: 1.2em;
+}
+.native-pdf-handwriting-scan-input { display: none; }
+.native-pdf-handwriting-scan-body { min-width: min(520px, 78vw); }
+.native-pdf-handwriting-scan-preview {
+  background: var(--background-secondary, #f3f4f6);
+  border-radius: 8px;
+  line-height: 0;
+  margin: 12px 0;
+  max-height: 58vh;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+}
+.native-pdf-handwriting-scan-image {
+  display: block;
+  height: auto;
+  max-height: 58vh;
+  max-width: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+.native-pdf-handwriting-scan-corner {
+  background: var(--interactive-accent, #2563eb);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  color: transparent;
+  cursor: grab;
+  height: 28px;
+  padding: 0;
+  position: absolute;
+  touch-action: none;
+  transform: translate(-50%, -50%);
+  width: 28px;
+}
+.native-pdf-handwriting-scan-corner:active { cursor: grabbing; }
+.native-pdf-handwriting-scan-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.native-pdf-handwriting-scan-controls button,
+.native-pdf-handwriting-scan-body > button {
+  min-height: 36px;
+}
+.native-pdf-handwriting-scan-error { color: var(--text-error, #b91c1c); }
 
 @media (min-width: 700px) {
   .native-pdf-handwriting-dropdown { max-width: 360px; }

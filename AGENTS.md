@@ -13,13 +13,12 @@ Read every path listed under `Required source reads` before editing. A non-zero 
 <!-- /project-memory-bootstrap:v1 -->
 
 
-- Keep `Inspiration/` read-only.
 - Keep undocumented Obsidian PDF access inside `src/integration/`.
-- Sidecar JSON is the canonical editable annotation store. Original PDFs are never modified.
+- Sidecar JSON is the canonical editable annotation store. Annotation edits never modify the source PDF; explicit page insert/delete/import/scan actions intentionally rewrite it and remap sidecar/recovery pages atomically.
 - Autosave defaults on. Use Export PDF for a separate annotated copy.
-- Mouse, touch, and trackpad keep normal PDF behavior unless editing is explicit.
+- Mouse, touch, and trackpad keep normal PDF behavior unless the active pointer policy routes annotation (stylus always; mouse only in annotate mode).
 - Use shared toolbar, tools, storage, and engine for direct and embedded PDF views.
-- No OCR. No whole-framework embedding. No in-place PDF writes.
+- No OCR. No whole-framework embedding. Keep page-structure writes limited to the explicit atomic page actions.
 - Run `npm test` and `npm run build` before done.
 
 ## Input Capability Probe
@@ -30,11 +29,6 @@ Sibling plugin `input-capability-probe` writes runtime HID results to
 pressure/tilt features later — do not route pointer-move floods through
 `hn-dev-probe:diagnostic`.
 
-Applied from probe findings (MockTab / Electron):
-- Mouse tip after pen hover remaps to pen for pressure + palm lock (`PenPresence` / `PalmRejectionPolicy`).
-- Off-host continuous wheel pans the PDF (MockTab two-finger scroll at cursor).
-- `lostpointercapture` finishes mouse ink routes, not only pen.
-- Companion / multi-touch still need real `TouchEvent`s — cannot fake from wheel.
-## Code analysis — wont-fix
+## Git
 
-- `main.js` (`perf/bundle-size`): Soft warn above the pdf-lib 750KB monitor threshold (~823KB). Export/path tooling needs `pdf-lib` in the Obsidian single-file bundle; stays under the 1MB error budget and Sync Standard 5MB limit. Further shrink would drop export capability or require unsupported release sidecars.
+- Always commit and merge to main for changes. Use `/sync` if push is not clean. 

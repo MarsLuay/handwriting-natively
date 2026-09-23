@@ -2,6 +2,8 @@ import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
 import type { VaultLogSink } from "./VaultLogSink";
 
 const PREFIX = "[Handwriting Natively]";
+/** Schema for copied bounded performance and draw-state diagnostics. */
+export const PROFILE_SCHEMA_VERSION = 2 as const;
 
 export type ViewStateSource =
   | "scalechanging"
@@ -77,7 +79,21 @@ export interface ZoomTickLog {
   msSinceLastTick?: number | null;
 }
 
+interface InputStrokeHeartbeat {
+  lastStartAt: string | null;
+  lastEndAt: string | null;
+  lastPage: number | null;
+  lastRouterGeneration: number | null;
+}
+
+interface InputLifecycleRecord {
+  at: string;
+  event: string;
+  details: Record<string, unknown>;
+}
+
 export class SessionLogger {
+  private static readonly INPUT_LIFECYCLE_LIMIT = 40;
   private lastViewState: PdfViewState | null = null;
   private refreshWindowStart = 0;
   private refreshWindowCount = 0;
@@ -89,6 +105,14 @@ export class SessionLogger {
   private alignMoveCount = 0;
   private shapeResizeMoveCount = 0;
   private readonly textToolHotCounts = new Map<string, number>();
+  private readonly inputLifecycle: InputLifecycleRecord[] = [];
+  private readonly inputHeartbeat: InputStrokeHeartbeat = {
+    lastStartAt: null,
+    lastEndAt: null,
+    lastPage: null,
+    lastRouterGeneration: null
+  };
+  private firstFailedPenDown: Record<string, unknown> | null = null;
   /** High-frequency text phases — sample so vault debug does not flood disk I/O. */
   private static readonly TEXT_TOOL_HOT_PHASES = new Set([
     "render",
@@ -118,7 +142,8 @@ export class SessionLogger {
   constructor(
     private readonly documentPath: string,
     private readonly vaultLog?: VaultLogSink,
-    private readonly debugEnabled: () => boolean = () => true
+    private readonly debugEnabled: () => boolean = () => true,
+    private readonly pluginVersion = "unknown"
   ) {}
 
   isEnabled(): boolean { return this.debugEnabled(); }
@@ -297,6 +322,56 @@ export class SessionLogger {
     });
   }
 
+  /** One bounded event for each effective drawing capability transition. */
+  drawStateChanged(details: Record<string, unknown>): void {
+    this.emit("info", "draw state changed", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      at: new Date().toISOString(),
+      ...details
+    });
+  }
+
+  /** One bounded summary per completed handwriting stroke. */
+  inkStrokeProfile(details: Record<string, unknown>): void {
+    this.emit("info", "ink stroke profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
+  /** One bounded summary per completed plugin-participating pan burst. */
+  panProfile(details: Record<string, unknown>): void {
+    this.emit("info", "ink pan profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
+  /** Major synchronous render work, never one event per pointer sample/frame. */
+  renderProfile(details: Record<string, unknown>): void {
+    this.emit("info", "ink render profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
+  /** Persistence timing summary kept separate from sidecar contents. */
+  persistProfile(details: Record<string, unknown>): void {
+    this.emit("info", "sidecar persist profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
   /** Terminal proof that preview and committed ink used the same renderer. */
   inkRenderer(page: number, details: Record<string, unknown>): void {
     this.emit("info", "ink renderer", {
@@ -328,7 +403,7 @@ export class SessionLogger {
    * zoom recycle / aborted listeners (zero `pointer route` while probe still fires).
    */
   pageRouter(
-    phase: "rebind" | "unavailable" | "received" | "fallback",
+    phase: "rebind" | "unavailable" | "received" | "fallback" | "rejected",
     details: Record<string, unknown> = {}
   ): void {
     this.emit("info", "page router", {
@@ -343,6 +418,60 @@ export class SessionLogger {
     this.emit("info", "pointer seen", {
       document: this.documentPath,
       ...details
+    });
+  }
+
+  /** Keep bounded input history in memory; dump it only for a routed-input anomaly. */
+  inputLifecycleEvent(event: string, details: Record<string, unknown> = {}): void {
+    this.inputLifecycle.push({ at: new Date().toISOString(), event, details: { ...details } });
+    if (this.inputLifecycle.length > SessionLogger.INPUT_LIFECYCLE_LIMIT) {
+      this.inputLifecycle.splice(0, this.inputLifecycle.length - SessionLogger.INPUT_LIFECYCLE_LIMIT);
+    }
+  }
+
+  /** Last successful pen stroke heartbeat, used to correlate the first failed down. */
+  inputStroke(phase: "start" | "end", details: { page: number; routerGeneration?: number | null }): void {
+    const at = new Date().toISOString();
+    if (phase === "start") {
+      this.inputHeartbeat.lastStartAt = at;
+    } else {
+      this.inputHeartbeat.lastEndAt = at;
+    }
+    this.inputHeartbeat.lastPage = details.page;
+    this.inputHeartbeat.lastRouterGeneration = details.routerGeneration ?? null;
+    this.inputLifecycleEvent(`stroke-${phase}`, {
+      page: details.page,
+      routerGeneration: details.routerGeneration ?? null
+    });
+  }
+
+  timeSinceLastSuccessfulStrokeMs(): number | null {
+    if (!this.inputHeartbeat.lastEndAt) return null;
+    const endedAt = Date.parse(this.inputHeartbeat.lastEndAt);
+    return Number.isFinite(endedAt) ? Math.max(0, Date.now() - endedAt) : null;
+  }
+
+  inputInvariantViolation(reason: string, details: Record<string, unknown> = {}): void {
+    this.emit("warn", "ink input invariant violation", {
+      document: this.documentPath,
+      reason,
+      ...details
+    });
+  }
+
+  /** Emit the bounded, high-signal snapshot requested for visible-page routing failures. */
+  inputAnomaly(details: Record<string, unknown>): void {
+    const failedAt = new Date().toISOString();
+    if (!this.firstFailedPenDown) {
+      this.firstFailedPenDown = { at: failedAt, ...details };
+    }
+    this.inputLifecycleEvent("ink-input-anomaly", { reason: details.reason ?? "unknown" });
+    this.emit("warn", "ink input anomaly", {
+      document: this.documentPath,
+      ...details,
+      firstFailedPenDown: this.firstFailedPenDown,
+      lastSuccessfulStroke: { ...this.inputHeartbeat },
+      lifecycle: this.inputLifecycle.slice()
     });
   }
 
@@ -460,6 +589,10 @@ export class SessionLogger {
       | "insert-complete"
       | "insert-error"
       | "insert-focus"
+      | "scan-start"
+      | "scan-cancel"
+      | "scan-complete"
+      | "scan-error"
       | "delete-start"
       | "delete-cancel"
       | "delete-complete"
@@ -488,7 +621,11 @@ export class SessionLogger {
     scrollRoot: string;
     panCapture: string;
     panBoundary?: string;
-    drawEnabled?: boolean;
+    stylusPolicy?: string;
+    touchPolicy?: string;
+    mousePolicy?: string;
+    activeTool?: string;
+    runtimePlatform?: string;
     mouseDragScroll?: boolean;
     toolbarPlacement?: string;
     loadedStrokes?: number;
@@ -544,6 +681,13 @@ export class SessionLogger {
     updatedAt: string;
     skipped?: string;
     error?: string;
+    serializedBytes?: number;
+    serializeMs?: number;
+    recoveryWriteMs?: number | null;
+    sidecarWriteMs?: number | null;
+    recoveryClearMs?: number | null;
+    totalMs?: number;
+    overlappedActiveGesture?: boolean;
   }): void {
     this.emit(details.error || details.skipped ? "warn" : "info", "sidecar persist", {
       document: this.documentPath,
@@ -610,6 +754,16 @@ export class SessionLogger {
     this.emit("warn", "ink zoom repaint interrupt", {
       document: this.documentPath,
       reason,
+      ...details
+    });
+  }
+
+  /** One bounded summary for a completed native pinch/zoom burst. */
+  zoomProfile(details: Record<string, unknown> = {}): void {
+    this.emit("info", "ink zoom profile", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
       ...details
     });
   }

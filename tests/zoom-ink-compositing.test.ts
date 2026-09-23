@@ -15,6 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ObsidianPdfAdapter, PdfViewState } from "../src/integration/ObsidianPdfAdapter";
+import { NativePdfViewAdapter } from "../src/integration/NativePdfViewAdapter";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import { PdfCoordinateMapper } from "../src/pdf/PdfCoordinateMapper";
 import { DEFAULT_SETTINGS, type PdfTextAnnotation } from "../src/model";
@@ -124,6 +125,15 @@ class ZoomAdapter implements ObsidianPdfAdapter {
     );
     this.applyRects();
   }
+
+  /** Optional BasePdfAdapter zoom-gate hooks used by the session bridge. */
+  setInkZoomBurstActive?(active: boolean): void;
+  consumeSidebarFollowZoomMetrics?(): {
+    sidebarFollowActiveDuringZoom: boolean;
+    sidebarFollowFramesDuringBurst: number;
+    maxSidebarOffsetJump: number;
+    sidebarFollowSuppressedTriggers: number;
+  };
 
   pages(): PdfPageInfo[] {
     return [{
@@ -242,20 +252,26 @@ function pointer(type: string, x: number, y: number): PointerEvent {
   return event as unknown as PointerEvent;
 }
 
-async function createSession(adapter: ZoomAdapter, files = new MemoryFiles()): Promise<ViewerInkSession> {
+async function createSession(
+  adapter: ZoomAdapter,
+  files = new MemoryFiles(),
+  platform: { mobile: boolean; phone: boolean } = { mobile: false, phone: false }
+): Promise<ViewerInkSession> {
   const settings = structuredClone(DEFAULT_SETTINGS);
   settings.autosave = false;
   settings.toolPreferences.activeTool = "pen";
   return ViewerInkSession.create({
     adapter,
     pdfPath: "Notes/zoom-ink.pdf",
+    pluginVersion: "test-0.1",
     settings,
     sidecars: new SidecarRepository(files, "annotations"),
     recovery: new RecoveryRepository(files, "recovery"),
     saveSettings: async () => undefined,
     readSourcePdf: async () => new Uint8Array(),
     writeExport: async () => undefined,
-    notice: () => undefined
+    notice: () => undefined,
+    runtimePlatform: () => platform
   });
 }
 
@@ -295,7 +311,6 @@ describe("zoom ink compositing", () => {
     const session = await createSession(adapter);
     const overlay = overlayOf(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
@@ -367,6 +382,22 @@ describe("zoom ink compositing", () => {
     expect(paintStampCalls(context)).toBe(stampsAtSettle);
     expect(debugCalls("ink renderer").some((call) => (call[2] as { phase?: string }).phase === "zoom-canonical-upgrade")).toBe(false);
 
+    const profiles = debugCalls("ink zoom profile");
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]?.[2]).toMatchObject({
+      pluginVersion: "test-0.1",
+      profileSchema: 2,
+      scaleChangingEvents: 2,
+      scaleStart: 1,
+      scaleEnd: 1.55,
+      minScale: 1,
+      maxScale: 1.55,
+      frameCount: expect.any(Number),
+      frameIntervalHistogram: expect.any(Object),
+      maxPdfInkMismatchPx: expect.any(Number),
+      settleAfterLastScaleMs: expect.any(Number)
+    });
+
     await session.destroy();
   });
 
@@ -398,6 +429,222 @@ describe("zoom ink compositing", () => {
     expect(debugCalls("ink zoom repaint")).toHaveLength(1);
 
     await session.destroy();
+  });
+
+  it("coalesces sustained mobile pinch work to display frames without router churn", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter, new MemoryFiles(), { mobile: true, phone: false });
+    const surface = probeSurface(session) as SurfaceProbe & { router: unknown };
+
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
+    context.arc.mockClear();
+    context.fill.mockClear();
+    context.stroke.mockClear();
+
+    vi.useFakeTimers();
+    await vi.advanceTimersByTimeAsync(1);
+    const routerBefore = surface.router;
+    for (let i = 0; i < 60; i += 1) {
+      const scale = 1.2 + i * 0.01;
+      adapter.zoomTo(scale, { left: i, top: i / 2, width: 720 + i * 4, height: 960 + i * 5 });
+      session.onViewStateChange(adapter.getViewState(), "scalechanging");
+      session.onViewStateChange(adapter.getViewState(), "scroll");
+      await vi.advanceTimersByTimeAsync(16);
+    }
+
+    // The live pinch path only moves the cached bitmap; no committed vector
+    // redraw is allowed on each native scale/scroll notification.
+    expect(paintStampCalls(context)).toBe(0);
+    expect(surface.router).toBe(routerBefore);
+
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+    await vi.advanceTimersByTimeAsync(532);
+
+    const profile = debugCalls("ink zoom profile").at(-1)?.[2] as {
+      scaleChangingEvents: number;
+      scrollEvents: number;
+      compositorTicks: number;
+      layoutFramesScheduled: number;
+      layoutFramesExecuted: number;
+      mobileRefreshDeferred: number;
+      routerRebinds: number;
+      routerDestroys: number;
+      vectorRepaints: number;
+      canvasResizes: number;
+      hqUpgrades: number;
+      longestTaskMs: number;
+    } | undefined;
+    expect(profile).toMatchObject({
+      scaleChangingEvents: 60,
+      scrollEvents: 60,
+      compositorTicks: 120,
+      mobileRefreshDeferred: 60,
+      routerRebinds: 0,
+      routerDestroys: 0
+    });
+    expect(profile?.layoutFramesScheduled).toBeLessThanOrEqual(60);
+    expect(profile?.layoutFramesExecuted).toBeLessThanOrEqual(60);
+    expect(profile?.vectorRepaints).toBeGreaterThan(0);
+    expect(profile?.vectorRepaints).toBeLessThan(60);
+    expect(profile?.canvasResizes).toBeGreaterThan(0);
+    expect(profile?.hqUpgrades).toBeGreaterThanOrEqual(1);
+    expect(profile?.longestTaskMs).toBeGreaterThanOrEqual(0);
+
+    await session.destroy();
+  });
+
+  it("keeps mobile zoom smooth with left-rail watcher: no sidebar follow from content mutations", async () => {
+    const host = document.createElement("div");
+    host.className = "pdf-container workspace-leaf";
+    const toolbarHost = document.createElement("div");
+    toolbarHost.className = "pdf-toolbar";
+    const content = document.createElement("div");
+    content.className = "pdf-content-container";
+    const sidebar = document.createElement("div");
+    sidebar.className = "pdf-sidebar-container";
+    Object.defineProperty(sidebar, "offsetWidth", { value: 0 });
+    Object.defineProperty(sidebar, "offsetHeight", { value: 600 });
+    sidebar.getBoundingClientRect = () => rect(0, 0, 0, 600);
+    const scroll = document.createElement("div");
+    scroll.className = "pdf-viewer-scroll-container";
+    Object.defineProperty(scroll, "scrollHeight", { value: 4000, configurable: true });
+    Object.defineProperty(scroll, "clientHeight", { value: 800, configurable: true });
+    Object.defineProperty(scroll, "scrollLeft", { value: 120, writable: true, configurable: true });
+    Object.defineProperty(scroll, "scrollTop", { value: 80, writable: true, configurable: true });
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const page = document.createElement("div");
+    page.className = "page";
+    page.dataset.pageNumber = "1";
+    page.dataset.scale = "1";
+    page.dataset.rotation = "0";
+    const pdfCanvas = document.createElement("canvas");
+    const canvasWrapper = document.createElement("div");
+    canvasWrapper.className = "canvasWrapper";
+    canvasWrapper.append(pdfCanvas);
+    page.append(canvasWrapper);
+    viewer.append(page);
+    scroll.append(viewer);
+    content.append(sidebar, scroll);
+    host.append(toolbarHost, content);
+    document.body.append(host);
+
+    Object.defineProperty(page, "getBoundingClientRect", {
+      configurable: true,
+      value: () => rect(0, 0, 600, 800)
+    });
+    Object.defineProperty(pdfCanvas, "getBoundingClientRect", {
+      configurable: true,
+      value: () => rect(0, 0, 600, 800)
+    });
+
+    const adapter = await NativePdfViewAdapter.attach(host, {
+      onDebugLog: (level, event, payload) => {
+        if (level === "warn") console.warn("[Handwriting Natively]", event, payload);
+        else console.debug("[Handwriting Natively]", event, payload);
+      }
+    });
+    const toolbar = document.createElement("div");
+    toolbar.className = "native-pdf-handwriting-toolbar";
+    adapter.mountToolbar(toolbar, "left");
+
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/zoom-sidebar.pdf",
+      settings: (() => {
+        const settings = structuredClone(DEFAULT_SETTINGS);
+        settings.autosave = false;
+        settings.toolPreferences.activeTool = "pen";
+        return settings;
+      })(),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: false })
+    });
+
+    const surface = probeSurface(session) as SurfaceProbe & { router: unknown; overlay: HTMLElement };
+    const overlay = surface.overlay;
+    expect(overlay).toBeTruthy();
+    expect(page.contains(overlay) || overlay.isConnected).toBe(true);
+    const routerBefore = surface.router;
+    const scrollBefore = { left: scroll.scrollLeft, top: scroll.scrollTop };
+
+    // Drain mount/resize rail follow before the pinch burst so zoom telemetry
+    // is not polluted by a pre-existing 480 ms follow loop.
+    await new Promise<void>((resolve) => setTimeout(resolve, 520));
+
+    vi.useFakeTimers();
+    for (let i = 0; i < 40; i += 1) {
+      const scale = 1.1 + i * 0.02;
+      const width = 600 + i * 8;
+      const height = 800 + i * 10;
+      Object.defineProperty(pdfCanvas, "getBoundingClientRect", {
+        configurable: true,
+        value: () => rect(i, i / 2, width, height)
+      });
+      Object.defineProperty(page, "getBoundingClientRect", {
+        configurable: true,
+        value: () => rect(0, 0, Math.max(600, width + i), Math.max(800, height + i / 2))
+      });
+      // PDF.js-style content style churn must not restart the rail follow loop.
+      content.style.setProperty("--pdf-zoom-noise", String(scale));
+      session.onViewStateChange(
+        { pageNumber: 1, scrollFraction: 0.2, scale, rotation: 0 },
+        "scalechanging"
+      );
+      session.onViewStateChange(
+        { pageNumber: 1, scrollFraction: 0.2, scale, rotation: 0 },
+        "scroll"
+      );
+      await vi.advanceTimersByTimeAsync(16);
+    }
+
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+    expect(surface.router).toBe(routerBefore);
+    expect(Math.abs(scroll.scrollLeft - scrollBefore.left)).toBeLessThan(1);
+    expect(Math.abs(scroll.scrollTop - scrollBefore.top)).toBeLessThan(1);
+    expect(
+      debugCalls("pdf sidebar rail follow start").filter(
+        (call) => (call[2] as { trigger?: string }).trigger === "mutation"
+      )
+    ).toHaveLength(0);
+    expect(debugCalls("pdf sidebar rail follow suppressed during zoom").length).toBeGreaterThanOrEqual(1);
+
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+    await vi.advanceTimersByTimeAsync(532);
+
+    const profile = debugCalls("ink zoom profile").at(-1)?.[2] as {
+      scaleChangingEvents: number;
+      routerRebinds: number;
+      routerDestroys: number;
+      vectorRepaints: number;
+      maxScrollDeltaPx: number;
+      sidebarFollowActiveDuringZoom: boolean;
+      sidebarFollowFramesDuringBurst: number;
+      sidebarFollowSuppressedTriggers: number;
+      maxSidebarOffsetJump: number;
+    } | undefined;
+    expect(profile).toMatchObject({
+      routerRebinds: 0,
+      routerDestroys: 0
+    });
+    expect(profile?.scaleChangingEvents).toBeGreaterThanOrEqual(35);
+    expect(profile?.sidebarFollowSuppressedTriggers).toBeGreaterThanOrEqual(1);
+    expect(profile?.maxSidebarOffsetJump ?? 0).toBeLessThan(24);
+    expect(profile?.maxScrollDeltaPx ?? 0).toBeLessThan(24);
+    expect(profile?.vectorRepaints).toBeGreaterThan(0);
+    expect(profile?.vectorRepaints).toBeLessThan(40);
+
+    await session.destroy();
+    adapter.destroy();
   });
 
   it("uses a short coalesce window for tiny scale nudges only", async () => {
@@ -482,7 +729,6 @@ describe("zoom ink compositing", () => {
     const session = await createSession(adapter);
     const overlay = overlayOf(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     vi.useFakeTimers();
     adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
@@ -514,7 +760,6 @@ describe("zoom ink compositing", () => {
     const committedBefore = { w: surface.canvas.width, h: surface.canvas.height };
     expect(committedBefore.w).toBeGreaterThan(0);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     vi.useFakeTimers();
     adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
@@ -572,7 +817,6 @@ describe("zoom ink compositing", () => {
       mapper(surface: SurfaceProbe): PdfCoordinateMapper;
     };
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 480, 720));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 500, 700));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 520, 680));
@@ -626,7 +870,6 @@ describe("zoom ink compositing", () => {
     const internal = session as unknown as { handleRootResize(): void };
     const overlay = overlayOf(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
@@ -794,7 +1037,6 @@ describe("zoom ink compositing", () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 80, 90));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 110, 120));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 140, 150));
@@ -863,7 +1105,6 @@ describe("zoom ink compositing", () => {
     const session = await createSession(adapter);
     const overlay = overlayOf(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
@@ -889,24 +1130,19 @@ describe("zoom ink compositing", () => {
     await session.destroy();
   });
 
-  it("draw-mode toggle does not invalidate committed ink", async () => {
+  it("tool chrome refresh does not invalidate committed ink", async () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 90, 100));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 130));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 150, 160));
     expect(probeSurface(session).inkLayerValid).toBe(true);
 
-    // Toggle draw off then on via toolbar.
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
-
+    // Prefer preference chrome path over selectTool (session attach gates vary in this harness).
+    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
+    document.querySelector<HTMLButtonElement>("[data-option-id='pencil']")?.click();
     expect(probeSurface(session).inkLayerValid).toBe(true);
-    const drawModeLogs = debugCalls("session refresh").filter((call) => (call[2] as { reason?: string }).reason === "draw-mode");
-    expect(drawModeLogs.length).toBeGreaterThanOrEqual(1);
-    expect(drawModeLogs.every((call) => (call[2] as { chromeOnly?: boolean }).chromeOnly === true)).toBe(true);
 
     await session.destroy();
   });
@@ -915,7 +1151,6 @@ describe("zoom ink compositing", () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 90, 100));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 130));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 150, 160));
@@ -939,7 +1174,6 @@ describe("zoom ink compositing", () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 90, 100));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 130));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 150, 160));
@@ -966,7 +1200,6 @@ describe("zoom ink compositing", () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter, files);
 
-    adapter.toolbarHost.querySelector<HTMLInputElement>("[data-control='draw']")?.click();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180));

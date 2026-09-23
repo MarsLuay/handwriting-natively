@@ -1,4 +1,5 @@
 import { PDFDocument } from "pdf-lib";
+import type { ScanDocumentPage } from "../scanning/ScanDocument";
 
 /** PDF points for a blank US Letter page (8.5 × 11 inches). */
 export const US_LETTER_PAGE_SIZE: readonly [number, number] = [612, 792];
@@ -38,6 +39,112 @@ export interface InsertedPdfPage {
   bytes: Uint8Array;
   /** One-indexed page number of the newly inserted page. */
   pageNumber: number;
+}
+
+export interface ImportedPdfPages {
+  bytes: Uint8Array;
+  /** One-indexed page number of the first newly inserted page. */
+  pageNumber: number;
+  /** Number of imported pages, in the same order as `pageNumbers`. */
+  pageCount: number;
+  /** One-indexed source-PDF pages copied into the destination (document order). */
+  pageNumbers: number[];
+}
+
+export interface InsertedPdfPages {
+  bytes: Uint8Array;
+  /** One-indexed page number of the first newly inserted page. */
+  pageNumber: number;
+  count: number;
+}
+
+/** Returns the page count after validating that the bytes are a readable PDF. */
+export async function getPdfPageCount(bytes: Uint8Array): Promise<number> {
+  const pdf = await PDFDocument.load(bytes);
+  return pdf.getPageCount();
+}
+
+/**
+ * Copies selected native PDF pages into the destination after `afterPage`.
+ * `pdf-lib` copies page dictionaries and content streams rather than rasterizing
+ * them, so page dimensions, rotation, and vector content remain native.
+ *
+ * Destination and source bytes are loaded independently so self-import (same
+ * path or identical bytes) cannot corrupt the destination snapshot.
+ */
+export async function importPdfPages(
+  destinationBytes: Uint8Array,
+  sourceBytes: Uint8Array,
+  afterPage: number,
+  requestedPageNumbers: readonly number[]
+): Promise<ImportedPdfPages> {
+  const destination = await PDFDocument.load(destinationBytes);
+  const source = await PDFDocument.load(sourceBytes);
+  const destinationCount = destination.getPageCount();
+  const sourceCount = source.getPageCount();
+  if (!destinationCount) throw new Error("Cannot import pages into a PDF with no pages.");
+  if (!Number.isInteger(afterPage) || afterPage < 1 || afterPage > destinationCount) {
+    throw new Error(`Destination PDF page ${afterPage} does not exist.`);
+  }
+  const pageNumbers = [...new Set(requestedPageNumbers)].sort((left, right) => left - right);
+  if (!pageNumbers.length) throw new Error("Select at least one PDF page to import.");
+  for (const pageNumber of pageNumbers) {
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > sourceCount) {
+      throw new Error(`Source PDF page ${pageNumber} does not exist.`);
+    }
+  }
+  const copiedPages = await destination.copyPages(source, pageNumbers.map((pageNumber) => pageNumber - 1));
+  const insertionIndex = afterPage;
+  copiedPages.forEach((page, index) => destination.insertPage(insertionIndex + index, page));
+  return {
+    bytes: await destination.save(),
+    pageNumber: afterPage + 1,
+    pageCount: copiedPages.length,
+    pageNumbers
+  };
+}
+
+/** Keeps a scanned page's aspect ratio while using a practical PDF point size. */
+export function scanPageSize(width: number, height: number): readonly [number, number] {
+  if (!(width > 0) || !(height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) {
+    throw new Error("Scanned page dimensions must be positive.");
+  }
+  const longEdge = 792;
+  const aspect = width / height;
+  return aspect >= 1
+    ? [longEdge, longEdge / aspect]
+    : [longEdge * aspect, longEdge];
+}
+
+/** Inserts corrected camera pages as real PDF pages in capture order. */
+export async function insertScannedPages(
+  sourceBytes: Uint8Array,
+  requestedPageNumber: number,
+  scannedPages: readonly ScanDocumentPage[]
+): Promise<InsertedPdfPages> {
+  if (!scannedPages.length) throw new Error("Capture at least one document page.");
+  const source = await PDFDocument.load(sourceBytes);
+  const pageCount = source.getPageCount();
+  if (!pageCount) throw new Error("Cannot add a page to a PDF with no pages.");
+  const requested = Number.isFinite(requestedPageNumber)
+    ? Math.floor(requestedPageNumber)
+    : pageCount + 1;
+  const pageNumber = Math.max(1, Math.min(pageCount + 1, requested));
+
+  for (const [offset, scanned] of scannedPages.entries()) {
+    const image = scanned.mimeType === "image/png"
+      ? await source.embedPng(scanned.bytes)
+      : await source.embedJpg(scanned.bytes);
+    const [width, height] = scanPageSize(scanned.width, scanned.height);
+    const page = source.insertPage(pageNumber - 1 + offset, [width, height]);
+    page.drawImage(image, { x: 0, y: 0, width, height });
+  }
+
+  return {
+    bytes: await source.save(),
+    pageNumber,
+    count: scannedPages.length
+  };
 }
 
 /** Inserts a blank page matching the preceding page (or page one at the start). */

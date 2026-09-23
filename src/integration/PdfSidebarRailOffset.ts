@@ -139,23 +139,24 @@ export function diagnosePdfSidebarOverlap(
     chrome: roundRect(chromeRect.left, chromeRect.right, chromeRect.width)
   };
 
+  let sidebarBox: { left: number; right: number; width: number; height: number } | null = null;
+
   if (sidebar) {
     const side = sidebar.getBoundingClientRect();
-    const sidebarBox = roundRect(side.left, side.right, side.width, side.height);
-    if (side.height >= 8) {
-      if (side.width >= 0.5 && side.right > chromeRect.left + 0.5 && side.left < chromeRect.right) {
+    sidebarBox = roundRect(side.left, side.right, side.width, side.height);
+
+    if (side.height >= 8 && side.width >= 0.5) {
+      if (side.right > chromeRect.left + 0.5 && side.left < chromeRect.right) {
         const overlap = side.right - chromeRect.left;
-        if (overlap > 0) {
-          return {
-            ...base,
-            offset: Math.max(0, Math.round(overlap)),
-            reason: "geometry-overlap",
-            sidebar: sidebarBox
-          };
-        }
+        return {
+          ...base,
+          offset: Math.max(0, Math.round(overlap)),
+          reason: "geometry-overlap",
+          sidebar: sidebarBox
+        };
       }
       // Measured and clearly clear of the rail — do not use CSS fallback.
-      if (side.width >= 0.5 && side.right <= chromeRect.left + 0.5) {
+      if (side.right <= chromeRect.left + 0.5) {
         return {
           ...base,
           offset: 0,
@@ -180,28 +181,14 @@ export function diagnosePdfSidebarOverlap(
       ...base,
       offset: 0,
       reason: "content-margin-clear",
-      sidebar: sidebar
-        ? roundRect(
-          sidebar.getBoundingClientRect().left,
-          sidebar.getBoundingClientRect().right,
-          sidebar.getBoundingClientRect().width,
-          sidebar.getBoundingClientRect().height
-        )
-        : null
+      sidebar: sidebarBox
     };
   }
   return {
     ...base,
     offset: Math.round(cssSidebarWidth),
     reason: "css-sidebar-width",
-    sidebar: sidebar
-      ? roundRect(
-        sidebar.getBoundingClientRect().left,
-        sidebar.getBoundingClientRect().right,
-        sidebar.getBoundingClientRect().width,
-        sidebar.getBoundingClientRect().height
-      )
-      : null
+    sidebar: sidebarBox
   };
 }
 
@@ -212,6 +199,34 @@ export function pdfSidebarOverlapOffset(
   scope: ParentNode | null = chrome.parentElement
 ): number {
   return diagnosePdfSidebarOverlap(chrome, sidebar, content, scope).offset;
+}
+
+/** Triggers that mean the user (or PDF.js) actually opened/closed the sidebar. */
+export const AUTHORITATIVE_PDF_SIDEBAR_LAYOUT_TRIGGERS = new Set([
+  "sidebarviewchanged",
+  "togglesidebar",
+  "click",
+  "mutation-sidebar-open"
+]);
+
+export function isAuthoritativePdfSidebarLayoutTrigger(trigger: string): boolean {
+  return AUTHORITATIVE_PDF_SIDEBAR_LAYOUT_TRIGGERS.has(trigger);
+}
+
+/**
+ * True when a class mutation flips `sidebarOpen` on a watched host.
+ * Requires `attributeOldValue: true` on the MutationObserver.
+ */
+export function mutationTogglesPdfSidebarOpen(records: readonly MutationRecord[]): boolean {
+  for (const record of records) {
+    if (record.type !== "attributes" || record.attributeName !== "class") continue;
+    const target = record.target;
+    if (!isHTMLElement(target)) continue;
+    const beforeOpen = (record.oldValue ?? "").split(/\s+/).includes("sidebarOpen");
+    const afterOpen = target.classList.contains("sidebarOpen");
+    if (beforeOpen !== afterOpen) return true;
+  }
+  return false;
 }
 
 export function applyPdfSidebarRailOffset(chrome: HTMLElement, offsetPx: number): void {

@@ -13,18 +13,6 @@ function remapText(text: PdfTextAnnotation, deletedPage: number): PdfTextAnnotat
   return text.page > deletedPage ? { ...text, page: remapPageNumber(text.page, deletedPage) } : text;
 }
 
-function shiftPageNumber(page: number, insertedPage: number): number {
-  return page >= insertedPage ? page + 1 : page;
-}
-
-function shiftStroke(stroke: InkStroke, insertedPage: number): InkStroke {
-  return stroke.page >= insertedPage ? { ...stroke, page: shiftPageNumber(stroke.page, insertedPage) } : stroke;
-}
-
-function shiftText(text: PdfTextAnnotation, insertedPage: number): PdfTextAnnotation {
-  return text.page >= insertedPage ? { ...text, page: shiftPageNumber(text.page, insertedPage) } : text;
-}
-
 /** Drops annotations on a deleted PDF page and shifts every later page down one. */
 export function removePageFromSidecar(
   sidecar: SidecarSchemaV1,
@@ -52,14 +40,30 @@ export function insertPageIntoSidecar(
   insertedPage: number,
   updatedAt = new Date().toISOString()
 ): SidecarSchemaV1 {
+  return insertPagesIntoSidecar(sidecar, insertedPage, 1, updatedAt);
+}
+
+/** Leaves all imported pages empty while shifting later annotation pages. */
+export function insertPagesIntoSidecar(
+  sidecar: SidecarSchemaV1,
+  insertedPage: number,
+  insertedPageCount: number,
+  updatedAt = new Date().toISOString()
+): SidecarSchemaV1 {
   if (!Number.isInteger(insertedPage) || insertedPage < 1) throw new Error("Inserted page must be a positive integer.");
+  if (!Number.isInteger(insertedPageCount) || insertedPageCount < 1) {
+    throw new Error("Inserted page count must be a positive integer.");
+  }
+  const shift = (page: number): number => page >= insertedPage ? page + insertedPageCount : page;
   return {
     ...sidecar,
     pages: sidecar.pages.map((page) => ({
       ...page,
-      page: shiftPageNumber(page.page, insertedPage),
-      strokes: page.strokes.map((stroke) => shiftStroke(stroke, insertedPage)),
-      ...(page.texts ? { texts: page.texts.map((text) => shiftText(text, insertedPage)) } : {})
+      page: shift(page.page),
+      strokes: page.strokes.map((stroke) => stroke.page >= insertedPage ? { ...stroke, page: shift(stroke.page) } : stroke),
+      ...(page.texts ? {
+        texts: page.texts.map((text) => text.page >= insertedPage ? { ...text, page: shift(text.page) } : text)
+      } : {})
     })),
     updatedAt
   };

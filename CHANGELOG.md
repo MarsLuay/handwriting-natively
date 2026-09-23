@@ -1,3 +1,9 @@
+## 0.1.53 — 2026-09-21
+
+- Recover long-lived handwriting after router teardown with generation-aware pointer ownership and inactive-session rejection.
+- Add input lifecycle diagnostics for stale routers, pointer ownership, and session rebinds.
+- Unblock release builds with strict TypeScript fixes for laser labels and page-coordinate test mocks.
+
 ## 0.1.52 — 2026-08-06
 
 - Improve stylus handling after pen hover and keep palm contacts from interrupting drawing or touch gestures.
@@ -53,6 +59,12 @@
 - Touch-action modes on the PDF page shell: `touch-none` while tip down, `touch-pan-xy` while Draw is on and tip is up, default when Draw is off (replaces binary `pen-capturing`).
 
 # Changelog
+
+## 0.1.57 — 2026-09-23
+
+- Restore thumbnail-sidebar Add page, Delete page, and selected-range deletion.
+- Rewrite explicit page-structure changes through one compensating PDF+sidecar+recovery transaction.
+- Keep annotation edits and Export PDF non-destructive while documenting the explicit source-PDF mutation boundary.
 
 ## 0.1.45 — 2026-08-01
 

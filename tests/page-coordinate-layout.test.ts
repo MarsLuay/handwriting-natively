@@ -58,7 +58,7 @@ describe("overlayOffsetInParent", () => {
     // Mock defaultView and getComputedStyle
     const mockWindow = {
       getComputedStyle: () => ({ borderLeftWidth: "1.5px", borderTopWidth: "2.5px" }) as CSSStyleDeclaration
-    } as Window & typeof globalThis;
+    } as unknown as Window & typeof globalThis;
     Object.defineProperty(parent.ownerDocument, "defaultView", { value: mockWindow, configurable: true });
 
     const contentRect = {
@@ -83,7 +83,7 @@ describe("overlayOffsetInParent", () => {
     // Provide non-numeric computed style
     const mockWindow = {
       getComputedStyle: () => ({ borderLeftWidth: "thin", borderTopWidth: "" }) as CSSStyleDeclaration
-    } as Window & typeof globalThis;
+    } as unknown as Window & typeof globalThis;
     Object.defineProperty(parent.ownerDocument, "defaultView", { value: mockWindow, configurable: true });
 
     // Set clientLeft/clientTop for fallback
@@ -112,7 +112,7 @@ describe("overlayOffsetInParent", () => {
     // Mock defaultView and getComputedStyle
     const mockWindow = {
       getComputedStyle: () => ({ borderLeftWidth: "0px", borderTopWidth: "0px" }) as CSSStyleDeclaration
-    } as Window & typeof globalThis;
+    } as unknown as Window & typeof globalThis;
     Object.defineProperty(parent.ownerDocument, "defaultView", { value: mockWindow, configurable: true });
 
     const contentRect = {
@@ -221,7 +221,7 @@ describe("page coordinate layout", () => {
     // Ensure the defaultView is available since JSDOM might not automatically populate it the way we expect if it isn't attached
     const mockWindow = {
       getComputedStyle: () => ({ borderLeftWidth: "0.5px", borderTopWidth: "0.5px" }) as CSSStyleDeclaration
-    } as Window & typeof globalThis;
+    } as unknown as Window & typeof globalThis;
     Object.defineProperty(host.ownerDocument, "defaultView", { value: mockWindow, configurable: true });
 
     canvas.getBoundingClientRect = () => ({

@@ -19,8 +19,8 @@
     },
     {
       "id": "source-pdf-write-contract",
-      "status": "blocked",
-      "title": "Resolve the documented no-in-place-write invariant versus page insert/delete paths that call modifyBinary.",
+      "status": "complete",
+      "title": "Resolve the source-PDF write contract for explicit page actions.",
       "paths": [
         "src/main.ts",
         "docs/architecture.md",

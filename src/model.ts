@@ -1,8 +1,9 @@
 export type DrawingTool = "pen" | "pencil" | "highlighter";
-/** There is no Pan tool: Draw off restores native PDF navigation. */
+/** Annotation tools. Mouse pan/native modes live in settings, not as a tool. */
 export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser";
 export type LassoType = "freeform" | "rectangle";
 export type ToolbarPlacement = "main" | "left" | "right";
+export type MouseInputMode = "pan" | "annotate" | "native";
 /** Which input source supplies pressure for new ink strokes. */
 export type PressureProfile = "auto" | "pen" | "mouse";
 /** Compact, device-agnostic controls applied to future pen strokes. */
@@ -113,6 +114,14 @@ export interface DrawingToolPreferences {
   simulateMousePressure: boolean;
 }
 
+/** A named, persisted drawing configuration that can be selected in one action. */
+export interface DrawingPreset {
+  id: string;
+  name: string;
+  tool: DrawingTool;
+  settings: DrawingToolPreferences;
+}
+
 /** Ephemeral laser pointer — never written to sidecar. */
 export interface LaserPreferences {
   color: string;
@@ -155,6 +164,9 @@ export interface ToolPreferences {
   lasso: { type: LassoType };
   laser: LaserPreferences;
   recentColors: string[];
+  /** User-selectable drawing configurations; capped during settings migration. */
+  presets: DrawingPreset[];
+  activePresetId: string | null;
 }
 
 export interface PluginSettings {
@@ -168,6 +180,12 @@ export interface PluginSettings {
   sidecarFolder: string;
   /** Vault-relative PDF template; page one is used. Empty means blank US Letter paper. */
   pdfTemplatePath: string;
+  /**
+   * Explicit mouse behavior without a Draw checkbox.
+   * Migrated from legacy `mouseDragScroll` when absent (`true` → pan, `false` → native).
+   */
+  mouseInputMode?: MouseInputMode;
+  /** Legacy mirror of `mouseInputMode === "pan"` for older sidecars / readers. */
   mouseDragScroll: boolean;
   /** Auto uses stylus pressure when available; Pen/Mouse force that input model. */
   pressureProfile: PressureProfile;
@@ -186,62 +204,50 @@ export interface PluginSettings {
 
 export const PLUGIN_ID = "native-pdf-handwriting";
 
-/** Build path defaults from Vault#configDir. */
-export function createDefaultSettings(configDir: string): PluginSettings {
-  const root = configDir.replace(/\\/g, "/").replace(/\/+$/, "");
+export function createDefaultToolPreferences(): ToolPreferences {
+  const pen: DrawingToolPreferences = {
+    color: "#111827",
+    width: 1.5,
+    opacity: 1,
+    pressureSensitivity: true,
+    stabilization: "medium",
+    thinning: 0.55,
+    textureStrength: 0,
+    tiltSensitivity: false,
+    simulateMousePressure: true
+  };
+  const pencil: DrawingToolPreferences = {
+    color: "#4b5563",
+    width: 4,
+    opacity: 0.88,
+    pressureSensitivity: true,
+    stabilization: "low",
+    thinning: 0.2,
+    textureStrength: 0.85,
+    tiltSensitivity: true,
+    simulateMousePressure: true
+  };
+  const highlighter: DrawingToolPreferences = {
+    color: "#facc15",
+    width: 14,
+    opacity: 0.35,
+    pressureSensitivity: false,
+    stabilization: "low",
+    thinning: 0.05,
+    textureStrength: 0,
+    tiltSensitivity: false,
+    simulateMousePressure: true
+  };
+  const presets: DrawingPreset[] = [
+    { id: "black-pen", name: "Black pen", tool: "pen", settings: { ...pen } },
+    { id: "blue-pen", name: "Blue pen", tool: "pen", settings: { ...pen, color: "#2563eb", width: 1.2 } },
+    { id: "yellow-highlighter", name: "Yellow highlighter", tool: "highlighter", settings: { ...highlighter } }
+  ];
   return {
-  autosave: true,
-  autosaveDelayMs: 750,
-  saveWhenClosing: true,
-  showSaveStatus: true,
-  retryFailedAutosaves: true,
-  textEscapeAction: "save",
-  sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
-  pdfTemplatePath: "",
-  mouseDragScroll: true,
-  pressureProfile: "auto",
-  pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
-  simplifyStrokes: true,
-  boostedPdfZoom: false,
-  hideStylusAnnotationLabel: false,
-  toolbarPlacement: "main",
-  vaultDebugLog: false,
-  vaultDebugLogPath: `${root}/plugins/${PLUGIN_ID}/debug.md`,
-  toolPreferences: {
     activeTool: "pen",
-    pen: {
-      color: "#111827",
-      width: 1.5,
-      opacity: 1,
-      pressureSensitivity: true,
-      stabilization: "medium",
-      thinning: 0.55,
-      textureStrength: 0,
-      tiltSensitivity: false,
-      simulateMousePressure: true
-    },
-    pencil: {
-      color: "#4b5563",
-      width: 4,
-      opacity: 0.88,
-      pressureSensitivity: true,
-      stabilization: "low",
-      thinning: 0.2,
-      textureStrength: 0.85,
-      tiltSensitivity: true,
-      simulateMousePressure: true
-    },
-    highlighter: {
-      color: "#facc15",
-      width: 14,
-      opacity: 0.35,
-      pressureSensitivity: false,
-      stabilization: "low",
-      thinning: 0.05,
-      textureStrength: 0,
-      tiltSensitivity: false,
-      simulateMousePressure: true
-    },
+    pen,
+    pencil,
+    highlighter,
     shape: { holdToRecognize: true },
     text: {
       color: "#111827",
@@ -260,8 +266,35 @@ export function createDefaultSettings(configDir: string): PluginSettings {
       holdMs: 900,
       fadeMs: 1400
     },
-    recentColors: ["#111827", "#2563eb", "#dc2626", "#059669", "#f59e0b", "#facc15"]
-  }
+    recentColors: ["#111827", "#2563eb", "#dc2626", "#059669", "#f59e0b", "#facc15"],
+    presets,
+    activePresetId: presets[0]?.id ?? null
+  };
+}
+
+/** Build path defaults from Vault#configDir. */
+export function createDefaultSettings(configDir: string): PluginSettings {
+  const root = configDir.replace(/\\/g, "/").replace(/\/+$/, "");
+  return {
+  autosave: true,
+  autosaveDelayMs: 750,
+  saveWhenClosing: true,
+  showSaveStatus: true,
+  retryFailedAutosaves: true,
+  textEscapeAction: "save",
+  sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
+  pdfTemplatePath: "",
+  mouseInputMode: "pan",
+  mouseDragScroll: true,
+  pressureProfile: "auto",
+  pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
+  simplifyStrokes: true,
+  boostedPdfZoom: false,
+  hideStylusAnnotationLabel: false,
+  toolbarPlacement: "main",
+  vaultDebugLog: false,
+  vaultDebugLogPath: `${root}/plugins/${PLUGIN_ID}/debug.md`,
+  toolPreferences: createDefaultToolPreferences()
   };
 }
 
@@ -368,14 +401,32 @@ export function mergeSettings(
           4000,
           defaults.toolPreferences.laser.fadeMs
         )
-      }
+      },
+      presets: normalizeDrawingPresets(cleaned.toolPreferences?.presets, defaults.toolPreferences.presets),
+      activePresetId: null as string | null
     }
   };
+  const savedPresetId = cleaned.toolPreferences?.activePresetId;
+  merged.toolPreferences.activePresetId = typeof savedPresetId === "string" &&
+    merged.toolPreferences.presets.some((preset) => preset.id === savedPresetId)
+    ? savedPresetId
+    : merged.toolPreferences.presets[0]?.id ?? null;
   merged.sidecarFolder = remapPluginDataPath(cleaned.sidecarFolder, defaults.sidecarFolder, configDir);
   merged.vaultDebugLogPath = migrateVaultDebugLogPath(
     remapPluginDataPath(cleaned.vaultDebugLogPath, defaults.vaultDebugLogPath, configDir)
   );
+  const mouseInputMode = resolvePersistedMouseInputMode(cleaned);
+  merged.mouseInputMode = mouseInputMode;
+  merged.mouseDragScroll = mouseInputMode === "pan";
   return merged;
+}
+
+function resolvePersistedMouseInputMode(
+  cleaned: Partial<PluginSettings>
+): MouseInputMode {
+  const mode = cleaned.mouseInputMode;
+  if (mode === "pan" || mode === "annotate" || mode === "native") return mode;
+  return cleaned.mouseDragScroll === false ? "native" : "pan";
 }
 
 /** Prefer `.md` so the vault log opens as a note in Obsidian. */
@@ -413,4 +464,33 @@ function clampPressureCalibration(value: unknown, min: number, max: number, fall
 function clampLaserMs(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function normalizeDrawingPresets(value: unknown, fallback: readonly DrawingPreset[]): DrawingPreset[] {
+  if (!Array.isArray(value)) return fallback.map(cloneDrawingPreset);
+  const seen = new Set<string>();
+  const result: DrawingPreset[] = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const raw = candidate as Partial<DrawingPreset> & { settings?: Partial<DrawingToolPreferences> };
+    const id = raw.id;
+    const name = raw.name;
+    const tool = raw.tool;
+    if (typeof id !== "string" || typeof name !== "string" || typeof tool !== "string" || !isDrawingTool(tool) || seen.has(id)) continue;
+    const defaults = fallback.find((preset) => preset.tool === tool)?.settings;
+    if (!defaults) continue;
+    seen.add(id);
+    result.push({
+      id: id.slice(0, 64),
+      name: name.trim().slice(0, 80) || id.slice(0, 64),
+      tool,
+      settings: { ...defaults, ...(raw.settings ?? {}) }
+    });
+    if (result.length === 8) break;
+  }
+  return result.length ? result : fallback.map(cloneDrawingPreset);
+}
+
+function cloneDrawingPreset(preset: DrawingPreset): DrawingPreset {
+  return { ...preset, settings: { ...preset.settings } };
 }

@@ -5,6 +5,7 @@ import {
   DRAWING_TOOLS,
   resolveDrawingTool,
   type DrawingTool,
+  type DrawingPreset,
   type ToolPreferences
 } from "../model";
 import type { DropdownOption } from "./DropdownController";
@@ -28,13 +29,47 @@ const TOOL_LABELS: Record<DrawingTool, string> = {
   highlighter: "Highlighter"
 };
 
+export function createWidthOptions(
+  widths: readonly number[],
+  labels: readonly string[],
+  activeWidth: number,
+  color: string,
+  prefix: string,
+  selectWidth: (width: number) => void
+): DropdownOption[] {
+  return widths.map((width, index) => ({
+    id: `${prefix}-width-${width}`,
+    label: `${labels[index]} (${width})`,
+    active: activeWidth === width,
+    render: (button) => {
+      const preview = createDetachedSpan(button.ownerDocument);
+      preview.className = "native-pdf-handwriting-width-preview";
+      setElementCssProps(preview, {
+        "--ink-preview-width": `${Math.min(12, width)}px`,
+        "--ink-preview-color": color
+      });
+      button.prepend(preview);
+    },
+    onSelect: () => selectWidth(width)
+  }));
+}
+
 export function drawingOptions(
   preferences: ToolPreferences,
   selectTool: (tool: DrawingTool) => void,
-  selectWidth: (width: number) => void
+  selectWidth: (width: number) => void,
+  selectPreset?: (preset: DrawingPreset) => void
 ): DropdownOption[] {
   const tool = resolveDrawingTool(preferences.activeTool);
   const drawing = preferences[tool];
+  const presets: DropdownOption[] = selectPreset
+    ? preferences.presets.map((preset) => ({
+      id: `preset-${preset.id}`,
+      label: `Preset: ${preset.name}`,
+      active: preferences.activePresetId === preset.id,
+      onSelect: () => selectPreset(preset)
+    }))
+    : [];
   const tools: DropdownOption[] = DRAWING_TOOLS.map((id) => ({
     id,
     label: TOOL_LABELS[id],
@@ -43,22 +78,19 @@ export function drawingOptions(
   }));
   const widths = tool === "highlighter" ? HIGHLIGHTER_WIDTHS : DRAWING_WIDTHS;
   const labels = tool === "highlighter" ? HIGHLIGHTER_WIDTH_LABELS : WIDTH_LABELS;
-  const widthOptions: DropdownOption[] = widths.map((width, index) => ({
-    id: `width-${width}`,
-    label: `${labels[index]} (${width})`,
-    active: drawing.width === width,
-    render: (button) => {
-      const preview = createDetachedSpan(button.ownerDocument);
-      preview.className = "native-pdf-handwriting-width-preview";
-      setElementCssProps(preview, {
-        "--ink-preview-width": `${Math.min(12, width)}px`,
-        "--ink-preview-color": drawing.color
-      });
-      button.prepend(preview);
-    },
-    onSelect: () => selectWidth(width)
-  }));
-  return [...tools, ...widthOptions];
+  const widthOptions = createWidthOptions(
+    widths,
+    labels,
+    drawing.width,
+    drawing.color,
+    "",
+    selectWidth
+  );
+  // Remove the empty prefix from ID for backwards compatibility with `width-` instead of `-width-`
+  widthOptions.forEach(opt => {
+    opt.id = `width-${opt.id.replace(/^-width-/, "")}`;
+  });
+  return [...presets, ...tools, ...widthOptions];
 }
 
 export function drawingAdvanced(
