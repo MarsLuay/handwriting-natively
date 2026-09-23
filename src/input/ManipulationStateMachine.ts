@@ -1,11 +1,11 @@
 /**
  * Small, DOM-free state machine for mobile PDF manipulation ownership.
  *
- * When the host can own native pinch, Draw mode starts in a
+ * When the host can own native pinch, the viewer page starts in a
  * `pan-x pan-y pinch-zoom`-compatible state so the browser sees that policy
  * before the first finger arrives. A pen signal switches the router to its
- * `touch-action: none` guard before the pen is routed. Hosts without a native
- * pinch path retain the stricter guard and use the explicit touch state.
+ * per-page `touch-action: none` guard before the pen is routed. Hosts without
+ * a native pinch path retain the stricter guard and use the explicit touch state.
  */
 
 export type ManipulationState =

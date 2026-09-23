@@ -122,6 +122,25 @@ describe("safe defaults", () => {
     expect(merged.toolPreferences.highlighter.color).toBe("#facc15");
   });
 
+  it("provides bounded drawing presets and sanitizes saved preset data", () => {
+    expect(DEFAULT_SETTINGS.toolPreferences.presets.length).toBeGreaterThan(1);
+    expect(DEFAULT_SETTINGS.toolPreferences.activePresetId).toBe("black-pen");
+    const merged = mergeSettings({
+      toolPreferences: {
+        presets: [
+          { id: "custom", name: "Blue", tool: "pen", settings: { color: "#2563eb", width: 2 } },
+          { id: "custom", name: "duplicate", tool: "pencil", settings: {} },
+          { id: "bad", name: "Bad", tool: "shape", settings: {} }
+        ],
+        activePresetId: "custom"
+      } as never
+    });
+    expect(merged.toolPreferences.presets).toHaveLength(1);
+    expect(merged.toolPreferences.presets[0]).toMatchObject({ id: "custom", name: "Blue", tool: "pen" });
+    expect(merged.toolPreferences.presets[0]?.settings.width).toBe(2);
+    expect(merged.toolPreferences.activePresetId).toBe("custom");
+  });
+
   it("merges laser preferences from saved settings", () => {
     const merged = mergeSettings({
       toolPreferences: {

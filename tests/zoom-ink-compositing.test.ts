@@ -263,6 +263,7 @@ async function createSession(
   return ViewerInkSession.create({
     adapter,
     pdfPath: "Notes/zoom-ink.pdf",
+    pluginVersion: "test-0.1",
     settings,
     sidecars: new SidecarRepository(files, "annotations"),
     recovery: new RecoveryRepository(files, "recovery"),
@@ -380,6 +381,22 @@ describe("zoom ink compositing", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(paintStampCalls(context)).toBe(stampsAtSettle);
     expect(debugCalls("ink renderer").some((call) => (call[2] as { phase?: string }).phase === "zoom-canonical-upgrade")).toBe(false);
+
+    const profiles = debugCalls("ink zoom profile");
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]?.[2]).toMatchObject({
+      pluginVersion: "test-0.1",
+      profileSchema: 2,
+      scaleChangingEvents: 2,
+      scaleStart: 1,
+      scaleEnd: 1.55,
+      minScale: 1,
+      maxScale: 1.55,
+      frameCount: expect.any(Number),
+      frameIntervalHistogram: expect.any(Object),
+      maxPdfInkMismatchPx: expect.any(Number),
+      settleAfterLastScaleMs: expect.any(Number)
+    });
 
     await session.destroy();
   });

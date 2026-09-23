@@ -106,11 +106,19 @@ describe("platform and PDF compatibility evidence", () => {
 
     expect(result.compatible).toBe(true);
     expect(result.platform).toBe(report);
+    expect(result.profile).toMatchObject({
+      schemaVersion: 1,
+      adapter: "direct",
+      status: "supported-with-fallback",
+      capabilities: { viewerRoot: true, pageElements: true, embedded: false }
+    });
   });
 
   it("fails closed for missing viewer roots and rendered pages", () => {
     const missingRoot = PdfViewerCompatibility.direct(document.createElement("div"));
     expect(missingRoot.compatible).toBe(false);
+    expect(missingRoot.profile.status).toBe("unsafe");
+    expect(missingRoot.profile.failedProbes).toEqual([expect.stringContaining("PDF viewer root missing")]);
     expect(missingRoot.errors).toEqual([expect.stringContaining("PDF viewer root missing")]);
 
     const missingPage = document.createElement("div");

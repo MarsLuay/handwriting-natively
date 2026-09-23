@@ -5,6 +5,7 @@ import {
   DRAWING_TOOLS,
   resolveDrawingTool,
   type DrawingTool,
+  type DrawingPreset,
   type ToolPreferences
 } from "../model";
 import type { DropdownOption } from "./DropdownController";
@@ -56,10 +57,19 @@ export function createWidthOptions(
 export function drawingOptions(
   preferences: ToolPreferences,
   selectTool: (tool: DrawingTool) => void,
-  selectWidth: (width: number) => void
+  selectWidth: (width: number) => void,
+  selectPreset?: (preset: DrawingPreset) => void
 ): DropdownOption[] {
   const tool = resolveDrawingTool(preferences.activeTool);
   const drawing = preferences[tool];
+  const presets: DropdownOption[] = selectPreset
+    ? preferences.presets.map((preset) => ({
+      id: `preset-${preset.id}`,
+      label: `Preset: ${preset.name}`,
+      active: preferences.activePresetId === preset.id,
+      onSelect: () => selectPreset(preset)
+    }))
+    : [];
   const tools: DropdownOption[] = DRAWING_TOOLS.map((id) => ({
     id,
     label: TOOL_LABELS[id],
@@ -80,7 +90,7 @@ export function drawingOptions(
   widthOptions.forEach(opt => {
     opt.id = `width-${opt.id.replace(/^-width-/, "")}`;
   });
-  return [...tools, ...widthOptions];
+  return [...presets, ...tools, ...widthOptions];
 }
 
 export function drawingAdvanced(
