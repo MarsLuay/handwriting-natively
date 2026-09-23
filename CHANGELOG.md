@@ -60,6 +60,12 @@
 
 # Changelog
 
+## 0.1.57 — 2026-09-23
+
+- Restore thumbnail-sidebar Add page, Delete page, and selected-range deletion.
+- Rewrite explicit page-structure changes through one compensating PDF+sidecar+recovery transaction.
+- Keep annotation edits and Export PDF non-destructive while documenting the explicit source-PDF mutation boundary.
+
 ## 0.1.45 — 2026-08-01
 
 - Draw mode: document capture sync-routes pen/mouse onto the page router even when binds/alive look healthy (page capture can stay deaf after zoom). Resolve hit page number via surface identity / ensure stamp when `data-page-number` is missing (loading shells). Fallback skip logs for missing page number / no surface.

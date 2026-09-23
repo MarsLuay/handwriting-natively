@@ -33,7 +33,7 @@ export class PdfPageSelectionModal extends Modal {
     this.inputEl.setAttribute("aria-label", "Pages to import");
     this.countEl = this.contentEl.createEl("p", {
       cls: "native-pdf-handwriting-import-count",
-      text: "0 pages will be imported."
+      text: "0 Pages will be imported."
     });
     const error = this.contentEl.createEl("p", { cls: "native-pdf-handwriting-import-error" });
     this.inputEl.addEventListener("keydown", (event) => {

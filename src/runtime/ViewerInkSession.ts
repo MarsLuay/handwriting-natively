@@ -55,7 +55,7 @@ import { createDocumentIdentity, hashDocumentContent, type DocumentIdentityInput
 import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
-import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
+import { insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultFs";
 import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
@@ -4902,7 +4902,7 @@ export class ViewerInkSession {
       hitTest.geometricPage?.pageNumber ?? "?",
       Math.round(event.clientX / 8),
       Math.round(event.clientY / 8),
-      String(hit?.tag ?? ""),
+      typeof hit?.tag === "string" ? hit.tag : "",
       classes
     ].join("|");
     const now = Date.now();
