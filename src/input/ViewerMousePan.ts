@@ -36,6 +36,8 @@ export interface ViewerMousePanCallbacks {
   enabled(): boolean;
   /** Finger drag-scroll. Default off — leave movement to native PDF viewer. */
   touchPanEnabled?(): boolean;
+  /** Optional position gate for the primary mouse pan gesture. */
+  allowMousePan?(event: PointerEvent): boolean;
   scrollRoot(): HTMLElement;
   withinTarget?(target: EventTarget | null): boolean;
   captureElement?(): HTMLElement;
@@ -165,6 +167,13 @@ export class ViewerMousePan {
     }
     if (event.target instanceof Element && event.target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown")) {
       this.callbacks.onPan?.("skip", event, { reason: "toolbar", target: describeTarget(event.target) });
+      return;
+    }
+    // The fixed desktop page policy reserves primary mouse drags over PDF pages
+    // for the active handwriting tool. Empty viewer space can still use the
+    // configured pan behavior.
+    if (tip && this.callbacks.allowMousePan && !this.callbacks.allowMousePan(event)) {
+      this.callbacks.onPan?.("skip", event, { reason: "pdf-page-annotation", target: describeTarget(event.target) });
       return;
     }
     // Mouse on PDF text → native selection. Finger still pans when touch pan is enabled.

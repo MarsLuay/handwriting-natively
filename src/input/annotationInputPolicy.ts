@@ -1,6 +1,7 @@
 /**
  * Device-aware annotation input policy (pencil-first).
- * Pen annotates by active tool; touch stays native PDF nav; mouse follows explicit mode.
+ * Pen annotates by active tool; touch stays native PDF nav; desktop mouse annotates
+ * on PDF pages and keeps the configured empty-space behavior elsewhere.
  */
 
 export type MouseInputMode = "pan" | "annotate" | "native";
@@ -30,11 +31,14 @@ export function stylusAnnotationEnabled(): boolean {
 
 export interface AnnotatePointerContext {
   mouseInputMode: MouseInputMode;
+  /** Fixed desktop page gate. Omit to retain the legacy mode-only policy. */
+  mouseOverPdfPage?: boolean;
 }
 
 /**
  * Whether this pointer may create annotation ink/edit/text routes.
- * Touch never inks. Pen always may (occlusion handled separately). Mouse only in annotate mode.
+ * Touch never inks. Pen always may (occlusion handled separately). Desktop mouse
+ * annotates only when the caller confirms that the pointer started on a PDF page.
  */
 export function canAnnotatePointer(
   event: Pick<PointerEvent, "pointerType">,
@@ -42,7 +46,10 @@ export function canAnnotatePointer(
 ): boolean {
   if (event.pointerType === "pen") return stylusAnnotationEnabled();
   if (event.pointerType === "touch") return false;
-  if (event.pointerType === "mouse") return ctx.mouseInputMode === "annotate";
+  if (event.pointerType === "mouse") {
+    if (ctx.mouseOverPdfPage !== undefined) return ctx.mouseOverPdfPage;
+    return ctx.mouseInputMode === "annotate";
+  }
   return false;
 }
 
