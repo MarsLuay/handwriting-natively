@@ -2,6 +2,8 @@ import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
 import type { VaultLogSink } from "./VaultLogSink";
 
 const PREFIX = "[Handwriting Natively]";
+/** Schema for copied bounded performance and draw-state diagnostics. */
+export const PROFILE_SCHEMA_VERSION = 2 as const;
 
 export type ViewStateSource =
   | "scalechanging"
