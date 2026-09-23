@@ -442,6 +442,13 @@ interface ZoomProfileState {
   lateFrameCount: number;
   maxFrameIntervalMs: number;
   lastLayoutFrameAt: number | null;
+  lastScrollLeft: number | null;
+  lastScrollTop: number | null;
+  maxScrollDeltaPx: number;
+  sidebarFollowActiveDuringZoom: boolean;
+  sidebarFollowFramesDuringBurst: number;
+  maxSidebarOffsetJump: number;
+  sidebarFollowSuppressedTriggers: number;
 }
 
 interface PageSurface {
@@ -1356,7 +1363,14 @@ export class ViewerInkSession {
       longestTaskMs: 0,
       lateFrameCount: 0,
       maxFrameIntervalMs: 0,
-      lastLayoutFrameAt: null
+      lastLayoutFrameAt: null,
+      lastScrollLeft: null,
+      lastScrollTop: null,
+      maxScrollDeltaPx: 0,
+      sidebarFollowActiveDuringZoom: false,
+      sidebarFollowFramesDuringBurst: 0,
+      maxSidebarOffsetJump: 0,
+      sidebarFollowSuppressedTriggers: 0
     };
   }
 
@@ -1390,6 +1404,31 @@ export class ViewerInkSession {
     profile.longestTaskMs = Math.max(profile.longestTaskMs, duration);
   }
 
+  /** Duck-typed bridge: BasePdfAdapter suppresses sidebar follow during pinch. */
+  private setAdapterInkZoomBurstActive(active: boolean): void {
+    const adapter = this.options.adapter as {
+      setInkZoomBurstActive?(next: boolean): void;
+    };
+    adapter.setInkZoomBurstActive?.(active);
+  }
+
+  private consumeAdapterSidebarFollowZoomMetrics(): {
+    sidebarFollowActiveDuringZoom: boolean;
+    sidebarFollowFramesDuringBurst: number;
+    maxSidebarOffsetJump: number;
+    sidebarFollowSuppressedTriggers: number;
+  } | null {
+    const adapter = this.options.adapter as {
+      consumeSidebarFollowZoomMetrics?(): {
+        sidebarFollowActiveDuringZoom: boolean;
+        sidebarFollowFramesDuringBurst: number;
+        maxSidebarOffsetJump: number;
+        sidebarFollowSuppressedTriggers: number;
+      };
+    };
+    return adapter.consumeSidebarFollowZoomMetrics?.() ?? null;
+  }
+
   private scheduleZoomOverlayLayout(): void {
     if (this.destroyed || !this.zoomCompositing || this.zoomLayoutFrame !== null) return;
     const view = this.options.adapter.host.ownerDocument.defaultView;
@@ -1409,7 +1448,30 @@ export class ViewerInkSession {
         this.zoomProfile.lastLayoutFrameAt = now;
       }
       const started = performance.now();
+      const scroller = this.options.adapter.scrollElement();
+      const beforeLeft = scroller.scrollLeft;
+      const beforeTop = scroller.scrollTop;
+      if (this.zoomProfile) {
+        if (this.zoomProfile.lastScrollLeft !== null && this.zoomProfile.lastScrollTop !== null) {
+          const frameDelta = Math.max(
+            Math.abs(beforeLeft - this.zoomProfile.lastScrollLeft),
+            Math.abs(beforeTop - this.zoomProfile.lastScrollTop)
+          );
+          this.zoomProfile.maxScrollDeltaPx = Math.max(this.zoomProfile.maxScrollDeltaPx, frameDelta);
+        }
+      }
       this.syncZoomOverlayLayouts();
+      // Overlay layout must not correct scroll during the live gesture — any
+      // delta here is plugin-owned and belongs in the burst profile.
+      const pluginScrollDelta = Math.max(
+        Math.abs(scroller.scrollLeft - beforeLeft),
+        Math.abs(scroller.scrollTop - beforeTop)
+      );
+      if (this.zoomProfile) {
+        this.zoomProfile.maxScrollDeltaPx = Math.max(this.zoomProfile.maxScrollDeltaPx, pluginScrollDelta);
+        this.zoomProfile.lastScrollLeft = scroller.scrollLeft;
+        this.zoomProfile.lastScrollTop = scroller.scrollTop;
+      }
       this.recordZoomProfileTask(started);
     });
   }
@@ -1425,6 +1487,13 @@ export class ViewerInkSession {
     if (!profile) return;
     const endedAt = profile.gestureEndedAt ?? performance.now();
     const profileEndedAt = performance.now();
+    const sidebar = this.consumeAdapterSidebarFollowZoomMetrics();
+    if (sidebar) {
+      profile.sidebarFollowActiveDuringZoom = sidebar.sidebarFollowActiveDuringZoom;
+      profile.sidebarFollowFramesDuringBurst = sidebar.sidebarFollowFramesDuringBurst;
+      profile.maxSidebarOffsetJump = sidebar.maxSidebarOffsetJump;
+      profile.sidebarFollowSuppressedTriggers = sidebar.sidebarFollowSuppressedTriggers;
+    }
     const metrics = {
       mobile: this.runtimePlatform().mobile,
       gestureStartAt: roundMs(profile.startedAt),
@@ -1460,6 +1529,11 @@ export class ViewerInkSession {
       longestTaskMs: roundMs(profile.longestTaskMs),
       lateFrameCount: profile.lateFrameCount,
       maxFrameIntervalMs: roundMs(profile.maxFrameIntervalMs),
+      maxScrollDeltaPx: Number(profile.maxScrollDeltaPx.toFixed(2)),
+      sidebarFollowActiveDuringZoom: profile.sidebarFollowActiveDuringZoom,
+      sidebarFollowFramesDuringBurst: profile.sidebarFollowFramesDuringBurst,
+      maxSidebarOffsetJump: profile.maxSidebarOffsetJump,
+      sidebarFollowSuppressedTriggers: profile.sidebarFollowSuppressedTriggers,
       nativeContentMutations: this.zoomNativeContentMutations
     };
     this.logger.zoomProfile(metrics);
@@ -1484,6 +1558,7 @@ export class ViewerInkSession {
       this.zoomInkLayoutLoggedPhases.clear();
       this.zoomInkAnchorByPage.clear();
       this.zoomHandoffNeedsFinalRebase = false;
+      this.setAdapterInkZoomBurstActive(true);
       this.reportDevProbe("zoom-burst-start", {
         reason,
         scale: scale ?? null,
@@ -1647,6 +1722,7 @@ export class ViewerInkSession {
     if (this.zoomCompositing) this.syncZoomOverlayLayouts();
     this.recordZoomProfileTask(finalLayoutStarted);
     if (this.zoomProfile) this.zoomProfile.gestureEndedAt = performance.now();
+    this.setAdapterInkZoomBurstActive(false);
     this.zoomBurstStartedAt = 0;
     this.zoomTickCount = 0;
     this.zoomBurstScaleStart = null;
@@ -4047,6 +4123,7 @@ export class ViewerInkSession {
     this.cancelZoomCompositeRelease();
     this.endZoomCompositing();
     this.releaseZoomCompositeLayers();
+    this.setAdapterInkZoomBurstActive(false);
     this.finishZoomProfile();
     this.syncAnnotationCursorMode(true);
     this.resizeObserver?.disconnect();

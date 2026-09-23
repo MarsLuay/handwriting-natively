@@ -15,6 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ObsidianPdfAdapter, PdfViewState } from "../src/integration/ObsidianPdfAdapter";
+import { NativePdfViewAdapter } from "../src/integration/NativePdfViewAdapter";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import { PdfCoordinateMapper } from "../src/pdf/PdfCoordinateMapper";
 import { DEFAULT_SETTINGS, type PdfTextAnnotation } from "../src/model";
@@ -124,6 +125,15 @@ class ZoomAdapter implements ObsidianPdfAdapter {
     );
     this.applyRects();
   }
+
+  /** Optional BasePdfAdapter zoom-gate hooks used by the session bridge. */
+  setInkZoomBurstActive?(active: boolean): void;
+  consumeSidebarFollowZoomMetrics?(): {
+    sidebarFollowActiveDuringZoom: boolean;
+    sidebarFollowFramesDuringBurst: number;
+    maxSidebarOffsetJump: number;
+    sidebarFollowSuppressedTriggers: number;
+  };
 
   pages(): PdfPageInfo[] {
     return [{
@@ -467,6 +477,157 @@ describe("zoom ink compositing", () => {
     expect(profile?.longestTaskMs).toBeGreaterThanOrEqual(0);
 
     await session.destroy();
+  });
+
+  it("keeps mobile zoom smooth with left-rail watcher: no sidebar follow from content mutations", async () => {
+    const host = document.createElement("div");
+    host.className = "pdf-container workspace-leaf";
+    const toolbarHost = document.createElement("div");
+    toolbarHost.className = "pdf-toolbar";
+    const content = document.createElement("div");
+    content.className = "pdf-content-container";
+    const sidebar = document.createElement("div");
+    sidebar.className = "pdf-sidebar-container";
+    Object.defineProperty(sidebar, "offsetWidth", { value: 0 });
+    Object.defineProperty(sidebar, "offsetHeight", { value: 600 });
+    sidebar.getBoundingClientRect = () => rect(0, 0, 0, 600);
+    const scroll = document.createElement("div");
+    scroll.className = "pdf-viewer-scroll-container";
+    Object.defineProperty(scroll, "scrollHeight", { value: 4000, configurable: true });
+    Object.defineProperty(scroll, "clientHeight", { value: 800, configurable: true });
+    Object.defineProperty(scroll, "scrollLeft", { value: 120, writable: true, configurable: true });
+    Object.defineProperty(scroll, "scrollTop", { value: 80, writable: true, configurable: true });
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const page = document.createElement("div");
+    page.className = "page";
+    page.dataset.pageNumber = "1";
+    page.dataset.scale = "1";
+    page.dataset.rotation = "0";
+    const pdfCanvas = document.createElement("canvas");
+    const canvasWrapper = document.createElement("div");
+    canvasWrapper.className = "canvasWrapper";
+    canvasWrapper.append(pdfCanvas);
+    page.append(canvasWrapper);
+    viewer.append(page);
+    scroll.append(viewer);
+    content.append(sidebar, scroll);
+    host.append(toolbarHost, content);
+    document.body.append(host);
+
+    Object.defineProperty(page, "getBoundingClientRect", {
+      configurable: true,
+      value: () => rect(0, 0, 600, 800)
+    });
+    Object.defineProperty(pdfCanvas, "getBoundingClientRect", {
+      configurable: true,
+      value: () => rect(0, 0, 600, 800)
+    });
+
+    const adapter = await NativePdfViewAdapter.attach(host, {
+      onDebugLog: (level, event, payload) => {
+        if (level === "warn") console.warn("[Handwriting Natively]", event, payload);
+        else console.debug("[Handwriting Natively]", event, payload);
+      }
+    });
+    const toolbar = document.createElement("div");
+    toolbar.className = "native-pdf-handwriting-toolbar";
+    adapter.mountToolbar(toolbar, "left");
+
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/zoom-sidebar.pdf",
+      settings: (() => {
+        const settings = structuredClone(DEFAULT_SETTINGS);
+        settings.autosave = false;
+        settings.toolPreferences.activeTool = "pen";
+        return settings;
+      })(),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: false })
+    });
+
+    const surface = probeSurface(session) as SurfaceProbe & { router: unknown; overlay: HTMLElement };
+    const overlay = surface.overlay;
+    expect(overlay).toBeTruthy();
+    expect(page.contains(overlay) || overlay.isConnected).toBe(true);
+    const routerBefore = surface.router;
+    const scrollBefore = { left: scroll.scrollLeft, top: scroll.scrollTop };
+
+    // Drain mount/resize rail follow before the pinch burst so zoom telemetry
+    // is not polluted by a pre-existing 480 ms follow loop.
+    await new Promise<void>((resolve) => setTimeout(resolve, 520));
+
+    vi.useFakeTimers();
+    for (let i = 0; i < 40; i += 1) {
+      const scale = 1.1 + i * 0.02;
+      const width = 600 + i * 8;
+      const height = 800 + i * 10;
+      Object.defineProperty(pdfCanvas, "getBoundingClientRect", {
+        configurable: true,
+        value: () => rect(i, i / 2, width, height)
+      });
+      Object.defineProperty(page, "getBoundingClientRect", {
+        configurable: true,
+        value: () => rect(0, 0, Math.max(600, width + i), Math.max(800, height + i / 2))
+      });
+      // PDF.js-style content style churn must not restart the rail follow loop.
+      content.style.setProperty("--pdf-zoom-noise", String(scale));
+      session.onViewStateChange(
+        { pageNumber: 1, scrollFraction: 0.2, scale, rotation: 0 },
+        "scalechanging"
+      );
+      session.onViewStateChange(
+        { pageNumber: 1, scrollFraction: 0.2, scale, rotation: 0 },
+        "scroll"
+      );
+      await vi.advanceTimersByTimeAsync(16);
+    }
+
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+    expect(surface.router).toBe(routerBefore);
+    expect(Math.abs(scroll.scrollLeft - scrollBefore.left)).toBeLessThan(1);
+    expect(Math.abs(scroll.scrollTop - scrollBefore.top)).toBeLessThan(1);
+    expect(
+      debugCalls("pdf sidebar rail follow start").filter(
+        (call) => (call[2] as { trigger?: string }).trigger === "mutation"
+      )
+    ).toHaveLength(0);
+    expect(debugCalls("pdf sidebar rail follow suppressed during zoom").length).toBeGreaterThanOrEqual(1);
+
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+    await vi.advanceTimersByTimeAsync(532);
+
+    const profile = debugCalls("ink zoom profile").at(-1)?.[2] as {
+      scaleChangingEvents: number;
+      routerRebinds: number;
+      routerDestroys: number;
+      vectorRepaints: number;
+      maxScrollDeltaPx: number;
+      sidebarFollowActiveDuringZoom: boolean;
+      sidebarFollowFramesDuringBurst: number;
+      sidebarFollowSuppressedTriggers: number;
+      maxSidebarOffsetJump: number;
+    } | undefined;
+    expect(profile).toMatchObject({
+      routerRebinds: 0,
+      routerDestroys: 0
+    });
+    expect(profile?.scaleChangingEvents).toBeGreaterThanOrEqual(35);
+    expect(profile?.sidebarFollowSuppressedTriggers).toBeGreaterThanOrEqual(1);
+    expect(profile?.maxSidebarOffsetJump ?? 0).toBeLessThan(24);
+    expect(profile?.maxScrollDeltaPx ?? 0).toBeLessThan(24);
+    expect(profile?.vectorRepaints).toBeGreaterThan(0);
+    expect(profile?.vectorRepaints).toBeLessThan(40);
+
+    await session.destroy();
+    adapter.destroy();
   });
 
   it("uses a short coalesce window for tiny scale nudges only", async () => {

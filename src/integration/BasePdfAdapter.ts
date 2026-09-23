@@ -8,10 +8,20 @@ import { resolvePdfScrollRoot } from "./PdfScrollRoot";
 import {
   findPdfContentContainer,
   findPdfSidebarContainer,
+  isAuthoritativePdfSidebarLayoutTrigger,
+  mutationTogglesPdfSidebarOpen,
   syncLeftChromeWithPdfSidebar,
   type PdfSidebarOffsetDiag,
   type PdfSidebarOffsetReason
 } from "./PdfSidebarRailOffset";
+
+/** Bounded zoom-burst counters for the session `ink zoom profile` summary. */
+export interface SidebarFollowZoomMetrics {
+  sidebarFollowActiveDuringZoom: boolean;
+  sidebarFollowFramesDuringBurst: number;
+  maxSidebarOffsetJump: number;
+  sidebarFollowSuppressedTriggers: number;
+}
 import type { CompatibilityResult } from "./PdfViewerCompatibility";
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import { PDF_PAGE_SELECTOR } from "./pdfPageSelectors";
@@ -46,10 +56,23 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   /** Coalesced `.page` structure mutations (can fire hundreds/sec on attach). */
   private pageStructureMutations = 0;
   private lastPageStructureLogAt = 0;
+  /**
+   * Live pinch/zoom burst gate from ViewerInkSession. While set, non-authoritative
+   * sidebar follow (style/resize/inner-content noise) is deferred so the rail
+   * loop cannot fight the zoom compositor for the same animation frames.
+   */
+  private inkZoomBurstActive = false;
+  private sidebarFollowDeferredAfterZoom = false;
+  private zoomSidebarFollowActive = false;
+  private zoomSidebarFollowFrames = 0;
+  private zoomSidebarMaxJump = 0;
+  private zoomSidebarSuppressedTriggers = 0;
+  private lastSuppressedSidebarFollowLogAt = 0;
   /** Cover Obsidian PDF sidebar open/close transitions (often ~250–400ms). */
   private static readonly SIDEBAR_FOLLOW_MS = 480;
   private static readonly SIDEBAR_JUMP_WARN_PX = 24;
   private static readonly SIDEBAR_IGNORED_LAYOUT_LOG_INTERVAL_MS = 500;
+  private static readonly SIDEBAR_SUPPRESSED_ZOOM_LOG_INTERVAL_MS = 500;
   /** Keep observer diagnostics useful without writing one entry for every PDF.js paint frame. */
   private static readonly PAGE_CONTENT_MUTATION_LOG_INTERVAL_MS = 250;
   private static readonly PAGE_STRUCTURE_LOG_INTERVAL_MS = 250;
@@ -319,6 +342,46 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       ?? this.host;
   }
 
+  /**
+   * ViewerInkSession marks the live pinch/zoom burst so the left-rail follow
+   * loop does not compete with the zoom compositor on the same frames.
+   */
+  setInkZoomBurstActive(active: boolean): void {
+    if (this.destroyed || active === this.inkZoomBurstActive) return;
+    this.inkZoomBurstActive = active;
+    if (active) {
+      // Existing follow loops pause without geometry R/W; paused ticks set the
+      // active flag. Do not pre-mark merely because a pre-zoom follow frame is
+      // still scheduled — that would false-positive every left-rail session.
+      this.zoomSidebarFollowActive = false;
+      this.zoomSidebarFollowFrames = 0;
+      this.zoomSidebarMaxJump = 0;
+      this.zoomSidebarSuppressedTriggers = 0;
+      return;
+    }
+    if (!this.sidebarFollowDeferredAfterZoom) return;
+    this.sidebarFollowDeferredAfterZoom = false;
+    // A paused follow loop is still scheduled and resumes geometry on the next
+    // tick once the burst gate clears. Only start work when nothing is running.
+    if (this.sidebarFollowFrame !== null) return;
+    this.queueSyncLeftRailWithPdfSidebar(true, "zoom-settle-sync");
+  }
+
+  /** Snapshot + reset zoom-burst sidebar counters for the session profile. */
+  consumeSidebarFollowZoomMetrics(): SidebarFollowZoomMetrics {
+    const metrics: SidebarFollowZoomMetrics = {
+      sidebarFollowActiveDuringZoom: this.zoomSidebarFollowActive,
+      sidebarFollowFramesDuringBurst: this.zoomSidebarFollowFrames,
+      maxSidebarOffsetJump: this.zoomSidebarMaxJump,
+      sidebarFollowSuppressedTriggers: this.zoomSidebarSuppressedTriggers
+    };
+    this.zoomSidebarFollowActive = false;
+    this.zoomSidebarFollowFrames = 0;
+    this.zoomSidebarMaxJump = 0;
+    this.zoomSidebarSuppressedTriggers = 0;
+    return metrics;
+  }
+
   private queueSyncLeftRailWithPdfSidebar(follow = false, trigger = "sync"): void {
     if (this.destroyed) return;
     if (!this.isLeftToolbarActive()) {
@@ -375,6 +438,19 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       this.sidebarFollowFrame = null;
       if (this.destroyed || !this.isLeftToolbarActive()) {
         this.stopSidebarFollowLoop();
+        return;
+      }
+      // Skip forced geometry read/write while pinch zoom owns the compositor.
+      // Keep the loop appointment so open/close animations resume after settle.
+      if (this.inkZoomBurstActive) {
+        this.zoomSidebarFollowActive = true;
+        this.zoomSidebarFollowFrames += 1;
+        this.sidebarFollowDeferredAfterZoom = true;
+        this.sidebarFollowUntil = Math.max(
+          this.sidebarFollowUntil,
+          now + BasePdfAdapter.SIDEBAR_FOLLOW_MS
+        );
+        this.sidebarFollowFrame = view.requestAnimationFrame(tick);
         return;
       }
       this.sidebarFollowFrameCount += 1;
@@ -445,6 +521,11 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     const absJump = Math.abs(delta);
     this.sidebarFollowMaxJump = Math.max(this.sidebarFollowMaxJump, absJump);
     this.sidebarFollowReasons.add(diag.reason);
+    if (this.inkZoomBurstActive) {
+      this.zoomSidebarFollowActive = true;
+      if (followFrame != null) this.zoomSidebarFollowFrames += 1;
+      this.zoomSidebarMaxJump = Math.max(this.zoomSidebarMaxJump, absJump);
+    }
 
     const reasonChanged = previousReason !== null && previousReason !== diag.reason;
     const jump = absJump >= BasePdfAdapter.SIDEBAR_JUMP_WARN_PX;
@@ -528,6 +609,20 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
         this.noteIgnoredSidebarLayoutTrigger(trigger);
         return;
       }
+      // Pinch zoom owns the compositor. PDF.js style/resize churn must not
+      // restart a 480 ms geometry follow loop mid-gesture. Real sidebar
+      // open/close still applies one coalesced offset sync; the multi-frame
+      // follow resumes after settle so the rail catches the rest of the
+      // open/close animation without fighting pinch frames.
+      if (this.inkZoomBurstActive) {
+        if (!isAuthoritativePdfSidebarLayoutTrigger(trigger)) {
+          this.noteSuppressedSidebarFollowDuringZoom(trigger);
+          return;
+        }
+        this.sidebarFollowDeferredAfterZoom = true;
+        this.queueSyncLeftRailWithPdfSidebar(false, trigger);
+        return;
+      }
       this.queueSyncLeftRailWithPdfSidebar(true, trigger);
     };
     // Sidebar transitions toggle one of these containers. Never observe the
@@ -538,14 +633,18 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     if (classHosts.length > 0) {
       const watched = new Set(classHosts);
       const observer = new MutationObserver((records) => {
-        if (records.some((record) => isHTMLElement(record.target) && watched.has(record.target))) {
-          onLayout("mutation");
+        if (!records.some((record) => isHTMLElement(record.target) && watched.has(record.target))) {
+          return;
         }
+        onLayout(
+          mutationTogglesPdfSidebarOpen(records) ? "mutation-sidebar-open" : "mutation"
+        );
       });
       for (const host of new Set(classHosts)) {
         observer.observe(host, {
           attributes: true,
-          attributeFilter: ["class", "style"]
+          attributeFilter: ["class", "style"],
+          attributeOldValue: true
         });
       }
       this.registerCleanup(() => observer.disconnect());
@@ -567,6 +666,20 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     const onClick = (): void => onLayout("click");
     this.host.addEventListener("click", onClick, true);
     this.registerCleanup(() => this.host.removeEventListener("click", onClick, true));
+  }
+
+  private noteSuppressedSidebarFollowDuringZoom(trigger: string): void {
+    this.zoomSidebarSuppressedTriggers += 1;
+    this.sidebarFollowDeferredAfterZoom = true;
+    const now = Date.now();
+    if (now - this.lastSuppressedSidebarFollowLogAt < BasePdfAdapter.SIDEBAR_SUPPRESSED_ZOOM_LOG_INTERVAL_MS) {
+      return;
+    }
+    this.logSidebarRail("info", "pdf sidebar rail follow suppressed during zoom", {
+      trigger,
+      suppressedTriggers: this.zoomSidebarSuppressedTriggers
+    });
+    this.lastSuppressedSidebarFollowLogAt = now;
   }
 
   private noteIgnoredSidebarLayoutTrigger(trigger: string): void {
