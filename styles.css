@@ -133,18 +133,6 @@
   touch-action: pan-y;
 }
 
-.native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-draw-toggle,
-.native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-draw-toggle {
-  justify-content: center;
-  padding: 0;
-  width: var(--ink-control-size);
-}
-
-.native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-draw-toggle-label,
-.native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-draw-toggle-label {
-  display: none;
-}
-
 .native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-save-status,
 .native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-save-status {
   border-left: 0;
@@ -222,23 +210,6 @@
   outline: 2px solid var(--interactive-accent, #2563eb);
   outline-offset: -2px;
 }
-
-.native-pdf-handwriting-draw-toggle {
-  align-items: center;
-  border-radius: 4px;
-  cursor: pointer;
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 6px;
-  min-height: var(--ink-control-size);
-  padding: 0 7px;
-  user-select: none;
-  white-space: nowrap;
-}
-.native-pdf-handwriting-draw-toggle:hover,
-.native-pdf-handwriting-draw-toggle[data-enabled="true"] { background: var(--background-modifier-hover, #e5e7eb); }
-.native-pdf-handwriting-draw-toggle input { margin: 0; }
-.native-pdf-handwriting-draw-toggle input:focus-visible { outline: 2px solid var(--interactive-accent, #2563eb); outline-offset: 2px; }
 
 .native-pdf-handwriting-dropdown {
   background: var(--background-primary, #fff);

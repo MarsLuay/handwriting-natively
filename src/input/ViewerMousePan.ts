@@ -21,9 +21,10 @@ interface PanGesture {
 
 export type MousePanPhase = "probe" | "start" | "pending" | "activate" | "move" | "end" | "cancel" | "abort" | "skip";
 
+/** Real pen never enters drag-pan; only primary mouse (and optional touch via touchPanEnabled). */
 export function isDragPanPointer(event: Pick<PointerEvent, "pointerType" | "button">): boolean {
   if (event.button !== 0) return false;
-  return event.pointerType === "mouse" || event.pointerType === "pen";
+  return event.pointerType === "mouse";
 }
 
 export function isFingerPanPointer(event: Pick<PointerEvent, "pointerType" | "button">): boolean {
@@ -31,10 +32,8 @@ export function isFingerPanPointer(event: Pick<PointerEvent, "pointerType" | "bu
 }
 
 export interface ViewerMousePanCallbacks {
-  /** Mouse/stylus drag-scroll when Draw is off. */
+  /** Mouse drag-scroll when mouse policy is pan. */
   enabled(): boolean;
-  /** Hard guard against stale pan state when Draw toggles during a gesture. */
-  drawEnabled?(): boolean;
   /** Finger drag-scroll. Default off — leave movement to native PDF viewer. */
   touchPanEnabled?(): boolean;
   scrollRoot(): HTMLElement;
@@ -81,27 +80,6 @@ export class ViewerMousePan {
 
   private touchPanAllowed(): boolean {
     return this.callbacks.touchPanEnabled?.() ?? false;
-  }
-
-  private penPanBlocked(event: PointerEvent, phase: "start" | "activate" | "move"): boolean {
-    if (event.pointerType !== "pen" || this.callbacks.drawEnabled?.() !== true) return false;
-    this.callbacks.onPan?.("abort", event, {
-      reason: "pen-pan-blocked-while-draw-enabled",
-      phase,
-      drawEnabled: true,
-      pointerId: event.pointerId
-    });
-    return true;
-  }
-
-  abortPenPans(reason = "draw-enabled"): void {
-    for (const [pointerId, pan] of [...this.panning.entries()]) {
-      if (pan.pointerType !== "pen") continue;
-      this.callbacks.onPan?.("abort", this.syntheticPointerEvent(pointerId), { reason, pointerId });
-      this.releaseClaim(pan, pointerId);
-      this.panning.delete(pointerId);
-    }
-    if (!this.panning.size) this.captureHost().classList.remove("native-pdf-handwriting-panning");
   }
 
   private abortTouchPans(event: PointerEvent, reason: string): void {
@@ -157,8 +135,17 @@ export class ViewerMousePan {
       });
     }
 
+    if (event.pointerType === "pen") {
+      this.callbacks.onPan?.("skip", event, {
+        reason: "pen-not-pan-pointer",
+        pointerType: event.pointerType,
+        target: describeTarget(event.target)
+      });
+      return;
+    }
+
     if (!finger && !tip) {
-      if (inBoundary && (event.pointerType === "mouse" || event.pointerType === "pen")) {
+      if (inBoundary && event.pointerType === "mouse") {
         this.callbacks.onPan?.("skip", event, {
           reason: "button",
           button: event.button,
@@ -180,15 +167,13 @@ export class ViewerMousePan {
       this.callbacks.onPan?.("skip", event, { reason: "toolbar", target: describeTarget(event.target) });
       return;
     }
-    // Mouse/stylus on PDF text → native selection. Finger still pans when touch pan is enabled.
+    // Mouse on PDF text → native selection. Finger still pans when touch pan is enabled.
     if (!finger && isSelectablePdfTarget(event.target)) {
       this.callbacks.onPan?.("skip", event, { reason: "selectable", target: describeTarget(event.target) });
       return;
     }
 
-    if (this.penPanBlocked(event, "start")) return;
-
-    // Finger only if touchPanEnabled. Mouse/stylus only when Draw is off (enabled).
+    // Finger only if touchPanEnabled. Mouse only when mouse policy is pan.
     if (finger) {
       if (!this.touchPanAllowed()) {
         this.callbacks.onPan?.("skip", event, { reason: "touch-disabled", target: describeTarget(event.target) });
@@ -214,7 +199,7 @@ export class ViewerMousePan {
       claimed: false
     });
     // Finger custom pan must claim immediately or native scroll wins.
-    // Mouse/stylus: wait for activate so clicks / text / links stay native until a real drag.
+    // Mouse: wait for activate so clicks / text / links stay native until a real drag.
     if (finger) {
       const pan = this.panning.get(event.pointerId)!;
       this.claimGesture(event, pan);
@@ -257,29 +242,7 @@ export class ViewerMousePan {
     if (!this.panning.size) this.captureHost().classList.remove("native-pdf-handwriting-panning");
   };
 
-  private syntheticPointerEvent(pointerId: number): PointerEvent {
-    const event = new Event("pointercancel", { bubbles: true, cancelable: true }) as PointerEvent;
-    Object.defineProperties(event, {
-      pointerId: { value: pointerId },
-      pointerType: { value: "pen" },
-      clientX: { value: 0 },
-      clientY: { value: 0 },
-      buttons: { value: 0 },
-      width: { value: 0 },
-      height: { value: 0 },
-      pressure: { value: 0 }
-    });
-    return event;
-  }
-
   private updatePan(event: PointerEvent, pan: PanGesture): void {
-    if (this.penPanBlocked(event, pan.active ? "move" : "activate")) {
-      this.releaseClaim(pan, event.pointerId);
-      this.panning.delete(event.pointerId);
-      if (!this.panning.size) this.captureHost().classList.remove("native-pdf-handwriting-panning");
-      return;
-    }
-
     const root = this.callbacks.scrollRoot();
     pan.scrollRoot = root;
     if (!pan.active) {
@@ -292,7 +255,7 @@ export class ViewerMousePan {
         }
         return;
       }
-      // Mouse/stylus: keep a soft vertical-bias gate so sideways drags stay native (e.g. selection).
+      // Mouse: keep a soft vertical-bias gate so sideways drags stay native (e.g. selection).
       // Fingers (when enabled): free drag.
       if (pan.pointerType !== "touch" && Math.abs(dx) > Math.max(12, Math.abs(dy) * 2)) {
         this.callbacks.onPan?.("abort", event, { reason: "horizontal-dominant", dx, dy });
@@ -316,7 +279,7 @@ export class ViewerMousePan {
     event.preventDefault();
     // Invert: drag down/right pulls the page with the pointer (grab feel).
     const scroll = scrollPdfByDetailed(root, -deltaY, event.clientX, event.clientY);
-    // Mouse/stylus also get X when zoomed; fingers already did.
+    // Mouse also gets X when zoomed; fingers already did.
     if (deltaX !== 0) {
       if (typeof root.scrollBy === "function") root.scrollBy(-deltaX, 0);
       else root.scrollLeft -= deltaX;
@@ -337,4 +300,3 @@ export class ViewerMousePan {
     });
   }
 }
-

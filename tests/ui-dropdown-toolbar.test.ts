@@ -53,27 +53,7 @@ describe("DropdownController", () => {
 });
 
 describe("AnnotationToolbar", () => {
-  it("defaults Draw off and reports explicit checkbox changes", () => {
-    const drawChanged = vi.fn();
-    const toolbar = new AnnotationToolbar({
-      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
-      autosave: true,
-      drawEnabled: false,
-      callbacks: { onPreferencesChange: vi.fn(), onDrawModeChange: drawChanged },
-      ownerDocument: document
-    });
-    document.body.append(toolbar.element);
-    const draw = toolbar.element.querySelector<HTMLInputElement>("[data-control='draw']");
-    expect(draw).toMatchObject({ checked: false, type: "checkbox" });
-    expect(draw?.labels?.[0]?.querySelector(".native-pdf-handwriting-draw-toggle-label")?.textContent).toBe("Draw");
-    expect(toolbar.element.querySelector(".native-pdf-handwriting-toolbar-controls")?.firstElementChild).toBe(draw?.labels?.[0]);
-    draw?.click();
-    expect(draw).toMatchObject({ checked: true });
-    expect(drawChanged).toHaveBeenCalledWith(true);
-    toolbar.destroy();
-  });
-
-  it("keeps Draw label in the DOM for main toolbar and aria title", () => {
+  it("has no Draw checkbox; tool controls still mount", () => {
     const toolbar = new AnnotationToolbar({
       preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
       autosave: true,
@@ -81,9 +61,24 @@ describe("AnnotationToolbar", () => {
       ownerDocument: document
     });
     document.body.append(toolbar.element);
-    expect(toolbar.element.querySelector(".native-pdf-handwriting-draw-toggle-label")?.textContent).toBe("Draw");
-    toolbar.element.classList.add("is-sidebar-left");
-    expect(toolbar.element.classList.contains("is-sidebar-left")).toBe(true);
+    expect(toolbar.element.querySelector("[data-control='draw']")).toBeNull();
+    expect(toolbar.element.textContent ?? "").not.toMatch(/\bDraw\b/);
+    expect(toolbar.element.querySelector("[data-control='drawing']")).toBeTruthy();
+    expect(toolbar.element.querySelector("[data-control='eraser']")).toBeTruthy();
+    expect(toolbar.element.querySelector("[data-control='color']")).toBeTruthy();
+    toolbar.destroy();
+  });
+
+  it("exposes tool aria labels without a Draw toggle", () => {
+    const toolbar = new AnnotationToolbar({
+      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
+      autosave: true,
+      callbacks: { onPreferencesChange: vi.fn() },
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    expect(toolbar.element.querySelector(".native-pdf-handwriting-draw-toggle")).toBeNull();
+    expect(toolbar.element.getAttribute("aria-label")).toBe("PDF annotation tools");
     toolbar.destroy();
   });
 

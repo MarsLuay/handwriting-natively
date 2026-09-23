@@ -33,7 +33,7 @@ describe("Combined Integration", () => {
     const pointerRoutes: string[] = [];
     const router = new PointerRouter(page, {
       activeTool: () => "pen",
-      drawingEnabled: () => false,
+      canAnnotatePointer: () => false,
       scrollRoot: () => root,
       onRoute: (route) => pointerRoutes.push(route)
     });

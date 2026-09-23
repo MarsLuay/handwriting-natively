@@ -9,6 +9,14 @@ import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMuta
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
 import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
+import {
+  canAnnotatePointer,
+  describeInputPolicies,
+  mouseAnnotationEnabled,
+  mousePanEnabled,
+  resolveMouseInputMode,
+  type MouseInputMode
+} from "../input/annotationInputPolicy";
 import { PullToAddPageGesture } from "../input/PullToAddPageGesture";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
@@ -447,7 +455,6 @@ export class ViewerInkSession {
   private temporaryStylusEraserPointers = 0;
   /** Hold Cmd/Ctrl while drawing to route the next gesture through Eraser. */
   private readonly temporaryModifierEraserKeys = new Set<"Control" | "Meta">();
-  private drawEnabled = false;
   private debugState: DebugState = {};
   private destroyed = false;
   private detachNotified = false;
@@ -580,7 +587,8 @@ export class ViewerInkSession {
     this.textToolActive = options.settings.toolPreferences.activeTool === "text";
     this.logger.textTool("tool-initial", {
       active: this.textToolActive,
-      drawEnabled: this.drawEnabled,
+      ...describeInputPolicies(options.settings),
+      activeTool: options.settings.toolPreferences.activeTool,
       fontSize: options.settings.toolPreferences.text.fontSize,
       fontFamily: options.settings.toolPreferences.text.fontFamily
     });
@@ -588,7 +596,6 @@ export class ViewerInkSession {
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
-      drawEnabled: this.drawEnabled,
       supportedMoreActions: (options.runtimePlatform?.().mobile ?? false)
         ? ["export", "export-editable", "toolbar-left", "toolbar-right"]
         : ["export", "export-editable", "toolbar-main", "toolbar-left", "toolbar-right"],
@@ -599,7 +606,7 @@ export class ViewerInkSession {
           if (wasTextToolActive !== this.textToolActive) {
             this.logger.textTool(this.textToolActive ? "tool-activate" : "tool-deactivate", {
               activeTool: preferences.activeTool,
-              drawEnabled: this.drawEnabled,
+              ...this.inputPolicyLogFields(),
               textBoxesInteractable: this.textBoxesInteractable()
             });
             // A deactivated Text tool must not leave its contenteditable over
@@ -646,29 +653,6 @@ export class ViewerInkSession {
         onTextStyleChange: (change) => this.applyTextStyleToActiveEditor(change),
         onTextFormatPointerDown: () => this.captureActiveTextSelection("toolbar-pointerdown"),
         activeTextStyle: () => this.activeTextStyle(),
-        onDrawModeChange: (enabled) => {
-          const previous = this.drawEnabled;
-          this.drawEnabled = enabled;
-          if (enabled) this.viewerMousePan?.abortPenPans("draw-enabled");
-          this.logger.inputLifecycleEvent("draw-state", {
-            previous,
-            next: enabled,
-            reason: "toolbar",
-            activeTool: this.activeTool(),
-            sessionId: this.identity.id,
-            routerGenerations: [...this.surfaces.values()]
-              .map((surface) => surface.router?.generation ?? null),
-            strokeActive: this.hasAnyLiveInkInput(),
-            sinceLastSuccessfulStrokeMs: this.logger.timeSinceLastSuccessfulStrokeMs(),
-          });
-          if (!enabled) {
-            this.clearSelection();
-            this.clearTemporaryEraserModifier();
-          }
-          this.logMousePanConfig("draw-mode");
-          // Chrome/cursors only — full refresh invalidates ink and flashes after zoom blit.
-          this.refreshToolChrome("draw-mode");
-        },
         onUndo: () => this.undo(),
         onRedo: () => this.redo(),
         onSave: () => this.manualSave(),
@@ -720,8 +704,7 @@ export class ViewerInkSession {
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
     this.viewerMousePan = new ViewerMousePan(adapter.host.ownerDocument, {
-        enabled: () => !this.drawEnabled && (this.options.mouseDragScrollEnabled?.() ?? this.options.settings.mouseDragScroll),
-        drawEnabled: () => this.drawEnabled,
+        enabled: () => mousePanEnabled(this.mouseInputMode()),
       // Fingers: native PDF viewer only. Custom touch pan fights pinch/scroll remounts on phone.
       touchPanEnabled: () => false,
       scrollRoot: () => adapter.scrollElement(),
@@ -735,12 +718,12 @@ export class ViewerInkSession {
       captureElement: () => adapter.root,
       onPan: (phase, event, details) => {
         this.logMousePan(phase, event, details);
-        if (event.pointerType === "pen" && this.drawEnabled && (phase === "start" || phase === "activate" || phase === "move")) {
-          this.logger.inputInvariantViolation("pen-pan-activated-while-draw-enabled", {
+        if (event.pointerType === "pen" && (phase === "start" || phase === "activate" || phase === "move")) {
+          this.logger.inputInvariantViolation("pen-entered-mouse-pan", {
             phase,
             pointerId: event.pointerId,
             activeTool: this.activeTool(),
-            blocked: false,
+            ...this.inputPolicyLogFields(),
             ...details,
           });
         }
@@ -751,7 +734,7 @@ export class ViewerInkSession {
       ? new PullToAddPageGesture(adapter.host.ownerDocument, {
         enabled: () => !this.destroyed && typeof this.options.onInsertPage === "function",
         isBusy: () => Boolean(this.pageMutationShield) || this.pendingInsertedPageFocus !== null,
-        isDrawing: () => this.drawEnabled,
+        isDrawing: () => this.hasActiveAnnotationGesture(),
         scrollRoot: () => adapter.scrollElement(),
         host: () => adapter.root,
         withinTarget: (target) => {
@@ -851,7 +834,8 @@ export class ViewerInkSession {
         hitPageId: getDebugNodeId(hitPage),
         hasDataPageNumber: Boolean(hitPage?.hasAttribute("data-page-number")),
         dataPageNumber: hitPage?.dataset.pageNumber ?? null,
-        drawEnabled: this.drawEnabled,
+        ...this.inputPolicyLogFields(),
+        activeTool: this.activeTool(),
         ...(hitTest.geometricPage ? { geometricPageNumber: hitTest.geometricPage.pageNumber } : {})
       });
       // Capture: own pen/mouse draw sync here. Page capture can stay deaf after
@@ -1393,6 +1377,67 @@ export class ViewerInkSession {
     if (surface.editPath.length > 0 && (surface.editTool === "eraser" || surface.editTool === "lasso")) return true;
     if ((surface.router?.activePenIds().length ?? 0) > 0) return true;
     return false;
+  }
+
+
+  private mouseInputMode(): MouseInputMode {
+    const settings = this.options.settings;
+    const liveDrag = this.options.mouseDragScrollEnabled?.();
+    const mode = settings.mouseInputMode ?? null;
+    if (liveDrag === true) return resolveMouseInputMode({ mouseInputMode: mode, mouseDragScroll: true });
+    if (liveDrag === false) return resolveMouseInputMode({ mouseInputMode: mode, mouseDragScroll: false });
+    return resolveMouseInputMode(settings);
+  }
+
+  private canAnnotatePointerEvent(event: Pick<PointerEvent, "pointerType">): boolean {
+    return canAnnotatePointer(event, { mouseInputMode: this.mouseInputMode() });
+  }
+
+  private inputPolicyLogFields(): Record<string, unknown> {
+    return {
+      ...describeInputPolicies({
+        mouseInputMode: this.mouseInputMode(),
+        mouseDragScroll: this.options.settings.mouseDragScroll
+      }),
+      activeTool: this.activeTool()
+    };
+  }
+
+  private resolvedPolicyForPointer(event: Pick<PointerEvent, "pointerType">): string {
+    if (event.pointerType === "pen") return "annotate";
+    if (event.pointerType === "touch") return "native";
+    return this.mouseInputMode();
+  }
+
+  /** Live annotation gesture (ink/edit) or selection/text manipulation. */
+  private hasActiveAnnotationGesture(): boolean {
+    if (this.hasAnyLiveInkInput()) return true;
+    if (this.moveDrag || this.textMoveDrag || this.textBoxTransformDrag) return true;
+    return false;
+  }
+
+  /** Transient pen hit-page class only while a stylus tip is actively routed. */
+  private hasActivePenCapability(): boolean {
+    for (const surface of this.surfaces.values()) {
+      if ((surface.router?.activePenIds().length ?? 0) > 0) return true;
+      if (surface.builder && surface.router) {
+        // Prefer pen-owned drafts; mouse annotate still uses routers without hit-page lock.
+        const pens = surface.router.activePenIds();
+        if (pens.length > 0) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Annotation shortcuts must not hijack native PDF/editor selection. */
+  private annotationShortcutContext(): boolean {
+    if (!this.isAttached()) return false;
+    if (this.activeTextEditor) return false;
+    const tool = this.activeTool();
+    // Lasso/text own annotation selection shortcuts; otherwise require an existing selection.
+    if (tool === "lasso" || tool === "text") return true;
+    this.reconcileSelection();
+    return this.selected.length > 0 || this.selectedTexts.length > 0;
   }
 
   private hasAnyLiveInkInput(): boolean {
@@ -2328,8 +2373,9 @@ export class ViewerInkSession {
       scrollRoot: describeScrollElement(options.adapter.scrollElement()),
       panCapture: "document-capture",
       panBoundary: describeScrollElement(options.adapter.host),
-      drawEnabled: session.drawEnabled,
-      mouseDragScroll: options.settings.mouseDragScroll,
+      ...describeInputPolicies(options.settings),
+      activeTool: options.settings.toolPreferences.activeTool,
+      runtimePlatform: session.runtimePlatform().mobile ? "mobile" : "desktop",
       toolbarPlacement: session.currentToolbarPlacement(),
       loadedStrokes,
       loadedTexts,
@@ -3415,7 +3461,7 @@ export class ViewerInkSession {
 
   private beginTemporaryEraserModifier(event: KeyboardEvent): boolean {
     const key = temporaryEraserModifierKey(event);
-    if (!key || !this.drawEnabled || this.activeTextEditor || shouldIgnoreSelectionShortcut(event.target)) return false;
+    if (!key || !this.isAttached() || this.activeTextEditor || shouldIgnoreSelectionShortcut(event.target)) return false;
     const wasActive = this.temporaryModifierEraserKeys.size > 0;
     this.temporaryModifierEraserKeys.add(key);
     if (!wasActive) this.refreshTemporaryEraserChrome();
@@ -3454,10 +3500,10 @@ export class ViewerInkSession {
 
   canSelectionShortcut(action: SelectionShortcutAction): boolean {
     if (this.destroyed) return false;
-    if (action === "selectAll") return this.drawEnabled;
+    if (action === "selectAll") return this.annotationShortcutContext();
     if (action === "paste") {
       const clipboard = StrokeClipboard.peek();
-      return this.drawEnabled && Boolean(clipboard?.strokes.length || clipboard?.texts.length);
+      return this.annotationShortcutContext() && Boolean(clipboard?.strokes.length || clipboard?.texts.length);
     }
     this.reconcileSelection();
     return this.selected.length > 0 || this.selectedTexts.length > 0;
@@ -3723,7 +3769,7 @@ export class ViewerInkSession {
     this.endZoomCompositing();
     this.releaseZoomCompositeLayers();
     this.finishZoomProfile();
-    this.syncAnnotationCursorMode(false);
+    this.syncAnnotationCursorMode(true);
     this.resizeObserver?.disconnect();
     for (const surface of this.surfaces.values()) {
       this.logger.inputLifecycleEvent("surface-unmount", {
@@ -3751,32 +3797,37 @@ export class ViewerInkSession {
     return true;
   }
 
-  private syncAnnotationCursorMode(enabled = this.drawEnabled): void {
+  private syncAnnotationCursorMode(forceOff = false): void {
     const tool = this.activeTool();
-    const hideNativeCursor = enabled
+    // Mouse pan/native keeps native cursor; mouse annotate hides native for ink/eraser.
+    const hideNativeCursor = !forceOff
+      && mouseAnnotationEnabled(this.mouseInputMode())
       && (isInkDrawTool(tool) || tool === "eraser");
     this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
   }
 
-  /** Apply direct-manipulation policy to the actual PDF.js page, not our overlay. */
+  /** Apply transient pen hit policy; never permanently disable PDF.js text/annotation layers. */
   private syncTouchDrawPolicy(reason: string): void {
-    const enabled = this.drawEnabled;
+    const penHit = this.hasActivePenCapability();
     for (const surface of this.surfaces.values()) {
-      this.applyTouchDrawPolicy(surface.page.element, enabled);
-      if (enabled) this.ensurePageRouter(surface);
+      this.applyTouchDrawPolicy(surface.page.element, penHit);
+      this.ensurePageRouter(surface);
       surface.router?.syncToolState();
     }
-    if (this.touchDrawPolicyEnabled === enabled) return;
-    this.touchDrawPolicyEnabled = enabled;
-    this.logger.touchInput("policy", { enabled, reason, surfaces: this.surfaces.size });
+    if (this.touchDrawPolicyEnabled === penHit) return;
+    this.touchDrawPolicyEnabled = penHit;
+    this.logger.touchInput("policy", {
+      enabled: penHit,
+      reason,
+      surfaces: this.surfaces.size,
+      ...this.inputPolicyLogFields()
+    });
   }
 
-  private applyTouchDrawPolicy(pageElement: HTMLElement, enabled = this.drawEnabled): void {
-    // Draw mode uses mouse/stylus hit class. Never enable legacy finger-draw class.
+  private applyTouchDrawPolicy(pageElement: HTMLElement, enabled = false): void {
+    // Transient pen capability only — never a permanent Draw-mode lock.
     pageElement.classList.toggle("native-pdf-handwriting-draw-hit-page", enabled);
     pageElement.classList.remove("native-pdf-handwriting-touch-draw-page");
-    // PDF.js may stamp inline pointer-events on text/annotation layers — set via
-    // setCssProps so Draw mode hits reach the ink overlay without CSS !important.
     const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
     for (const layer of layers) {
       setElementCssProps(layer, { pointerEvents: enabled ? "none" : "" });
@@ -3809,7 +3860,6 @@ export class ViewerInkSession {
 
   /** Text boxes steal hits only in Text/lasso — pen/eraser/laser must pass through. */
   private textBoxesInteractable(): boolean {
-    if (!this.drawEnabled) return false;
     const tool = this.activeTool();
     return tool === "text" || tool === "lasso";
   }
@@ -3853,11 +3903,10 @@ export class ViewerInkSession {
   }
 
   private mousePanContext(reason?: string): Record<string, unknown> {
-    const mouseDragScroll = this.options.mouseDragScrollEnabled?.() ?? this.options.settings.mouseDragScroll;
+    const mode = this.mouseInputMode();
     return {
-      drawEnabled: this.drawEnabled,
-      mouseDragScroll,
-      panEnabled: !this.drawEnabled && mouseDragScroll,
+      ...this.inputPolicyLogFields(),
+      panEnabled: mousePanEnabled(mode),
       touchPanEnabled: false,
       scrollRoot: describeScrollElement(this.options.adapter.scrollElement()),
       ...(reason ? { reason } : {})
@@ -3966,7 +4015,8 @@ export class ViewerInkSession {
   private createPageRouter(surface: PageSurface): PointerRouter {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
-      drawingEnabled: () => this.drawEnabled,
+      canAnnotatePointer: (event) => this.canAnnotatePointerEvent(event),
+      mouseAnnotationEnabled: () => mouseAnnotationEnabled(this.mouseInputMode()),
       rightMouseEraserEnabled: () => this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton,
       onStylusEraserStart: () => {
         this.temporaryStylusEraserPointers += 1;
@@ -3993,6 +4043,7 @@ export class ViewerInkSession {
           this.commitActiveDrawBeforeSurfaceLoss(surface, "router-rebind-recovery");
         }
         this.pointerStart(surface, samples, route, event);
+        if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-start");
         this.logger.inputLifecycleEvent("route-decision", {
           page: surface.page.pageNumber,
           route,
@@ -4002,7 +4053,7 @@ export class ViewerInkSession {
           routerAlive: Boolean(surface.router?.isAlive()),
           routerBindsToPage: Boolean(surface.router?.bindsTo(surface.page.element)),
           inputOwnerIsThisSession: inputOwners(surface.page.element).get(surface.page.element) === this,
-          drawEnabled: this.drawEnabled,
+          ...this.inputPolicyLogFields(),
           activeTool: this.activeTool(),
           recoveredAfterRouterRebind,
           defaultPrevented: event.defaultPrevented,
@@ -4018,6 +4069,7 @@ export class ViewerInkSession {
       onEnd: (samples, route, event) => {
         const hadPenStroke = route === "draw" && Boolean(surface.builder) && event.pointerType === "pen";
         this.pointerEnd(surface, samples, route, event);
+        if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-end");
         if (hadPenStroke) {
           this.logger.inputStroke("end", { page: surface.page.pageNumber, routerGeneration: surface.router?.generation ?? null });
         }
@@ -4030,6 +4082,7 @@ export class ViewerInkSession {
           routerGeneration: surface.router?.generation ?? null
         });
         this.pointerCancel(surface, route, event);
+        if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-cancel");
       },
       onRouterReceived: (event, generation) => {
         this.logger.inputLifecycleEvent("router-received", {
@@ -4082,7 +4135,7 @@ export class ViewerInkSession {
           bindsToPage: Boolean(surface.router?.bindsTo(pageElement)),
           routerAlive: Boolean(surface.router?.isAlive()),
           activeInputOwner: inputOwners(pageElement).get(pageElement) === this,
-          drawEnabled: this.drawEnabled,
+          ...this.inputPolicyLogFields(),
           activeTool: this.activeTool()
         });
       },
@@ -4105,8 +4158,10 @@ export class ViewerInkSession {
           width: event.width,
           height: event.height,
           pressure: event.pressure,
-          drawEnabled: this.drawEnabled,
-          touchDrawPolicyEnabled: this.drawEnabled,
+          ...this.inputPolicyLogFields(),
+          touchDrawPolicyEnabled: this.touchDrawPolicyEnabled,
+          resolvedPolicy: this.resolvedPolicyForPointer(event),
+          route,
           ...(route === "draw" ? { pressureProfile: this.pressureProfile() } : {}),
           clientX: Math.round(event.clientX),
           clientY: Math.round(event.clientY)
@@ -4286,10 +4341,9 @@ export class ViewerInkSession {
   }
 
   private shouldFallbackRoutePointer(event: PointerEvent): boolean {
-    if (this.destroyed || !this.drawEnabled) return false;
+    if (this.destroyed) return false;
     if (event.pointerType === "touch") return false;
-    if (event.pointerType === "pen") return true;
-    return event.pointerType === "mouse" && event.button === 0;
+    return this.canAnnotatePointerEvent(event);
   }
 
   /**
@@ -4319,7 +4373,7 @@ export class ViewerInkSession {
       pointerId: event.pointerId,
       pointerType: event.pointerType || "(empty)",
       targetId: getDebugNodeId(event.target),
-      drawEnabled: this.drawEnabled,
+      ...this.inputPolicyLogFields(),
       ...extra
     });
   }
@@ -4356,7 +4410,7 @@ export class ViewerInkSession {
       routerBindsToPage: Boolean(router && pageElement && router.bindsTo(pageElement)),
       inputOwnerIsThisSession: Boolean(pageElement && inputOwners(pageElement).get(pageElement) === this),
       activeTool: this.activeTool(),
-      drawEnabled: this.drawEnabled,
+      ...this.inputPolicyLogFields(),
       pointerType: event.pointerType || "(empty)",
       pointerId: event.pointerId,
       pressure: event.pressure,

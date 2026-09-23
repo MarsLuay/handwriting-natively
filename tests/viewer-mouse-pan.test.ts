@@ -13,7 +13,7 @@ function pointer(type: string, target: EventTarget, x: number, y: number, pointe
 }
 
 describe("viewer mouse pan", () => {
-  it("scrolls from the viewer root in capture phase when draw mode is off", () => {
+  it("scrolls from the viewer root in capture phase when mouse pan is enabled", () => {
     const viewer = document.createElement("div");
     viewer.className = "pdf-viewer";
     const page = document.createElement("div");
@@ -175,15 +175,14 @@ describe("viewer mouse pan", () => {
 
     canvas.dispatchEvent(pointer("pointerdown", canvas, 40, 100, 7, "pen"));
     canvas.dispatchEvent(pointer("pointermove", canvas, 40, 140, 7, "pen"));
-    expect(scrollTop).toBe(60);
+    expect(scrollTop).toBe(100);
     pan.destroy();
     scroller.remove();
   });
 
-  it("does not start a stylus pan while Draw is enabled", () => {
+  it("never starts a real pen as a drag-pan pointer", () => {
     let scrollTop = 100;
     const phases: MousePanPhase[] = [];
-    let drawEnabled = true;
     const scroller = document.createElement("div");
     Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
     Object.defineProperty(scroller, "clientHeight", { value: 600, configurable: true });
@@ -198,7 +197,6 @@ describe("viewer mouse pan", () => {
 
     const pan = new ViewerMousePan(document, {
       enabled: () => true,
-      drawEnabled: () => drawEnabled,
       scrollRoot: () => scroller,
       withinTarget: (target) => target instanceof Node && scroller.contains(target),
       captureElement: () => scroller,
@@ -209,51 +207,13 @@ describe("viewer mouse pan", () => {
     canvas.dispatchEvent(pointer("pointermove", canvas, 40, 140, 17, "pen"));
 
     expect(scrollTop).toBe(100);
-    expect(phases).toContain("abort");
+    expect(phases).toContain("skip");
     expect(phases).not.toContain("start");
     expect(phases).not.toContain("activate");
     pan.destroy();
     scroller.remove();
-    drawEnabled = false;
   });
 
-  it("aborts a pending stylus pan if Draw turns on before movement", () => {
-    let scrollTop = 100;
-    const phases: MousePanPhase[] = [];
-    let drawEnabled = false;
-    const scroller = document.createElement("div");
-    Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
-    Object.defineProperty(scroller, "clientHeight", { value: 600, configurable: true });
-    Object.defineProperty(scroller, "scrollTop", {
-      get: () => scrollTop,
-      set: (value: number) => { scrollTop = value; }
-    });
-    const canvas = document.createElement("canvas");
-    scroller.append(canvas);
-    document.body.append(scroller);
-    Object.assign(canvas, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
-
-    const pan = new ViewerMousePan(document, {
-      enabled: () => true,
-      drawEnabled: () => drawEnabled,
-      scrollRoot: () => scroller,
-      withinTarget: (target) => target instanceof Node && scroller.contains(target),
-      captureElement: () => scroller,
-      onPan: (phase) => { phases.push(phase); }
-    });
-
-    canvas.dispatchEvent(pointer("pointerdown", canvas, 40, 100, 18, "pen"));
-    drawEnabled = true;
-    canvas.dispatchEvent(pointer("pointermove", canvas, 40, 140, 18, "pen"));
-    canvas.dispatchEvent(pointer("pointerup", canvas, 40, 140, 18, "pen"));
-
-    expect(scrollTop).toBe(100);
-    expect(phases).toContain("start");
-    expect(phases).toContain("abort");
-    expect(phases).not.toContain("activate");
-    pan.destroy();
-    scroller.remove();
-  });
 
   it("defers mouse capture until the drag activates", () => {
     const setPointerCapture = vi.fn();

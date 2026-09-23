@@ -211,7 +211,6 @@ function pointer(type: string, clientX: number, clientY: number): PointerEvent {
 }
 
 async function drawInk(adapter: PdfjsAdapter): Promise<void> {
-  adapter.toolbarHost.querySelector<HTMLElement>("[data-control='draw']")?.click();
   const firstPage = adapter.pages()[0]?.element;
   if (!firstPage) throw new Error("Missing first PDF.js page.");
   firstPage.dispatchEvent(pointer("pointerdown", 110, 150));

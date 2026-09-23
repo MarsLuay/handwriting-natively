@@ -1,7 +1,6 @@
 import { appendToBodyOr, createDetachedSpan } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
 import { isInkDrawTool, type ToolId } from "../model";
-import { scrollPdfBy } from "../integration/PdfScrollRoot";
 import { PalmRejectionPolicy, type PenStateResetReason } from "./PalmRejectionPolicy";
 import { PointerCapabilities, type PointerSample } from "./PointerCapabilities";
 import { isTipContact, remapMouseTipSamples } from "./PenPresence";
@@ -12,8 +11,6 @@ import {
   type ManipulationPlatformCapabilities
 } from "./ManipulationStateMachine";
 import {
-  resolveTouchAxisLock,
-  shouldClaimVerticalTouchPan,
   type TouchAxisLock
 } from "./TouchAxisPolicy";
 
@@ -65,7 +62,10 @@ interface TouchAxisGesture {
 
 export interface PointerRouterCallbacks {
   activeTool(): ToolId;
-  drawingEnabled(): boolean;
+  /** Event-aware annotation gate (pen/touch/mouse policy). Replaces global Draw mode. */
+  canAnnotatePointer(event: PointerEvent): boolean;
+  /** True when primary mouse may annotate (cursor chrome / right-click eraser). */
+  mouseAnnotationEnabled?(): boolean;
   rightMouseEraserEnabled?(): boolean;
   onStylusEraserStart?(): void;
   onStylusEraserEnd?(): void;
@@ -132,6 +132,7 @@ export class PointerRouter {
   private readonly eraserCursor: HTMLElement;
   private readonly drawCursor: HTMLElement;
   private lastCursorClient: { x: number; y: number } | null = null;
+  private lastCursorPointerType: string | null = null;
   private pendingCursorUpdate: Pick<PointerEvent, "clientX" | "clientY" | "pointerType"> | null = null;
   private cursorAnimationFrame: number | null = null;
 
@@ -193,10 +194,10 @@ export class PointerRouter {
       if (this.palmPolicy.shouldIgnore(event)) return "ignored";
       const multi = this.touches.size + (this.touches.has(event.pointerId) ? 0 : 1) >= 2;
       if (multi) return "touch-zoom-pan";
-      // Fingers always leave native scroll/pinch. Draw mode is mouse + stylus only.
+      // Fingers always leave native scroll/pinch. Annotation is stylus + optional mouse only.
       return "touch-pan";
     }
-    if (!this.callbacks.drawingEnabled()) {
+    if (!this.callbacks.canAnnotatePointer(event)) {
       return "native";
     }
     // MockTab can expose a physical eraser as a mouse pointer with W3C's
@@ -222,7 +223,7 @@ export class PointerRouter {
   }
 
   private notePenSignal(event: PointerEvent): void {
-    if (!this.callbacks.drawingEnabled()) return;
+    if (!this.callbacks.canAnnotatePointer(event)) return;
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
     if (!penLike) return;
     const transition = this.manipulation.penSignal();
@@ -297,20 +298,11 @@ export class PointerRouter {
     const route = this.classify(event);
     if (event.pointerType === "touch" && route !== "ignored") {
       this.touches.add(event.pointerId);
-      if (this.callbacks.drawingEnabled()) {
-        const transition = this.manipulation.touchStart();
-        this.manipulationTouches.add(event.pointerId);
-        this.applyManipulationTransition(transition);
-        if (transition.assistThisGesture) {
-          this.beginTouchAxisGesture(event, true);
-        }
-      }
+      // Touch stays native PDF nav — no custom axis lock from annotation availability.
     }
     this.callbacks.onRoute?.(route, event);
     if (route === "touch-zoom-pan") {
       this.clearTouchAxisGesture("multi-finger");
-    } else if (route === "touch-pan" && this.callbacks.drawingEnabled() && !this.palmPolicy.hasActivePen()) {
-      if (!this.touchAxis) this.beginTouchAxisGesture(event, false);
     }
     // Palm / Pencil companion touch while a stylus is down: block native scroll.
     if (route === "ignored") {
@@ -350,7 +342,7 @@ export class PointerRouter {
 
   /** Start temporary Eraser mode once for a physical eraser pointer. */
   private beginStylusEraser(event: PointerEvent): void {
-    if (!this.callbacks.drawingEnabled() || !isStylusEraserInput(event)) return;
+    if (!this.callbacks.canAnnotatePointer(event) || !isStylusEraserInput(event)) return;
     if (this.stylusErasers.has(event.pointerId)) return;
     this.stylusErasers.add(event.pointerId);
     this.callbacks.onStylusEraserStart?.();
@@ -363,7 +355,7 @@ export class PointerRouter {
    */
   private recoverMissingPointerDown(event: PointerEvent): boolean {
     if (this.callbacks.isInputOwnerActive?.() === false) return false;
-    if (!this.callbacks.drawingEnabled() || !isTipContact(event)) return false;
+    if (!this.callbacks.canAnnotatePointer(event) || !isTipContact(event)) return false;
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
     if (!penLike) return false;
     this.palmPolicy.pointerDown(event);
@@ -452,19 +444,18 @@ export class PointerRouter {
     );
   };
 
-  /** WebKit / iPad: explicit touch-action modes (Ink finger-blocker pattern). */
+  /** WebKit / iPad: transient touch-action only while pen/palm requires it. */
   private syncTouchActionMode(): void {
-    if (!this.callbacks.drawingEnabled()) {
+    // Pencil-first: never lock touch from annotation availability alone.
+    const mode = this.palmPolicy.hasActivePen() || this.touchAxis?.lock === "vertical"
+      ? "none"
+      : "default";
+    if (mode === "default") {
       this.clearManipulationRearm();
       if (this.manipulation.state !== "armed" || this.manipulation.activeTouches > 0) this.manipulation.reset();
     }
-    const mode = !this.callbacks.drawingEnabled()
-      ? "default"
-      : this.palmPolicy.hasActivePen() || this.touchAxis?.lock === "vertical"
-        ? "none"
-        : this.manipulation.touchAction();
     this.element.classList.toggle("native-pdf-handwriting-touch-none", mode === "none");
-    this.element.classList.toggle("native-pdf-handwriting-touch-pan-xy", mode === "pan-xy");
+    this.element.classList.toggle("native-pdf-handwriting-touch-pan-xy", false);
     // Legacy alias from 0.1.42–0.1.45 — keep cleared so only one mode class wins.
     this.element.classList.remove("native-pdf-handwriting-pen-capturing");
   }
@@ -518,57 +509,12 @@ export class PointerRouter {
   private updateTouchAxisGesture(event: PointerEvent): void {
     const gesture = this.touchAxis;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
-    if (!this.callbacks.drawingEnabled() || this.palmPolicy.hasActivePen() || this.touches.size >= 2) {
+    // Custom touch-axis assist is unused in pencil-first (touch stays native).
+    if (this.palmPolicy.hasActivePen() || this.touches.size >= 2) {
       this.clearTouchAxisGesture(this.touches.size >= 2 ? "multi-finger" : "draw-or-pen");
       return;
     }
-    if (gesture.lock === "none") {
-      const dx = event.clientX - gesture.startX;
-      const dy = event.clientY - gesture.startY;
-      const next = resolveTouchAxisLock(dx, dy);
-      if (next === "none") return;
-      gesture.lock = next;
-      this.syncTouchActionMode();
-      this.callbacks.onTouchLifecycle?.("axis-lock", event, {
-        reason: next === "vertical" ? "lock-vertical" : "lock-horizontal",
-        axisLock: next,
-        dx,
-        dy,
-        touchCount: this.touches.size
-      });
-      if (next === "horizontal" && !gesture.assist) return;
-      if (gesture.assist) {
-        gesture.active = true;
-        this.element.setPointerCapture?.(event.pointerId);
-        this.callbacks.onTouchPan?.("activate", event, { reason: "standing-guard-assist", pointerId: event.pointerId });
-      } else {
-        this.element.setPointerCapture?.(event.pointerId);
-      }
-    }
-    if (!gesture.assist && !shouldClaimVerticalTouchPan(gesture.lock)) return;
-    const root = this.callbacks.scrollRoot?.();
-    if (!root) return;
-    const deltaY = event.clientY - gesture.lastY;
-    const deltaX = event.clientX - gesture.lastX;
-    gesture.lastX = event.clientX;
-    gesture.lastY = event.clientY;
-    if (deltaY === 0 && deltaX === 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const changed = scrollPdfBy(root, -deltaY);
-    if (gesture.assist && deltaX !== 0) {
-      if (typeof root.scrollBy === "function") root.scrollBy(-deltaX, 0);
-      else root.scrollLeft -= deltaX;
-    }
-    this.callbacks.onTouchPan?.("move", event, {
-      reason: gesture.assist && gesture.lock === "horizontal"
-        ? "touch-standing-guard-assist"
-        : "touch-axis-vertical",
-      deltaY: -deltaY,
-      deltaX: -deltaX,
-      changed,
-      scrollTop: root.scrollTop
-    });
+    this.clearTouchAxisGesture("native-touch-policy");
   }
 
 
@@ -790,10 +736,6 @@ export class PointerRouter {
   syncToolState(): void {
     this.cancelScheduledCursorUpdate();
     this.syncTouchActionMode();
-    if (!this.callbacks.drawingEnabled()) {
-      this.hideCustomCursors();
-      return;
-    }
     const tool = this.callbacks.activeTool();
     if (tool !== "eraser") this.hideEraserCursor();
     if (!isInkDrawTool(tool)) this.hideDrawCursor();
@@ -802,7 +744,7 @@ export class PointerRouter {
 
   refreshCursors(): void {
     this.cancelScheduledCursorUpdate();
-    if (!this.lastCursorClient || !this.callbacks.drawingEnabled()) return;
+    if (!this.lastCursorClient) return;
     const { x, y } = this.lastCursorClient;
     const tool = this.callbacks.activeTool();
     if (tool === "eraser" && !this.eraserCursor.hidden) this.paintEraserCursor(x, y);
@@ -889,7 +831,7 @@ export class PointerRouter {
   }
 
   private readonly suppressRightMouseEraserMenu = (event: MouseEvent): void => {
-    if (!this.callbacks.drawingEnabled() || !this.callbacks.rightMouseEraserEnabled?.() || event.button !== 2) return;
+    if (!this.callbacks.mouseAnnotationEnabled?.() || !this.callbacks.rightMouseEraserEnabled?.() || event.button !== 2) return;
     event.preventDefault();
   };
 
@@ -934,6 +876,7 @@ export class PointerRouter {
 
   private updateCustomCursors(event: Pick<PointerEvent, "clientX" | "clientY" | "pointerType">): void {
     this.lastCursorClient = { x: event.clientX, y: event.clientY };
+    this.lastCursorPointerType = event.pointerType;
     this.updateDrawCursor(event);
     this.updateEraserCursor(event);
   }
@@ -943,13 +886,14 @@ export class PointerRouter {
       this.hideDrawCursor();
       return;
     }
-    this.paintDrawCursor(event.clientX, event.clientY);
+    this.paintDrawCursor(event.clientX, event.clientY, event.pointerType);
   }
 
-  private paintDrawCursor(clientX: number, clientY: number): void {
+  private paintDrawCursor(clientX: number, clientY: number, pointerType?: string): void {
     const tool = this.callbacks.activeTool();
-    const visible = this.callbacks.drawingEnabled()
-      && isInkDrawTool(tool);
+    const type = pointerType ?? this.lastCursorPointerType ?? "mouse";
+    const pointerAllows = type === "pen" || this.callbacks.mouseAnnotationEnabled?.() === true;
+    const visible = pointerAllows && isInkDrawTool(tool);
     if (!visible) {
       this.hideDrawCursor();
       return;
@@ -973,12 +917,13 @@ export class PointerRouter {
       this.hideEraserCursor();
       return;
     }
-    this.paintEraserCursor(event.clientX, event.clientY);
+    this.paintEraserCursor(event.clientX, event.clientY, event.pointerType);
   }
 
-  private paintEraserCursor(clientX: number, clientY: number): void {
-    const visible = this.callbacks.drawingEnabled()
-      && this.callbacks.activeTool() === "eraser";
+  private paintEraserCursor(clientX: number, clientY: number, pointerType?: string): void {
+    const type = pointerType ?? this.lastCursorPointerType ?? "mouse";
+    const pointerAllows = type === "pen" || this.callbacks.mouseAnnotationEnabled?.() === true;
+    const visible = pointerAllows && this.callbacks.activeTool() === "eraser";
     if (!visible) {
       this.hideEraserCursor();
       return;
