@@ -2665,4 +2665,98 @@ describe("viewer runtime tracer", () => {
     expect(document.querySelectorAll(".native-pdf-handwriting-page-mutation-snapshot")).toHaveLength(1);
     await session.destroy();
   });
+
+  it("commits imported-page PDF bytes and shifts the persisted sidecar atomically", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const originalPdf = new Uint8Array([1]);
+    const importedPdf = new Uint8Array([2]);
+    const writeSourcePdf = vi.fn(async (_bytes: Uint8Array) => undefined);
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => originalPdf,
+      writeSourcePdf,
+      onImportPages: async () => ({ bytes: importedPdf, pageNumber: 2, pageCount: 2, pageNumbers: [1, 2] }),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      ink: { add(stroke: InkStroke): void };
+    };
+    internal.ink.add({
+      id: "later", page: 2, tool: "pen", color: "#000000", width: 2, opacity: 1, inputType: "pen",
+      points: [{ x: 1, y: 2, pressure: 0.5, time: 3 }], createdAt: "2026-01-01", updatedAt: "2026-01-01"
+    });
+
+    await session.importPagesAfter(1);
+
+    expect(writeSourcePdf).toHaveBeenCalledWith(importedPdf);
+    const entry = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+    expect(entry).toBeDefined();
+    expect(JSON.parse(entry![1]).pages[0].page).toBe(4);
+    expect(JSON.parse(entry![1]).pages[0].strokes[0].page).toBe(4);
+    await session.destroy();
+  });
+
+  it("leaves PDF and sidecar untouched when the import picker is cancelled", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const writeSourcePdf = vi.fn(async (_bytes: Uint8Array) => undefined);
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array([1]),
+      writeSourcePdf,
+      onImportPages: async () => null,
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    await session.importPagesAfter(1);
+
+    expect(writeSourcePdf).not.toHaveBeenCalled();
+    expect([...files.values.keys()]).toEqual([]);
+    await session.destroy();
+  });
+
+  it("rolls the destination PDF back when the remapped sidecar cannot be saved", async () => {
+    const files = new MemoryFiles();
+    const originalWrite = files.write.bind(files);
+    files.write = async (path, contents) => {
+      if (path.startsWith("annotations/")) throw new Error("sidecar write failed");
+      await originalWrite(path, contents);
+    };
+    const adapter = new FakeAdapter();
+    const originalPdf = new Uint8Array([1]);
+    const importedPdf = new Uint8Array([2]);
+    const writes: Uint8Array[] = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      pdfPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => originalPdf,
+      writeSourcePdf: async (bytes) => { writes.push(bytes); },
+      onImportPages: async () => ({ bytes: importedPdf, pageNumber: 2, pageCount: 1, pageNumbers: [1] }),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    await session.importPagesAfter(1);
+
+    expect(writes).toEqual([importedPdf, originalPdf]);
+    expect([...files.values.keys()].some((path) => path.startsWith("annotations/"))).toBe(false);
+    await session.destroy();
+  });
 });
