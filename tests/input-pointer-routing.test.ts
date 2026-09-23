@@ -1028,6 +1028,38 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
+  it("reports route reason and claim evidence without changing the draw route", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const routeDecisions: Array<{ route: string; reason: string }> = [];
+    const claims: Array<Record<string, unknown>> = [];
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: vi.fn().mockReturnValue(true),
+      releasePointerCapture: vi.fn()
+    });
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true,
+      onRouteDecision: (route, reason) => routeDecisions.push({ route, reason }),
+      onPointerClaim: (_route, _event, details) => claims.push(details)
+    });
+
+    const event = pointer("pen", 303);
+    router.acceptPointerDown(event);
+
+    expect(routeDecisions).toEqual([{ route: "draw", reason: "stylus-draw" }]);
+    expect(claims[0]).toMatchObject({
+      preventDefaultCalled: true,
+      propagationStopped: true,
+      captureAttempted: true,
+      captureSucceeded: true
+    });
+    expect(event.defaultPrevented).toBe(true);
+    router.destroy();
+    element.remove();
+  });
+
   it("destroy swallows NotFoundError from releasePointerCapture during zoom settle", () => {
     const element = document.createElement("div");
     document.body.append(element);
