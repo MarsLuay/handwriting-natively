@@ -21,6 +21,7 @@ export type MoreAction =
   | "export"
   | "export-editable"
   | "import-page"
+  | "scan-document"
   | "toolbar-main"
   | "toolbar-left"
   | "toolbar-right";
@@ -341,6 +342,7 @@ export class AnnotationToolbar {
       export: "Export PDF",
       "export-editable": "Export editable PDF annotations",
       "import-page": "Import page",
+      "scan-document": "Scan document",
       "toolbar-main": "Toolbar: PDF bar",
       "toolbar-left": "Toolbar: Left sidebar",
       "toolbar-right": "Toolbar: Right sidebar"
