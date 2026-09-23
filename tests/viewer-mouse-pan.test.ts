@@ -86,6 +86,40 @@ describe("viewer mouse pan", () => {
     scroller.remove();
   });
 
+  it("does not pan when the page-position policy reserves the primary mouse drag", () => {
+    let scrollTop = 100;
+    const phases: MousePanPhase[] = [];
+    const scroller = document.createElement("div");
+    Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(scroller, "scrollTop", {
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = value; }
+    });
+    const canvas = document.createElement("canvas");
+    scroller.append(canvas);
+    document.body.append(scroller);
+    Object.assign(canvas, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
+
+    const pan = new ViewerMousePan(document, {
+      enabled: () => true,
+      allowMousePan: () => false,
+      scrollRoot: () => scroller,
+      withinTarget: (target) => target instanceof Node && scroller.contains(target),
+      captureElement: () => scroller,
+      onPan: (phase) => { phases.push(phase); }
+    });
+
+    canvas.dispatchEvent(pointer("pointerdown", canvas, 40, 100));
+    canvas.dispatchEvent(pointer("pointermove", canvas, 40, 140));
+
+    expect(scrollTop).toBe(100);
+    expect(phases).toContain("skip");
+    expect(phases).not.toContain("activate");
+    pan.destroy();
+    scroller.remove();
+  });
+
   it("still pans with finger when starting on selectable pdf text", () => {
     let scrollTop = 100;
     const scroller = document.createElement("div");
