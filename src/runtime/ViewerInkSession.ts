@@ -576,9 +576,12 @@ export class ViewerInkSession {
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
       drawEnabled: this.drawEnabled,
-      supportedMoreActions: (options.runtimePlatform?.().mobile ?? false)
-        ? ["export", "export-editable", "toolbar-left", "toolbar-right"]
-        : ["export", "export-editable", "toolbar-main", "toolbar-left", "toolbar-right"],
+      supportedMoreActions: [
+        ...(options.adapter.supportsPdfExport === false ? [] : ["export", "export-editable"]),
+        ...(options.runtimePlatform?.().mobile ?? false)
+          ? ["toolbar-left", "toolbar-right"]
+          : ["toolbar-main", "toolbar-left", "toolbar-right"]
+      ],
       callbacks: {
         onPreferencesChange: (preferences, reason = "general") => {
           const wasTextToolActive = this.textToolActive;
@@ -4107,7 +4110,7 @@ export class ViewerInkSession {
 
   private closestPdfPageElement(target: EventTarget | null): HTMLElement | null {
     if (!isElement(target)) return null;
-    const page = target.closest(".page, .pdf-page-view");
+    const page = target.closest(".page, .pdf-page-view, .native-pdf-handwriting-image-page");
     if (!isHTMLElement(page) || isHandwritingPageChrome(page)) return null;
     return page;
   }

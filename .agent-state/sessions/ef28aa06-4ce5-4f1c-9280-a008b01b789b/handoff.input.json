@@ -1,0 +1,53 @@
+﻿{
+    "schema_version":  2,
+    "task_goal":  "Implement MarsLuay/handwriting-natively#25: add handwriting support for PNG and other image file types",
+    "acceptance_criteria":  "Direct PNG/JPEG/WebP/etc image leaves accept the existing handwriting toolbar and sidecar persistence; unsupported files remain untouched; tests prove image page geometry/overlay lifecycle and attachment discovery; npm test and npm run build pass.",
+    "confirmed_facts":  [
+
+                        ],
+    "assumptions":  [
+                        "handoff written from session wrapper"
+                    ],
+    "important_files":  [
+                            "\u0027src/main.ts\u0027,\u0027src/integration/ImageViewAdapter.ts\u0027,\u0027src/integration/ObsidianPdfAdapter.ts\u0027,\u0027src/focus-view/embedFocusHelpers.ts\u0027,\u0027src/integration/EmbeddedPdfAdapter.ts\u0027,\u0027tests/image-view-adapter.test.ts\u0027,\u0027tests/embed-annotate-focus.test.ts\u0027"
+                        ],
+    "important_symbols":  [
+
+                          ],
+    "decisions":  [
+                      {
+                          "decision":  "snapshot via agent-session-start",
+                          "rationale":  "Lease active; exact worktree materialized from origin/main; baseline clean. Current implementation supports PDF direct leaves only."
+                      }
+                  ],
+    "files_changed":  [
+                          "\u0027src/main.ts\u0027,\u0027src/integration/ImageViewAdapter.ts\u0027,\u0027src/integration/ObsidianPdfAdapter.ts\u0027,\u0027src/focus-view/embedFocusHelpers.ts\u0027,\u0027src/integration/EmbeddedPdfAdapter.ts\u0027,\u0027tests/image-view-adapter.test.ts\u0027,\u0027tests/embed-annotate-focus.test.ts\u0027"
+                      ],
+    "verification_performed":  [
+                                   "npm test -- --run tests/image-view-adapter.test.ts"
+                               ],
+    "baseline_failures":  [
+
+                          ],
+    "current_failures":  [
+
+                         ],
+    "unresolved_risks":  [
+
+                         ],
+    "remaining_steps":  [
+
+                        ],
+    "next_recommended_action":  "Add image view adapter and direct image attachment with regression coverage, then run focused/full checks.",
+    "source_session_id":  "ef28aa06-4ce5-4f1c-9280-a008b01b789b",
+    "active_subproject":  ".",
+    "raw_artifact_refs":  [
+
+                          ],
+    "contract_id":  "",
+    "contract_hash":  "",
+    "route_id":  "",
+    "context_packet_hash":  "",
+    "recovery_disposition":  "",
+    "trigger":  "milestone"
+}

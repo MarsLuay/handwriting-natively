@@ -13,7 +13,9 @@ import {
 } from "obsidian";
 import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
+import { ImageViewAdapter } from "./integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
+import { isSupportedImageFile } from "./integration/ImageFileTypes";
 import type { ObsidianPdfAdapter, PdfAdapterCallbacks } from "./integration/ObsidianPdfAdapter";
 import { PdfViewerCompatibility } from "./integration/PdfViewerCompatibility";
 import { describePdfPageDom } from "./integration/pdfPageSelectors";
@@ -459,9 +461,13 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private async scanPdfLeaves(): Promise<void> {
-    const leaves = this.app.workspace.getLeavesOfType("pdf");
+    const leaves = [...new Set([
+      ...this.app.workspace.getLeavesOfType("pdf"),
+      ...this.app.workspace.getLeavesOfType("image")
+    ])];
     await this.vaultDebugLog.writeUrgent("info", "scan-pdf-leaves", {
-      pdfLeafCount: leaves.length,
+      pdfLeafCount: this.app.workspace.getLeavesOfType("pdf").length,
+      imageLeafCount: this.app.workspace.getLeavesOfType("image").length,
       sessions: this.sessions.size,
       attachingLeaves: this.attachingLeaves.size,
       mobile: Platform.isMobile,
@@ -487,7 +493,10 @@ export default class NativePdfInkPlugin extends Plugin {
       if (this.sessions.has(leaf) || this.attachingLeaves.has(leaf)) continue;
       const view = leaf.view;
       const file = view instanceof FileView ? view.file : (view as FileView).file;
-      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
+      if (!(file instanceof TFile)) continue;
+      const isPdf = file.extension.toLowerCase() === "pdf";
+      const isImage = isSupportedImageFile(file);
+      if (!isPdf && !isImage) continue;
       livePaths.add(file.path);
       if (!this.attachRetry.canAttempt(file.path)) {
         await this.vaultDebugLog.writeUrgent("info", "session attach cooling", {
@@ -506,33 +515,47 @@ export default class NativePdfInkPlugin extends Plugin {
           phone: Platform.isPhone,
           hostChildCount: view.containerEl?.childElementCount ?? null
         });
-        await this.vaultDebugLog.writeUrgent("info", "session attach resolve-viewer", {
-          document: file.path
-        });
-        const graph = await PdfViewerCompatibility.resolveViewerGraphFromPdfView(view);
-        const privateViewer = graph.privateViewer;
-        // Large textbooks on phone need a longer first paint before page nodes exist.
-        const pageWaitMs = Platform.isMobile ? 12_000 : 5_000;
-        await this.vaultDebugLog.writeUrgent("info", "session attach begin", {
-          document: file.path,
-          mobile: Platform.isMobile,
-          phone: Platform.isPhone,
-          pageWaitMs,
-          hasPrivateViewer: Boolean(privateViewer),
-          hasFindController: Boolean(graph.findController)
-        });
-        const attachOptions: {
-          privateViewer?: import("./integration/PdfViewerCompatibility").PdfJsViewerLike;
-          findController?: import("./integration/PdfViewerCompatibility").PdfFindControllerLike;
-          pageWaitMs: number;
-        } = { pageWaitMs };
-        if (privateViewer) attachOptions.privateViewer = privateViewer;
-        if (graph.findController) attachOptions.findController = graph.findController;
-        const adapter = await NativePdfViewAdapter.attach(
-          view.containerEl,
-          this.sessionAdapterCallbacks(() => session),
-          attachOptions
-        );
+        let adapter: ObsidianPdfAdapter;
+        if (isPdf) {
+          await this.vaultDebugLog.writeUrgent("info", "session attach resolve-viewer", {
+            document: file.path
+          });
+          const graph = await PdfViewerCompatibility.resolveViewerGraphFromPdfView(view);
+          const privateViewer = graph.privateViewer;
+          // Large textbooks on phone need a longer first paint before page nodes exist.
+          const pageWaitMs = Platform.isMobile ? 12_000 : 5_000;
+          await this.vaultDebugLog.writeUrgent("info", "session attach begin", {
+            document: file.path,
+            mobile: Platform.isMobile,
+            phone: Platform.isPhone,
+            pageWaitMs,
+            hasPrivateViewer: Boolean(privateViewer),
+            hasFindController: Boolean(graph.findController)
+          });
+          const attachOptions: {
+            privateViewer?: import("./integration/PdfViewerCompatibility").PdfJsViewerLike;
+            findController?: import("./integration/PdfViewerCompatibility").PdfFindControllerLike;
+            pageWaitMs: number;
+          } = { pageWaitMs };
+          if (privateViewer) attachOptions.privateViewer = privateViewer;
+          if (graph.findController) attachOptions.findController = graph.findController;
+          adapter = await NativePdfViewAdapter.attach(
+            view.containerEl,
+            this.sessionAdapterCallbacks(() => session),
+            attachOptions
+          );
+        } else {
+          await this.vaultDebugLog.writeUrgent("info", "image session attach begin", {
+            document: file.path,
+            extension: file.extension,
+            mobile: Platform.isMobile,
+            phone: Platform.isPhone
+          });
+          adapter = ImageViewAdapter.attach(
+            view.containerEl,
+            this.sessionAdapterCallbacks(() => session)
+          );
+        }
         await this.vaultDebugLog.writeUrgent("info", "session attach adapter-ok", {
           document: file.path,
           mobile: Platform.isMobile,
@@ -566,8 +589,12 @@ export default class NativePdfInkPlugin extends Plugin {
         const pagesMissing = message.includes("PDF page nodes missing");
         let dom: Record<string, unknown> = { viewerRoot: false };
         try {
-          const preview = PdfViewerCompatibility.direct(view.containerEl);
-          dom = describePdfPageDom(preview.viewerRoot);
+          if (isPdf) {
+            const preview = PdfViewerCompatibility.direct(view.containerEl);
+            dom = describePdfPageDom(preview.viewerRoot);
+          } else {
+            dom = { imageElement: Boolean(view.containerEl.querySelector("img")) };
+          }
         } catch (domError) {
           dom = {
             viewerRoot: false,
@@ -584,7 +611,7 @@ export default class NativePdfInkPlugin extends Plugin {
           ...dom
         });
         // After waiting for pages, keep mobile from re-attach-storming large PDFs.
-        const delayMs = pagesMissing && Platform.isMobile
+        const delayMs = isPdf && pagesMissing && Platform.isMobile
           ? this.attachRetry.recordHardFailure(file.path)
           : this.attachRetry.recordFailure(file.path);
         this.scheduleDebouncedScan(delayMs);
@@ -598,7 +625,9 @@ export default class NativePdfInkPlugin extends Plugin {
     for (const leaf of leaves) {
       const view = leaf.view;
       const file = view instanceof FileView ? view.file : (view as FileView).file;
-      if (file instanceof TFile && file.extension.toLowerCase() === "pdf") livePaths.add(file.path);
+      if (file instanceof TFile && (file.extension.toLowerCase() === "pdf" || isSupportedImageFile(file))) {
+        livePaths.add(file.path);
+      }
     }
     this.attachRetry.retainOnly(livePaths);
     const wait = this.attachRetry.msUntilNextRetry(livePaths);

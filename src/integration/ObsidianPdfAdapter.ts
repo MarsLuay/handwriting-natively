@@ -22,6 +22,8 @@ export interface PdfAdapterCallbacks {
 
 export interface ObsidianPdfAdapter {
   readonly kind: "direct" | "embedded";
+  /** Image sessions reuse the annotation engine but do not expose PDF export actions. */
+  readonly supportsPdfExport?: boolean;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
   pages(): PdfPageInfo[];
