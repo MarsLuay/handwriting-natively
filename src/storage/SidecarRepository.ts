@@ -311,6 +311,19 @@ export class SidecarRepository {
       }
     }
 
+    // Preserve the exact validated primary outside the overwrite target before
+    // touching an existing sidecar. This is intentionally a separate best-good
+    // artifact: exception-time rollback cannot run after a process kill.
+    if (previous !== null) {
+      const lastGoodPath = `${path}.last-good`;
+      await this.files.write(lastGoodPath, previous);
+      try {
+        this.migration.migrate(await this.files.read(lastGoodPath));
+      } catch (error) {
+        throw new Error(`Could not validate last-good sidecar backup: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
     // Stage + validate via temp, then commit. Obsidian's adapter.rename throws
     // "Destination file already exists!" when replacing, so overwriting dest uses
     // write (not rename) whenever the sidecar path is already present.

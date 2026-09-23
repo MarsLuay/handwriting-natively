@@ -134,6 +134,7 @@ describe("sidecar storage", () => {
     changed.updatedAt = "later";
     await repository.save(changed);
     expect(parseSidecar(await files.read("annotations/doc.json")).updatedAt).toBe("later");
+    expect(parseSidecar(await files.read("annotations/doc.json.last-good")).updatedAt).toBe("2026-01-01");
     expect(files.data.has("annotations/doc.json.tmp")).toBe(false);
   });
 
@@ -257,6 +258,7 @@ describe("sidecar storage", () => {
     changed.updatedAt = "later";
     await expect(repository.save(changed)).rejects.toThrow("write failed");
     expect(await files.read("annotations/doc.json")).toBe(original);
+    expect(await files.read("annotations/doc.json.last-good")).toBe(original);
     expect(files.data.has("annotations/doc.json.tmp")).toBe(false);
   });
 

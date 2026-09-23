@@ -47,6 +47,7 @@ export interface ObsidianPdfAdapter {
   compatibilityReport(): {
     errors: string[];
     warnings: string[];
+    profile?: import("./PdfViewerCompatibility").PdfIntegrationProfile;
     platform?: import("./PlatformCapabilities").PlatformCapabilityReport;
   };
   destroy(): void;
