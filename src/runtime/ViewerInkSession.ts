@@ -869,6 +869,7 @@ export class ViewerInkSession {
         enabled: () => mousePanEnabled(this.mouseInputMode()),
       // Fingers: native PDF viewer only. Custom touch pan fights pinch/scroll remounts on phone.
       touchPanEnabled: () => false,
+      allowMousePan: (event) => !this.isDesktopPdfPageEvent(event),
       scrollRoot: () => adapter.scrollElement(),
       withinTarget: (target) => {
         if (!(target instanceof Element)) return false;
@@ -1646,8 +1647,32 @@ export class ViewerInkSession {
     return resolveMouseInputMode(settings);
   }
 
-  private canAnnotatePointerEvent(event: Pick<PointerEvent, "pointerType">): boolean {
-    return canAnnotatePointer(event, { mouseInputMode: this.mouseInputMode() });
+  private isDesktopPdfPageEvent(
+    event: Pick<PointerEvent, "clientX" | "clientY" | "target">
+  ): boolean {
+    if (this.runtimePlatform().mobile) return false;
+    const page = this.options.adapter.pages().find(({ element }) =>
+      containsClientPoint(element, event.clientX, event.clientY)
+    );
+    if (!page || !(event.target instanceof Element)) return false;
+    if (page.element.contains(event.target)) return true;
+    // A stale/retargeted event may still be visibly over the page. Recover it
+    // only when the topmost hit confirms the page, never from geometry alone.
+    if (!this.options.adapter.root.contains(event.target)) return false;
+    const topHit = this.options.adapter.host.ownerDocument.elementFromPoint?.(event.clientX, event.clientY);
+    return topHit instanceof Element && page.element.contains(topHit);
+  }
+
+  private canAnnotatePointerEvent(
+    event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
+  ): boolean {
+    const context = {
+      mouseInputMode: this.mouseInputMode(),
+      ...(event.pointerType === "mouse"
+        ? { mouseOverPdfPage: this.isDesktopPdfPageEvent(event) }
+        : {})
+    };
+    return canAnnotatePointer(event, context);
   }
 
   private inputPolicyLogFields(): Record<string, unknown> {
@@ -1660,9 +1685,14 @@ export class ViewerInkSession {
     };
   }
 
-  private resolvedPolicyForPointer(event: Pick<PointerEvent, "pointerType">): string {
+  private resolvedPolicyForPointer(
+    event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
+  ): string {
     if (event.pointerType === "pen") return "annotate";
     if (event.pointerType === "touch") return "native";
+    if (event.pointerType === "mouse" && this.isDesktopPdfPageEvent(event)) {
+      return "annotate-page";
+    }
     return this.mouseInputMode();
   }
 
@@ -4432,7 +4462,9 @@ export class ViewerInkSession {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
       canAnnotatePointer: (event) => this.canAnnotatePointerEvent(event),
-      mouseAnnotationEnabled: () => mouseAnnotationEnabled(this.mouseInputMode()),
+      mouseAnnotationEnabled: () => this.runtimePlatform().mobile
+        ? mouseAnnotationEnabled(this.mouseInputMode())
+        : true,
       rightMouseEraserEnabled: () => this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton,
       onStylusEraserStart: () => {
         this.temporaryStylusEraserPointers += 1;
