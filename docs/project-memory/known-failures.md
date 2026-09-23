@@ -1,6 +1,6 @@
 # Known Failures and Uncertainties
 
-- Contract conflict: `README.md` and `docs/architecture.md` state that original/source PDFs remain unchanged and exports are separate, while `src/main.ts` page insertion/deletion paths call `app.vault.modifyBinary`. `AGENTS.md` also requires no in-place PDF writes. This must be resolved before the no-in-place-write statement is treated as verified behavior.
+- The source-PDF write contract is resolved: ordinary annotation edits and Export PDF remain non-destructive, while explicit Add/Delete/Import/Scan page actions use `app.vault.modifyBinary` through `writePdfAndAnnotationStoresAtomic` and remap sidecar/recovery data. Live Obsidian host compatibility for those private viewer reloads remains unverified.
 - Runtime compatibility against current Obsidian desktop, Android, and iPad builds remains unverified. Undocumented viewer selectors/object paths may change; the adapter is intended to fail closed and report compatibility details.
 - Circular erasing on very dense pages needs device profiling. Lasso resize and clipboard behavior need large-document profiling.
 - Editable PDF annotation support varies by the PDF viewer; the vault sidecar remains the canonical editable data.

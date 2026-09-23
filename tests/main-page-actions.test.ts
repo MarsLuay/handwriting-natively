@@ -12,8 +12,11 @@ describe("main PDF page actions", () => {
     expect(mainSource).toContain("modifyBinary");
   });
 
-  it("keeps legacy blank-page and delete actions on the explicit unsupported policy", () => {
-    expect(mainSource).toContain("createUnsupportedPdfPageMutationCallbacks");
-    expect(mainSource).toContain("...createUnsupportedPdfPageMutationCallbacks()");
+  it("wires thumbnail blank-page and delete actions through in-place callbacks", () => {
+    expect(mainSource).toContain("onInsertPage: (pageNumber) => this.insertPageInPlace(file, pageNumber)");
+    expect(mainSource).toContain("onDeletePage: (pageNumber) => this.deletePageInPlace(file, pageNumber)");
+    expect(mainSource).toContain("onDeletePages: (pageNumbers) => this.deletePagesInPlace(file, pageNumbers)");
+    expect(mainSource).toContain("writePdfAndAnnotationStoresAtomic");
+    expect(mainSource).not.toContain("createUnsupportedPdfPageMutationCallbacks");
   });
 });

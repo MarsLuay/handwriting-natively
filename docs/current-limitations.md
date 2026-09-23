@@ -14,7 +14,7 @@ Automated compatibility evidence covers the adapter boundary and explicit host-s
 - Typed text annotations are searchable in Obsidian’s native PDF find bar (Cmd/Ctrl+F) via a viewer-only bridge; freehand ink is not searchable.
 - Shape recognition is on by default in each drawing tool's Advanced settings. Holding a stroke still for 0.5 seconds recognises confident lines, arrows, ellipses, rectangles, triangles, diamonds, stars, and hearts; ambiguous writing remains ink. This is intentionally not claimed as an exact clone of another app's shape set.
 - MacBook Force Touch trackpad pressure is not available in Obsidian (Electron); stylus pressure works when the OS exposes it.
-- Source PDFs are never modified; annotated copies are export-only.
+- Annotation edits do not modify source PDFs. Add/Delete/Import/Scan page actions intentionally rewrite the open PDF and remap sidecar/recovery data; export remains a separate-copy workflow.
 
 Remaining manual compatibility evidence:
 

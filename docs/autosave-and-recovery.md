@@ -41,4 +41,4 @@ Crash recovery uses a separate recovery repository. A successful canonical save 
 
 ## Export
 
-`Export PDF` always writes a separate annotated copy from the latest in-memory annotation snapshot. The original PDF bytes are never modified.
+`Export PDF` always writes a separate annotated copy from the latest in-memory annotation snapshot. It never replaces the source PDF; explicit page-structure actions are the only source-PDF writes.

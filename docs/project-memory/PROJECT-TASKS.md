@@ -10,9 +10,9 @@ Paths: `src/integration/`, `docs/current-limitations.md`
 
 Checks: `npm test`; `npm run build`; manual PDF checks on current desktop, Android, and iPad builds.
 
-## source-pdf-write-contract — blocked
+## source-pdf-write-contract — complete
 
-Resolve the documented no-in-place-write invariant versus page insert/delete paths that call `modifyBinary`.
+Resolve the source-PDF write contract for explicit page actions.
 
 Paths: `src/main.ts`, `docs/architecture.md`, `AGENTS.md`
 
