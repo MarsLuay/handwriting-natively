@@ -5243,7 +5243,7 @@ export class ViewerInkSession {
 
   private closestPdfPageElement(target: EventTarget | null): HTMLElement | null {
     if (!isElement(target)) return null;
-    const page = target.closest(".page, .pdf-page-view");
+    const page = target.closest(".page, .pdf-page-view, .native-pdf-handwriting-image-page");
     if (!isHTMLElement(page) || isHandwritingPageChrome(page)) return null;
     return page;
   }
