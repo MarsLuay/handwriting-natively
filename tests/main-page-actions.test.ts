@@ -5,12 +5,14 @@ import { describe, expect, it } from "vitest";
 const mainSource = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
 
 describe("main PDF page actions", () => {
-  it("does not retain an in-place source-PDF write path", () => {
-    expect(mainSource).not.toContain("modifyBinary");
-    expect(mainSource).not.toMatch(/insertPageInPlace|deletePageInPlace|deletePagesInPlace/);
+  it("wires Import page through an explicit source-PDF write callback", () => {
+    expect(mainSource).toContain("writeSourcePdf");
+    expect(mainSource).toContain("onImportPages");
+    expect(mainSource).toContain("prepareImportedPages");
+    expect(mainSource).toContain("modifyBinary");
   });
 
-  it("wires page actions to the explicit unsupported policy", () => {
+  it("keeps legacy blank-page and delete actions on the explicit unsupported policy", () => {
     expect(mainSource).toContain("createUnsupportedPdfPageMutationCallbacks");
     expect(mainSource).toContain("...createUnsupportedPdfPageMutationCallbacks()");
   });
