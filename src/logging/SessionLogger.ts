@@ -2,6 +2,7 @@ import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
 import type { VaultLogSink } from "./VaultLogSink";
 
 const PREFIX = "[Handwriting Natively]";
+export const PROFILE_SCHEMA_VERSION = 2;
 
 export type ViewStateSource =
   | "scalechanging"
