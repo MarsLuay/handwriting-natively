@@ -738,6 +738,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const source = await new Promise<TFile | null>((resolve) => {
       new PdfImportFilePicker(
         this.app,
+        destination.path,
         resolve,
         () => resolve(null)
       ).open();

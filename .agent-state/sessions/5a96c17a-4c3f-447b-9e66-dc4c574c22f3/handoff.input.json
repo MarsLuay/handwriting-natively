@@ -1,0 +1,62 @@
+﻿{
+    "schema_version":  2,
+    "task_goal":  "Implement exactly issue #112: add More \u003e Import page for atomic native PDF page insertion with sidecar shifting.",
+    "acceptance_criteria":  [
+                                "More \u003e Import page",
+                                "PDF picker excludes destination and supports cancel",
+                                "single multiple range all selection",
+                                "native vector dimensions rotation order preserved",
+                                "sidecar annotations shift and imported pages start empty",
+                                "cancel and errors leave destination and sidecar unchanged",
+                                "reopen refresh persists pages",
+                                "regression coverage added"
+                            ],
+    "confirmed_facts":  [
+
+                        ],
+    "assumptions":  [
+                        "handoff written from session wrapper"
+                    ],
+    "important_files":  [
+                            "\u0027src/main.ts\u0027,\u0027src/pdf/PdfNoteService.ts\u0027,\u0027src/runtime/ViewerInkSession.ts\u0027,\u0027src/storage/SidecarPageRemoval.ts\u0027,\u0027src/ui/AnnotationToolbar.ts\u0027,\u0027src/ui/PdfPageImport.ts\u0027,\u0027src/util/parsePageRanges.ts\u0027,\u0027tests/main-page-actions.test.ts\u0027,\u0027tests/mocks/obsidian.ts\u0027,\u0027tests/pdf-note-service.test.ts\u0027,\u0027tests/pdf-page-import.test.ts\u0027,\u0027tests/runtime-viewer-session.test.ts\u0027,\u0027tests/sidecar-page-removal.test.ts\u0027,\u0027tests/ui-dropdown-toolbar.test.ts\u0027,\u0027main.js\u0027"
+                        ],
+    "important_symbols":  [
+
+                          ],
+    "decisions":  [
+                      {
+                          "decision":  "snapshot via agent-session-start",
+                          "rationale":  "Implementation and focused/full product checks complete; policy conflict is pre-existing and explicitly required by issue scope."
+                      }
+                  ],
+    "files_changed":  [
+                          "\u0027src/main.ts\u0027,\u0027src/pdf/PdfNoteService.ts\u0027,\u0027src/runtime/ViewerInkSession.ts\u0027,\u0027src/storage/SidecarPageRemoval.ts\u0027,\u0027src/ui/AnnotationToolbar.ts\u0027,\u0027src/ui/PdfPageImport.ts\u0027,\u0027src/util/parsePageRanges.ts\u0027,\u0027tests/main-page-actions.test.ts\u0027,\u0027tests/mocks/obsidian.ts\u0027,\u0027tests/pdf-note-service.test.ts\u0027,\u0027tests/pdf-page-import.test.ts\u0027,\u0027tests/runtime-viewer-session.test.ts\u0027,\u0027tests/sidecar-page-removal.test.ts\u0027,\u0027tests/ui-dropdown-toolbar.test.ts\u0027,\u0027main.js\u0027"
+                      ],
+    "verification_performed":  [
+                                   "targeted Vitest: 6 files, 92 tests passed|npm test: 75 files, 648 tests passed|npm run build passed|npm run lint passed|git diff --check passed"
+                               ],
+    "baseline_failures":  [
+
+                          ],
+    "current_failures":  [
+
+                         ],
+    "unresolved_risks":  [
+
+                         ],
+    "remaining_steps":  [
+
+                        ],
+    "next_recommended_action":  "Commit focused changes, push branch, and open PR targeting main; parent owns review, merge verification, issue closure, and cleanup.",
+    "source_session_id":  "5a96c17a-4c3f-447b-9e66-dc4c574c22f3",
+    "active_subproject":  "native-pdf-handwriting",
+    "raw_artifact_refs":  [
+
+                          ],
+    "contract_id":  "",
+    "contract_hash":  "",
+    "route_id":  "",
+    "context_packet_hash":  "",
+    "recovery_disposition":  "",
+    "trigger":  "milestone"
+}
