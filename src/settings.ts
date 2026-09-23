@@ -21,6 +21,7 @@ export interface CopiedLogDiagnostics {
   runtime?: string;
   userAgent?: string;
   devicePixelRatio?: number;
+  profileSchemaVersion?: number;
 }
 
 const MAX_DIAGNOSTIC_VALUE_CHARACTERS = 512;
@@ -45,7 +46,8 @@ export function buildCopiedLogDiagnostics(
   const optional = [
     `Runtime: ${diagnosticValue(diagnostics.runtime)}`,
     `User agent: ${diagnosticValue(diagnostics.userAgent)}`,
-    `Device pixel ratio: ${diagnosticValue(diagnostics.devicePixelRatio)}`
+    `Device pixel ratio: ${diagnosticValue(diagnostics.devicePixelRatio)}`,
+    `Performance profile schema: ${diagnosticValue(diagnostics.profileSchemaVersion)}`
   ].join("\n");
   const budget = Math.max(0, maxCharacters);
   if (core.length >= budget) return core.slice(0, budget);

@@ -7,3 +7,4 @@
 - `src/pdf/` creates blank PDFs, inserts/deletes pages, maps coordinates, and exports annotated copies. Explicit page insertion/deletion/import/scan actions rewrite the open source PDF through `writePdfAndAnnotationStoresAtomic`; export writes a separate copy.
 - Each attached viewer owns a disposable session. Close, note switching, and unload flush persistence, release captures/listeners, remove overlays, restore integration state, and release viewer references.
 - `esbuild.config.mjs` bundles `src/main.ts` to `main.js`, externalizing `obsidian`, `electron`, and Node built-ins; production mode minifies and copies the plugin artifacts to the vault plugin directory.
+- `SessionLogger` emits versioned, local-only bounded diagnostics for effective draw-state transitions, zoom bursts, strokes, pans, rendering, and persistence. `PerformanceMetrics` retains only bounded timing samples for summaries; no network telemetry or per-frame log stream is used.

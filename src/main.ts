@@ -23,6 +23,7 @@ import { ViewerInkSession } from "./runtime/ViewerInkSession";
 import { AttachRetryPolicy } from "./runtime/AttachRetryPolicy";
 import { ScanDebounce } from "./runtime/ScanDebounce";
 import { VaultDebugLog } from "./logging/VaultDebugLog";
+import { PROFILE_SCHEMA_VERSION } from "./logging/SessionLogger";
 import {
   createGoodNotesNotebook,
   createPdfFromTemplate,
@@ -465,6 +466,7 @@ export default class NativePdfInkPlugin extends Plugin {
       platform,
       appMode,
       runtime,
+      profileSchemaVersion: PROFILE_SCHEMA_VERSION,
       ...(typeof devicePixelRatio === "number" && Number.isFinite(devicePixelRatio) ? { devicePixelRatio } : {})
     };
   }
@@ -692,6 +694,7 @@ export default class NativePdfInkPlugin extends Plugin {
     return ViewerInkSession.create({
       adapter,
       pdfPath: file.path,
+      pluginVersion: this.manifest.version,
       settings: this.inkSettings,
       sidecars: new SidecarRepository(textFiles, this.inkSettings.sidecarFolder),
       recovery: new RecoveryRepository(textFiles, `${this.inkSettings.sidecarFolder}/recovery`),
