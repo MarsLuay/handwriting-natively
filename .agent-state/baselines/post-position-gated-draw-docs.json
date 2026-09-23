@@ -1,0 +1,21 @@
+{
+  "command": [
+    "git",
+    "show",
+    "--no-patch",
+    "--format=%H",
+    "HEAD"
+  ],
+  "working_directory": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-worktrees\\position-gated-draw-docs-20260923-r3",
+  "active_subproject": ".",
+  "timestamp": "2026-09-23T09:11:14+00:00",
+  "exit_code": 0,
+  "failing_test_ids": [],
+  "diagnostic_locations": [],
+  "configuration": {
+    "label": "post-position-gated-draw-docs"
+  },
+  "raw_log_path": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-worktrees\\position-gated-draw-docs-20260923-r3\\.agent-state\\diagnostics\\20260923T091114Z-post-position-gated-draw-docs.log",
+  "stdout_excerpt": "ff6fbce4c03bf5f5cb55036110a6d99c3e70e65d\n",
+  "stderr_excerpt": ""
+}

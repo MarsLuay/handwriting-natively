@@ -1,0 +1,11 @@
+$ git show --no-patch --format=%H 19b03553d53c98f245dae1aba45e7deaaaa6fc12
+cwd=C:\Users\marwa\Obsidian\obsidian_notes\.git\modules\Projects\native-pdf-handwriting\agent-worktrees\position-gated-draw-docs-20260923-r3
+exit=0
+elapsed_s=0.052
+
+--- stdout ---
+19b03553d53c98f245dae1aba45e7deaaaa6fc12
+
+
+--- stderr ---
+
