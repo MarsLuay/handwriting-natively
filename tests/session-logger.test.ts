@@ -323,6 +323,32 @@ describe("SessionLogger", () => {
     expect(writes[0]?.payload).toMatchObject({ phase: "selection-snapshot", sampleN: 1 });
   });
 
+  it("records versioned bounded performance profiles and draw-state transitions", () => {
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
+    }, () => true, "0.1.60");
+
+    logger.drawStateChanged({ from: true, to: false, reason: "tool-selected", source: "toolbar" });
+    logger.zoomProfile({ durationMs: 524, lateFrameCount: 4, frameIntervalHistogram: { "0-16": 1 } });
+    logger.inkStrokeProfile({ p95InputToRenderMs: 24.8, droppedFrameEstimate: 3 });
+    logger.panProfile({ pointerMoves: 20, maxFrameMs: 48 });
+    logger.renderProfile({ operationCount: 4, totalMs: 12 });
+    logger.persistProfile({ serializedBytes: 100, totalMs: 4, overlappedActiveGesture: false });
+
+    expect(writes.map((entry) => entry.event)).toEqual([
+      "draw state changed",
+      "ink zoom profile",
+      "ink stroke profile",
+      "ink pan profile",
+      "ink render profile",
+      "sidecar persist profile"
+    ]);
+    expect(writes[0]?.payload).toMatchObject({ from: true, to: false, reason: "tool-selected", pluginVersion: "0.1.60" });
+    expect(writes[1]?.payload).toMatchObject({ profileSchema: 2, pluginVersion: "0.1.60", durationMs: 524 });
+    expect(writes[5]?.payload).toMatchObject({ serializedBytes: 100, totalMs: 4, overlappedActiveGesture: false });
+  });
+
   it("avoids diagnostics and their input-path sampling work when debug is disabled", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const write = vi.fn();

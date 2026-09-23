@@ -26,7 +26,7 @@ host.component.pdfViewer
 host.component.viewer
 ```
 
-When present, the object may provide `currentPageNumber`, `currentScale`, `pagesRotation`, and an `eventBus`. These paths are assumptions, not public Obsidian API. They are optional; DOM metrics remain the fallback. Compatibility reporting must include the fallback warning so a changed object graph is visible during debugging.
+When present, the object may provide `currentPageNumber`, `currentScale`, `pagesRotation`, and an `eventBus`. These paths are assumptions, not public Obsidian API. They are optional; DOM metrics remain the fallback. Compatibility reporting includes a versioned per-adapter profile: supported, supported-with-fallback, or unsafe; selected viewer/page/scale/zoom/sidebar strategies; capability booleans; failed probes; and bounded warnings. A changed object graph is therefore visible in session diagnostics without dumping private DOM or object contents.
 
 ## Lifecycle and cleanup
 
@@ -34,4 +34,4 @@ Adapters register scroll handlers, mutation observers, and PDF.js event-bus call
 
 Page overlays mount transparent with `pointer-events: none`. Annotation mode explicitly adds `.is-editing`; leaving annotation mode removes it. This prevents the adapter from stealing text selection, links, search, mouse, touch, or trackpad behavior by default.
 
-Direct and embedded adapters differ only in discovery and compatibility probing. Both expose the same state, page, overlay, toolbar, and cleanup contract.
+Direct and embedded adapters differ only in discovery and compatibility probing. Both expose the same state, page, overlay, toolbar, profile, and cleanup contract. The profile is evidence for runtime validation, not a claim that a released Obsidian build has been tested.
