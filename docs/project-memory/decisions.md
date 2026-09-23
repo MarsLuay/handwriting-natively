@@ -6,3 +6,4 @@
 - Default autosave on. Completed annotation commands schedule persistence after the documented 750 ms debounce; closing a PDF flushes, and manual-save mode requires an explicit save/discard/cancel choice when dirty.
 - Keep operation local to the vault/device: no telemetry, hosted service, CDN, remote AI, OCR, or handwriting recognition.
 - Share one toolbar, tool state, history, storage, autosave, export, and recovery path between direct and embedded PDF views.
+- Import page (More menu): copy selected native pages via `PDFDocument.copyPages` into the open PDF after the current page in one source-PDF write, then shift later sidecar page indices by the imported count. Destination and source bytes load independently so self-import cannot corrupt the open document; picker cancel and load failures leave PDF+sidecar unchanged.

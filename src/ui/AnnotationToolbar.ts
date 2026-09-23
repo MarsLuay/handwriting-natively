@@ -20,6 +20,7 @@ const DRAWING_LABELS: Record<DrawingTool, string> = {
 export type MoreAction =
   | "export"
   | "export-editable"
+  | "import-page"
   | "toolbar-main"
   | "toolbar-left"
   | "toolbar-right";
@@ -339,6 +340,7 @@ export class AnnotationToolbar {
     const labels: Record<MoreAction, string> = {
       export: "Export PDF",
       "export-editable": "Export editable PDF annotations",
+      "import-page": "Import page",
       "toolbar-main": "Toolbar: PDF bar",
       "toolbar-left": "Toolbar: Left sidebar",
       "toolbar-right": "Toolbar: Right sidebar"

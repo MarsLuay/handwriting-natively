@@ -26,8 +26,12 @@ import { VaultDebugLog } from "./logging/VaultDebugLog";
 import {
   createGoodNotesNotebook,
   createPdfFromTemplate,
-  createUnsupportedPdfPageMutationCallbacks
+  createUnsupportedPdfPageMutationCallbacks,
+  getPdfPageCount,
+  importPdfPages,
+  type ImportedPdfPages
 } from "./pdf/PdfNoteService";
+import { PdfImportFilePicker, PdfPageSelectionModal } from "./ui/PdfPageImport";
 import { mergeSettings, NativePdfInkSettingTab, type CopiedLogDiagnostics } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
 import { SidecarRepository } from "./storage/SidecarRepository";
@@ -689,6 +693,10 @@ export default class NativePdfInkPlugin extends Plugin {
         await this.saveSettings({ ...this.inkSettings, ...patch });
       },
       readSourcePdf: async () => new Uint8Array(await this.app.vault.readBinary(file)),
+      writeSourcePdf: async (bytes) => {
+        await this.app.vault.modifyBinary(file, bytes.slice().buffer);
+      },
+      onImportPages: (afterPage) => this.prepareImportedPages(file, afterPage),
       writeExport: async (name, bytes) => this.writeAndOpenExport(file, name, bytes),
       ...createUnsupportedPdfPageMutationCallbacks(),
       writeSvgExport: async (name, svg) => this.writeSvgExport(file, name, svg),
@@ -707,6 +715,41 @@ export default class NativePdfInkPlugin extends Plugin {
       runtimePlatform: () => ({ mobile: Platform.isMobile, phone: Platform.isPhone }),
       ...(options.onDetached ? { onDetached: options.onDetached } : {})
     });
+  }
+
+  private async prepareImportedPages(destination: TFile, afterPage: number): Promise<ImportedPdfPages | null> {
+    const source = await new Promise<TFile | null>((resolve) => {
+      new PdfImportFilePicker(
+        this.app,
+        resolve,
+        () => resolve(null)
+      ).open();
+    });
+    if (!source) return null;
+
+    const sourceBytes = new Uint8Array(await this.app.vault.readBinary(source));
+    const sourcePageCount = await getPdfPageCount(sourceBytes);
+    if (sourcePageCount < 1) throw new Error("The selected PDF has no pages.");
+
+    let pageNumbers: number[] | null;
+    if (sourcePageCount === 1) {
+      pageNumbers = [1];
+    } else {
+      pageNumbers = await new Promise<number[] | null>((resolve) => {
+        new PdfPageSelectionModal(
+          this.app,
+          sourcePageCount,
+          (selected) => resolve(selected),
+          () => resolve(null)
+        ).open();
+      });
+    }
+    if (!pageNumbers) return null;
+
+    // Re-read destination after selection so a concurrent edit is not overwritten
+    // with a stale snapshot, and so self-import uses an independent byte copy.
+    const destinationBytes = new Uint8Array(await this.app.vault.readBinary(destination));
+    return importPdfPages(destinationBytes, sourceBytes, afterPage, pageNumbers);
   }
 
   private async openPdfInNewTab(file: TFile): Promise<void> {

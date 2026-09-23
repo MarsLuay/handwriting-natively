@@ -1,4 +1,4 @@
-import { PDFDocument, degrees } from "pdf-lib";
+import { PDFDocument, degrees, rgb } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import {
   appendMatchingBlankPage,
@@ -6,7 +6,9 @@ import {
   createPdfFromTemplate,
   deletePdfPage,
   deletePdfPages,
+  getPdfPageCount,
   GOODNOTES_STANDARD_PAGE_SIZE,
+  importPdfPages,
   insertMatchingBlankPage,
   US_LETTER_PAGE_SIZE
 } from "../src/pdf/PdfNoteService";
@@ -115,5 +117,68 @@ describe("PDF note service", () => {
     await expect(deletePdfPages(source, [])).rejects.toThrow("Select at least one");
     await expect(deletePdfPages(source, [1, 2, 3, 4, 5])).rejects.toThrow("at least one page");
     expect(await sizes(source)).toHaveLength(5);
+  });
+
+  it("imports selected native pages in sorted deterministic order after the current page", async () => {
+    const destination = await createPdf([[400, 600], [800, 900]]);
+    const sourceDocument = await PDFDocument.create();
+    const first = sourceDocument.addPage([300, 500]);
+    first.setRotation(degrees(90));
+    first.drawRectangle({ x: 20, y: 30, width: 80, height: 60, color: rgb(1, 0, 0) });
+    const second = sourceDocument.addPage([700, 200]);
+    second.setRotation(degrees(270));
+    second.drawRectangle({ x: 10, y: 20, width: 40, height: 30, color: rgb(0, 0, 1) });
+    const source = await sourceDocument.save();
+
+    const result = await importPdfPages(destination, source, 1, [2, 1, 2]);
+    expect(result.pageNumber).toBe(2);
+    expect(result.pageCount).toBe(2);
+    expect(result.pageNumbers).toEqual([1, 2]);
+    const imported = await PDFDocument.load(result.bytes);
+    expect(imported.getPageCount()).toBe(4);
+    expect(imported.getPages().map((page) => page.getSize())).toEqual([
+      { width: 400, height: 600 },
+      { width: 300, height: 500 },
+      { width: 700, height: 200 },
+      { width: 800, height: 900 }
+    ]);
+    expect(imported.getPage(1).getRotation().angle).toBe(90);
+    expect(imported.getPage(2).getRotation().angle).toBe(270);
+    expect(imported.getPage(1).node.Contents()).toBeDefined();
+    expect(await getPdfPageCount(source)).toBe(2);
+    expect(await getPdfPageCount(destination)).toBe(2);
+  });
+
+  it("imports all source pages and rejects invalid or encrypted sources before mutation", async () => {
+    const destination = await createPdf([[400, 600]]);
+    const source = await createPdf([[500, 700], [600, 800], [700, 900]]);
+    const result = await importPdfPages(destination, source, 1, [1, 2, 3]);
+    expect(result.pageNumbers).toEqual([1, 2, 3]);
+    expect((await PDFDocument.load(result.bytes)).getPageCount()).toBe(4);
+    await expect(importPdfPages(destination, new Uint8Array([1, 2, 3]), 1, [1])).rejects.toThrow();
+
+    const encryptedMarker = new TextDecoder().decode(source).replace(
+      "/Root",
+      "/Encrypt 1 0 R\n/Root"
+    );
+    await expect(importPdfPages(destination, new TextEncoder().encode(encryptedMarker), 1, [1])).rejects.toThrow();
+    expect(await getPdfPageCount(destination)).toBe(1);
+  });
+
+  it("self-imports from identical bytes without corrupting destination page order", async () => {
+    const destination = await createPdf([[400, 600], [500, 700], [600, 800]]);
+    const result = await importPdfPages(destination, destination, 2, [1, 3]);
+    expect(result.pageNumber).toBe(3);
+    expect(result.pageCount).toBe(2);
+    const imported = await PDFDocument.load(result.bytes);
+    expect(imported.getPageCount()).toBe(5);
+    expect(imported.getPages().map((page) => page.getSize())).toEqual([
+      { width: 400, height: 600 },
+      { width: 500, height: 700 },
+      { width: 400, height: 600 },
+      { width: 600, height: 800 },
+      { width: 600, height: 800 }
+    ]);
+    expect(await getPdfPageCount(destination)).toBe(3);
   });
 });
