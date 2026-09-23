@@ -35,6 +35,7 @@ import { getDebugNodeId } from "../dom/debugNodeId";
 import { isElement, isElementInDocument, isHTMLElement, setElementCssProps } from "../dom/typeGuards";
 import { ensurePdfPageNumbers, isHandwritingPageChrome } from "../integration/pdfPageSelectors";
 import { PdfExportService, annotatedFilename, editableAnnotatedFilename } from "../pdf/PdfExportService";
+import type { ImportedPdfPages } from "../pdf/PdfNoteService";
 import { exportInkStrokesToSvg } from "../pdf/SvgInkExportService";
 import { AddStrokeCommand, ReplaceAnnotationSelectionCommand, ReplacePageStrokesCommand, translateStrokes } from "../history/AnnotationCommands";
 import { CommandHistory, type Command } from "../history/CommandHistory";
@@ -54,7 +55,7 @@ import { createDocumentIdentity, hashDocumentContent, type DocumentIdentityInput
 import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
-import { insertPageIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
+import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultFs";
 import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
@@ -356,11 +357,15 @@ export interface ViewerInkSessionOptions {
   saveSettings(preferences: ToolPreferences): Promise<void>;
   savePluginSettings?(patch: Partial<PluginSettings>): Promise<void>;
   readSourcePdf(): Promise<Uint8Array>;
+  /** Writes the current source PDF bytes after a validated page import. */
+  writeSourcePdf?(bytes: Uint8Array): Promise<void>;
   writeExport(name: string, bytes: Uint8Array): Promise<string | void>;
   /** Writes a separate selected-ink SVG beside the source PDF. */
   writeSvgExport?(this: void, name: string, svg: string): Promise<string | void>;
   /** Inserts a blank page at the requested one-indexed PDF position. */
   onInsertPage?(requestedPageNumber: number): Promise<number>;
+  /** Opens the source picker and prepares an imported-page PDF without writing it. */
+  onImportPages?(afterPage: number): Promise<ImportedPdfPages | null>;
   /** Removes one source-PDF page and remaps its persisted annotations. */
   onDeletePage?(pageNumber: number): Promise<void>;
   /** Removes multiple source-PDF pages and remaps persisted annotations once. */
@@ -733,9 +738,14 @@ export class ViewerInkSession {
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
-      supportedMoreActions: (options.runtimePlatform?.().mobile ?? false)
-        ? ["export", "export-editable", "toolbar-left", "toolbar-right"]
-        : ["export", "export-editable", "toolbar-main", "toolbar-left", "toolbar-right"],
+      supportedMoreActions: [
+        "export",
+        "export-editable",
+        ...(options.onImportPages && options.writeSourcePdf ? ["import-page" as const] : []),
+        ...((options.runtimePlatform?.().mobile ?? false)
+          ? ["toolbar-left", "toolbar-right"] as const
+          : ["toolbar-main", "toolbar-left", "toolbar-right"] as const)
+      ],
       callbacks: {
         onPreferencesChange: (preferences, reason = "general") => {
           const wasTextToolActive = this.textToolActive;
@@ -3259,6 +3269,69 @@ export class ViewerInkSession {
     }
   }
 
+  /** Import selected native pages after the current page and commit one sidecar remap. */
+  async importPagesAfter(afterPage: number): Promise<void> {
+    if (!this.options.onImportPages || !this.options.writeSourcePdf) return;
+    if (this.pageMutationInFlight) {
+      this.logger.pdfPageAction("insert-cancel", { requestedPageNumber: afterPage, reason: "page-mutation-in-flight" });
+      return;
+    }
+    this.pageMutationInFlight = true;
+    this.logger.pdfPageAction("insert-start", { requestedPageNumber: afterPage + 1, kind: "import", dirty: this.isDirty() });
+    try {
+      const mutation = await this.options.onImportPages(afterPage);
+      if (!mutation) {
+        this.logger.pdfPageAction("insert-cancel", { requestedPageNumber: afterPage + 1, reason: "picker-cancel" });
+        return;
+      }
+      this.commitActiveTextEditor("page-import");
+      if (this.isDirty()) await this.manualSave();
+      const before = this.snapshot();
+      const beforeMetrics = new Map(this.pageMetrics);
+      const beforePdf = await this.options.readSourcePdf();
+      const expectedPageCount = this.options.adapter.pages().length + mutation.pageCount;
+      this.pendingInsertedPageFocus = {
+        pageNumber: mutation.pageNumber,
+        expectedPageCount
+      };
+      await this.armPageMutationShield("insert", mutation.pageNumber);
+      await this.options.writeSourcePdf(mutation.bytes);
+      const remapped = this.applyImportedPagesToSession(before, mutation.pageNumber, mutation.pageCount);
+      try {
+        await this.persist(remapped, "page-import");
+      } catch (error) {
+        await this.options.writeSourcePdf(beforePdf).catch((rollbackError) => {
+          throw new Error(`${this.errorMessage(error)}; PDF rollback failed: ${this.errorMessage(rollbackError)}`);
+        });
+        this.restoreSidecarSnapshot(before, beforeMetrics);
+        await this.persist(before, "page-import-rollback").catch(() => undefined);
+        throw error;
+      }
+      this.autosave.markClean(this.identity.id);
+      this.saveCoordinator.markSaved();
+      this.toolbar.setSaveStatus("saved", new Date());
+      this.focusInsertedPageIfReady("import-complete", this.options.adapter.pages());
+      this.logger.pdfPageAction("insert-complete", {
+        requestedPageNumber: afterPage + 1,
+        insertedPage: mutation.pageNumber,
+        count: mutation.pageCount,
+        sourcePageNumbers: mutation.pageNumbers
+      });
+      this.options.notice(`Imported ${mutation.pageCount} page${mutation.pageCount === 1 ? "" : "s"}.`);
+    } catch (error) {
+      this.pendingInsertedPageFocus = null;
+      this.releasePageMutationShield("insert-error");
+      this.logger.pdfPageAction("insert-error", {
+        requestedPageNumber: afterPage + 1,
+        kind: "import",
+        error: this.errorMessage(error)
+      });
+      this.options.notice(`Could not import pages: ${this.errorMessage(error)}`);
+    } finally {
+      this.pageMutationInFlight = false;
+    }
+  }
+
   async addPageAt(requestedPageNumber: number): Promise<void> {
     if (!this.options.onInsertPage) return;
     if (this.pageMutationInFlight) {
@@ -3310,12 +3383,7 @@ export class ViewerInkSession {
     this.commitActiveTextEditor("page-insert");
     this.cancelTextBoxTransform("page-insert", false);
     const remapped = insertPageIntoSidecar(before, insertedPage);
-    this.ink.clear();
-    this.texts.clear();
-    for (const page of remapped.pages) {
-      for (const stroke of page.strokes) this.ink.add(stroke);
-      for (const text of page.texts ?? []) this.texts.add(text);
-    }
+    this.hydrateSidecarSnapshot(remapped);
     const metrics = [...this.pageMetrics.entries()];
     this.pageMetrics.clear();
     for (const [page, value] of metrics) this.pageMetrics.set(page >= insertedPage ? page + 1 : page, value);
@@ -3327,6 +3395,53 @@ export class ViewerInkSession {
     this.saveCoordinator.markSaved();
     this.toolbar.setSaveStatus("saved", new Date());
     this.scheduleRefresh("page-insert", true);
+  }
+
+  private applyImportedPagesToSession(
+    before: SidecarSchemaV1,
+    insertedPage: number,
+    insertedPageCount: number
+  ): SidecarSchemaV1 {
+    this.cancelTextBoxTransform("page-import", false);
+    const remapped = insertPagesIntoSidecar(before, insertedPage, insertedPageCount);
+    this.hydrateSidecarSnapshot(remapped);
+    const metrics = [...this.pageMetrics.entries()];
+    this.pageMetrics.clear();
+    for (const [page, value] of metrics) {
+      this.pageMetrics.set(page >= insertedPage ? page + insertedPageCount : page, value);
+    }
+    this.history.clear();
+    this.historyDirtyPages.clear();
+    this.historyPaintedPages.clear();
+    this.clearSelection({ refresh: false });
+    this.scheduleRefresh("page-import", true);
+    return remapped;
+  }
+
+  private hydrateSidecarSnapshot(snapshot: SidecarSchemaV1): void {
+    this.ink.clear();
+    this.texts.clear();
+    for (const page of snapshot.pages) {
+      for (const stroke of page.strokes) this.ink.add(stroke);
+      for (const text of page.texts ?? []) this.texts.add(text);
+    }
+  }
+
+  private restoreSidecarSnapshot(
+    snapshot: SidecarSchemaV1,
+    metrics: ReadonlyMap<number, { width: number; height: number }>
+  ): void {
+    this.hydrateSidecarSnapshot(snapshot);
+    this.pageMetrics.clear();
+    for (const [page, value] of metrics) this.pageMetrics.set(page, value);
+    this.history.clear();
+    this.historyDirtyPages.clear();
+    this.historyPaintedPages.clear();
+    this.clearSelection({ refresh: false });
+    this.autosave.markClean(this.identity.id);
+    this.saveCoordinator.markSaved();
+    this.toolbar.setSaveStatus("saved", new Date());
+    this.scheduleRefresh("page-import-rollback", true);
   }
 
   private async deletePage(pageNumber: number): Promise<void> {
@@ -8245,6 +8360,10 @@ export class ViewerInkSession {
   }
 
   private async handleMore(action: MoreAction): Promise<void> {
+    if (action === "import-page") {
+      await this.importPagesAfter(this.options.adapter.getViewState().pageNumber);
+      return;
+    }
     if (action === "export") {
       await this.exportCopy().catch((error) => this.options.notice(`Export failed: ${this.errorMessage(error)}`));
       return;

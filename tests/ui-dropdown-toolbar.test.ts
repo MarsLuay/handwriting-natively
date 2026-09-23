@@ -178,6 +178,24 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
+  it("shows Import page in More and reports its selection", () => {
+    const selected = vi.fn();
+    const toolbar = new AnnotationToolbar({
+      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
+      autosave: true,
+      callbacks: { onPreferencesChange: vi.fn(), onMore: selected },
+      supportedMoreActions: ["import-page"],
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
+    const importOption = document.querySelector<HTMLButtonElement>("[data-option-id='import-page']");
+    expect(importOption?.textContent).toBe("Import page");
+    importOption?.click();
+    expect(selected).toHaveBeenCalledWith("import-page");
+    toolbar.destroy();
+  });
+
   it("activates the laser pointer from the toolbar", () => {
     const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
     const changed = vi.fn();
