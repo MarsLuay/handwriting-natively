@@ -57,8 +57,9 @@ export class PdfPageSelectionModal extends Modal {
     importButton.addEventListener("click", () => this.submit(), { signal: this.abort.signal });
     const cancel = actions.createEl("button", { text: "Cancel" });
     cancel.addEventListener("click", () => this.close(), { signal: this.abort.signal });
-    this.refreshCount();
     this.inputEl.focus();
+
+    this.inputEl.addEventListener("input", () => { error.textContent = ""; }, { signal: this.abort.signal });
   }
 
   onClose(): void {
@@ -95,6 +96,7 @@ export class PdfImportFilePicker extends FuzzySuggestModal<TFile> {
 
   constructor(
     app: App,
+    private readonly excludedPath: string,
     private readonly onChoose: (file: TFile) => void,
     private readonly onCancel: () => void
   ) {
@@ -104,7 +106,7 @@ export class PdfImportFilePicker extends FuzzySuggestModal<TFile> {
 
   getItems(): TFile[] {
     return this.app.vault.getFiles()
-      .filter((file) => file.extension.toLowerCase() === "pdf");
+      .filter((file) => file.extension.toLowerCase() === "pdf" && file.path !== this.excludedPath);
   }
 
   getItemText(file: TFile): string {
