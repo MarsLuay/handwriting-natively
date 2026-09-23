@@ -1,0 +1,12 @@
+{
+  "canonical_repo": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.Projects\\native-pdf-handwriting",
+  "worktree_path": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-worktrees\\issue-141-post-ui-pencil-probe-20260923",
+  "branch": "agent-run/issue-141-post-ui-pencil-probe-20260923",
+  "task_id": "issue-141-post-ui-pencil-probe-20260923",
+  "session_id": "01a0c9f5-fc39-72cc-a310-ee923b26cb1a",
+  "target_branch": "main",
+  "integration_target": "main",
+  "created_at": "2026-09-23T23:06:35.758039Z",
+  "creator_pid": 35372,
+  "status": "active"
+}
