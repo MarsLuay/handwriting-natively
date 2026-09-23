@@ -1,0 +1,88 @@
+name: Testing prerelease
+
+on:
+  push:
+    branches:
+      - testing
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: testing-prerelease
+  cancel-in-progress: true
+
+jobs:
+  build-and-prerelease:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out testing commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Calculate BRAT prerelease version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(node -e '
+            const fs = require("fs");
+            const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+            const match = /^(\d+)\.(\d+)\.(\d+)/.exec(manifest.version);
+            if (!match) throw new Error("manifest.json version must begin with major.minor.patch");
+            const major = Number(match[1]);
+            const minor = Number(match[2]) + 1;
+            process.stdout.write(`${major}.${minor}.0-dev.${process.env.GITHUB_RUN_NUMBER}`);
+          ')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp prerelease version into release manifest
+        env:
+          PRERELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = "manifest.json";
+            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+            manifest.version = process.env.PRERELEASE_VERSION;
+            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+          '
+
+      - name: Verify release assets
+        run: |
+          test -f main.js
+          test -f manifest.json
+          test -f styles.css
+
+      - name: Publish BRAT prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          body: |
+            Automated BRAT testing build from the `testing` branch.
+
+            Commit: `${{ github.sha }}`
+          files: |
+            main.js
+            manifest.json
+            styles.css
