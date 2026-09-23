@@ -4,9 +4,9 @@
 
 ## Compact controls
 
-- Draw is an explicit checkbox and starts off for each PDF session. Off preserves native mouse-like PDF interaction; on enables the selected drawing, eraser, or lasso tool.
+- There is no global Draw checkbox. Stylus input selects the active ink/edit tool directly; fingers remain native PDF navigation, and mouse behavior follows the persisted pan/annotate/native policy.
 - Annotation actions use compact icon buttons that match Obsidian's native PDF controls. Save status sits in a separate fixed-width area, so status text never shifts the tools.
-- Drawing main button shows Pen/Pencil/Highlighter; its dropdown contains those tools, numeric widths with live previews (highlighter uses a wider size set), and advanced pressure/stabilization/opacity/thinning/texture/tilt/mouse controls.
+- Drawing main button shows Pen/Pencil/Highlighter; its dropdown contains persisted named presets, those tools, numeric widths with live previews (highlighter uses a wider size set), and advanced pressure/stabilization/opacity/thinning/texture/tilt/mouse controls. Presets apply tool and style together, can be renamed or deleted, and are capped at eight during settings migration.
 - Laser pointer is a sibling toolbar control (like Eraser). Flat solid trails hold briefly, then fade and erase from the oldest tip; they never enter the sidecar. Dropdown: width, hold time, fade duration. Color button edits laser color while Laser is active.
 - Eraser exposes Small, Medium, and Large circular sizes with matching previews. It removes only ink inside the swept circle.
 - Color exposes recent colors and the active swatch.
@@ -15,7 +15,7 @@
 - Manual Save and More appear only when callbacks/actions are supported. Use Obsidian’s native PDF zoom controls.
 - Manual Save appears only with Autosave off. The live status announces Saved, Saving…, Unsaved changes, or Save failed.
 
-The toolbar updates the active icon/label and remembers per-tool values through `ToolPreferences`; open dropdown state is transient UI state and never enters annotation sidecars.
+The toolbar updates the active icon/label and remembers per-tool values and presets through `ToolPreferences`; open dropdown state is transient UI state and never enters annotation sidecars.
 
 ## Placement
 

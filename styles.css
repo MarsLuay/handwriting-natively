@@ -326,6 +326,9 @@
 }
 .native-pdf-handwriting-advanced { border-top: 1px solid var(--background-modifier-border, #d1d5db); padding: 8px; }
 .native-pdf-handwriting-advanced label { align-items: center; display: flex; gap: 8px; justify-content: space-between; min-height: 36px; }
+.native-pdf-handwriting-preset-editor { border-top: 1px solid var(--background-modifier-border, #d1d5db); display: grid; gap: 6px; margin-top: 8px; padding: 8px; }
+.native-pdf-handwriting-preset-editor label { align-items: center; display: flex; gap: 6px; justify-content: space-between; }
+.native-pdf-handwriting-preset-editor input[type="text"] { flex: 1 1 auto; min-width: 0; }
 /* Collapsible settings: override Obsidian's flex setting-item so <details> is full width. */
 .setting-item.native-pdf-handwriting-settings-details-host {
   align-items: stretch;

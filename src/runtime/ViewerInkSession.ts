@@ -63,6 +63,7 @@ import { inkBackingBudget, inkBackingSize } from "./inkBackingSize";
 import type { DebugState } from "../ui/DebugPanel";
 import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
 import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../logging/SessionLogger";
+import { BoundedTiming, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
 import type { VaultLogSink } from "../logging/VaultLogSink";
 import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
 import { describeScrollElement, scrollPdfByDetailed } from "../integration/PdfScrollRoot";
@@ -353,6 +354,8 @@ export interface ViewerInkSessionOptions {
   pluginVersion?: string;
   /** Content-derived identity captured once while the source PDF is opened. */
   contentHash?: string;
+  /** Version stamped onto bounded copied diagnostics profiles. */
+  pluginVersion?: string;
   settings: PluginSettings;
   sidecars: SidecarRepository;
   recovery: RecoveryRepository;
@@ -410,20 +413,73 @@ interface LaserTrail {
   fadeMs: number;
 }
 
+interface RectSnapshot {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface StrokePerformanceState {
+  startedAt: number;
+  page: number;
+  tool: string;
+  pointerType: string;
+  pointerEvents: number;
+  renderUpdates: number;
+  inputToRender: BoundedTiming;
+  frameIntervals: BoundedTiming;
+  renderTotalMs: number;
+  maxPluginCallbackMs: number;
+  lastRenderAt: number | null;
+  longTaskMaxMs: number;
+  routerRebinds: number;
+  canvasResizes: number;
+  vectorRepaints: number;
+  mutationRefreshes: number;
+  hqUpgrades: number;
+}
+
+interface PanPerformanceState {
+  startedAt: number;
+  pointerType: string;
+  pointerMoves: number;
+  refreshes: number;
+  frameIntervals: BoundedTiming;
+  lastMoveAt: number | null;
+  maxPluginCallbackMs: number;
+  maxScrollDeltaPx: number;
+  routerRebinds: number;
+  canvasResizes: number;
+  vectorRepaints: number;
+  scrollCorrections: number;
+}
+
 interface ZoomProfileState {
   startedAt: number;
   gestureEndedAt: number | null;
   scaleStart: number | null;
   scaleEnd: number | null;
+  minScale: number | null;
+  maxScale: number | null;
   scaleChangingEvents: number;
-  scaleIntervalCount: number;
-  scaleIntervalTotalMs: number;
-  scaleIntervalMaxMs: number;
-  scaleDeltaCount: number;
-  scaleDeltaTotal: number;
-  scaleDeltaMax: number;
+  scaleIntervals: BoundedTiming;
+  scaleDeltas: BoundedTiming;
   lastScaleAt: number | null;
   lastScale: number | null;
+  frameIntervals: BoundedTiming;
+  frameCount: number;
+  lastFrameAt: number | null;
+  worstFrameOffsetMs: number | null;
+  longTaskMaxMs: number;
+  lastPdfGeometry: RectSnapshot | null;
+  lastInkGeometry: RectSnapshot | null;
+  maxPdfGeometryDeltaPx: number;
+  maxInkGeometryDeltaPx: number;
+  maxPdfInkMismatchPx: number;
+  worstMismatchOffsetMs: number | null;
+  initialScrollLeft: number | null;
+  initialScrollTop: number | null;
   scrollEvents: number;
   pageChangingEvents: number;
   mobileRefreshSignals: number;
@@ -445,12 +501,20 @@ interface ZoomProfileState {
   taskCount: number;
   totalTaskMs: number;
   longestTaskMs: number;
-  lateFrameCount: number;
-  maxFrameIntervalMs: number;
-  lastLayoutFrameAt: number | null;
+  layoutTaskCount: number;
+  layoutTaskTotalMs: number;
+  layoutTaskMaxMs: number;
+  refreshTaskCount: number;
+  refreshTaskTotalMs: number;
+  refreshTaskMaxMs: number;
+  compositorTaskCount: number;
+  compositorTaskTotalMs: number;
+  compositorTaskMaxMs: number;
+  settleTimerResets: number;
   lastScrollLeft: number | null;
   lastScrollTop: number | null;
   maxScrollDeltaPx: number;
+  worstScrollOffsetMs: number | null;
   sidebarFollowActiveDuringZoom: boolean;
   sidebarFollowFramesDuringBurst: number;
   maxSidebarOffsetJump: number;
@@ -482,6 +546,8 @@ interface PageSurface {
   pendingRouterHandoff: PointerRouterHandoff | null;
   livePaintFrame: number | null;
   pendingLivePaint: { kind: "draw" | "edit"; syncText: boolean; sampleCount: number; event?: PointerEvent } | null;
+  pendingLivePaintAt: number | null;
+  strokePerformance: StrokePerformanceState | null;
   /** Prefix of editPath already represented by the transient live eraser preview. */
   liveEraserPaintedPoints: number;
   /** True while draftCanvas is a wet copy of the committed ink canvas. */
@@ -649,6 +715,13 @@ export class ViewerInkSession {
   private readonly zoomInkLayoutLoggedPhases = new Set<string>();
   private readonly zoomInkAnchorByPage = new Map<number, { normalizedX: number; normalizedY: number }>();
   private zoomProfile: ZoomProfileState | null = null;
+  private zoomLongTaskObserver: PerformanceObserver | null = null;
+  private interactionLongTaskObserver: PerformanceObserver | null = null;
+  private effectiveDrawEnabledState = false;
+  private lastObservedTool: ToolId = "pen";
+  private lastDrawOwner = "idle";
+  private lastActivePenIds: number[] = [];
+  private panProfile: PanPerformanceState | null = null;
   private laserTrails: LaserTrail[] = [];
   private laserFadeFrame: number | null = null;
   private lastLaserPaintAt = 0;
@@ -738,8 +811,9 @@ export class ViewerInkSession {
       ...(options.contentHash ? { contentHash: options.contentHash } : {})
     };
     this.identity = createDocumentIdentity(identityInput);
-    this.logger = new SessionLogger(options.pdfPath, options.vaultLog, options.debugEnabled);
+    this.logger = new SessionLogger(options.pdfPath, options.vaultLog, options.debugEnabled, options.pluginVersion);
     this.textToolActive = options.settings.toolPreferences.activeTool === "text";
+    this.lastObservedTool = options.settings.toolPreferences.activeTool;
     this.logger.textTool("tool-initial", {
       active: this.textToolActive,
       ...describeInputPolicies(options.settings),
@@ -747,7 +821,8 @@ export class ViewerInkSession {
       fontSize: options.settings.toolPreferences.text.fontSize,
       fontFamily: options.settings.toolPreferences.text.fontFamily
     });
-      this.toolbar = new AnnotationToolbar({
+    this.syncEffectiveDrawState("session-create", "session");
+    this.toolbar = new AnnotationToolbar({
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
@@ -796,6 +871,7 @@ export class ViewerInkSession {
               });
             }
           });
+          this.syncEffectiveDrawState(reason === "tool" ? "tool-selected" : "settings-change", reason === "tool" ? "toolbar" : "settings");
           // Text-style changes synchronously update the focused editor, or
           // refresh just the selected text annotations. A full session refresh
           // here redraws every page a second time and makes font-size changes
@@ -881,6 +957,8 @@ export class ViewerInkSession {
       },
       captureElement: () => adapter.root,
       onPan: (phase, event, details) => {
+        const panStarted = performance.now();
+        this.observePan(phase, event, details);
         this.logMousePan(phase, event, details);
         if (event.pointerType === "pen" && (phase === "start" || phase === "activate" || phase === "move")) {
           this.logger.inputInvariantViolation("pen-entered-mouse-pan", {
@@ -892,6 +970,7 @@ export class ViewerInkSession {
           });
         }
         this.feedPullToAddFromPan(phase, details);
+        if (this.panProfile) this.panProfile.maxPluginCallbackMs = Math.max(this.panProfile.maxPluginCallbackMs, performance.now() - panStarted);
       }
     });
     this.pullToAddPage = options.onInsertPage
@@ -1254,7 +1333,7 @@ export class ViewerInkSession {
       const started = performance.now();
       if (pending.repaintOnly) this.repaintSurfaces(pending.reason);
       else this.refresh(pending.reason);
-      this.recordZoomProfileTask(started);
+      this.recordZoomProfileTask(started, "refresh");
     });
   }
 
@@ -1286,7 +1365,7 @@ export class ViewerInkSession {
       if (this.zoomProfile) this.zoomProfile.mobileRefreshExecutions += 1;
       const started = performance.now();
       this.refresh("view-scroll-mobile");
-      this.recordZoomProfileTask(started);
+      this.recordZoomProfileTask(started, "refresh");
     });
   }
 
@@ -1341,15 +1420,26 @@ export class ViewerInkSession {
       gestureEndedAt: null,
       scaleStart,
       scaleEnd: scaleStart,
+      minScale: scaleStart,
+      maxScale: scaleStart,
       scaleChangingEvents: 0,
-      scaleIntervalCount: 0,
-      scaleIntervalTotalMs: 0,
-      scaleIntervalMaxMs: 0,
-      scaleDeltaCount: 0,
-      scaleDeltaTotal: 0,
-      scaleDeltaMax: 0,
+      scaleIntervals: new BoundedTiming(24),
+      scaleDeltas: new BoundedTiming(0),
       lastScaleAt: null,
       lastScale: scaleStart,
+      frameIntervals: new BoundedTiming(24),
+      frameCount: 0,
+      lastFrameAt: null,
+      worstFrameOffsetMs: null,
+      longTaskMaxMs: 0,
+      lastPdfGeometry: null,
+      lastInkGeometry: null,
+      maxPdfGeometryDeltaPx: 0,
+      maxInkGeometryDeltaPx: 0,
+      maxPdfInkMismatchPx: 0,
+      worstMismatchOffsetMs: null,
+      initialScrollLeft: null,
+      initialScrollTop: null,
       scrollEvents: 0,
       pageChangingEvents: 0,
       mobileRefreshSignals: 0,
@@ -1371,12 +1461,20 @@ export class ViewerInkSession {
       taskCount: 0,
       totalTaskMs: 0,
       longestTaskMs: 0,
-      lateFrameCount: 0,
-      maxFrameIntervalMs: 0,
-      lastLayoutFrameAt: null,
+      layoutTaskCount: 0,
+      layoutTaskTotalMs: 0,
+      layoutTaskMaxMs: 0,
+      refreshTaskCount: 0,
+      refreshTaskTotalMs: 0,
+      refreshTaskMaxMs: 0,
+      compositorTaskCount: 0,
+      compositorTaskTotalMs: 0,
+      compositorTaskMaxMs: 0,
+      settleTimerResets: 0,
       lastScrollLeft: null,
       lastScrollTop: null,
       maxScrollDeltaPx: 0,
+      worstScrollOffsetMs: null,
       sidebarFollowActiveDuringZoom: false,
       sidebarFollowFramesDuringBurst: 0,
       maxSidebarOffsetJump: 0,
@@ -1389,29 +1487,34 @@ export class ViewerInkSession {
     if (!profile) return;
     profile.scaleChangingEvents += 1;
     profile.scaleEnd = scale;
-    if (profile.lastScaleAt !== null) {
-      const interval = Math.max(0, now - profile.lastScaleAt);
-      profile.scaleIntervalCount += 1;
-      profile.scaleIntervalTotalMs += interval;
-      profile.scaleIntervalMaxMs = Math.max(profile.scaleIntervalMaxMs, interval);
-    }
-    if (profile.lastScale !== null) {
-      const delta = Math.abs(scale - profile.lastScale);
-      profile.scaleDeltaCount += 1;
-      profile.scaleDeltaTotal += delta;
-      profile.scaleDeltaMax = Math.max(profile.scaleDeltaMax, delta);
-    }
+    profile.minScale = profile.minScale === null ? scale : Math.min(profile.minScale, scale);
+    profile.maxScale = profile.maxScale === null ? scale : Math.max(profile.maxScale, scale);
+    if (profile.lastScaleAt !== null) profile.scaleIntervals.add(Math.max(0, now - profile.lastScaleAt));
+    if (profile.lastScale !== null) profile.scaleDeltas.add(Math.abs(scale - profile.lastScale));
     profile.lastScaleAt = now;
     profile.lastScale = scale;
   }
 
-  private recordZoomProfileTask(started: number): void {
+  private recordZoomProfileTask(started: number, kind: "layout" | "refresh" | "compositor" = "layout"): void {
     const profile = this.zoomProfile;
     if (!profile) return;
     const duration = Math.max(0, performance.now() - started);
     profile.taskCount += 1;
     profile.totalTaskMs += duration;
     profile.longestTaskMs = Math.max(profile.longestTaskMs, duration);
+    if (kind === "layout") {
+      profile.layoutTaskCount += 1;
+      profile.layoutTaskTotalMs += duration;
+      profile.layoutTaskMaxMs = Math.max(profile.layoutTaskMaxMs, duration);
+    } else if (kind === "refresh") {
+      profile.refreshTaskCount += 1;
+      profile.refreshTaskTotalMs += duration;
+      profile.refreshTaskMaxMs = Math.max(profile.refreshTaskMaxMs, duration);
+    } else {
+      profile.compositorTaskCount += 1;
+      profile.compositorTaskTotalMs += duration;
+      profile.compositorTaskMaxMs = Math.max(profile.compositorTaskMaxMs, duration);
+    }
   }
 
   /** Duck-typed bridge: BasePdfAdapter suppresses sidebar follow during pinch. */
@@ -1450,27 +1553,38 @@ export class ViewerInkSession {
       const now = performance.now();
       if (this.zoomProfile) {
         this.zoomProfile.layoutFramesExecuted += 1;
-        if (this.zoomProfile.lastLayoutFrameAt !== null) {
-          const interval = Math.max(0, now - this.zoomProfile.lastLayoutFrameAt);
-          this.zoomProfile.maxFrameIntervalMs = Math.max(this.zoomProfile.maxFrameIntervalMs, interval);
-          if (interval > 24) this.zoomProfile.lateFrameCount += 1;
+        this.zoomProfile.frameCount += 1;
+        if (this.zoomProfile.lastFrameAt !== null) {
+          const frameInterval = Math.max(0, now - this.zoomProfile.lastFrameAt);
+          this.zoomProfile.frameIntervals.add(frameInterval);
+          if (frameInterval >= this.zoomProfile.frameIntervals.maxMs) {
+            this.zoomProfile.worstFrameOffsetMs = roundMs(now - this.zoomProfile.startedAt);
+          }
         }
-        this.zoomProfile.lastLayoutFrameAt = now;
+        this.zoomProfile.lastFrameAt = now;
       }
       const started = performance.now();
       const scroller = this.options.adapter.scrollElement();
       const beforeLeft = scroller.scrollLeft;
       const beforeTop = scroller.scrollTop;
       if (this.zoomProfile) {
+        if (this.zoomProfile.initialScrollLeft === null) {
+          this.zoomProfile.initialScrollLeft = beforeLeft;
+          this.zoomProfile.initialScrollTop = beforeTop;
+        }
         if (this.zoomProfile.lastScrollLeft !== null && this.zoomProfile.lastScrollTop !== null) {
           const frameDelta = Math.max(
             Math.abs(beforeLeft - this.zoomProfile.lastScrollLeft),
             Math.abs(beforeTop - this.zoomProfile.lastScrollTop)
           );
-          this.zoomProfile.maxScrollDeltaPx = Math.max(this.zoomProfile.maxScrollDeltaPx, frameDelta);
+          if (frameDelta > this.zoomProfile.maxScrollDeltaPx) {
+          this.zoomProfile.maxScrollDeltaPx = frameDelta;
+          this.zoomProfile.worstScrollOffsetMs = roundMs(now - this.zoomProfile.startedAt);
+        }
         }
       }
       this.syncZoomOverlayLayouts();
+      this.recordZoomGeometry();
       // Overlay layout must not correct scroll during the live gesture — any
       // delta here is plugin-owned and belongs in the burst profile.
       const pluginScrollDelta = Math.max(
@@ -1478,12 +1592,66 @@ export class ViewerInkSession {
         Math.abs(scroller.scrollTop - beforeTop)
       );
       if (this.zoomProfile) {
-        this.zoomProfile.maxScrollDeltaPx = Math.max(this.zoomProfile.maxScrollDeltaPx, pluginScrollDelta);
+        if (pluginScrollDelta > this.zoomProfile.maxScrollDeltaPx) {
+          this.zoomProfile.maxScrollDeltaPx = pluginScrollDelta;
+          this.zoomProfile.worstScrollOffsetMs = roundMs(now - this.zoomProfile.startedAt);
+        }
         this.zoomProfile.lastScrollLeft = scroller.scrollLeft;
         this.zoomProfile.lastScrollTop = scroller.scrollTop;
       }
       this.recordZoomProfileTask(started);
     });
+  }
+
+  private recordZoomGeometry(): void {
+    const profile = this.zoomProfile;
+    if (!profile || !this.logger.isEnabled()) return;
+    const now = performance.now();
+    for (const surface of this.surfaces.values()) {
+      const pdf = pdfRenderCanvas(surface.page.element)?.getBoundingClientRect();
+      const ink = surface.overlay.getBoundingClientRect();
+      if (!pdf) continue;
+      const pdfRect: RectSnapshot = {
+        left: pdf.left,
+        top: pdf.top,
+        width: pdf.width,
+        height: pdf.height
+      };
+      const inkRect: RectSnapshot = {
+        left: ink.left,
+        top: ink.top,
+        width: ink.width,
+        height: ink.height
+      };
+      profile.maxPdfGeometryDeltaPx = Math.max(profile.maxPdfGeometryDeltaPx, rectDelta(profile.lastPdfGeometry, pdfRect));
+      profile.maxInkGeometryDeltaPx = Math.max(profile.maxInkGeometryDeltaPx, rectDelta(profile.lastInkGeometry, inkRect));
+      const mismatch = rectMismatch(pdfRect, inkRect);
+      if (mismatch > profile.maxPdfInkMismatchPx) {
+        profile.maxPdfInkMismatchPx = mismatch;
+        profile.worstMismatchOffsetMs = roundMs(now - profile.startedAt);
+      }
+      profile.lastPdfGeometry = pdfRect;
+      profile.lastInkGeometry = inkRect;
+    }
+  }
+
+  private startZoomLongTaskObserver(): void {
+    if (!this.logger.isEnabled() || this.zoomLongTaskObserver || typeof PerformanceObserver === "undefined") return;
+    try {
+      const observer = new PerformanceObserver((entries) => {
+        const longest = entries.getEntries().reduce((max, entry) => Math.max(max, entry.duration), 0);
+        if (this.zoomProfile) this.zoomProfile.longTaskMaxMs = Math.max(this.zoomProfile.longTaskMaxMs, longest);
+      });
+      observer.observe({ entryTypes: ["longtask"] });
+      this.zoomLongTaskObserver = observer;
+    } catch {
+      this.zoomLongTaskObserver = null;
+    }
+  }
+
+  private stopZoomLongTaskObserver(): void {
+    this.zoomLongTaskObserver?.disconnect();
+    this.zoomLongTaskObserver = null;
   }
 
   private cancelZoomOverlayLayout(): void {
@@ -1504,19 +1672,66 @@ export class ViewerInkSession {
       profile.maxSidebarOffsetJump = sidebar.maxSidebarOffsetJump;
       profile.sidebarFollowSuppressedTriggers = sidebar.sidebarFollowSuppressedTriggers;
     }
+    this.stopZoomLongTaskObserver();
+    const scaleIntervals = profile.scaleIntervals.summary();
+    const scaleDeltas = profile.scaleDeltas.summary();
+    const frameIntervals = profile.frameIntervals.summary();
+    const scroller = this.options.adapter.scrollElement();
+    const rootRect = this.options.adapter.root.getBoundingClientRect();
     const metrics = {
       mobile: this.runtimePlatform().mobile,
+      pluginVersion: this.options.pluginVersion ?? "unknown",
       gestureStartAt: roundMs(profile.startedAt),
       gestureEndAt: roundMs(endedAt),
       durationMs: roundMs(endedAt - profile.startedAt),
       profileWindowMs: roundMs(profileEndedAt - profile.startedAt),
       scaleStart: profile.scaleStart,
       scaleEnd: profile.scaleEnd,
+      initialScale: profile.scaleStart,
+      finalScale: profile.scaleEnd,
+      minScale: profile.minScale,
+      maxScale: profile.maxScale,
       scaleChangingEvents: profile.scaleChangingEvents,
-      scaleIntervalAvgMs: profile.scaleIntervalCount ? roundMs(profile.scaleIntervalTotalMs / profile.scaleIntervalCount) : 0,
-      scaleIntervalMaxMs: roundMs(profile.scaleIntervalMaxMs),
-      scaleDeltaAvg: profile.scaleDeltaCount ? Number((profile.scaleDeltaTotal / profile.scaleDeltaCount).toFixed(4)) : 0,
-      scaleDeltaMax: Number(profile.scaleDeltaMax.toFixed(4)),
+      scaleEvents: profile.scaleChangingEvents,
+      scaleIntervalAvgMs: roundMetric(scaleIntervals.averageMs),
+      scaleIntervalP50Ms: roundMetric(scaleIntervals.p50Ms),
+      scaleIntervalP95Ms: roundMetric(scaleIntervals.p95Ms),
+      scaleIntervalMaxMs: roundMetric(scaleIntervals.maxMs),
+      scaleIntervalHistogram: scaleIntervals.histogram,
+      scaleDeltaAvg: roundMetric(scaleDeltas.averageMs),
+      scaleDeltaP95: roundMetric(scaleDeltas.p95Ms),
+      scaleDeltaMax: roundMetric(scaleDeltas.maxMs),
+      largestScaleDelta: roundMetric(scaleDeltas.maxMs),
+      scaleDeltaHistogram: buildScaleDeltaHistogram(profile.scaleDeltas.sampleValues()),
+      frameCount: profile.frameCount,
+      frames: profile.frameCount,
+      avgFrameDeltaMs: roundMetric(frameIntervals.averageMs),
+      p95FrameDeltaMs: roundMetric(frameIntervals.p95Ms),
+      maxFrameIntervalMs: roundMetric(frameIntervals.maxMs),
+      maxFrameDeltaMs: roundMetric(frameIntervals.maxMs),
+      lateFrameCount: frameIntervals.lateFrameCount,
+      lateFrames: frameIntervals.lateFrameCount,
+      droppedFrameEstimate: frameIntervals.droppedFrameEstimate,
+      droppedFrames: frameIntervals.droppedFrameEstimate,
+      worstFrameOffsetMs: profile.worstFrameOffsetMs,
+      frameIntervalHistogram: frameIntervals.histogram,
+      longestLongTaskMs: roundMetric(profile.longTaskMaxMs),
+      pdfGeometrySamples: profile.lastPdfGeometry ? profile.frameCount : 0,
+      maxPdfGeometryDeltaPx: roundMetric(profile.maxPdfGeometryDeltaPx),
+      maxInkGeometryDeltaPx: roundMetric(profile.maxInkGeometryDeltaPx),
+      maxPdfInkMismatchPx: roundMetric(profile.maxPdfInkMismatchPx),
+      worstMismatchOffsetMs: profile.worstMismatchOffsetMs,
+      initialScrollLeft: profile.initialScrollLeft,
+      initialScrollTop: profile.initialScrollTop,
+      finalScrollLeft: roundMetric(scroller.scrollLeft),
+      finalScrollTop: roundMetric(scroller.scrollTop),
+      settleAfterLastScaleMs: profile.lastScaleAt === null ? null : roundMetric(Math.max(0, endedAt - profile.lastScaleAt)),
+      heldAfterSettleMs: this.zoomCompositeSettledAt > 0 ? roundMetric(Math.max(0, profileEndedAt - this.zoomCompositeSettledAt)) : null,
+      viewportWidth: roundMetric(rootRect.width),
+      viewportHeight: roundMetric(rootRect.height),
+      devicePixelRatio: this.options.adapter.host.ownerDocument.defaultView?.devicePixelRatio ?? null,
+      visiblePageCount: this.surfaces.size,
+      strokeCount: this.ink.all().length,
       scrollEvents: profile.scrollEvents,
       pageChangingEvents: profile.pageChangingEvents,
       mobileRefreshSignals: profile.mobileRefreshSignals,
@@ -1525,6 +1740,16 @@ export class ViewerInkSession {
       mobileRefreshExecutions: profile.mobileRefreshExecutions,
       refreshRequests: profile.refreshRequests,
       refreshExecutions: profile.refreshExecutions,
+      layoutTaskCount: profile.layoutTaskCount,
+      layoutTaskTotalMs: roundMs(profile.layoutTaskTotalMs),
+      layoutTaskMaxMs: roundMs(profile.layoutTaskMaxMs),
+      refreshTaskCount: profile.refreshTaskCount,
+      refreshTaskTotalMs: roundMs(profile.refreshTaskTotalMs),
+      refreshTaskMaxMs: roundMs(profile.refreshTaskMaxMs),
+      compositorTaskCount: profile.compositorTaskCount,
+      compositorTaskTotalMs: roundMs(profile.compositorTaskTotalMs),
+      compositorTaskMaxMs: roundMs(profile.compositorTaskMaxMs),
+      settleTimerResets: profile.settleTimerResets,
       layoutFramesScheduled: profile.layoutFramesScheduled,
       layoutFramesExecuted: profile.layoutFramesExecuted,
       layoutSyncs: profile.layoutSyncs,
@@ -1537,9 +1762,8 @@ export class ViewerInkSession {
       routerDestroys: profile.routerDestroys,
       pluginWorkMs: roundMs(profile.totalTaskMs),
       longestTaskMs: roundMs(profile.longestTaskMs),
-      lateFrameCount: profile.lateFrameCount,
-      maxFrameIntervalMs: roundMs(profile.maxFrameIntervalMs),
       maxScrollDeltaPx: Number(profile.maxScrollDeltaPx.toFixed(2)),
+      worstScrollOffsetMs: profile.worstScrollOffsetMs,
       sidebarFollowActiveDuringZoom: profile.sidebarFollowActiveDuringZoom,
       sidebarFollowFramesDuringBurst: profile.sidebarFollowFramesDuringBurst,
       maxSidebarOffsetJump: profile.maxSidebarOffsetJump,
@@ -1547,7 +1771,16 @@ export class ViewerInkSession {
       nativeContentMutations: this.zoomNativeContentMutations
     };
     this.logger.zoomProfile(metrics);
-    this.reportDevProbe("zoom-profile", metrics);
+    this.reportDevProbe("zoom-profile", {
+      durationMs: metrics.durationMs,
+      scaleChangingEvents: metrics.scaleChangingEvents,
+      layoutFramesExecuted: metrics.layoutFramesExecuted,
+      lateFrameCount: metrics.lateFrameCount,
+      droppedFrameEstimate: metrics.droppedFrameEstimate,
+      maxPdfInkMismatchPx: metrics.maxPdfInkMismatchPx,
+      maxScrollDeltaPx: metrics.maxScrollDeltaPx,
+      pluginWorkMs: metrics.pluginWorkMs
+    });
     this.zoomProfile = null;
   }
 
@@ -1558,7 +1791,7 @@ export class ViewerInkSession {
     // Keep one burst for the full gesture. A long, healthy pinch can last well
     // beyond ZOOM_ACTIVE_MS while still delivering scale ticks every frame;
     // the settle timer is the actual quiet-window boundary.
-    if (!this.zoomBurstStartedAt) {
+    if (!this.zoomProfile) {
       this.zoomBurstStartedAt = now;
       this.zoomTickCount = 0;
       this.startZoomProfile(scale, now);
@@ -1569,6 +1802,7 @@ export class ViewerInkSession {
       this.zoomInkAnchorByPage.clear();
       this.zoomHandoffNeedsFinalRebase = false;
       this.setAdapterInkZoomBurstActive(true);
+      this.startZoomLongTaskObserver();
       this.reportDevProbe("zoom-burst-start", {
         reason,
         scale: scale ?? null,
@@ -1600,7 +1834,10 @@ export class ViewerInkSession {
       settleMs,
       ...(scale !== undefined ? { scale: Number(scale.toFixed(4)) } : {})
     });
-    if (this.zoomSettleTimer !== null) window.clearTimeout(this.zoomSettleTimer);
+    if (this.zoomSettleTimer !== null) {
+      if (this.zoomProfile) this.zoomProfile.settleTimerResets += 1;
+      window.clearTimeout(this.zoomSettleTimer);
+    }
     this.zoomSettleTimer = window.setTimeout(() => {
       this.zoomSettleTimer = null;
       this.runZoomSettlePaint();
@@ -2083,7 +2320,7 @@ export class ViewerInkSession {
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
     }
     this.syncZoomOverlayLayouts();
-    this.recordZoomProfileTask(started);
+    this.recordZoomProfileTask(started, "compositor");
     this.logger.zoomComposite("begin", { pages: this.surfaces.size });
   }
 
@@ -2151,6 +2388,9 @@ export class ViewerInkSession {
   /** Adapter breadcrumb for the native PDF.js canvas/text layer replacement. */
   onPdfPageContentMutation(recordCount: number): void {
     if (this.destroyed) return;
+    for (const surface of this.surfaces.values()) {
+      if (surface.strokePerformance) surface.strokePerformance.mutationRefreshes += 1;
+    }
     const pages = this.options.adapter.pages();
     const pagesMap = new Map(pages.map((p) => [p.pageNumber, p]));
     this.notePageMutationShieldNativeContent(recordCount, pages.length);
@@ -2701,6 +2941,7 @@ export class ViewerInkSession {
   refresh(reason = "manual"): void {
     if (this.destroyed) return;
     if (this.zoomProfile) this.zoomProfile.refreshExecutions += 1;
+    if (this.panProfile) this.panProfile.refreshes += 1;
     if (
       reason !== "create"
       && (this.isZoomGestureActive() || this.isZoomHandoffActive())
@@ -4137,6 +4378,8 @@ export class ViewerInkSession {
 
   async destroy(options: { silent?: boolean; alreadyPersisted?: boolean } = {}): Promise<boolean> {
     if (this.destroyed) return true;
+    this.syncEffectiveDrawState(options.silent ? "session-destroy" : "plugin-unload", "lifecycle");
+    this.finishPanPerformance(options.silent ? "session-destroy" : "plugin-unload");
     this.releasePageMutationShield("session-destroy");
     this.commitActiveTextEditor("destroy");
     this.cancelTextBoxTransform("destroy");
@@ -4251,6 +4494,52 @@ export class ViewerInkSession {
       && mouseAnnotationEnabled(this.mouseInputMode())
       && (isInkDrawTool(tool) || tool === "eraser");
     this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
+  }
+
+  private isEffectiveDrawTool(tool: ToolId): boolean {
+    return isInkDrawTool(tool) || tool === "eraser";
+  }
+
+  /** Log effective draw capability, not only persisted preferences. */
+  private syncEffectiveDrawState(reason: string, source: string): void {
+    const tool = this.activeTool();
+    const next = this.isEffectiveDrawTool(tool);
+    const previousTool = this.lastObservedTool;
+    this.lastObservedTool = tool;
+    if (this.effectiveDrawEnabledState === next) return;
+    const activePenIds = [...new Set([...this.surfaces.values()].flatMap((surface) => surface.router?.activePenIds() ?? []))];
+    const ownerPages = [...this.surfaces]
+      .filter(([, surface]) => surface.router?.activePenIds().length)
+      .map(([page]) => page);
+    const currentOwner = ownerPages.length ? ownerPages.join(",") : "idle";
+    const ownerBefore = !next && currentOwner !== "idle" ? currentOwner : this.lastDrawOwner;
+    const ownerAfter = next ? currentOwner : "idle";
+    const activePenIdsBefore = !next && activePenIds.length ? activePenIds : this.lastActivePenIds;
+    this.logger.drawStateChanged({
+      from: this.effectiveDrawEnabledState,
+      to: next,
+      effectiveFrom: this.effectiveDrawEnabledState,
+      effectiveTo: next,
+      storedDrawEnabled: this.isEffectiveDrawTool(tool),
+      reason,
+      source,
+      selectedToolBefore: previousTool,
+      selectedToolAfter: tool,
+      activePenPreset: this.options.settings.toolPreferences.pen,
+      inkCapableBefore: this.isEffectiveDrawTool(previousTool),
+      inkCapableAfter: next,
+      activePenIdsBefore,
+      activePenIds,
+      activePenCount: activePenIds.length,
+      ownerBefore,
+      ownerAfter,
+      duringActiveStroke: this.hasAnyLiveInkInput(),
+      page: this.options.adapter.getViewState().pageNumber,
+      inputPolicies: this.inputPolicyLogFields()
+    });
+    this.lastDrawOwner = ownerAfter;
+    this.lastActivePenIds = activePenIds;
+    this.effectiveDrawEnabledState = next;
   }
 
   /** Apply transient pen hit policy; never permanently disable PDF.js text/annotation layers. */
@@ -4398,6 +4687,8 @@ export class ViewerInkSession {
       router: null,
       livePaintFrame: null,
       pendingLivePaint: null,
+      pendingLivePaintAt: null,
+      strokePerformance: null,
       liveEraserPaintedPoints: 0,
       wetPreviewActive: false,
       wetDamage: new DamageLedger(),
@@ -5197,6 +5488,8 @@ export class ViewerInkSession {
     this.claimInputOwner(pageElement, surface.page.pageNumber);
     surface.router = this.createPageRouter(surface);
     if (this.zoomProfile) this.zoomProfile.routerRebinds += 1;
+    if (this.panProfile) this.panProfile.routerRebinds += 1;
+    if (surface.strokePerformance) surface.strokePerformance.routerRebinds += 1;
     this.logger.inputLifecycleEvent("router-rebind", {
       page: surface.page.pageNumber,
       reason,
@@ -5229,6 +5522,157 @@ export class ViewerInkSession {
     });
   }
 
+  private startInteractionLongTaskObserver(): void {
+    if (!this.logger.isEnabled() || this.interactionLongTaskObserver || typeof PerformanceObserver === "undefined") return;
+    try {
+      const observer = new PerformanceObserver((entries) => {
+        const longest = entries.getEntries().reduce((max, entry) => Math.max(max, entry.duration), 0);
+        for (const surface of this.surfaces.values()) {
+          if (surface.strokePerformance) surface.strokePerformance.longTaskMaxMs = Math.max(surface.strokePerformance.longTaskMaxMs, longest);
+        }
+        if (this.panProfile) this.panProfile.maxPluginCallbackMs = Math.max(this.panProfile.maxPluginCallbackMs, longest);
+      });
+      observer.observe({ entryTypes: ["longtask"] });
+      this.interactionLongTaskObserver = observer;
+    } catch {
+      this.interactionLongTaskObserver = null;
+    }
+  }
+
+  private stopInteractionLongTaskObserver(): void {
+    if (this.panProfile || [...this.surfaces.values()].some((surface) => surface.strokePerformance)) return;
+    this.interactionLongTaskObserver?.disconnect();
+    this.interactionLongTaskObserver = null;
+  }
+
+  private startStrokePerformance(surface: PageSurface, event: PointerEvent, sampleCount: number): void {
+    if (!this.logger.isEnabled()) {
+      surface.strokePerformance = null;
+      return;
+    }
+    const startedAt = performance.now();
+    this.startInteractionLongTaskObserver();
+    surface.strokePerformance = {
+      startedAt,
+      page: surface.page.pageNumber,
+      tool: this.activeTool(),
+      pointerType: event.pointerType || "unknown",
+      pointerEvents: sampleCount,
+      renderUpdates: 0,
+      inputToRender: new BoundedTiming(24),
+      frameIntervals: new BoundedTiming(24),
+      renderTotalMs: 0,
+      maxPluginCallbackMs: 0,
+      lastRenderAt: null,
+      longTaskMaxMs: 0,
+      routerRebinds: 0,
+      canvasResizes: 0,
+      vectorRepaints: 0,
+      mutationRefreshes: 0,
+      hqUpgrades: 0
+    };
+  }
+
+  private finishPanPerformance(outcome: string): void {
+    const profile = this.panProfile;
+    if (!profile) return;
+    const frames = profile.frameIntervals.summary();
+    this.logger.panProfile({
+      pointerType: profile.pointerType,
+      outcome,
+      durationMs: roundMetric(performance.now() - profile.startedAt),
+      pointerMoves: profile.pointerMoves,
+      frameCount: frames.count,
+      avgFrameMs: roundMetric(frames.averageMs),
+      p95FrameMs: roundMetric(frames.p95Ms),
+      maxFrameMs: roundMetric(frames.maxMs),
+      lateFrameCount: frames.lateFrameCount,
+      droppedFrameEstimate: frames.droppedFrameEstimate,
+      frameIntervalHistogram: frames.histogram,
+      largestScrollDeltaPx: roundMetric(profile.maxScrollDeltaPx),
+      maxPluginCallbackMs: roundMetric(profile.maxPluginCallbackMs),
+      refreshCount: profile.refreshes,
+      routerRebinds: profile.routerRebinds,
+      canvasResizes: profile.canvasResizes,
+      vectorRepaints: profile.vectorRepaints,
+      scrollCorrections: profile.scrollCorrections,
+      visiblePageCount: this.surfaces.size
+    });
+    this.panProfile = null;
+    this.stopInteractionLongTaskObserver();
+  }
+
+  private observePan(phase: MousePanPhase, event: PointerEvent, details: Record<string, unknown>): void {
+    if (!this.logger.isEnabled()) return;
+    if (phase === "start" || (phase === "activate" && !this.panProfile)) {
+      this.startInteractionLongTaskObserver();
+      this.panProfile = {
+        startedAt: performance.now(),
+        pointerType: event.pointerType || "unknown",
+        pointerMoves: 0,
+        refreshes: 0,
+        frameIntervals: new BoundedTiming(24),
+        lastMoveAt: null,
+        maxPluginCallbackMs: 0,
+        maxScrollDeltaPx: 0,
+        routerRebinds: 0,
+        canvasResizes: 0,
+        vectorRepaints: 0,
+        scrollCorrections: 0
+      };
+    }
+    const profile = this.panProfile;
+    if (!profile) return;
+    if (phase === "move") {
+      const now = performance.now();
+      profile.pointerMoves += 1;
+      if (profile.lastMoveAt !== null) profile.frameIntervals.add(Math.max(0, now - profile.lastMoveAt));
+      profile.lastMoveAt = now;
+      const deltaX = typeof details.deltaX === "number" ? details.deltaX : 0;
+      const deltaY = typeof details.deltaY === "number" ? details.deltaY : 0;
+      profile.maxScrollDeltaPx = Math.max(profile.maxScrollDeltaPx, Math.max(Math.abs(deltaX), Math.abs(deltaY)));
+    }
+    if (phase === "end" || phase === "cancel" || phase === "abort") this.finishPanPerformance(phase);
+  }
+
+  private finishStrokePerformance(surface: PageSurface, outcome: string): void {
+    const profile = surface.strokePerformance;
+    if (!profile) return;
+    const input = profile.inputToRender.summary();
+    const frames = profile.frameIntervals.summary();
+    this.logger.inkStrokeProfile({
+      page: profile.page,
+      tool: profile.tool,
+      pointerType: profile.pointerType,
+      outcome,
+      durationMs: roundMetric(performance.now() - profile.startedAt),
+      pointerEvents: profile.pointerEvents,
+      renderUpdates: profile.renderUpdates,
+      avgInputToRenderMs: roundMetric(input.averageMs),
+      p50InputToRenderMs: roundMetric(input.p50Ms),
+      p95InputToRenderMs: roundMetric(input.p95Ms),
+      maxInputToRenderMs: roundMetric(input.maxMs),
+      avgFrameMs: roundMetric(frames.averageMs),
+      p95FrameMs: roundMetric(frames.p95Ms),
+      maxFrameMs: roundMetric(frames.maxMs),
+      lateFrameCount: frames.lateFrameCount,
+      droppedFrameEstimate: frames.droppedFrameEstimate,
+      frameIntervalHistogram: frames.histogram,
+      renderTotalMs: roundMetric(profile.renderTotalMs),
+      maxPluginCallbackMs: roundMetric(profile.maxPluginCallbackMs),
+      longestLongTaskMs: roundMetric(profile.longTaskMaxMs),
+      routerRebinds: profile.routerRebinds,
+      canvasResizes: profile.canvasResizes,
+      vectorRepaints: profile.vectorRepaints,
+      mutationRefreshes: profile.mutationRefreshes,
+      hqUpgrades: profile.hqUpgrades,
+      strokeCountOnPage: this.ink.page(profile.page).length,
+      visiblePageCount: this.surfaces.size
+    });
+    surface.strokePerformance = null;
+    this.stopInteractionLongTaskObserver();
+  }
+
   /** Coalesce visual work to display rate without dropping any input samples. */
   private scheduleLivePaint(
     surface: PageSurface,
@@ -5245,6 +5689,10 @@ export class ViewerInkSession {
       syncText: Boolean(pending?.syncText || syncText),
       sampleCount: (pending?.sampleCount ?? 0) + sampleCount
     };
+    if (kind === "draw" && surface.strokePerformance) {
+      surface.strokePerformance.pointerEvents += sampleCount;
+      surface.pendingLivePaintAt ??= performance.now();
+    }
     surface.pendingLivePaint = pendingEvent ? { ...nextPaint, event: pendingEvent } : nextPaint;
     if (surface.livePaintFrame !== null) return;
     const view = surface.overlay.ownerDocument.defaultView;
@@ -5260,7 +5708,9 @@ export class ViewerInkSession {
 
   private paintScheduledLiveWork(surface: PageSurface): void {
     const pending = surface.pendingLivePaint;
+    const pendingAt = surface.pendingLivePaintAt;
     surface.pendingLivePaint = null;
+    surface.pendingLivePaintAt = null;
     if (!pending || this.destroyed) return;
     const startedAt = performance.now();
     let draftPoints: number | undefined;
@@ -5277,7 +5727,18 @@ export class ViewerInkSession {
       draftResized = painted.draftResized;
     } else if (surface.editTool === "eraser") this.renderLiveEraserPreview(surface);
     else this.renderPage(surface.page.pageNumber, undefined, "live-edit", pending.syncText);
-    this.logger.inputPaint(surface.page.pageNumber, performance.now() - startedAt, pending.kind, pending.sampleCount, {
+    const completedAt = performance.now();
+    if (pending.kind === "draw" && surface.strokePerformance) {
+      const profile = surface.strokePerformance;
+      const duration = Math.max(0, completedAt - startedAt);
+      profile.renderUpdates += 1;
+      profile.renderTotalMs += duration;
+      profile.maxPluginCallbackMs = Math.max(profile.maxPluginCallbackMs, duration);
+      if (pendingAt !== null) profile.inputToRender.add(Math.max(0, completedAt - pendingAt));
+      if (profile.lastRenderAt !== null) profile.frameIntervals.add(Math.max(0, completedAt - profile.lastRenderAt));
+      profile.lastRenderAt = completedAt;
+    }
+    this.logger.inputPaint(surface.page.pageNumber, completedAt - startedAt, pending.kind, pending.sampleCount, {
       ...(draftPoints !== undefined ? { draftPoints } : {}),
       ...(incremental !== undefined ? { incremental } : {}),
       ...(compositeMatched !== undefined ? { compositeMatched } : {}),
@@ -5294,6 +5755,7 @@ export class ViewerInkSession {
       surface.livePaintFrame = null;
     }
     surface.pendingLivePaint = null;
+    surface.pendingLivePaintAt = null;
   }
 
   private clearLiveDrawPreview(surface: PageSurface): void {
@@ -5556,6 +6018,7 @@ export class ViewerInkSession {
       return;
     }
     if (route === "draw") {
+      this.startStrokePerformance(surface, event, samples.length);
       const laser = activeTool === "laser";
       if (laser) {
         surface.pressureConditioner = undefined;
@@ -5740,7 +6203,10 @@ export class ViewerInkSession {
     terminalDetail?: string
   ): void {
     const builder = surface.builder;
-    if (!builder) return;
+    if (!builder) {
+      this.finishStrokePerformance(surface, termination);
+      return;
+    }
     this.cancelHeldShape(surface);
     const laserDraft = surface.laserDraft;
     const simulate = laserDraft ? false : surface.simulateMousePressure;
@@ -5812,12 +6278,16 @@ export class ViewerInkSession {
     }
     const last = samples.at(-1);
     if (last) this.logPositionAlign(surface, last, "end");
+    this.finishStrokePerformance(surface, termination);
   }
 
   /** Save an in-progress real-ink draft before mobile/PDF.js replaces its page. */
   private commitActiveDrawBeforeSurfaceLoss(surface: PageSurface, reason: string): void {
     // Laser trails are intentionally ephemeral; only saved ink must survive a remount.
-    if (!surface.builder || surface.laserDraft) return;
+    if (!surface.builder || surface.laserDraft) {
+      this.finishStrokePerformance(surface, "surface-unmount");
+      return;
+    }
     surface.pendingRouterHandoff = null;
     this.cancelLivePaint(surface);
     this.commitActiveDraw(surface, [], "surface-unmount", reason);
@@ -5836,6 +6306,7 @@ export class ViewerInkSession {
     this.movePreview = null;
     this.moveTextPreview = null;
     this.moveShapePreview = null;
+    if (route === "draw") this.finishStrokePerformance(surface, "pointercancel");
     surface.builder = undefined;
     surface.pressureConditioner = undefined;
     surface.pressureLastPdfPoint = undefined;
@@ -7380,6 +7851,8 @@ export class ViewerInkSession {
     graphiteQuality: "full" | "draft" = "full"
   ): void {
     if (this.zoomProfile && graphiteQuality === "full") this.zoomProfile.vectorRepaints += 1;
+    if (this.panProfile && graphiteQuality === "full") this.panProfile.vectorRepaints += 1;
+    if (surface.strokePerformance && graphiteQuality === "full") surface.strokePerformance.vectorRepaints += 1;
     const previous = surface.context;
     surface.context = context;
     try {
@@ -7407,6 +7880,7 @@ export class ViewerInkSession {
   ): boolean {
     const surface = this.surfaces.get(pageNumber);
     if (!surface || this.zoomCompositing) return false;
+    if (reason.includes("settle-upgrade") && surface.strokePerformance) surface.strokePerformance.hqUpgrades += 1;
     const preserveLiveDraft = this.surfaceHasLiveInkInput(surface);
     // Keep tip draft visible through resize/paint — clearing first caused a blank
     // flash between tip-up and settle-paint (draft gone, committed still building).
@@ -7430,6 +7904,8 @@ export class ViewerInkSession {
       settleNeighbor ? "neighbor" : "full"
     );
     const needsResize = surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight;
+    if (needsResize && this.panProfile) this.panProfile.canvasResizes += 1;
+    if (needsResize && surface.strokePerformance) surface.strokePerformance.canvasResizes += 1;
     const canBlit = typeof surface.context.drawImage === "function";
     const zoomish = ViewerInkSession.isZoomPaintReason(reason);
     const erasingLive = includeActivePreview
@@ -7686,6 +8162,28 @@ export class ViewerInkSession {
     this.paintLaserTrails(surface, pageNumber);
     if (syncText) this.renderTextAnnotations(surface);
     if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
+    const renderDurationMs = roundMetric(performance.now() - paintStarted);
+    this.logger.renderProfile({
+      page: pageNumber,
+      operation: "page-render",
+      reason: reason || "render",
+      operationCount: 1,
+      totalMs: renderDurationMs,
+      maxDurationMs: renderDurationMs,
+      durationMs: renderDurationMs,
+      strokeCount: visibleStrokes.length,
+      canvasResized: needsResize,
+      canvasResizeCount: needsResize ? 1 : 0,
+      vectorRepaintCount: useLayerCache ? 0 : 1,
+      hqUpgradeCount: reason.includes("settle-upgrade") ? 1 : 0,
+      backingScale: roundMetric(backingScale),
+      width: roundMetric(width),
+      height: roundMetric(height),
+      useLayerCache,
+      includeActivePreview,
+      zoomCompositing: this.zoomCompositing,
+      visiblePageCount: this.surfaces.size
+    });
     return true;
   }
 
@@ -8394,19 +8892,45 @@ export class ViewerInkSession {
     const strokeCount = countSidecarStrokes(snapshot);
     const textCount = countSidecarTexts(snapshot);
     const started = performance.now();
+    const profilePersistence = this.logger.isEnabled();
+    const serializeStarted = performance.now();
+    const serialized = profilePersistence ? JSON.stringify(snapshot) : "";
+    const serializedBytes = profilePersistence
+      ? typeof TextEncoder === "undefined" ? serialized.length : new TextEncoder().encode(serialized).byteLength
+      : 0;
+    const serializeMs = profilePersistence ? roundMs(performance.now() - serializeStarted) : 0;
+    const overlappedActiveGesture = this.hasAnyLiveInkInput();
     let recoveryWriteMs: number | null = null;
     let sidecarWriteMs: number | null = null;
     let recoveryClearMs: number | null = null;
-    const reportPersist = (outcome: string): void => this.reportDevProbe("sidecar-persist", {
-      reason,
-      outcome,
-      durationMs: roundMs(performance.now() - started),
-      recoveryWriteMs,
-      sidecarWriteMs,
-      recoveryClearMs,
-      strokeCount,
-      textCount
-    });
+    const reportPersist = (outcome: string): void => {
+      const totalMs = roundMs(performance.now() - started);
+      this.logger.persistProfile({
+        reason,
+        outcome,
+        strokeCount,
+        textCount,
+        serializedBytes,
+        serializeMs,
+        recoveryWriteMs,
+        sidecarWriteMs,
+        recoveryClearMs,
+        writeMs: sidecarWriteMs ?? recoveryWriteMs,
+        maxSynchronousBlockingMs: serializeMs,
+        totalMs,
+        overlappedActiveGesture
+      });
+      this.reportDevProbe("sidecar-persist", {
+        reason,
+        outcome,
+        durationMs: totalMs,
+        recoveryWriteMs,
+        sidecarWriteMs,
+        recoveryClearMs,
+        strokeCount,
+        textCount
+      });
+    };
     if (!this.stillOwnsPersist()) {
       this.logger.sidecarPersist({
         reason,
@@ -8660,6 +9184,25 @@ function samplePoints<T>(points: readonly T[], maxPoints: number): T[] {
     sampled.push(points[Math.round((index * (points.length - 1)) / (maxPoints - 1))]!);
   }
   return sampled;
+}
+
+function rectDelta(previous: RectSnapshot | null, next: RectSnapshot): number {
+  if (!previous) return 0;
+  return Math.max(
+    Math.abs(next.left - previous.left),
+    Math.abs(next.top - previous.top),
+    Math.abs(next.width - previous.width),
+    Math.abs(next.height - previous.height)
+  );
+}
+
+function rectMismatch(pdf: RectSnapshot, ink: RectSnapshot): number {
+  return Math.max(
+    Math.abs(pdf.left - ink.left),
+    Math.abs(pdf.top - ink.top),
+    Math.abs(pdf.width - ink.width),
+    Math.abs(pdf.height - ink.height)
+  );
 }
 
 function drawBounds(points: readonly PdfPoint[]): NonNullable<DrawPositionLog["bounds"]> {

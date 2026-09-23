@@ -1,10 +1,31 @@
 import { queryPdfPageNodes } from "./pdfPageSelectors";
 import { PlatformCapabilities, type PlatformCapabilityReport } from "./PlatformCapabilities";
 
+export type PdfIntegrationStatus = "supported" | "supported-with-fallback" | "unsafe";
+
+export interface PdfIntegrationProfile {
+  schemaVersion: 1;
+  adapter: "direct" | "embedded";
+  status: PdfIntegrationStatus;
+  strategies: {
+    viewerRoot: string;
+    pages: string;
+    scrollRoot: string;
+    scale: string;
+    zoomEvents: string;
+    pageLifecycle: string;
+    sidebar: string;
+  };
+  capabilities: Record<string, boolean>;
+  failedProbes: string[];
+  warnings: string[];
+}
+
 export interface CompatibilityResult {
   compatible: boolean;
   errors: string[];
   warnings: string[];
+  profile: PdfIntegrationProfile;
   /** Present for reports produced by this compatibility layer; optional for legacy callers. */
   platform?: PlatformCapabilityReport;
   viewerRoot?: HTMLElement;
@@ -101,6 +122,7 @@ export class PdfViewerCompatibility {
   ): CompatibilityResult {
     return this.inspect(
       host,
+      "direct",
       [".pdf-viewer", ".pdfViewer"],
       [".pdf-toolbar", ".pdf-toolbar-container"],
       privateViewer,
@@ -117,6 +139,7 @@ export class PdfViewerCompatibility {
   ): CompatibilityResult {
     return this.inspect(
       host,
+      "embedded",
       [".pdf-embed .pdf-viewer", ".internal-embed .pdf-viewer", ".pdf-viewer", ".pdfViewer"],
       [".pdf-toolbar", ".pdf-toolbar-container"],
       privateViewer,
@@ -247,6 +270,7 @@ export class PdfViewerCompatibility {
 
   private static inspect(
     host: HTMLElement,
+    adapter: "direct" | "embedded",
     viewerSelectors: string[],
     toolbarSelectors: string[],
     resolvedPrivateViewer?: PdfJsViewerLike,
@@ -276,10 +300,42 @@ export class PdfViewerCompatibility {
     if (!findController) {
       warnings.push("PDF find controller unavailable; Handwriting Natively text will not appear in the PDF find bar");
     }
+    const eventBus = privateViewer?.eventBus ?? findController?.eventBus ?? findController?._eventBus;
+    const hasEventBus = Boolean(eventBus &&
+      typeof (eventBus as unknown as { on?: unknown }).on === "function" &&
+      typeof (eventBus as unknown as { off?: unknown }).off === "function");
+    const profile: PdfIntegrationProfile = {
+      schemaVersion: 1,
+      adapter,
+      status: errors.length ? "unsafe" : warnings.length ? "supported-with-fallback" : "supported",
+      strategies: {
+        viewerRoot: viewerRoot ? "validated-dom-selector" : "missing",
+        pages: page ? "numbered-dom-shell" : "missing",
+        scrollRoot: "adapter-fallback-chain",
+        scale: typeof privateViewer?.currentScale === "number" ? "private-viewer" : "page-geometry-fallback",
+        zoomEvents: hasEventBus ? "optional-event-bus" : "geometry-fallback",
+        pageLifecycle: "bounded-dom-observation",
+        sidebar: toolbarHost ? "native-toolbar-or-geometry" : "shared-toolbar-fallback"
+      },
+      capabilities: {
+        viewerRoot: Boolean(viewerRoot),
+        pageElements: Boolean(page),
+        toolbarHost: Boolean(toolbarHost),
+        privateViewer: Boolean(privateViewer),
+        findController: Boolean(findController),
+        eventBus: hasEventBus,
+        scaleReadable: typeof privateViewer?.currentScale === "number" || Boolean(page),
+        rotationReadable: typeof privateViewer?.pagesRotation === "number" || Boolean(page),
+        embedded: adapter === "embedded"
+      },
+      failedProbes: [...errors],
+      warnings: [...warnings]
+    };
     const result: CompatibilityResult = {
       compatible: errors.length === 0,
       errors,
       warnings,
+      profile,
       platform
     };
     if (viewerRoot) result.viewerRoot = viewerRoot;
