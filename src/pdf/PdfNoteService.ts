@@ -78,6 +78,62 @@ export interface InsertedPdfPage {
   pageNumber: number;
 }
 
+export interface ImportedPdfPages {
+  bytes: Uint8Array;
+  /** One-indexed page number of the first newly inserted page. */
+  pageNumber: number;
+  /** Number of imported pages, in the same order as `pageNumbers`. */
+  pageCount: number;
+  /** One-indexed source-PDF pages copied into the destination (document order). */
+  pageNumbers: number[];
+}
+
+/** Returns the page count after validating that the bytes are a readable PDF. */
+export async function getPdfPageCount(bytes: Uint8Array): Promise<number> {
+  const pdf = await PDFDocument.load(bytes);
+  return pdf.getPageCount();
+}
+
+/**
+ * Copies selected native PDF pages into the destination after `afterPage`.
+ * `pdf-lib` copies page dictionaries and content streams rather than rasterizing
+ * them, so page dimensions, rotation, and vector content remain native.
+ *
+ * Destination and source bytes are loaded independently so self-import (same
+ * path or identical bytes) cannot corrupt the destination snapshot.
+ */
+export async function importPdfPages(
+  destinationBytes: Uint8Array,
+  sourceBytes: Uint8Array,
+  afterPage: number,
+  requestedPageNumbers: readonly number[]
+): Promise<ImportedPdfPages> {
+  const destination = await PDFDocument.load(destinationBytes);
+  const source = await PDFDocument.load(sourceBytes);
+  const destinationCount = destination.getPageCount();
+  const sourceCount = source.getPageCount();
+  if (!destinationCount) throw new Error("Cannot import pages into a PDF with no pages.");
+  if (!Number.isInteger(afterPage) || afterPage < 1 || afterPage > destinationCount) {
+    throw new Error(`Destination PDF page ${afterPage} does not exist.`);
+  }
+  const pageNumbers = [...new Set(requestedPageNumbers)].sort((left, right) => left - right);
+  if (!pageNumbers.length) throw new Error("Select at least one PDF page to import.");
+  for (const pageNumber of pageNumbers) {
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > sourceCount) {
+      throw new Error(`Source PDF page ${pageNumber} does not exist.`);
+    }
+  }
+  const copiedPages = await destination.copyPages(source, pageNumbers.map((pageNumber) => pageNumber - 1));
+  const insertionIndex = afterPage;
+  copiedPages.forEach((page, index) => destination.insertPage(insertionIndex + index, page));
+  return {
+    bytes: await destination.save(),
+    pageNumber: afterPage + 1,
+    pageCount: copiedPages.length,
+    pageNumbers
+  };
+}
+
 /** Inserts a blank page matching the preceding page (or page one at the start). */
 export async function insertMatchingBlankPage(
   sourceBytes: Uint8Array,
