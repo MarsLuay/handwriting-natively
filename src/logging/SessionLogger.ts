@@ -115,6 +115,7 @@ export class SessionLogger {
     lastCorrelationId: null
   };
   private firstFailedPenDown: Record<string, unknown> | null = null;
+  private regressionReportedForStrokeAt: string | null = null;
   /** High-frequency text phases — sample so vault debug does not flood disk I/O. */
   private static readonly TEXT_TOOL_HOT_PHASES = new Set([
     "render",
@@ -492,6 +493,15 @@ export class SessionLogger {
     });
   }
 
+  /** Lifecycle-only zoom markers let a probe be placed on the same timeline as a view burst. */
+  zoomLifecycle(phase: "burst-start" | "settle" | "release", details: Record<string, unknown> = {}): void {
+    this.emit("info", "ink zoom lifecycle", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   /** Keep bounded input history in memory; dump it only for a routed-input anomaly. */
   inputLifecycleEvent(event: string, details: Record<string, unknown> = {}): void {
     this.inputLifecycle.push({ at: new Date().toISOString(), event, details: { ...details } });
@@ -544,6 +554,18 @@ export class SessionLogger {
       this.firstFailedPenDown = { at: failedAt, ...details };
     }
     this.inputLifecycleEvent("ink-input-anomaly", { reason: details.reason ?? "unknown" });
+    const lastSuccess = this.inputHeartbeat.lastEndAt;
+    if (lastSuccess && this.regressionReportedForStrokeAt !== lastSuccess) {
+      this.regressionReportedForStrokeAt = lastSuccess;
+      this.emit("warn", "pen-routing regression", {
+        document: this.documentPath,
+        reason: details.reason ?? "unknown",
+        timeSinceLastSuccessfulStrokeMs: this.timeSinceLastSuccessfulStrokeMs(),
+        lastSuccessfulStroke: { ...this.inputHeartbeat },
+        currentFailure: { ...details },
+        lifecycle: this.inputLifecycle.slice(-12)
+      });
+    }
     this.emit("warn", "ink input anomaly", {
       document: this.documentPath,
       ...details,

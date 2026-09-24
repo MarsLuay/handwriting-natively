@@ -204,12 +204,16 @@ interface ObsidianUiShellSnapshot {
   kind: ObsidianUiShellKind;
   active: boolean;
   details: Record<string, unknown>;
-  nestedShellCount: number;
-  nestedShellIds: Array<number | null>;
-  openedAt: number | null;
-  openedByPointerType: string | null;
-  lastInputPointerType: string | null;
-  routerGenerations: number[];
+  surfaceInstanceId: string | null;
+  initiatorPointerType: string | null;
+  initiatorAt: number | null;
+}
+
+interface NativePenContact {
+  startedAt: number;
+  scrollBefore: { left: number; top: number };
+  maxScrollDeltaPx: number;
+  panObserved: boolean;
 }
 
 function classifyObsidianUiShell(shell: Element): ObsidianUiShellKind {
@@ -736,6 +740,10 @@ export class ViewerInkSession {
   private lastUiShellMutationAt = 0;
   private uiShellMutationObserver: MutationObserver | null = null;
   private readonly uiShellSnapshots = new Map<Element, ObsidianUiShellSnapshot>();
+  private readonly nativePenContacts = new Map<number, NativePenContact>();
+  private lastPointerInitiator: { pointerType: string; pointerId: number; at: number; targetId: string | null } | null = null;
+  private zoomTimelineSequence = 0;
+  private activeZoomTimelineId: string | null = null;
   private readonly postUiInputProbe = new PostUiInputProbe();
   private readonly penScrollEvidence = new Map<number, PenScrollEvidence>();
   private postUiProbeTimer: number | null = null;
@@ -1597,22 +1605,52 @@ export class ViewerInkSession {
     if (!(this.options.debugEnabled?.() ?? false)) return;
     const contact = this.postUiInputProbe.pointerDown(Date.now(), event.pointerId, event.pointerType || "(empty)");
     if (!contact) return;
-    this.logger.postUiProbe("document", {
-      ...contact,
+    const path = this.safeComposedPath(event);
+    const page = hitTest.geometricPage?.element ?? null;
+    const target = isElement(event.target) ? event.target : null;
+    const documentDetails = {
+      eventPhase: event.eventPhase,
+      listenerPhase: "document-capture",
       targetId: getDebugNodeId(event.target),
       target: describeTarget(event.target),
-      page: hitTest.geometricPage?.pageNumber ?? null,
-      withinViewer: hitTest.details.targetWithinViewer ?? null
-    });
-    this.recordPostUiProbeStage(event, "hit-test", {
-      page: hitTest.geometricPage?.pageNumber ?? null,
+      currentTargetId: getDebugNodeId(event.currentTarget),
+      composedPathAvailable: path !== null,
+      composedPathLength: path?.length ?? 0,
+      composedPath: this.boundedComposedPath(path),
+      pageInComposedPath: Boolean(page && path?.includes(page)),
+      viewerInComposedPath: Boolean(path?.includes(this.options.adapter.root) || path?.includes(this.options.adapter.host)),
+      cancelable: event.cancelable,
+      defaultPrevented: event.defaultPrevented,
+      preventDefaultCalledByHandwriting: false,
+      propagationStoppedByHandwriting: false,
       targetWithinViewer: hitTest.details.targetWithinViewer ?? null,
-      pageOccludedByUi: hitTest.pageOccludedByUi,
+      targetWithinPage: Boolean(page && target && page.contains(target)),
+      targetWithinOverlay: Boolean(target?.closest?.(".native-pdf-handwriting-page-overlay")),
+      targetPageId: getDebugNodeId(hitTest.targetPage),
+      geometricPageId: getDebugNodeId(page),
+      geometricPage: hitTest.geometricPage?.pageNumber ?? null,
+      safeRecoveryPageId: getDebugNodeId(hitTest.safeRecoveryPage?.element),
       safeRecoveryPage: hitTest.safeRecoveryPage?.pageNumber ?? null,
+      elementFromPoint: hitTest.details.topHit ?? null,
+      elementsFromPoint: hitTest.details.hitStack ?? [],
+      targetOwnership: this.pointerTargetOwnership(event, hitTest),
+      page: hitTest.geometricPage?.pageNumber ?? null,
+      withinViewer: hitTest.details.targetWithinViewer ?? null,
+      viewerGeneration: this.viewerGeneration,
+      pageGeneration: this.pageGenerationFor(page),
+      zoomTimelineId: this.activeZoomTimelineId,
+      msSinceZoomSettle: this.msSinceZoomSettle()
+    };
+    const updated = this.postUiInputProbe.stage(Date.now(), event.pointerId, "document", documentDetails) ?? contact;
+    this.logger.postUiProbe("document", { ...updated, ...documentDetails });
+    this.recordPostUiProbeStage(event, "hit-test", {
+      ...documentDetails,
+      pageOccludedByUi: hitTest.pageOccludedByUi,
       topHitIsPdfPage: hitTest.details.topHitIsPdfPage ?? null,
       firstInteractiveHitBelongsToPage: hitTest.firstInteractiveHitBelongsToPage,
       staleOutsideHit: hitTest.details.staleOutsideHit ?? null
     });
+    this.beginNativePenContact(event);
   }
 
   private recordPostUiProbeStage(
@@ -1621,19 +1659,23 @@ export class ViewerInkSession {
     details: Record<string, unknown> = {}
   ): void {
     if (!(this.options.debugEnabled?.() ?? false)) return;
-    const contact = this.postUiInputProbe.stage(Date.now(), event.pointerId, stage, details);
-    if (contact) {
-      this.logger.postUiProbe(stage, {
-        ...contact,
-        pointerType: event.pointerType || "(empty)",
-        targetId: getDebugNodeId(event.target),
-        ...details
-      });
-    }
-    const page = this.closestPdfPageElement(event.target);
-    const surface = page ? [...this.surfaces.values()].find((candidate) => candidate.page.element === page) : undefined;
-    const handoff = this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, stage, {
-      ...this.pointerEventPropagationDetails(event, page, surface?.overlay ?? null),
+    const path = this.safeComposedPath(event);
+    const contact = this.postUiInputProbe.stage(Date.now(), event.pointerId, stage, {
+      eventPhase: event.eventPhase,
+      targetId: getDebugNodeId(event.target),
+      currentTargetId: getDebugNodeId(event.currentTarget),
+      composedPathAvailable: path !== null,
+      composedPathLength: path?.length ?? 0,
+      cancelable: event.cancelable,
+      defaultPrevented: event.defaultPrevented,
+      ...details
+    });
+    if (!contact) return;
+    this.logger.postUiProbe(stage, {
+      ...contact,
+      pointerType: event.pointerType || "(empty)",
+      targetId: getDebugNodeId(event.target),
+      currentTargetId: getDebugNodeId(event.currentTarget),
       ...details
     });
     if (handoff) {

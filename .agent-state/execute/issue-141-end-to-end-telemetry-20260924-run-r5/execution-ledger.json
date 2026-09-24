@@ -1,0 +1,286 @@
+{
+  "acceptance_criteria": [
+    "Correlated document-to-router/native trace with explicit pen-seen-document-not-router outcome",
+    "Deterministic tests and npm test/build/lint pass",
+    "UI/zoom lifecycle and first-failure regression summaries",
+    "Verified squashed merge to main and issue closure"
+  ],
+  "admission": {
+    "baseline_sha": "538d85c",
+    "coordination_record": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-coordination\\runs\\issue-141-end-to-end-telemetry-20260924-run-r5.json",
+    "plan_hash": "af83466602bf3883d4a8af2f00b17736a522e5cd6b6fd462388805930b6a9817",
+    "run_id": "issue-141-end-to-end-telemetry-20260924-run-r5",
+    "target": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.Projects\\native-pdf-handwriting",
+    "target_branch": "main",
+    "work_branch": "agent-run/issue-141-end-to-end-telemetry-20260924-run-r5",
+    "worktree": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-worktrees\\issue-141-end-to-end-telemetry-20260924-run-r5"
+  },
+  "assignments": {
+    "asg-3342be86903c7e084022b057": {
+      "dispatch": {
+        "acknowledged_at": "2026-09-24T20:19:08.615691Z",
+        "dispatch_id": "dispatch-issue141-p1t1-1",
+        "requested_at": "2026-09-24T20:19:08.157700Z"
+      },
+      "identity": {
+        "agent_id": "01a0d312-90fe-73e9-8ef6-c9937dcdc0a0",
+        "assignment_id": "asg-3342be86903c7e084022b057",
+        "assignment_key": "P1/P1-T1/worker/attempt-1",
+        "attempt": 1,
+        "authority": "parent",
+        "for_assignment": null,
+        "model": "gpt-5.6-luna",
+        "objective": "Extend bounded PostUiInputProbe and SessionLogger schemas with issue-141 correlation and outcome evidence.",
+        "parent": {
+          "run_id": "issue-141-end-to-end-telemetry-20260924-run-r5",
+          "worktree": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-worktrees\\issue-141-end-to-end-telemetry-20260924-run-r5"
+        },
+        "phase_id": "P1",
+        "requested_artifact_path": null,
+        "role": "worker",
+        "scope": {
+          "paths": [
+            "src/input/PostUiInputProbe.ts",
+            "src/logging/SessionLogger.ts",
+            "tests/post-ui-input-probe.test.ts",
+            "tests/session-logger.test.ts"
+          ]
+        },
+        "task_id": "P1-T1"
+      },
+      "result": null,
+      "status": "running",
+      "transitions": [
+        {
+          "at": "2026-09-24T20:18:42.709611Z",
+          "from": null,
+          "reason": "assigned",
+          "to": "planned"
+        },
+        {
+          "at": "2026-09-24T20:19:08.157719Z",
+          "from": "planned",
+          "reason": "dispatch requested",
+          "to": "dispatching"
+        },
+        {
+          "at": "2026-09-24T20:19:08.615709Z",
+          "from": "dispatching",
+          "reason": "dispatch acknowledged",
+          "to": "running"
+        }
+      ]
+    },
+    "asg-901599dcaf6764d4590d0ed2": {
+      "dispatch": {
+        "acknowledged_at": "2026-09-24T20:19:09.663099Z",
+        "dispatch_id": "dispatch-issue141-p1t2-1",
+        "requested_at": "2026-09-24T20:19:09.419230Z"
+      },
+      "identity": {
+        "agent_id": "01a0d312-90fe-73e9-8ef6-c9937dcdc0a0",
+        "assignment_id": "asg-901599dcaf6764d4590d0ed2",
+        "assignment_key": "P1/P1-T2/worker/attempt-1",
+        "attempt": 1,
+        "authority": "parent",
+        "for_assignment": "asg-3342be86903c7e084022b057",
+        "model": "gpt-5.6-luna",
+        "objective": "Add diagnostic-only router, pan, fallback, and runtime handoff evidence without changing route behavior.",
+        "parent": {
+          "run_id": "issue-141-end-to-end-telemetry-20260924-run-r5",
+          "worktree": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-worktrees\\issue-141-end-to-end-telemetry-20260924-run-r5"
+        },
+        "phase_id": "P1",
+        "requested_artifact_path": null,
+        "role": "worker",
+        "scope": {
+          "paths": [
+            "src/input/PointerRouter.ts",
+            "src/input/ViewerMousePan.ts",
+            "src/runtime/ViewerInkSession.ts",
+            "tests/input-pointer-routing.test.ts",
+            "tests/viewer-mouse-pan.test.ts",
+            "tests/combined-pan-integration.test.ts",
+            "tests/runtime-viewer-session.test.ts"
+          ]
+        },
+        "task_id": "P1-T2"
+      },
+      "result": null,
+      "status": "running",
+      "transitions": [
+        {
+          "at": "2026-09-24T20:18:51.482575Z",
+          "from": null,
+          "reason": "assigned",
+          "to": "planned"
+        },
+        {
+          "at": "2026-09-24T20:19:09.419249Z",
+          "from": "planned",
+          "reason": "dispatch requested",
+          "to": "dispatching"
+        },
+        {
+          "at": "2026-09-24T20:19:09.663119Z",
+          "from": "dispatching",
+          "reason": "dispatch acknowledged",
+          "to": "running"
+        }
+      ]
+    }
+  },
+  "authorization": "User explicitly authorized implementation, squash merge to main, and issue closure.",
+  "baseline_dirty_manifest": {
+    "baseline_sha": "538d85c9bdace26f6153c7e41ea50926ee27ccc4",
+    "classification": "generated_runtime_only and session_coordination_state; no product files in run scope",
+    "schema_version": 1,
+    "target": ".Projects/native-pdf-handwriting",
+    "tracked_generated_dirt_cleaned_before_baseline": [
+      ".obsidian/plugins/native-pdf-handwriting/main.js",
+      ".obsidian/plugins/native-pdf-handwriting/manifest.json",
+      ".obsidian/plugins/native-pdf-handwriting/styles.css",
+      "main.js"
+    ],
+    "untracked_runtime_state_preserved": [
+      ".agent-state/chats/",
+      ".agent-state/codebase-design/",
+      ".agent-state/sessions/01a0cd55-2fe8-7363-b3eb-84eec368d407/",
+      ".agent-state/sessions/01a0cd57-3466-77e3-8f4d-3759a84a596b/",
+      ".worktrees/"
+    ]
+  },
+  "created_at": "2026-09-24T20:18:22.949034Z",
+  "events": [
+    {
+      "action": "initialized",
+      "at": "2026-09-24T20:18:22.949080Z",
+      "detail": {
+        "run_id": "issue-141-end-to-end-telemetry-20260924-run-r5"
+      },
+      "sequence": 1
+    },
+    {
+      "action": "assignment-created",
+      "assignment_id": "asg-3342be86903c7e084022b057",
+      "at": "2026-09-24T20:18:42.709629Z",
+      "detail": {
+        "identity": {
+          "agent_id": "01a0d312-90fe-73e9-8ef6-c9937dcdc0a0",
+          "assignment_id": "asg-3342be86903c7e084022b057",
+          "assignment_key": "P1/P1-T1/worker/attempt-1",
+          "attempt": 1,
+          "authority": "parent",
+          "for_assignment": null,
+          "model": "gpt-5.6-luna",
+          "objective": "Extend bounded PostUiInputProbe and SessionLogger schemas with issue-141 correlation and outcome evidence.",
+          "parent": {
+            "run_id": "issue-141-end-to-end-telemetry-20260924-run-r5",
+            "worktree": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-worktrees\\issue-141-end-to-end-telemetry-20260924-run-r5"
+          },
+          "phase_id": "P1",
+          "requested_artifact_path": null,
+          "role": "worker",
+          "scope": {
+            "paths": [
+              "src/input/PostUiInputProbe.ts",
+              "src/logging/SessionLogger.ts",
+              "tests/post-ui-input-probe.test.ts",
+              "tests/session-logger.test.ts"
+            ]
+          },
+          "task_id": "P1-T1"
+        }
+      },
+      "sequence": 2
+    },
+    {
+      "action": "assignment-created",
+      "assignment_id": "asg-901599dcaf6764d4590d0ed2",
+      "at": "2026-09-24T20:18:51.482591Z",
+      "detail": {
+        "identity": {
+          "agent_id": "01a0d312-90fe-73e9-8ef6-c9937dcdc0a0",
+          "assignment_id": "asg-901599dcaf6764d4590d0ed2",
+          "assignment_key": "P1/P1-T2/worker/attempt-1",
+          "attempt": 1,
+          "authority": "parent",
+          "for_assignment": "asg-3342be86903c7e084022b057",
+          "model": "gpt-5.6-luna",
+          "objective": "Add diagnostic-only router, pan, fallback, and runtime handoff evidence without changing route behavior.",
+          "parent": {
+            "run_id": "issue-141-end-to-end-telemetry-20260924-run-r5",
+            "worktree": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-worktrees\\issue-141-end-to-end-telemetry-20260924-run-r5"
+          },
+          "phase_id": "P1",
+          "requested_artifact_path": null,
+          "role": "worker",
+          "scope": {
+            "paths": [
+              "src/input/PointerRouter.ts",
+              "src/input/ViewerMousePan.ts",
+              "src/runtime/ViewerInkSession.ts",
+              "tests/input-pointer-routing.test.ts",
+              "tests/viewer-mouse-pan.test.ts",
+              "tests/combined-pan-integration.test.ts",
+              "tests/runtime-viewer-session.test.ts"
+            ]
+          },
+          "task_id": "P1-T2"
+        }
+      },
+      "sequence": 3
+    },
+    {
+      "action": "dispatch-requested",
+      "assignment_id": "asg-3342be86903c7e084022b057",
+      "at": "2026-09-24T20:19:08.157725Z",
+      "detail": {
+        "dispatch_id": "dispatch-issue141-p1t1-1"
+      },
+      "sequence": 4
+    },
+    {
+      "action": "dispatch-acknowledged",
+      "assignment_id": "asg-3342be86903c7e084022b057",
+      "at": "2026-09-24T20:19:08.615714Z",
+      "detail": {
+        "agent_id": "01a0d312-90fe-73e9-8ef6-c9937dcdc0a0",
+        "dispatch_id": "dispatch-issue141-p1t1-1"
+      },
+      "sequence": 5
+    },
+    {
+      "action": "dispatch-requested",
+      "assignment_id": "asg-901599dcaf6764d4590d0ed2",
+      "at": "2026-09-24T20:19:09.419254Z",
+      "detail": {
+        "dispatch_id": "dispatch-issue141-p1t2-1"
+      },
+      "sequence": 6
+    },
+    {
+      "action": "dispatch-acknowledged",
+      "assignment_id": "asg-901599dcaf6764d4590d0ed2",
+      "at": "2026-09-24T20:19:09.663126Z",
+      "detail": {
+        "agent_id": "01a0d312-90fe-73e9-8ef6-c9937dcdc0a0",
+        "dispatch_id": "dispatch-issue141-p1t2-1"
+      },
+      "sequence": 7
+    }
+  ],
+  "objective": "Complete issue #141 end-to-end diagnostic telemetry without changing input routing behavior.",
+  "plan_identity": {
+    "content_hash": "af83466602bf3883d4a8af2f00b17736a522e5cd6b6fd462388805930b6a9817",
+    "contract_version": 2,
+    "design_id": "issue-141-end-to-end-telemetry-20260924",
+    "path": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.Projects\\native-pdf-handwriting\\.agent-state\\codebase-design\\issue-141-end-to-end-telemetry-20260924\\phase-plan.json"
+  },
+  "revision": 7,
+  "rollback_boundary": "Only the bounded issue-141 files and contract-listed memory pages in this run worktree.",
+  "run_id": "issue-141-end-to-end-telemetry-20260924-run-r5",
+  "schema_version": 1,
+  "status": "prepared",
+  "updated_at": "2026-09-24T20:19:09.663131Z"
+}
