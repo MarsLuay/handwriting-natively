@@ -12,6 +12,7 @@ This matrix is the manual-runtime companion to the deterministic compatibility f
 | Duplicate or stale page shell | `tests/pdf-page-locator.test.ts` | independent mount generation; ambiguous identity is unsafe |
 | Zoom fallback and inner-layer churn | `tests/pdf-sidebar-rail-offset.test.ts`, `tests/zoom-ink-compositing.test.ts`, `tests/runtime-viewer-session.test.ts` | geometry/event fallback, no plugin-owned remount, generation-safe reattachment |
 | Unsafe geometry/identity | `tests/annotation-safety.test.ts` | pointer and persistence gates reject the affected page |
+| Full synthetic interaction matrix | `tests/fixtures/pdfInteractionScenarios.ts`, `tests/pdf-interaction-fixtures.test.ts` | versioned direct/embedded scenarios cover sidecar, export/reopen, generation, zoom, sidebar, and cleanup assertions |
 
 ## Manual qualification rows
 
