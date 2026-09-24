@@ -210,6 +210,23 @@ describe("PdfPageLocator", () => {
     expect(locator.page(2)?.mountGeneration).toBe(2);
   });
 
+  it("marks indistinguishable duplicate shells unsafe instead of guessing", () => {
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const first = pageElement({ scale: "1", rect: { width: 600, height: 800 }, canvas: { width: 600, height: 800 } });
+    const second = pageElement({ scale: "1", rect: { width: 600, height: 800 }, canvas: { width: 600, height: 800 } });
+    viewer.append(first, second);
+    document.body.append(viewer);
+    const previous = document.elementFromPoint;
+    document.elementFromPoint = (() => null) as typeof document.elementFromPoint;
+    try {
+      const info = new PdfPageLocator(viewer).page(1);
+      expect(info).toMatchObject({ candidateCount: 2, identityConfidence: "ambiguous", identitySafe: false });
+    } finally {
+      document.elementFromPoint = previous ?? (() => null);
+    }
+  });
+
   it("prefers the hit-receiving duplicate shell when both keep a PDF canvas", () => {
     const viewer = document.createElement("div");
     viewer.className = "pdf-viewer";
