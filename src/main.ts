@@ -42,6 +42,9 @@ import { PdfImportFilePicker, PdfPageSelectionModal } from "./ui/PdfPageImport";
 import { mergeSettings, NativePdfInkSettingTab, type CopiedLogDiagnostics } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
 import { createDocumentIdentity, hashDocumentContent } from "./storage/DocumentIdentity";
+  insertScannedPages
+import { mergeSettings, NativePdfInkSettingTab } from "./settings";
+import { createDocumentIdentity } from "./storage/DocumentIdentity";
 import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "./storage/SidecarPageRemoval";
 import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
