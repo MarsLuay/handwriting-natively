@@ -1,0 +1,13 @@
+.Projects/native-pdf-handwriting/.agent-worktree.json
+.Projects/native-pdf-handwriting/docs/project-memory/architecture.md
+.Projects/native-pdf-handwriting/docs/project-memory/decisions.md
+.Projects/native-pdf-handwriting/docs/project-memory/verified.jsonl
+.Projects/native-pdf-handwriting/src/input/PointerRouter.ts
+.Projects/native-pdf-handwriting/src/input/PostUiInputProbe.ts
+.Projects/native-pdf-handwriting/src/input/ViewerMousePan.ts
+.Projects/native-pdf-handwriting/src/logging/SessionLogger.ts
+.Projects/native-pdf-handwriting/src/runtime/ViewerInkSession.ts
+.Projects/native-pdf-handwriting/tests/input-pointer-routing.test.ts
+.Projects/native-pdf-handwriting/tests/post-ui-input-probe.test.ts
+.Projects/native-pdf-handwriting/tests/runtime-viewer-session.test.ts
+.Projects/native-pdf-handwriting/tests/session-logger.test.ts
