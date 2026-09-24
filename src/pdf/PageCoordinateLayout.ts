@@ -51,8 +51,12 @@ export function overlayOffsetInParent(
   // by half a CSS pixel while zooming. CSS left/top are relative to the
   // padding edge; retain the computed fractional border width for that origin.
   const style = parent.ownerDocument.defaultView?.getComputedStyle(parent);
-  const computedBorderLeft = Number.parseFloat(style?.borderLeftWidth ?? "");
-  const computedBorderTop = Number.parseFloat(style?.borderTopWidth ?? "");
+  const computedBorderLeft = style?.borderLeftStyle !== "none"
+    ? Number.parseFloat(style?.borderLeftWidth ?? "")
+    : Number.NaN;
+  const computedBorderTop = style?.borderTopStyle !== "none"
+    ? Number.parseFloat(style?.borderTopWidth ?? "")
+    : Number.NaN;
   const borderLeft = Number.isFinite(computedBorderLeft) ? computedBorderLeft : parent.clientLeft || 0;
   const borderTop = Number.isFinite(computedBorderTop) ? computedBorderTop : parent.clientTop || 0;
   return {

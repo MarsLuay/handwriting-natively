@@ -15,7 +15,7 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
   readonly root: HTMLElement;
 
   private readonly image: HTMLImageElement;
-  private readonly page: HTMLElement;
+  private readonly pageElement: HTMLElement;
   private readonly callbacks: PdfAdapterCallbacks;
   private readonly cleanup: Array<() => void> = [];
   private readonly mounted = new Set<HTMLElement>();
@@ -26,9 +26,9 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
     this.host = host;
     this.image = image;
     this.callbacks = callbacks;
-    this.page = this.wrapImage(image);
-    this.root = this.page;
-    this.wrappedImage = this.page !== image.parentElement;
+    this.pageElement = this.wrapImage(image);
+    this.root = this.pageElement;
+    this.wrappedImage = this.pageElement !== image.parentElement;
     this.installObservers();
   }
 
@@ -62,7 +62,7 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
 
   restoreViewState(state: PdfViewState): void {
     if (state.pageNumber !== 1) return;
-    this.page.scrollIntoView?.({ block: "start" });
+    this.pageElement.scrollIntoView?.({ block: "start" });
     const scrollRoot = this.scrollElement();
     const denominator = Math.max(0, scrollRoot.scrollHeight - scrollRoot.clientHeight);
     scrollRoot.scrollTop = denominator * Math.max(0, Math.min(1, state.scrollFraction));
@@ -70,7 +70,7 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
 
   focusPage(pageNumber: number): boolean {
     if (pageNumber !== 1) return false;
-    this.page.scrollIntoView?.({ block: "start" });
+    this.pageElement.scrollIntoView?.({ block: "start" });
     return true;
   }
 
@@ -88,12 +88,12 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
 
   mountOverlay(pageNumber: number): HTMLElement {
     if (pageNumber !== 1) throw new Error(`Cannot mount annotation overlay: image page ${pageNumber} is unavailable`);
-    const overlay = createDetachedDiv(this.page.ownerDocument);
+    const overlay = createDetachedDiv(this.pageElement.ownerDocument);
     overlay.className = "native-pdf-handwriting-page-overlay";
     overlay.dataset.pageNumber = "1";
     overlay.dataset.focusOverlayInternal = "true";
-    this.ensureRelative(this.page);
-    this.page.append(overlay);
+    this.ensureRelative(this.pageElement);
+    this.pageElement.append(overlay);
     this.mounted.add(overlay);
     return overlay;
   }
@@ -132,9 +132,9 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
     for (const cleanup of this.cleanup.splice(0)) cleanup();
     for (const mounted of this.mounted) mounted.remove();
     this.mounted.clear();
-    if (this.wrappedImage && this.page.parentElement) {
-      this.page.parentElement.insertBefore(this.image, this.page);
-      this.page.remove();
+    if (this.wrappedImage && this.pageElement.parentElement) {
+      this.pageElement.parentElement.insertBefore(this.image, this.pageElement);
+      this.pageElement.remove();
     }
   }
 
@@ -150,24 +150,18 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
       height,
       scale: Math.min(scaleX, scaleY) > 0 ? Math.min(scaleX, scaleY) : 1,
       rotation: 0,
-      element: this.page
+      element: this.pageElement
     };
   }
 
   private wrapImage(image: HTMLImageElement): HTMLElement {
     const existing = image.parentElement;
     if (!existing) throw new Error("Image view element is detached");
-    const wrapper = image.ownerDocument.createElement("div");
+    const wrapper = createDetachedDiv(image.ownerDocument);
     wrapper.className = "native-pdf-handwriting-image-page";
     wrapper.dataset.pageNumber = "1";
-    wrapper.style.display = "inline-block";
-    wrapper.style.lineHeight = "0";
-    wrapper.style.maxWidth = "100%";
-    wrapper.style.position = "relative";
     existing.insertBefore(wrapper, image);
     wrapper.append(image);
-    image.style.display = "block";
-    image.style.maxWidth = "100%";
     return wrapper;
   }
 
