@@ -1,0 +1,63 @@
+{
+  "acceptance_criteria": [
+    "Correlated document-to-router/native trace with explicit pen-seen-document-not-router outcome",
+    "Deterministic tests and npm test/build/lint pass",
+    "UI/zoom lifecycle and first-failure regression summaries",
+    "Verified squashed merge to main and issue closure"
+  ],
+  "admission": {
+    "baseline_sha": "538d85c9bdace26f6153c7e41ea50926ee27ccc4",
+    "coordination_record": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-coordination\\runs\\issue-141-end-to-end-telemetry-20260924-run-r3.json",
+    "plan_hash": "af83466602bf3883d4a8af2f00b17736a522e5cd6b6fd462388805930b6a9817",
+    "run_id": "issue-141-end-to-end-telemetry-20260924-run-r3",
+    "target": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.Projects\\native-pdf-handwriting",
+    "target_branch": "main",
+    "work_branch": "agent-run/issue-141-end-to-end-telemetry-20260924-run-r3",
+    "worktree": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.git\\modules\\Projects\\native-pdf-handwriting\\agent-worktrees\\issue-141-end-to-end-telemetry-20260924-run-r3"
+  },
+  "assignments": {},
+  "authorization": "User explicitly authorized implementation, squash merge to main, and issue closure.",
+  "baseline_dirty_manifest": {
+    "baseline_sha": "538d85c9bdace26f6153c7e41ea50926ee27ccc4",
+    "classification": "generated_runtime_only and session_coordination_state; no product files in run scope",
+    "schema_version": 1,
+    "target": ".Projects/native-pdf-handwriting",
+    "tracked_generated_dirt_cleaned_before_baseline": [
+      ".obsidian/plugins/native-pdf-handwriting/main.js",
+      ".obsidian/plugins/native-pdf-handwriting/manifest.json",
+      ".obsidian/plugins/native-pdf-handwriting/styles.css",
+      "main.js"
+    ],
+    "untracked_runtime_state_preserved": [
+      ".agent-state/chats/",
+      ".agent-state/codebase-design/",
+      ".agent-state/sessions/01a0cd55-2fe8-7363-b3eb-84eec368d407/",
+      ".agent-state/sessions/01a0cd57-3466-77e3-8f4d-3759a84a596b/",
+      ".worktrees/"
+    ]
+  },
+  "created_at": "2026-09-24T20:16:44.372493Z",
+  "events": [
+    {
+      "action": "initialized",
+      "at": "2026-09-24T20:16:44.372518Z",
+      "detail": {
+        "run_id": "issue-141-end-to-end-telemetry-20260924-run-r3"
+      },
+      "sequence": 1
+    }
+  ],
+  "objective": "Complete issue #141 end-to-end diagnostic telemetry without changing input routing behavior.",
+  "plan_identity": {
+    "content_hash": "af83466602bf3883d4a8af2f00b17736a522e5cd6b6fd462388805930b6a9817",
+    "contract_version": 2,
+    "design_id": "issue-141-end-to-end-telemetry-20260924",
+    "path": "C:\\Users\\marwa\\Obsidian\\obsidian_notes\\.Projects\\native-pdf-handwriting\\.agent-state\\codebase-design\\issue-141-end-to-end-telemetry-20260924\\phase-plan.json"
+  },
+  "revision": 1,
+  "rollback_boundary": "Only the bounded issue-141 files and contract-listed memory pages in this run worktree.",
+  "run_id": "issue-141-end-to-end-telemetry-20260924-run-r3",
+  "schema_version": 1,
+  "status": "prepared",
+  "updated_at": "2026-09-24T20:16:44.372511Z"
+}
