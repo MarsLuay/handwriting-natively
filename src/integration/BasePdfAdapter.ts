@@ -89,6 +89,20 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.locator = new PdfPageLocator(this.root, compatibility.privateViewer);
     this.registerCleanup(() => this.zoomBoost?.destroy());
     for (const warning of compatibility.warnings) callbacks.onCompatibilityWarning?.(warning);
+    // Emit one bounded, sanitized profile for this adapter generation. The
+    // profile contains only booleans, strategies, counters, and fixed probe
+    // messages; raw DOM/private viewer objects never cross the diagnostics boundary.
+    callbacks.onDebugLog?.("info", "pdf integration profile", {
+      schemaVersion: compatibility.profile.schemaVersion,
+      adapter: compatibility.profile.adapter,
+      status: compatibility.profile.status,
+      viewerGeneration: compatibility.profile.viewerGeneration,
+      strategies: { ...compatibility.profile.strategies },
+      capabilities: { ...compatibility.profile.capabilities },
+      counters: { ...compatibility.profile.counters },
+      failedProbes: compatibility.profile.failedProbes.slice(0, 8),
+      warnings: compatibility.profile.warnings.slice(0, 8)
+    });
     this.listen();
   }
 
