@@ -24,6 +24,12 @@ export interface AnnotationPageInfo {
   geometryConfidence?: "authoritative" | "derived" | "heuristic";
   /** False means the surface must not accept annotation for this mount. */
   geometrySafe?: boolean;
+  /** Evidence quality for logical page identity when shells are duplicated. */
+  identityConfidence?: "authoritative" | "derived" | "heuristic" | "ambiguous";
+  /** False means duplicate/stale shells were not safely disambiguated. */
+  identitySafe?: boolean;
+  /** Number of candidate DOM shells observed for this logical page. */
+  candidateCount?: number;
 }
 
 export interface AnnotationViewState {
