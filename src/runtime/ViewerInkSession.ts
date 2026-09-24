@@ -1578,6 +1578,7 @@ export class ViewerInkSession {
     this.logger.inputHandoff("terminal", {
       outcome: result.outcome,
       correlationId: result.correlationId,
+      penContactId: result.penContactId,
       contact: result.contact,
       details: result.details
     });
