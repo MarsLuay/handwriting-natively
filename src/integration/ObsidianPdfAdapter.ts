@@ -32,6 +32,10 @@ export function pdfSurfaceExtensions(surface: AnnotationSurface): PdfSurfaceExte
 
 export interface ObsidianPdfAdapter extends AnnotationSurface, PdfSurfaceExtensions {
   readonly kind: "direct" | "embedded";
+  /** Monotonic per-adapter viewer generation; native and embedded leaves are independent. */
+  readonly viewerGeneration: number;
+  /** Current ephemeral DOM-shell generation for a logical page. */
+  pageMountGeneration(pageNumber: number): number;
   /** PDF adapters expose PDF export and viewer capabilities through the optional extension. */
   readonly supportsPdfExport?: true;
   readonly host: HTMLElement;

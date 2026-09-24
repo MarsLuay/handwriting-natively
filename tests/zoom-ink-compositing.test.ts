@@ -86,6 +86,8 @@ class ZoomAdapter implements ObsidianPdfAdapter {
   readonly pdfCanvas = document.createElement("canvas");
   readonly canvasWrapper = document.createElement("div");
   destroyed = false;
+  readonly viewerGeneration = 1;
+  pageMountGeneration(_pageNumber: number): number { return 1; }
   scale = 1;
   pageWidth = 600;
   pageHeight = 800;

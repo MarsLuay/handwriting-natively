@@ -174,6 +174,42 @@ describe("PdfPageLocator", () => {
     expect(locator.pages()[0]?.element).toBe(live);
   });
 
+  it("increments mount generation when a logical page receives a new shell", () => {
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const first = pageElement({ scale: "1", rect: { width: 600, height: 800 } });
+    viewer.append(first);
+    const locator = new PdfPageLocator(viewer);
+
+    expect(locator.page(1)).toMatchObject({ mountGeneration: 1, geometrySafe: true });
+    const replacement = pageElement({ scale: "1", rect: { width: 600, height: 800 } });
+    first.replaceWith(replacement);
+
+    const next = locator.page(1);
+    expect(next?.element).toBe(replacement);
+    expect(next?.mountGeneration).toBe(2);
+    expect(locator.mountGeneration(1)).toBe(2);
+  });
+
+  it("keeps mount generations independent for different logical pages", () => {
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer";
+    const first = pageElement({ scale: "1", rect: { width: 600, height: 800 } });
+    first.dataset.pageNumber = "1";
+    const second = pageElement({ scale: "1", rect: { width: 600, height: 800 } });
+    second.dataset.pageNumber = "2";
+    viewer.append(first, second);
+    const locator = new PdfPageLocator(viewer);
+
+    expect(locator.pages().map((page) => page.mountGeneration)).toEqual([1, 1]);
+    const replacement = pageElement({ scale: "1", rect: { width: 600, height: 800 } });
+    replacement.dataset.pageNumber = "2";
+    second.replaceWith(replacement);
+
+    expect(locator.page(1)?.mountGeneration).toBe(1);
+    expect(locator.page(2)?.mountGeneration).toBe(2);
+  });
+
   it("prefers the hit-receiving duplicate shell when both keep a PDF canvas", () => {
     const viewer = document.createElement("div");
     viewer.className = "pdf-viewer";

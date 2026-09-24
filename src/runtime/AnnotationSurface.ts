@@ -16,8 +16,14 @@ export interface AnnotationPageInfo {
   rotation: number;
   /** Coordinate origin for page-local geometry. PDF defaults to bottom-left. */
   coordinateOrigin?: "top-left" | "bottom-left";
-  /** Live host element for this page. */
+  /** Live host element for this page; the DOM node is an ephemeral mount. */
   element: HTMLElement;
+  /** Changes when the logical page is backed by a different DOM shell. */
+  mountGeneration?: number;
+  /** Evidence quality for the geometry used by annotation mapping. */
+  geometryConfidence?: "authoritative" | "derived" | "heuristic";
+  /** False means the surface must not accept annotation for this mount. */
+  geometrySafe?: boolean;
 }
 
 export interface AnnotationViewState {
