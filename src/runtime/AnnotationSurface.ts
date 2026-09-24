@@ -33,9 +33,26 @@ export interface AnnotationViewState {
   rotation: number;
 }
 
+/** Semantic lifecycle evidence emitted by PDF adapters; no DOM/private types escape. */
+export interface AnnotationPageLifecycleChange {
+  kind: "mount" | "unmount" | "replace" | "render" | "reload" | "viewer-replaced";
+  viewerGeneration: number;
+  pageNumbers?: number[];
+  mountGenerations?: Record<string, number>;
+}
+
+export interface AnnotationZoomChange {
+  phase: "begin" | "change" | "settled";
+  scale: number | null;
+  source: "viewer-event" | "geometry" | "mutation-fallback" | "unknown";
+  viewerGeneration: number;
+}
+
 export interface AnnotationSurfaceCallbacks {
   onViewStateChange?(state: AnnotationViewState, source: ViewStateSource): void;
   onPagesChanged?(reason: string): void;
+  onPageLifecycleChange?(change: AnnotationPageLifecycleChange): void;
+  onZoomChange?(change: AnnotationZoomChange): void;
   onPageContentMutation?(recordCount: number): void;
   onCompatibilityWarning?(message: string): void;
   onDebugLog?(level: VaultLogLevel, event: string, payload?: Record<string, unknown>): void;
