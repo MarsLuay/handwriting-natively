@@ -46,6 +46,7 @@ export interface PostUiProbeArmContext {
 export interface PostUiProbeContactSummary {
   armId: string;
   correlationId: string;
+  penContactId: string;
   pointerId: number;
   pointerType: string;
   startedAt: number;
@@ -71,6 +72,7 @@ export interface PostUiProbeContactSummary {
 export interface PostUiProbeResult {
   armId: string;
   correlationId: string | null;
+  penContactId: string | null;
   outcome: PostUiProbeOutcome;
   elapsedMs: number;
   pointerDownCount: number;
@@ -330,6 +332,7 @@ export class PostUiInputProbe {
       results.push({
         armId: active.armId,
         correlationId: null,
+        penContactId: null,
         outcome: "post-ui-probe-expired-no-pen",
         elapsedMs: Math.max(0, now - active.armedAt),
         pointerDownCount: active.pointerDownCount,
@@ -437,6 +440,7 @@ export class PostUiInputProbe {
     return {
       armId: active.armId,
       correlationId: contact.correlationId,
+      penContactId: contact.correlationId,
       outcome,
       elapsedMs: Math.max(0, now - active.armedAt),
       pointerDownCount: active.pointerDownCount,
@@ -456,6 +460,7 @@ export class PostUiInputProbe {
     return {
       armId: contact.armId,
       correlationId: contact.correlationId,
+      penContactId: contact.correlationId,
       outcome,
       elapsedMs: Math.max(0, now - contact.startedAt),
       pointerDownCount: 1,
@@ -487,6 +492,7 @@ export class PostUiInputProbe {
     return {
       armId: contact.armId,
       correlationId: contact.correlationId,
+      penContactId: contact.correlationId,
       pointerId: contact.pointerId,
       pointerType: contact.pointerType,
       startedAt: contact.startedAt,
