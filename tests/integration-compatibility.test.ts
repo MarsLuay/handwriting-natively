@@ -109,7 +109,7 @@ describe("platform and PDF compatibility evidence", () => {
     expect(result.profile).toMatchObject({
       schemaVersion: 1,
       adapter: "direct",
-      status: "supported-with-fallback",
+      status: "degraded",
       viewerGeneration: 1,
       capabilities: {
         viewerRoot: true,
@@ -117,6 +117,7 @@ describe("platform and PDF compatibility evidence", () => {
         trustworthyPageNumbers: true,
         geometryReadable: true,
         scrollRoot: true,
+        sidebarObservable: false,
         embedded: false
       },
       counters: {
