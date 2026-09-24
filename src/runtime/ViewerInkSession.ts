@@ -1,10 +1,12 @@
 import type { DrawingTool, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarPlacement, ToolPreferences } from "../model";
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
-import type {
-  AnnotationPageLifecycleChange,
-  AnnotationSurface,
-  AnnotationPageInfo,
-  AnnotationZoomChange
+import {
+  annotationPageMountMatches,
+  annotationPageSafetyReason,
+  type AnnotationPageLifecycleChange,
+  type AnnotationSurface,
+  type AnnotationPageInfo,
+  type AnnotationZoomChange
 } from "./AnnotationSurface";
 import { pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
 import { describeTarget } from "../dom/describeElement";
@@ -613,6 +615,8 @@ interface PageSurface {
   eraserSize: number | undefined;
   eraserWholeStrokes: boolean | undefined;
   textIntent: { start: PagePoint; hit: TextAnnotation | null; pointerType: string } | null;
+  /** Last unsafe evidence reason reported for this page generation. */
+  annotationSafetyBlocked: string | null;
 }
 
 /** A one-shot bitmap cover kept alive while Obsidian replaces a source PDF. */
@@ -682,6 +686,7 @@ export class ViewerInkSession {
   private readonly texts = new TextAnnotationSession();
   private readonly identity;
   private readonly surfaces = new Map<number, PageSurface>();
+  private readonly pageSafetyDiagnostics = new Map<number, string>();
   private readonly ownedInputPages = new Set<HTMLElement>();
   private readonly exporter = new PdfExportService();
   private readonly createdAt = new Date().toISOString();
@@ -2523,6 +2528,57 @@ export class ViewerInkSession {
     return canAnnotatePointer(event, context);
   }
 
+  private pageEvidenceReason(page: AnnotationPageInfo): string | null {
+    const reason = annotationPageSafetyReason(page);
+    if (reason) return reason;
+    if (!this.options.adapter.root.contains(page.element)
+      && !this.options.adapter.host.contains(page.element)) return "outside-viewer-host";
+    return null;
+  }
+
+  private recordPageEvidence(page: AnnotationPageInfo, reason: string | null): void {
+    const surface = this.surfaces.get(page.pageNumber);
+    if (surface) surface.annotationSafetyBlocked = reason;
+    if (!reason) {
+      this.pageSafetyDiagnostics.delete(page.pageNumber);
+      return;
+    }
+    const diagnosticKey = `${reason}:${page.mountGeneration ?? "none"}:${getDebugNodeId(page.element)}`;
+    if (this.pageSafetyDiagnostics.get(page.pageNumber) === diagnosticKey) return;
+    this.pageSafetyDiagnostics.set(page.pageNumber, diagnosticKey);
+    this.logger.inputLifecycleEvent("annotation-safety-blocked", {
+      page: page.pageNumber,
+      reason,
+      pageId: getDebugNodeId(page.element),
+      mountGeneration: page.mountGeneration ?? null,
+      geometryConfidence: page.geometryConfidence ?? null,
+      identityConfidence: page.identityConfidence ?? null
+    });
+  }
+
+  private canAnnotateSurface(
+    surface: PageSurface,
+    event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
+  ): boolean {
+    if (!this.canAnnotatePointerEvent(event)) return false;
+    const current = this.options.adapter.page(surface.page.pageNumber);
+    let reason = this.pageEvidenceReason(surface.page);
+    if (surface.page.mountGeneration !== undefined) {
+      reason = current ? this.pageEvidenceReason(current) : "page-not-found";
+      if (!reason && current && !annotationPageMountMatches(current, surface.page)) {
+        reason = "stale-page-generation";
+      }
+    } else if (current && current.element === surface.page.element) {
+      reason = this.pageEvidenceReason(current);
+    }
+    if (reason) {
+      this.recordPageEvidence(current ?? surface.page, reason);
+      return false;
+    }
+    this.recordPageEvidence(surface.page, null);
+    return true;
+  }
+
   private inputPolicyLogFields(): Record<string, unknown> {
     return {
       ...describeInputPolicies({
@@ -3693,20 +3749,27 @@ export class ViewerInkSession {
    * (never scan all 900+ page rects on scroll).
    */
   private pagesForInkMount(): AnnotationPageInfo[] {
+    const candidates: AnnotationPageInfo[] = [];
     if (!this.runtimePlatform().mobile) {
-      return this.options.adapter.pages();
+      candidates.push(...this.options.adapter.pages());
+    } else {
+      const pad = 1;
+      const currentPage = this.options.adapter.getViewState().pageNumber;
+      for (let pageNumber = currentPage - pad; pageNumber <= currentPage + pad; pageNumber += 1) {
+        if (pageNumber < 1) continue;
+        const page = this.options.adapter.page(pageNumber);
+        if (page) candidates.push(page);
+      }
+      if (candidates.length === 0) {
+        const fallback = this.options.adapter.page(1) ?? this.options.adapter.pages()[0];
+        if (fallback) candidates.push(fallback);
+      }
     }
-    const pad = 1;
-    const currentPage = this.options.adapter.getViewState().pageNumber;
-    const resolved: AnnotationPageInfo[] = [];
-    for (let pageNumber = currentPage - pad; pageNumber <= currentPage + pad; pageNumber += 1) {
-      if (pageNumber < 1) continue;
-      const page = this.options.adapter.page(pageNumber);
-      if (page) resolved.push(page);
-    }
-    if (resolved.length > 0) return resolved;
-    const fallback = this.options.adapter.page(1) ?? this.options.adapter.pages()[0];
-    return fallback ? [fallback] : [];
+    return candidates.filter((page) => {
+      const reason = this.pageEvidenceReason(page);
+      this.recordPageEvidence(page, reason);
+      return reason === null;
+    });
   }
 
   /** Tool/draw-mode swaps update hit-testing/cursors/text chrome without rebuilding ink pixels. */
@@ -5371,7 +5434,8 @@ export class ViewerInkSession {
       eraserSize: undefined,
       eraserWholeStrokes: undefined,
       textIntent: null,
-      pendingRouterHandoff: null
+      pendingRouterHandoff: null,
+      annotationSafetyBlocked: null
     };
     surface.router = this.createPageRouter(surface);
     this.ensurePagePositioning(page.element);
@@ -5417,7 +5481,7 @@ export class ViewerInkSession {
   private createPageRouter(surface: PageSurface): PointerRouter {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
-      canAnnotatePointer: (event) => this.canAnnotatePointerEvent(event),
+      canAnnotatePointer: (event) => this.canAnnotateSurface(surface, event),
       mouseAnnotationEnabled: () => this.runtimePlatform().mobile
         ? mouseAnnotationEnabled(this.mouseInputMode())
         : true,
@@ -9668,6 +9732,16 @@ export class ViewerInkSession {
     return normalizeRotation(value);
   }
 
+  private unsafeSnapshotPage(snapshot: SidecarSchemaV1): { page: number; reason: string } | null {
+    for (const stored of snapshot.pages) {
+      const current = this.options.adapter.page(stored.page);
+      if (!current) continue;
+      const reason = this.pageEvidenceReason(current);
+      if (reason) return { page: stored.page, reason };
+    }
+    return null;
+  }
+
   private snapshot(): SidecarSchemaV1 {
     const now = new Date().toISOString();
     const stored = new Map<number, InkStroke[]>();
@@ -9780,6 +9854,20 @@ export class ViewerInkSession {
         skipped: this.writesAbandoned ? "abandoned-writer" : "destroyed"
       });
       reportPersist(this.writesAbandoned ? "skipped-abandoned" : "skipped-destroyed");
+      return;
+    }
+    const unsafe = this.unsafeSnapshotPage(snapshot);
+    if (unsafe) {
+      this.logger.sidecarPersist({
+        reason,
+        documentId: this.identity.id,
+        strokeCount,
+        textCount,
+        dirty: this.isDirty(),
+        updatedAt: snapshot.updatedAt,
+        skipped: `unsafe-page:${unsafe.page}:${unsafe.reason}`
+      });
+      reportPersist("skipped-unsafe-page");
       return;
     }
     try {

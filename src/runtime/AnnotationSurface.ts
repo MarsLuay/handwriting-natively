@@ -39,6 +39,31 @@ export interface AnnotationViewState {
   rotation: number;
 }
 
+/** Bounded evidence gate shared by adapters and the annotation runtime. */
+export function annotationPageSafetyReason(page: AnnotationPageInfo): string | null {
+  if (!page.element.isConnected) return "page-detached";
+  if (page.geometrySafe === false
+    || !Number.isFinite(page.width)
+    || !Number.isFinite(page.height)
+    || page.width <= 1
+    || page.height <= 1) {
+    return "geometry-unsafe";
+  }
+  if (page.identitySafe === false || page.identityConfidence === "ambiguous") {
+    return "identity-unsafe";
+  }
+  return null;
+}
+
+/** A page shell must remain the same live generation before accepting input. */
+export function annotationPageMountMatches(current: AnnotationPageInfo, expected: AnnotationPageInfo): boolean {
+  if (current.element !== expected.element) return false;
+  if (current.mountGeneration === undefined && expected.mountGeneration === undefined) return true;
+  return current.mountGeneration !== undefined
+    && expected.mountGeneration !== undefined
+    && current.mountGeneration === expected.mountGeneration;
+}
+
 /** Semantic lifecycle evidence emitted by PDF adapters; no DOM/private types escape. */
 export interface AnnotationPageLifecycleChange {
   kind: "mount" | "unmount" | "replace" | "render" | "reload" | "viewer-replaced";
