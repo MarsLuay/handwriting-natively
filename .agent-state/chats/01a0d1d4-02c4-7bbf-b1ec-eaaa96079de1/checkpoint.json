@@ -5,6 +5,6 @@
   "contractId": "native-pdf-handwriting-context-v1",
   "contractHash": "ac54a09369cebb4e94c3454cd75afd50a42ef06550a6bdbd1ff7038ebdaad037",
   "lifecycle": "idle",
-  "queuedPromptCount": 1,
-  "updatedAt": "2026-09-24T06:08:49.863Z"
+  "queuedPromptCount": 0,
+  "updatedAt": "2026-09-24T06:23:28.184Z"
 }
