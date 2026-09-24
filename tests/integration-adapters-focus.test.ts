@@ -65,10 +65,16 @@ describe("PDF adapters", () => {
     const pageChanges = vi.fn();
     const adapter = await NativePdfViewAdapter.attach(host, { onPagesChanged: pageChanges });
     const previousRoot = adapter.root;
+    expect(adapter.viewerGeneration).toBe(1);
 
     previousRoot.remove();
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(pageChanges).toHaveBeenCalledWith("host-dom");
+    expect(adapter.viewerGeneration).toBe(2);
+    expect(adapter.compatibilityReport().profile).toMatchObject({
+      viewerGeneration: 2,
+      counters: { viewerReplacements: 1 }
+    });
     const callsBeforeDestroy = pageChanges.mock.calls.length;
 
     adapter.destroy();
