@@ -4,9 +4,8 @@ import type { PdfFindControllerLike, PdfIntegrationProfile, PdfJsEventBus } from
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import type { PdfPageInfo } from "./PdfPageLocator";
 
-/** @deprecated Use AnnotationViewState in shared runtime code. */
+/** Compatibility aliases for PDF-only adapters and integrations. */
 export type PdfViewState = AnnotationViewState;
-/** @deprecated Use AnnotationSurfaceCallbacks in shared runtime code. */
 export type PdfAdapterCallbacks = AnnotationSurfaceCallbacks;
 
 /** Optional PDF-only capabilities; generic annotation surfaces do not implement this contract. */
@@ -28,7 +27,7 @@ export interface PdfSurfaceExtensions {
 
 export function pdfSurfaceExtensions(surface: AnnotationSurface): PdfSurfaceExtensions | null {
   const candidate = surface as AnnotationSurface & Partial<PdfSurfaceExtensions>;
-  return candidate.supportsPdfExport === true ? candidate as PdfSurfaceExtensions : null;
+  return candidate.supportsPdfExport === true ? candidate : null;
 }
 
 export interface ObsidianPdfAdapter extends AnnotationSurface, PdfSurfaceExtensions {

@@ -13,9 +13,9 @@ describe("main PDF page actions", () => {
   });
 
   it("wires thumbnail blank-page and delete actions through in-place callbacks", () => {
-    expect(mainSource).toContain("onInsertPage: (pageNumber) => this.insertPageInPlace(file, pageNumber)");
-    expect(mainSource).toContain("onDeletePage: (pageNumber) => this.deletePageInPlace(file, pageNumber)");
-    expect(mainSource).toContain("onDeletePages: (pageNumbers) => this.deletePagesInPlace(file, pageNumbers)");
+    expect(mainSource).toContain("onInsertPage: (pageNumber: number) => this.insertPageInPlace(file, pageNumber)");
+    expect(mainSource).toContain("onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber)");
+    expect(mainSource).toContain("onDeletePages: (pageNumbers: readonly number[]) => this.deletePagesInPlace(file, pageNumbers)");
     expect(mainSource).toContain("writePdfAndAnnotationStoresAtomic");
     expect(mainSource).not.toContain("createUnsupportedPdfPageMutationCallbacks");
   });

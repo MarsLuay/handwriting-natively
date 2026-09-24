@@ -368,9 +368,9 @@ export interface ViewerInkSessionOptions {
   saveSettings(preferences: ToolPreferences): Promise<void>;
   savePluginSettings?(patch: Partial<PluginSettings>): Promise<void>;
   /** Reads source bytes for content identity; works for PDF and image documents. */
-  readDocument?(): Promise<Uint8Array>;
-  /** @deprecated Use readDocument for generic surfaces. */
-  readSourcePdf?(): Promise<Uint8Array>;
+  readDocument?(this: void): Promise<Uint8Array>;
+  /** Compatibility callback for PDF integrations that have not migrated yet. */
+  readSourcePdf?(this: void): Promise<Uint8Array>;
   /** Writes the current source PDF bytes after a validated page import. */
   writeSourcePdf?(bytes: Uint8Array): Promise<void>;
   /** Optional document export supplied by a surface-specific integration. */
