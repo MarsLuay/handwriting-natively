@@ -704,6 +704,8 @@ export default class NativePdfInkPlugin extends Plugin {
   private sessionAdapterCallbacks(getSession: () => ViewerInkSession | undefined): AnnotationSurfaceCallbacks {
     return {
       onPagesChanged: (reason) => getSession()?.onPagesChanged(reason),
+      onPageLifecycleChange: (change) => getSession()?.onPageLifecycleChange(change),
+      onZoomChange: (change) => getSession()?.onZoomChange(change),
       onViewStateChange: (state, source) => getSession()?.onViewStateChange(state, source),
       onPageContentMutation: (recordCount) => getSession()?.onPdfPageContentMutation(recordCount),
       onCompatibilityWarning: (message) => {
