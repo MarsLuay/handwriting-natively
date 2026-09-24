@@ -94,6 +94,57 @@ describe("PostUiInputProbe", () => {
     expect(result?.outcome).toBe(expected);
   });
 
+  it("correlates an unarmed document Pencil contact through router handoff and native evidence", () => {
+    const probe = new PostUiInputProbe();
+    const contact = probe.observeDocument(2_000, 42, "pen", {
+      page: 3,
+      targetWithinPage: false,
+      targetWithinOverlay: false,
+      fallbackConsidered: true,
+      fallbackEligible: true
+    });
+    expect(contact?.correlationId).toBe("pen-routing-1");
+    probe.handoffStage(2_001, 42, "router-received", { page: 3, routerGeneration: 19 });
+    probe.handoffStage(2_002, 42, "route", { route: "draw", routeReason: "stylus-draw" });
+    probe.handoffStage(2_003, 42, "native-evidence", { nativeMovementObserved: false, maxScrollDeltaPx: 0 });
+    const result = probe.finishHandoff(2_010, 42, "pointerup", "post-ui-pen-success", { persistedStrokePoints: 8 });
+
+    expect(result).toMatchObject({
+      correlationId: "pen-routing-1",
+      outcome: "post-ui-pen-success",
+      contact: expect.objectContaining({
+        routerReceived: true,
+        page: 3,
+        routerGeneration: 19,
+        nativeScrollDeltaPx: 0,
+        terminal: "pointerup"
+      }),
+      details: expect.objectContaining({ persistedStrokePoints: 8 })
+    });
+  });
+
+  it("preserves a document-only Pencil outcome when same-dispatch fallback is rejected", () => {
+    const probe = new PostUiInputProbe();
+    probe.observeDocument(4_000, 9, "pen", { page: 1, fallbackRejected: true });
+    probe.handoffStage(4_001, 9, "fallback", {
+      fallbackConsidered: true,
+      fallbackEligible: false,
+      fallbackRejected: true,
+      fallbackRejectedReason: "same-dispatch-no-router"
+    });
+
+    expect(probe.finishHandoff(4_002, 9, "pointerdown", "pen-seen-document-not-router"))
+      .toMatchObject({
+        outcome: "pen-seen-document-not-router",
+        contact: expect.objectContaining({
+          documentSeen: true,
+          routerReceived: false,
+          fallbackEligible: false,
+          fallbackRejectedReason: "same-dispatch-no-router"
+        })
+      });
+  });
+
   it("bounds contacts and pointer-down accounting without logging move-like state", () => {
     const probe = new PostUiInputProbe();
     probe.arm(0, context);

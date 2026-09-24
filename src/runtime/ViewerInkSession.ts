@@ -197,6 +197,10 @@ interface ObsidianUiShellSnapshot {
   kind: ObsidianUiShellKind;
   active: boolean;
   details: Record<string, unknown>;
+  openedAt: number | null;
+  openedByPointerType: string | null;
+  lastInputPointerType: string | null;
+  routerGenerations: number[];
 }
 
 function classifyObsidianUiShell(shell: Element): ObsidianUiShellKind {
@@ -531,6 +535,25 @@ interface ZoomProfileState {
   sidebarFollowSuppressedTriggers: number;
 }
 
+interface PenScrollEvidence {
+  correlationId: string;
+  beforeLeft: number;
+  beforeTop: number;
+  maxDeltaPx: number;
+  terminalLeft: number | null;
+  terminalTop: number | null;
+  observedAt: number;
+}
+
+interface ToolChangeMarker {
+  id: string;
+  at: number;
+  previousTool: ToolId;
+  nextTool: ToolId;
+  source: string;
+  pointerType: string;
+}
+
 interface PageSurface {
   page: AnnotationPageInfo;
   overlay: HTMLElement;
@@ -690,7 +713,15 @@ export class ViewerInkSession {
   private uiShellMutationObserver: MutationObserver | null = null;
   private readonly uiShellSnapshots = new Map<Element, ObsidianUiShellSnapshot>();
   private readonly postUiInputProbe = new PostUiInputProbe();
+  private readonly penScrollEvidence = new Map<number, PenScrollEvidence>();
   private postUiProbeTimer: number | null = null;
+  private lastUiInputPointerType = "programmatic";
+  private lastUiSurfaceCloseAt: number | null = null;
+  private lastZoomSettleAt: number | null = null;
+  private lastTouchPanAt: number | null = null;
+  private lastRouterBindAt: number | null = null;
+  private lastPageReplacementAt: number | null = null;
+  private lastToolChange: ToolChangeMarker | null = null;
   private postUiPendingPersistence: { correlationId: string; page: number | null } | null = null;
   /** Dedup key → last emit time for pen occlusion anomaly bursts. */
   private lastPenOcclusionAnomalyAt = 0;
@@ -717,6 +748,8 @@ export class ViewerInkSession {
   /** Last observed PDF.js scale — burst baseline for single-tick delta coalesce. */
   private lastKnownViewScale: number | null = null;
   private zoomBurstReason = "view-scalechanging";
+  private zoomCorrelationId: string | null = null;
+  private zoomSequence = 0;
   /** Delayed release avoids exposing an ink redraw before PDF.js finishes its own render. */
   private zoomCompositeReleaseFrame: number | null = null;
   private zoomCompositeReleaseTimer: number | null = null;
@@ -858,6 +891,26 @@ export class ViewerInkSession {
       ],
       callbacks: {
         onPreferencesChange: (preferences, reason = "general") => {
+          const previousTool = this.lastObservedTool;
+          if (preferences.activeTool !== previousTool) {
+            const at = Date.now();
+            this.lastToolChange = {
+              id: `tool-${at}-${preferences.activeTool}`,
+              at,
+              previousTool,
+              nextTool: preferences.activeTool,
+              source: reason,
+              pointerType: this.lastUiInputPointerType
+            };
+            this.logger.toolChanged({
+              toolChangeId: this.lastToolChange.id,
+              previousTool,
+              nextTool: preferences.activeTool,
+              source: reason,
+              pointerType: this.lastUiInputPointerType,
+              activeStroke: this.hasAnyLiveInkInput()
+            });
+          }
           const wasTextToolActive = this.textToolActive;
           this.textToolActive = preferences.activeTool === "text";
           if (wasTextToolActive !== this.textToolActive) {
@@ -1070,10 +1123,21 @@ export class ViewerInkSession {
 
     this.installPointerDownProbes(doc, options, within);
     this.installPointerUpCancelProbes(doc, options);
+    adapter.scrollElement().addEventListener("scroll", () => this.updatePenScrollEvidence(), options);
     this.installTouchProbes(doc, options, within);
     this.installWheelProbes(doc, options, within, adapter);
     this.installGestureProbes(doc, options, within);
     this.installUiShellMutationWatch(doc);
+  }
+
+  private noteUiInput(event: PointerEvent): void {
+    const pointerType = event.pointerType || "(empty)";
+    this.lastUiInputPointerType = pointerType;
+    if (!isElement(event.target)) return;
+    const shell = findObsidianUiShell(event.target);
+    if (!shell) return;
+    const snapshot = this.uiShellSnapshots.get(shell.shell);
+    if (snapshot) snapshot.lastInputPointerType = pointerType;
   }
 
   private installUiShellMutationWatch(doc: Document): void {
@@ -1118,49 +1182,117 @@ export class ViewerInkSession {
   private captureUiShellSnapshots(doc: Document, armOnTransition = false, removedShells: readonly Element[] = []): void {
     const next = new Map<Element, ObsidianUiShellSnapshot>();
     const transitions: Record<string, unknown>[] = [];
+    const now = Date.now();
+    const routerGenerations = this.currentRouterGenerations();
     for (const shell of [...doc.querySelectorAll(OBSIDIAN_UI_SHELL_SELECTOR)]) {
       const kind = classifyObsidianUiShell(shell);
       const active = isActiveObsidianUiShell(shell, kind);
+      const previous = this.uiShellSnapshots.get(shell);
+      const opened = active && !previous?.active;
       const snapshot: ObsidianUiShellSnapshot = {
         kind,
         active,
-        details: hitElementDetails(shell) ?? {}
+        details: hitElementDetails(shell) ?? {},
+        openedAt: active ? (previous?.openedAt ?? (opened ? now : null)) : null,
+        openedByPointerType: active ? (previous?.openedByPointerType ?? (opened ? this.lastUiInputPointerType : null)) : null,
+        lastInputPointerType: active ? (previous?.lastInputPointerType ?? this.lastUiInputPointerType) : null,
+        routerGenerations
       };
       next.set(shell, snapshot);
-      const previous = this.uiShellSnapshots.get(shell);
+      if (armOnTransition && opened) {
+        this.logger.uiSurface("open", {
+          surfaceKind: kind,
+          surfaceId: getDebugNodeId(shell),
+          openedAt: now,
+          openedByPointerType: snapshot.openedByPointerType,
+          lastInputPointerType: snapshot.lastInputPointerType,
+          viewerActiveBefore: this.surfaces.size > 0,
+          viewerActiveAfter: this.surfaces.size > 0,
+          pageRouterGenerationsBefore: previous?.routerGenerations ?? routerGenerations,
+          pageRouterGenerationsAfter: routerGenerations
+        });
+      }
       if (armOnTransition && previous?.active && !active) {
-        transitions.push({
+        const transition = {
           kind,
           reason: "active-to-closed",
+          surfaceId: getDebugNodeId(shell),
+          openedAt: previous.openedAt,
+          closedAt: now,
+          durationMs: previous.openedAt === null ? null : Math.max(0, now - previous.openedAt),
+          openedByPointerType: previous.openedByPointerType,
+          closingPointerType: this.lastUiInputPointerType,
+          lastInputPointerType: previous.lastInputPointerType,
           before: previous.details,
-          after: snapshot.details
-        });
+          after: snapshot.details,
+          pageRouterGenerationsBefore: previous.routerGenerations,
+          pageRouterGenerationsAfter: routerGenerations,
+          viewerActiveBefore: this.surfaces.size > 0,
+          viewerActiveAfter: this.surfaces.size > 0
+        };
+        transitions.push(transition);
+        this.lastUiSurfaceCloseAt = now;
+        this.logger.uiSurface("close", transition);
       }
     }
     if (armOnTransition) {
       for (const [shell, previous] of this.uiShellSnapshots) {
         if (!previous.active || next.has(shell)) continue;
-        transitions.push({
+        const transition = {
           kind: previous.kind,
           reason: "removed",
+          surfaceId: getDebugNodeId(shell),
+          openedAt: previous.openedAt,
+          closedAt: now,
+          durationMs: previous.openedAt === null ? null : Math.max(0, now - previous.openedAt),
+          openedByPointerType: previous.openedByPointerType,
+          closingPointerType: this.lastUiInputPointerType,
+          lastInputPointerType: previous.lastInputPointerType,
           before: previous.details,
-          after: { connected: false }
-        });
+          after: { connected: false },
+          pageRouterGenerationsBefore: previous.routerGenerations,
+          pageRouterGenerationsAfter: routerGenerations,
+          viewerActiveBefore: this.surfaces.size > 0,
+          viewerActiveAfter: this.surfaces.size > 0
+        };
+        transitions.push(transition);
+        this.lastUiSurfaceCloseAt = now;
+        this.logger.uiSurface("close", transition);
       }
       for (const shell of removedShells) {
         if (this.uiShellSnapshots.has(shell)) continue;
-        transitions.push({
+        const transition = {
           kind: classifyObsidianUiShell(shell),
           reason: "removed",
+          surfaceId: getDebugNodeId(shell),
+          openedAt: null,
+          closedAt: now,
+          durationMs: null,
+          openedByPointerType: null,
+          closingPointerType: this.lastUiInputPointerType,
+          lastInputPointerType: null,
           before: hitElementDetails(shell) ?? {},
-          after: { connected: false }
-        });
+          after: { connected: false },
+          pageRouterGenerationsBefore: routerGenerations,
+          pageRouterGenerationsAfter: routerGenerations,
+          viewerActiveBefore: this.surfaces.size > 0,
+          viewerActiveAfter: this.surfaces.size > 0
+        };
+        transitions.push(transition);
+        this.lastUiSurfaceCloseAt = now;
+        this.logger.uiSurface("close", transition);
       }
       const transition = transitions.at(-1);
       if (transition) this.armPostUiProbe(doc, transition);
     }
     this.uiShellSnapshots.clear();
     for (const [shell, snapshot] of next) this.uiShellSnapshots.set(shell, snapshot);
+  }
+
+  private currentRouterGenerations(): number[] {
+    return [...this.surfaces.values()]
+      .map((surface) => surface.router?.generation ?? null)
+      .filter((generation): generation is number => generation !== null);
   }
 
   private armPostUiProbe(doc: Document, transition: Record<string, unknown>): void {
@@ -1176,7 +1308,15 @@ export class ViewerInkSession {
       pageGeneration: generations.length ? Math.max(...generations) : null,
       mountedPages: [...this.surfaces.keys()].sort((a, b) => a - b),
       documentPath: this.options.documentPath,
-      transition
+      transition,
+      uiCloseAt: this.lastUiSurfaceCloseAt,
+      lastSuccessfulStrokeAt: this.logger.lastSuccessfulStroke().lastEndAt
+        ? Date.parse(String(this.logger.lastSuccessfulStroke().lastEndAt))
+        : null,
+      lastZoomSettleAt: this.lastZoomSettleAt,
+      lastTouchPanAt: this.lastTouchPanAt,
+      lastRouterBindAt: this.lastRouterBindAt,
+      lastPageReplacementAt: this.lastPageReplacementAt
     };
     const now = Date.now();
     const arm = this.postUiInputProbe.arm(now, context);
@@ -1211,6 +1351,202 @@ export class ViewerInkSession {
     this.postUiProbeTimer = null;
   }
 
+  private pointerEventPropagationDetails(
+    event: PointerEvent,
+    pageElement: HTMLElement | null,
+    overlay: HTMLElement | null
+  ): Record<string, unknown> {
+    const path = typeof event.composedPath === "function" ? event.composedPath().slice(0, 12) : [];
+    const pageInPath = Boolean(pageElement && path.includes(pageElement));
+    const root = this.options.adapter.root;
+    return {
+      eventPhase: event.eventPhase,
+      capturePhase: event.eventPhase === Event.CAPTURING_PHASE,
+      bubblePhase: event.eventPhase === Event.BUBBLING_PHASE,
+      targetId: getDebugNodeId(isElement(event.target) ? event.target : null),
+      currentTargetId: getDebugNodeId(isElement(event.currentTarget) ? event.currentTarget : null),
+      composedPath: path.map((entry) => isElement(entry) ? hitElementDetails(entry) : Object.prototype.toString.call(entry)),
+      currentPageInComposedPath: pageInPath,
+      adapterRootInComposedPath: path.includes(root),
+      viewerHostInComposedPath: path.includes(this.options.adapter.host),
+      targetWithinViewer: isElement(event.target) && (root.contains(event.target) || this.options.adapter.host.contains(event.target)),
+      targetWithinPage: Boolean(pageElement && isElement(event.target) && pageElement.contains(event.target)),
+      targetWithinOverlay: Boolean(overlay && isElement(event.target) && overlay.contains(event.target)),
+      targetPageId: getDebugNodeId(this.closestPdfPageElement(event.target)),
+      cancelable: event.cancelable,
+      defaultPrevented: event.defaultPrevented,
+      propagationStopped: Reflect.get(event, "cancelBubble") === true,
+      handwritingPreventDefaultCalled: event.defaultPrevented,
+      handwritingStoppedPropagation: Reflect.get(event, "cancelBubble") === true
+    };
+  }
+
+  private beginPenScrollEvidence(correlationId: string, pointerId: number): void {
+    const root = this.options.adapter.scrollElement();
+    this.penScrollEvidence.set(pointerId, {
+      correlationId,
+      beforeLeft: root.scrollLeft,
+      beforeTop: root.scrollTop,
+      maxDeltaPx: 0,
+      terminalLeft: null,
+      terminalTop: null,
+      observedAt: Date.now()
+    });
+  }
+
+  private updatePenScrollEvidence(): void {
+    if (!this.penScrollEvidence.size) return;
+    const root = this.options.adapter.scrollElement();
+    for (const evidence of this.penScrollEvidence.values()) {
+      evidence.maxDeltaPx = Math.max(
+        evidence.maxDeltaPx,
+        Math.abs(root.scrollLeft - evidence.beforeLeft),
+        Math.abs(root.scrollTop - evidence.beforeTop)
+      );
+      evidence.observedAt = Date.now();
+    }
+  }
+
+  private finishPenScrollEvidence(pointerId: number): Record<string, unknown> {
+    this.updatePenScrollEvidence();
+    const evidence = this.penScrollEvidence.get(pointerId);
+    if (!evidence) return { nativeMovementObserved: false, maxScrollDeltaPx: 0 };
+    const root = this.options.adapter.scrollElement();
+    evidence.terminalLeft = root.scrollLeft;
+    evidence.terminalTop = root.scrollTop;
+    this.penScrollEvidence.delete(pointerId);
+    return {
+      nativeMovementObserved: evidence.maxDeltaPx > 0,
+      scrollBefore: { left: evidence.beforeLeft, top: evidence.beforeTop },
+      maxScrollDeltaPx: Number(evidence.maxDeltaPx.toFixed(2)),
+      scrollAtTerminal: { left: evidence.terminalLeft, top: evidence.terminalTop },
+      scrollDeltaWhileUnclaimed: evidence.maxDeltaPx > 0,
+      scrollObservedAt: evidence.observedAt
+    };
+  }
+
+  private recordDocumentHandoff(event: PointerEvent, hitTest: PointerHitTest): void {
+    if (!(this.options.debugEnabled?.() ?? false) || event.pointerType !== "pen") return;
+    for (const expired of this.postUiInputProbe.expireHandoffs(Date.now())) {
+      this.logger.inputHandoff("expired", {
+        outcome: expired.outcome,
+        correlationId: expired.correlationId,
+        contact: expired.contact,
+        details: expired.details
+      });
+      this.logger.penRoutingRegression({
+        outcome: expired.outcome,
+        correlationId: expired.correlationId,
+        page: expired.contact?.page ?? null,
+        toolChangeId: this.lastToolChange?.id ?? null
+      });
+    }
+    const page = hitTest.geometricPage?.element ?? null;
+    const surface = hitTest.geometricPage ? this.surfaces.get(hitTest.geometricPage.pageNumber) : undefined;
+    const router = surface?.router ?? null;
+    const contact = this.postUiInputProbe.observeDocument(Date.now(), event.pointerId, "pen", {
+      page: hitTest.geometricPage?.pageNumber ?? null,
+      geometricPageId: getDebugNodeId(page),
+      safeRecoveryPageId: getDebugNodeId(hitTest.safeRecoveryPage?.element ?? null),
+      ...this.pointerEventPropagationDetails(event, page, surface?.overlay ?? null),
+      routerBoundElementId: getDebugNodeId(router?.boundElement() ?? null),
+      routerGeneration: router?.generation ?? null,
+      routerExists: Boolean(router),
+      routerAlive: Boolean(router?.isAlive()),
+      routerBindsToCurrentPage: Boolean(router && page && router.bindsTo(page)),
+      routerListenerAborted: Boolean(router?.isListenerAborted()),
+      pageConnected: Boolean(page?.isConnected),
+      overlayId: getDebugNodeId(surface?.overlay ?? null),
+      overlayConnected: Boolean(surface?.overlay.isConnected),
+      pdfCanvasId: getDebugNodeId(page ? pdfRenderCanvas(page) : null),
+      activeInputOwner: Boolean(page && inputOwners(page).get(page) === this),
+      handledPointerBefore: this.handledDrawPointers.has(event.pointerId),
+      handledPointerGenerationBefore: this.handledDrawPointers.get(event.pointerId) ?? null,
+      viewerGeneration: this.viewerGeneration,
+      pageGeneration: router?.generation ?? null,
+      msSinceRouterBind: this.lastRouterBindAt === null ? null : Math.max(0, Date.now() - this.lastRouterBindAt),
+      msSincePageReplacement: this.lastPageReplacementAt === null ? null : Math.max(0, Date.now() - this.lastPageReplacementAt),
+      msSinceLastZoomSettle: this.lastZoomSettleAt === null ? null : Math.max(0, Date.now() - this.lastZoomSettleAt),
+      msSinceLastTouchZoomPan: this.lastTouchPanAt === null ? null : Math.max(0, Date.now() - this.lastTouchPanAt),
+      toolChangeId: this.lastToolChange?.id ?? null,
+      selectedToolAtPointerDown: this.activeTool(),
+      fallbackConsidered: this.shouldFallbackRoutePointer(event),
+      fallbackEligible: Boolean(hitTest.safeRecoveryPage && !hitTest.pageOccludedByUi),
+      fallbackRejectedReason: hitTest.pageOccludedByUi
+        ? "ui-occluded"
+        : hitTest.safeRecoveryPage
+          ? null
+          : "no-safe-recovery-page"
+    });
+    if (!contact) return;
+    this.beginPenScrollEvidence(contact.correlationId, event.pointerId);
+    const captured = this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, "document-capture", {
+      ...this.pointerEventPropagationDetails(event, page, surface?.overlay ?? null),
+      hitTest: hitTest.details
+    });
+    this.logger.inputHandoff("document-capture", {
+      ...(captured ?? contact),
+      pointerType: event.pointerType || "(empty)",
+      hitTest: hitTest.details
+    });
+    this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, "hit-test", {
+      page: hitTest.geometricPage?.pageNumber ?? null,
+      pageOccludedByUi: hitTest.pageOccludedByUi,
+      safeRecoveryPage: hitTest.safeRecoveryPage?.pageNumber ?? null,
+      fallbackConsidered: true,
+      fallbackEligible: Boolean(hitTest.safeRecoveryPage && !hitTest.pageOccludedByUi),
+      fallbackRejectedReason: hitTest.pageOccludedByUi ? "ui-occluded" : hitTest.safeRecoveryPage ? null : "no-safe-recovery-page",
+      ...hitTest.details
+    });
+  }
+
+  private finishDocumentHandoff(
+    event: PointerEvent,
+    terminal: string,
+    outcome?: PostUiProbeOutcome,
+    details: Record<string, unknown> = {}
+  ): void {
+    if (!(this.options.debugEnabled?.() ?? false) || event.pointerType !== "pen") return;
+    const scroll = this.finishPenScrollEvidence(event.pointerId);
+    const evidence = this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, "native-evidence", scroll);
+    if (evidence) {
+      this.logger.inputHandoff("native-evidence", {
+        ...evidence,
+        ...scroll,
+        pointerType: event.pointerType || "(empty)"
+      });
+    }
+    const result = this.postUiInputProbe.finishHandoff(Date.now(), event.pointerId, terminal, outcome, {
+      ...details,
+      ...scroll,
+      lastSuccessfulStroke: this.logger.lastSuccessfulStroke(),
+      msSinceLastSuccessfulStroke: this.logger.timeSinceLastSuccessfulStrokeMs(),
+      msSinceUiClose: this.lastUiSurfaceCloseAt === null ? null : Math.max(0, Date.now() - this.lastUiSurfaceCloseAt),
+      msSinceZoomSettle: this.lastZoomSettleAt === null ? null : Math.max(0, Date.now() - this.lastZoomSettleAt),
+      msSinceLastTouchZoomPan: this.lastTouchPanAt === null ? null : Math.max(0, Date.now() - this.lastTouchPanAt),
+      msSinceRouterBind: this.lastRouterBindAt === null ? null : Math.max(0, Date.now() - this.lastRouterBindAt),
+      msSincePageReplacement: this.lastPageReplacementAt === null ? null : Math.max(0, Date.now() - this.lastPageReplacementAt),
+      lastToolChange: this.lastToolChange,
+      ...this.pointerEventPropagationDetails(event, this.closestPdfPageElement(event.target), null)
+    });
+    if (!result) return;
+    this.logger.inputHandoff("terminal", {
+      outcome: result.outcome,
+      correlationId: result.correlationId,
+      contact: result.contact,
+      details: result.details
+    });
+    if (result.outcome !== "post-ui-pen-success") {
+      this.logger.penRoutingRegression({
+        outcome: result.outcome,
+        correlationId: result.correlationId,
+        page: result.contact?.page ?? null,
+        previousSuccessfulCorrelationId: this.logger.lastSuccessfulStroke().lastCorrelationId,
+        toolChangeId: this.lastToolChange?.id ?? null
+      });
+    }
+  }
+
   private recordPostUiProbeDocument(event: PointerEvent, hitTest: PointerHitTest): void {
     if (!(this.options.debugEnabled?.() ?? false)) return;
     const contact = this.postUiInputProbe.pointerDown(Date.now(), event.pointerId, event.pointerType || "(empty)");
@@ -1240,13 +1576,27 @@ export class ViewerInkSession {
   ): void {
     if (!(this.options.debugEnabled?.() ?? false)) return;
     const contact = this.postUiInputProbe.stage(Date.now(), event.pointerId, stage, details);
-    if (!contact) return;
-    this.logger.postUiProbe(stage, {
-      ...contact,
-      pointerType: event.pointerType || "(empty)",
-      targetId: getDebugNodeId(event.target),
+    if (contact) {
+      this.logger.postUiProbe(stage, {
+        ...contact,
+        pointerType: event.pointerType || "(empty)",
+        targetId: getDebugNodeId(event.target),
+        ...details
+      });
+    }
+    const page = this.closestPdfPageElement(event.target);
+    const surface = page ? [...this.surfaces.values()].find((candidate) => candidate.page.element === page) : undefined;
+    const handoff = this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, stage, {
+      ...this.pointerEventPropagationDetails(event, page, surface?.overlay ?? null),
       ...details
     });
+    if (handoff) {
+      this.logger.inputHandoff(stage, {
+        ...handoff,
+        pointerType: event.pointerType || "(empty)",
+        ...details
+      });
+    }
   }
 
   private finishPostUiProbe(
@@ -1255,6 +1605,7 @@ export class ViewerInkSession {
     details: Record<string, unknown> = {}
   ): void {
     const result = this.postUiInputProbe.finish(Date.now(), event.pointerId, terminal, details);
+    this.finishDocumentHandoff(event, terminal, result?.outcome, details);
     if (!result) return;
     this.logPostUiProbeResult(result);
     if (result.outcome === "post-ui-pen-success") {
@@ -1272,6 +1623,7 @@ export class ViewerInkSession {
     details: Record<string, unknown> = {}
   ): void {
     const result = this.postUiInputProbe.finishWithOutcome(Date.now(), event.pointerId, outcome, details);
+    this.finishDocumentHandoff(event, "pointerdown", outcome, details);
     if (!result) return;
     this.logPostUiProbeResult(result);
   }
@@ -1296,10 +1648,12 @@ export class ViewerInkSession {
     within: (target: EventTarget | null) => boolean
   ): void {
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
+      this.noteUiInput(e);
       const hitPage = this.closestPdfPageElement(e.target);
       const hitTest = this.shouldFallbackRoutePointer(e)
         ? this.inspectPointerHit(e, hitPage, within(e.target))
         : emptyPointerHitTest(hitPage);
+      this.recordDocumentHandoff(e, hitTest);
       this.recordPostUiProbeDocument(e, hitTest);
       this.logger.inputLifecycleEvent("pointerdown", {
         pointerType: e.pointerType || "(empty)",
@@ -1335,6 +1689,24 @@ export class ViewerInkSession {
       // zoom while binds/alive still look healthy; bubble never runs if something
       // stops the event mid-descent. Microtask is too late for preventDefault.
       this.captureDrawPointerFallback(e, within, hitTest);
+      if (e.pointerType === "pen") {
+        const pointerId = e.pointerId;
+        queueMicrotask(() => {
+          const contact = this.postUiInputProbe.handoffSummary(pointerId);
+          if (!contact || contact.routerReceived || contact.strokeStarted) return;
+          this.postUiInputProbe.handoffStage(Date.now(), pointerId, "fallback", {
+            fallbackConsidered: true,
+            fallbackEligible: false,
+            fallbackRejected: true,
+            fallbackRejectedReason: "same-dispatch-no-router"
+          });
+          this.finishDocumentHandoff(e, "pointerdown", "pen-seen-document-not-router", {
+            penSeenDocumentNotRouter: true,
+            fallbackRejected: true,
+            fallbackRejectedReason: "same-dispatch-no-router"
+          });
+        });
+      }
     }, { ...options, passive: false });
 
     // Bubble: if the page router never marked the pointer, own the stroke here.
@@ -1352,6 +1724,10 @@ export class ViewerInkSession {
     options: AddEventListenerOptions
   ): void {
     const clearHandled = (e: PointerEvent): void => {
+      this.finishDocumentHandoff(e, e.type === "pointercancel" ? "pointercancel" : "pointerup", undefined, {
+        terminalObservedByDocument: true,
+        eventType: e.type
+      });
       this.handledDrawPointers.delete(e.pointerId);
     };
     doc.addEventListener("pointerup", clearHandled, options);
@@ -2031,6 +2407,12 @@ export class ViewerInkSession {
         scale: scale ?? null,
         surfaces: this.surfaces.size
       });
+      this.logger.zoomLifecycle("zoom-burst-start", {
+        reason,
+        scale: scale ?? null,
+        mountedPages: [...this.surfaces.keys()].sort((a, b) => a - b),
+        routerGenerations: this.currentRouterGenerations()
+      });
     }
     this.zoomTickCount += 1;
     if (this.zoomProfile) this.zoomProfile.compositorTicks += 1;
@@ -2230,7 +2612,15 @@ export class ViewerInkSession {
     this.cancelZoomSettleSlice();
     this.endZoomCompositing();
     this.zoomCompositeSettledAt = performance.now();
+    this.lastZoomSettleAt = Date.now();
     this.zoomSettleSliceStartedAt = this.zoomCompositeSettledAt;
+    this.logger.zoomLifecycle("zoom-burst-settle", {
+      burstTicks,
+      burstDurationMs,
+      scaleStart,
+      scaleEnd,
+      routerGenerations: this.currentRouterGenerations()
+    });
     this.zoomSettleBurst = {
       reason: this.zoomBurstReason,
       burstTicks,
@@ -2758,10 +3148,17 @@ export class ViewerInkSession {
     for (const surface of this.surfaces.values()) {
       surface.overlay.classList.remove("native-pdf-handwriting-zoom-compositing");
     }
+    const heldAfterSettleMs = this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null;
     this.logger.zoomComposite("release", {
       pages: this.surfaces.size,
       nativeContentMutations: this.zoomNativeContentMutations,
-      heldAfterSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null
+      heldAfterSettleMs
+    });
+    this.logger.zoomLifecycle("zoom-burst-release", {
+      pages: this.surfaces.size,
+      nativeContentMutations: this.zoomNativeContentMutations,
+      heldAfterSettleMs,
+      routerGenerations: this.currentRouterGenerations()
     });
     this.reportDevProbe("zoom-composite-release", {
       pages: this.surfaces.size,
@@ -3773,6 +4170,7 @@ export class ViewerInkSession {
   }
 
   private remountSurfaceOnPageReplacement(surface: PageSurface, page: AnnotationPageInfo): void {
+    this.lastPageReplacementAt = Date.now();
     const previousPage = surface.page.element;
     this.logger.inputLifecycleEvent("page-dom-replacement", {
       page: page.pageNumber,
@@ -5027,7 +5425,9 @@ export class ViewerInkSession {
           this.recordPostUiProbeStage(event, "stroke-start", {
             page: surface.page.pageNumber,
             pointCount: surface.builder.preview(this.simplifyStrokesEnabled()).length,
-            inputType: event.pointerType || "(empty)"
+            inputType: event.pointerType || "(empty)",
+            correlationId: this.postUiInputProbe.handoffCorrelationId(event.pointerId),
+            ...this.pointerEventPropagationDetails(event, surface.page.element, surface.overlay)
           });
         }
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-start");
@@ -5049,7 +5449,11 @@ export class ViewerInkSession {
           touchAction: [...surface.page.element.classList].filter((name) => name.startsWith("native-pdf-handwriting-touch-")),
         });
         if (route === "draw" && surface.builder && event.pointerType === "pen") {
-          this.logger.inputStroke("start", { page: surface.page.pageNumber, routerGeneration: surface.router?.generation ?? null });
+          this.logger.inputStroke("start", {
+            page: surface.page.pageNumber,
+            routerGeneration: surface.router?.generation ?? null,
+            correlationId: this.postUiInputProbe.handoffCorrelationId(event.pointerId)
+          });
         }
       },
       onMove: (samples, route, event) => this.pointerMove(surface, samples, route, event),
@@ -5058,7 +5462,11 @@ export class ViewerInkSession {
         this.pointerEnd(surface, samples, route, event);
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-end");
         if (hadPenStroke) {
-          this.logger.inputStroke("end", { page: surface.page.pageNumber, routerGeneration: surface.router?.generation ?? null });
+          this.logger.inputStroke("end", {
+            page: surface.page.pageNumber,
+            routerGeneration: surface.router?.generation ?? null,
+            correlationId: this.postUiInputProbe.handoffCorrelationId(event.pointerId)
+          });
         }
         this.finishPostUiProbe(event, "pointerup", {
           page: surface.page.pageNumber,
@@ -5090,7 +5498,13 @@ export class ViewerInkSession {
           page: surface.page.pageNumber,
           routerGeneration: generation,
           routerAlive: Boolean(surface.router?.isAlive()),
-          routerBindsToPage: Boolean(surface.router?.bindsTo(surface.page.element))
+          routerBindsToPage: Boolean(surface.router?.bindsTo(surface.page.element)),
+          routerBoundElementId: getDebugNodeId(surface.router?.boundElement() ?? surface.page.element),
+          routerListenerAborted: Boolean(surface.router?.isListenerAborted()),
+          pageConnected: surface.page.element.isConnected,
+          overlayConnected: surface.overlay.isConnected,
+          handledPointerGeneration: this.handledDrawPointers.get(event.pointerId) ?? null,
+          ...this.pointerEventPropagationDetails(event, surface.page.element, surface.overlay)
         });
         this.logger.inputLifecycleEvent("router-received", {
           page: surface.page.pageNumber,
@@ -5107,7 +5521,14 @@ export class ViewerInkSession {
           currentTargetId: getDebugNodeId(event.currentTarget),
           pageId: getDebugNodeId(surface.page.element),
           pdfCanvasId: getDebugNodeId(pdfRenderCanvas(surface.page.element)),
-          inkCanvasId: getDebugNodeId(surface.canvas)
+          inkCanvasId: getDebugNodeId(surface.canvas),
+          routerBoundElementId: getDebugNodeId(surface.router?.boundElement() ?? surface.page.element),
+          routerListenerAborted: Boolean(surface.router?.isListenerAborted()),
+          pageInComposedPath: typeof event.composedPath === "function" && event.composedPath().includes(surface.page.element),
+          adapterRootInComposedPath: typeof event.composedPath === "function" && event.composedPath().includes(this.options.adapter.root),
+          cancelable: event.cancelable,
+          defaultPrevented: event.defaultPrevented,
+          propagationStopped: Reflect.get(event, "cancelBubble") === true
         });
       },
       isPointerHandled: (pointerId, generation) => this.wasDrawPointerHandled(pointerId, generation),
@@ -5185,7 +5606,9 @@ export class ViewerInkSession {
           page: surface.page.pageNumber,
           route,
           routeReason: reason,
-          routerGeneration: surface.router?.generation ?? null
+          routerGeneration: surface.router?.generation ?? null,
+          correlationId: this.postUiInputProbe.handoffCorrelationId(event.pointerId),
+          ...this.pointerEventPropagationDetails(event, surface.page.element, surface.overlay)
         });
         if (event.pointerType === "pen" && route === "native") {
           this.finishPostUiProbeWithOutcome(event, "post-ui-pen-routed-native", {
@@ -5201,6 +5624,8 @@ export class ViewerInkSession {
           page: surface.page.pageNumber,
           route,
           claimFailed: !details.preventDefaultCalled || !details.propagationStopped || !details.captureSucceeded,
+          correlationId: this.postUiInputProbe.handoffCorrelationId(event.pointerId),
+          ...this.pointerEventPropagationDetails(event, surface.page.element, surface.overlay),
           ...details
         });
       },
@@ -5218,8 +5643,16 @@ export class ViewerInkSession {
           ...details
         });
       },
-      onTouchPan: (phase, _event, details) => this.logger.touchPan(phase, { page: surface.page.pageNumber, ...details })
+      onTouchPan: (phase, event, details) => {
+        this.lastTouchPanAt = Date.now();
+        this.logger.touchPan(phase, {
+          page: surface.page.pageNumber,
+          pointerId: event?.pointerId ?? null,
+          ...details
+        });
+      }
     });
+    this.lastRouterBindAt = Date.now();
     if (surface.pendingRouterHandoff) {
       const handoff = surface.pendingRouterHandoff;
       surface.pendingRouterHandoff = null;
@@ -5368,6 +5801,7 @@ export class ViewerInkSession {
     const pageIntersectsHit = Boolean(
       geometricPage && containsClientPoint(geometricPage.element, event.clientX, event.clientY)
     );
+    const targetSurface = [...this.surfaces.values()].find((surface) => surface.page.element === targetPage);
     return {
       targetPage,
       geometricPage,
@@ -5377,6 +5811,8 @@ export class ViewerInkSession {
       pageOccludedByUi,
       details: {
         targetWithinViewer: targetWithin,
+        targetWithinPage: Boolean(targetPage && isElement(event.target) && targetPage.contains(event.target)),
+        targetWithinOverlay: Boolean(targetSurface?.overlay && isElement(event.target) && targetSurface.overlay.contains(event.target)),
         targetPageId: getDebugNodeId(targetPage),
         targetPageConnected: Boolean(targetPage?.isConnected),
         topHit: hitElementDetails(topHit),
@@ -5409,7 +5845,12 @@ export class ViewerInkSession {
         })),
         overlayRects: mountedOverlays,
         geometricPageNumber: geometricPage?.pageNumber ?? null,
-        geometricPageId: getDebugNodeId(geometricPage?.element)
+        geometricPageId: getDebugNodeId(geometricPage?.element),
+        safeRecoveryPageNumber: safeRecoveryPage?.pageNumber ?? null,
+        safeRecoveryPageId: getDebugNodeId(safeRecoveryPage?.element ?? null),
+        pageInComposedPath: Boolean(geometricPage && path.includes(geometricPage.element)),
+        adapterRootInComposedPath: path.includes(this.options.adapter.root),
+        viewerHostInComposedPath: path.includes(this.options.adapter.host)
       }
     };
   }
@@ -5441,6 +5882,15 @@ export class ViewerInkSession {
     event: PointerEvent,
     extra: Record<string, unknown> = {}
   ): void {
+    if (event.pointerType === "pen") {
+      this.recordPostUiProbeStage(event, "fallback", {
+        fallbackConsidered: true,
+        fallbackEligible: false,
+        fallbackRejected: true,
+        fallbackRejectedReason: reason,
+        ...extra
+      });
+    }
     this.logger.pageRouter("fallback", {
       phase: "skip",
       reason,
@@ -5458,6 +5908,15 @@ export class ViewerInkSession {
     reason: string,
     surface?: PageSurface
   ): void {
+    if (event.pointerType === "pen") {
+      this.recordPostUiProbeStage(event, "fallback", {
+        fallbackConsidered: true,
+        fallbackEligible: false,
+        fallbackRejected: true,
+        fallbackRejectedReason: reason,
+        anomalyReason: reason
+      });
+    }
     const view = this.options.adapter.getViewState();
     const resolvedSurface = surface ?? (hitTest.geometricPage
       ? this.surfaces.get(hitTest.geometricPage.pageNumber)
@@ -5655,6 +6114,19 @@ export class ViewerInkSession {
       listenerGeneration: surface.router?.generation ?? null
     });
     const route = surface.router?.acceptPointerDown(event) ?? null;
+    if (event.pointerType === "pen") {
+      this.recordPostUiProbeStage(event, "fallback", {
+        fallbackConsidered: true,
+        fallbackEligible: true,
+        fallbackAccepted: route === "draw" || route === "edit" || route === "text",
+        fallbackRoute: route,
+        fallbackRejected: route === null || (route !== "draw" && route !== "edit" && route !== "text"),
+        fallbackRejectedReason: route === null ? "router-unavailable" : route,
+        page: pageNumber,
+        routerGeneration: surface.router?.generation ?? null,
+        recoveredAfterRouterRebind: fallbackPhase === "capture-repair"
+      });
+    }
     if (event.pointerType === "pen" && hitTest.geometricPage && route !== "draw" && route !== "edit" && route !== "text"
       && !isAnnotationChromeTarget(event.target)) {
       this.logInkInputAnomaly(event, hitTest, "pen-over-visible-page-not-started", surface);
@@ -5751,6 +6223,19 @@ export class ViewerInkSession {
       listenerGeneration: surface.router?.generation ?? null
     });
     const route = surface.router?.acceptPointerDown(event) ?? null;
+    if (event.pointerType === "pen") {
+      this.recordPostUiProbeStage(event, "fallback", {
+        fallbackConsidered: true,
+        fallbackEligible: true,
+        fallbackAccepted: route === "draw" || route === "edit" || route === "text",
+        fallbackRoute: route,
+        fallbackRejected: route === null || (route !== "draw" && route !== "edit" && route !== "text"),
+        fallbackRejectedReason: route === null ? "router-unavailable" : route,
+        page: pageNumber,
+        routerGeneration: surface.router?.generation ?? null,
+        via: "bubble"
+      });
+    }
     if (event.pointerType === "pen" && hitTest.geometricPage && route !== "draw" && route !== "edit" && route !== "text"
       && !isAnnotationChromeTarget(event.target)) {
       this.logInkInputAnomaly(event, hitTest, "pen-over-visible-page-not-started", surface);

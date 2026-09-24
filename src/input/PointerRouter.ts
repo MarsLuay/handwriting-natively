@@ -794,6 +794,15 @@ export class PointerRouter {
     return !this.abort.signal.aborted && this.element.isConnected;
   }
 
+  /** Diagnostic-only listener state; routing callers must not use this to change policy. */
+  isListenerAborted(): boolean {
+    return this.abort.signal.aborted;
+  }
+
+  boundElement(): HTMLElement {
+    return this.element;
+  }
+
   activePenIds(): number[] {
     return this.palmPolicy.activePenIds();
   }

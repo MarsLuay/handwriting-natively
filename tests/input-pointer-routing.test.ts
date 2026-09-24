@@ -22,6 +22,21 @@ async function nextAnimationFrame(): Promise<void> {
 }
 
 describe("PointerRouter", () => {
+  it("exposes listener health for diagnostics without changing routing state", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true
+    });
+
+    expect(router.boundElement()).toBe(element);
+    expect(router.isListenerAborted()).toBe(false);
+    router.destroy();
+    expect(router.isListenerAborted()).toBe(true);
+    element.remove();
+  });
+
   it("keeps native touch and pinch available before a stylus tip goes down", () => {
     const element = document.createElement("div");
     document.body.append(element);

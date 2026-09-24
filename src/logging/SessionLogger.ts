@@ -84,6 +84,7 @@ interface InputStrokeHeartbeat {
   lastEndAt: string | null;
   lastPage: number | null;
   lastRouterGeneration: number | null;
+  lastCorrelationId: string | null;
 }
 
 interface InputLifecycleRecord {
@@ -110,7 +111,8 @@ export class SessionLogger {
     lastStartAt: null,
     lastEndAt: null,
     lastPage: null,
-    lastRouterGeneration: null
+    lastRouterGeneration: null,
+    lastCorrelationId: null
   };
   private firstFailedPenDown: Record<string, unknown> | null = null;
   /** High-frequency text phases — sample so vault debug does not flood disk I/O. */
@@ -421,12 +423,66 @@ export class SessionLogger {
     });
   }
 
+  /** Correlates document capture, router, fallback, pan, and terminal evidence. */
+  inputHandoff(phase: string, details: Record<string, unknown> = {}): void {
+    const failure = typeof details.outcome === "string" && details.outcome !== "post-ui-pen-success";
+    this.emit(failure ? "warn" : "info", "pen input handoff", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      phase,
+      ...details
+    });
+  }
+
+  /** Foreground UI lifecycle markers stay separate from pointer routing records. */
+  uiSurface(phase: "open" | "close", details: Record<string, unknown> = {}): void {
+    this.emit("info", "ui surface", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
+  /** Explicit zoom lifecycle anchors used by later Pencil regression summaries. */
+  zoomLifecycle(phase: "zoom-burst-start" | "zoom-burst-settle" | "zoom-burst-release", details: Record<string, unknown> = {}): void {
+    this.emit("info", "zoom lifecycle", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
+  /** Explicit active-tool transitions, separate from effective draw-state changes. */
+  toolChanged(details: Record<string, unknown> = {}): void {
+    this.emit("info", "tool changed", {
+      document: this.documentPath,
+      ...details
+    });
+  }
+
+  /** One bounded summary for a transition from a successful Pencil stroke to failure. */
+  penRoutingRegression(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "pen routing regression", {
+      document: this.documentPath,
+      ...details,
+      lastSuccessfulStroke: { ...this.inputHeartbeat },
+      msSinceLastSuccessfulStroke: this.timeSinceLastSuccessfulStrokeMs(),
+      lifecycle: this.inputLifecycle.slice()
+    });
+  }
+
   /**
    * Correlated post-UI input diagnostics. The session arms this only for a
    * bounded window after an active Obsidian shell closes; it never logs moves.
    */
   postUiProbe(phase: string, details: Record<string, unknown> = {}): void {
-    const level = phase === "terminal" && details.outcome !== "post-ui-pen-success" ? "warn" : "info";
+    const outcome = typeof details.outcome === "string" ? details.outcome : "";
+    const penFailure = outcome.startsWith("post-ui-pen-")
+      || outcome === "pen-seen-document-not-router"
+      || outcome === "pen-routing-regression"
+      || outcome === "post-tool-change-routing-regression";
+    const level = phase === "terminal" && penFailure ? "warn" : "info";
     this.emit(level, "post-ui input probe", {
       document: this.documentPath,
       pluginVersion: this.pluginVersion,
@@ -445,19 +501,26 @@ export class SessionLogger {
   }
 
   /** Last successful pen stroke heartbeat, used to correlate the first failed down. */
-  inputStroke(phase: "start" | "end", details: { page: number; routerGeneration?: number | null }): void {
+  inputStroke(phase: "start" | "end", details: { page: number; routerGeneration?: number | null; correlationId?: string | null }): void {
     const at = new Date().toISOString();
     if (phase === "start") {
       this.inputHeartbeat.lastStartAt = at;
     } else {
       this.inputHeartbeat.lastEndAt = at;
+      this.inputHeartbeat.lastCorrelationId = details.correlationId ?? this.inputHeartbeat.lastCorrelationId;
     }
     this.inputHeartbeat.lastPage = details.page;
     this.inputHeartbeat.lastRouterGeneration = details.routerGeneration ?? null;
     this.inputLifecycleEvent(`stroke-${phase}`, {
       page: details.page,
-      routerGeneration: details.routerGeneration ?? null
+      routerGeneration: details.routerGeneration ?? null,
+      correlationId: details.correlationId ?? null
     });
+  }
+
+  /** Snapshot without exposing annotation contents. */
+  lastSuccessfulStroke(): Record<string, unknown> {
+    return { ...this.inputHeartbeat };
   }
 
   timeSinceLastSuccessfulStrokeMs(): number | null {
