@@ -43,6 +43,7 @@ No asynchronous callback is allowed to be treated as proof that a newer viewer g
 - Raw-byte optimistic locking and conflict files remain enabled. Cross-process/device compare-and-swap is not available through the current adapter, so divergent sync branches are preserved rather than auto-merged.
 - Add, delete, import, and scan page actions use one compensating PDF/sidecar/recovery transaction and deterministically shift annotated page numbers.
 - Reorder/duplicate and persistent page UUIDs are not yet shipped. Signed/encrypted/externally mutated PDFs require a live compatibility and data-integrity pass before broad mutation support is claimed.
+- **Audit outcome:** the current v1 sidecar/recovery protocol is the supported integrity boundary: staged validation, last-good preservation, raw-byte conflict detection, and compensating page mutations are verified locally. Commit-lineage v2, stable page UUIDs, and cross-device compare-and-swap remain explicitly bounded follow-ups and must not be implied by the current schema.
 
 ## Large documents and performance (#128, #129, #134)
 
