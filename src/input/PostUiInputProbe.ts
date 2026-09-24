@@ -10,6 +10,7 @@ export type PostUiProbeOutcome =
   | "post-ui-pen-claim-failed"
   | "post-ui-pen-cancelled-before-ink"
   | "post-ui-pen-success"
+  | "post-ui-probe-expired-no-pen"
   | "pen-routing-regression"
   | "post-tool-change-routing-regression";
 
@@ -290,6 +291,7 @@ export class PostUiInputProbe {
     if (!active || !contact || contact.finalized) return null;
     this.applyStage(contact, "terminal", { ...details, terminal });
     contact.finalized = true;
+    if (contact.pointerType !== "pen") return null;
     return this.result(active, contact, this.outcomeFor(contact), now, details);
   }
 
@@ -304,6 +306,7 @@ export class PostUiInputProbe {
     if (!active || !contact || contact.finalized) return null;
     this.applyStage(contact, "terminal", { ...details, terminal: "pointerdown", outcome });
     contact.finalized = true;
+    if (contact.pointerType !== "pen") return null;
     return this.result(active, contact, outcome, now, details);
   }
 
@@ -312,26 +315,33 @@ export class PostUiInputProbe {
     if (!active || now < active.expiresAt) return [];
     active.acceptingContacts = false;
     const results: PostUiProbeResult[] = [];
+    const observedPen = [...active.contacts.values()].some((contact) => contact.pointerType === "pen");
     for (const contact of active.contacts.values()) {
       if (contact.finalized) continue;
       contact.finalized = true;
-      results.push(this.result(active, contact, this.outcomeFor(contact), now, { expired: true }));
+      // Touch is useful context, but it is never evidence of a Pencil route
+      // failure. Only real pen contacts receive a Pencil-specific outcome.
+      if (contact.pointerType === "pen") {
+        results.push(this.result(active, contact, this.outcomeFor(contact), now, { expired: true }));
+      }
     }
-    const observedPen = [...active.contacts.values()].some((contact) => contact.pointerType === "pen");
     if (!observedPen) {
+      const observedPointerTypes = [...active.observedPointerTypes];
       results.push({
         armId: active.armId,
         correlationId: null,
-        outcome: "post-ui-pen-missing-before-document-listener",
+        outcome: "post-ui-probe-expired-no-pen",
         elapsedMs: Math.max(0, now - active.armedAt),
         pointerDownCount: active.pointerDownCount,
-        observedPointerTypes: [...active.observedPointerTypes],
+        observedPointerTypes,
         contactCount: active.contacts.size,
         contact: null,
         details: {
           ...this.contextDetails(active),
           expired: true,
-          observedPointerTypes: [...active.observedPointerTypes]
+          penObserved: false,
+          observedPointerTypes,
+          contactCount: active.contacts.size
         }
       });
     }
@@ -398,6 +408,7 @@ export class PostUiInputProbe {
   }
 
   private outcomeFor(contact: ProbeContact): PostUiProbeOutcome {
+    if (contact.pointerType !== "pen") return "post-ui-probe-expired-no-pen";
     if (contact.strokeStarted) return "post-ui-pen-success";
     if (contact.details.pageOccludedByUi === true || contact.details.occluded === true) {
       return "post-ui-pen-ui-occluded";

@@ -11,21 +11,62 @@ const context = {
 };
 
 describe("PostUiInputProbe", () => {
-  it("reports missing Pencil input when the bounded window expires without a pen document event", () => {
+  it("reports a neutral expiry when the bounded window contains touch-only input", () => {
     const probe = new PostUiInputProbe();
     probe.arm(100, context);
     probe.pointerDown(120, 1, "touch");
 
     const results = probe.expire(1_601);
 
-    expect(results).toEqual(expect.arrayContaining([
+    expect(results).toEqual([
       expect.objectContaining({
         correlationId: null,
-        outcome: "post-ui-pen-missing-before-document-listener",
+        outcome: "post-ui-probe-expired-no-pen",
         pointerDownCount: 1,
-        observedPointerTypes: ["touch"]
+        observedPointerTypes: ["touch"],
+        details: expect.objectContaining({ penObserved: false, contactCount: 1 })
       })
-    ]));
+    ]);
+    expect(results.some(({ outcome }) => outcome.startsWith("post-ui-pen-"))).toBe(false);
+  });
+
+  it("reports a neutral expiry when no pointer input arrives", () => {
+    const probe = new PostUiInputProbe();
+    probe.arm(100, context);
+
+    const [result] = probe.expire(1_601);
+
+    expect(result).toMatchObject({
+      outcome: "post-ui-probe-expired-no-pen",
+      pointerDownCount: 0,
+      observedPointerTypes: [],
+      contactCount: 0,
+      details: expect.objectContaining({ penObserved: false, contactCount: 0 })
+    });
+  });
+
+  it("keeps repeated touch-only contacts out of Pencil failure outcomes", () => {
+    const probe = new PostUiInputProbe();
+    probe.arm(100, context);
+    probe.pointerDown(120, 1, "touch");
+    probe.pointerDown(130, 2, "touch");
+
+    const results = probe.expire(1_601);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      outcome: "post-ui-probe-expired-no-pen",
+      observedPointerTypes: ["touch"],
+      contactCount: 2
+    });
+  });
+
+  it("does not emit a Pencil terminal outcome for a touch contact that ends before expiry", () => {
+    const probe = new PostUiInputProbe();
+    probe.arm(1_000, context);
+    probe.pointerDown(1_010, 7, "touch");
+
+    expect(probe.finish(1_040, 7, "pointerup")).toBeNull();
   });
 
   it("correlates a successful pen stroke through document, router, claim, and terminal stages", () => {
@@ -92,6 +133,23 @@ describe("PostUiInputProbe", () => {
     const result = probe.expire(2_501).find((candidate) => candidate.contact?.pointerType === "pen");
 
     expect(result?.outcome).toBe(expected);
+  });
+
+  it("keeps touch context while a mixed window classifies only the real pen contact", () => {
+    const probe = new PostUiInputProbe();
+    probe.arm(1_000, context);
+    probe.pointerDown(1_010, 1, "touch");
+    probe.pointerDown(1_020, 2, "pen");
+
+    const [result] = probe.expire(2_501);
+
+    expect(result).toMatchObject({
+      outcome: "post-ui-pen-missed-page-router",
+      observedPointerTypes: ["touch", "pen"],
+      contactCount: 2,
+      contact: expect.objectContaining({ pointerType: "pen" })
+    });
+    expect(result?.outcome.startsWith("post-ui-pen-")).toBe(true);
   });
 
   it("correlates an unarmed document Pencil contact through router handoff and native evidence", () => {
