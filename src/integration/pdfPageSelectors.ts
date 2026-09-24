@@ -5,6 +5,13 @@ export const PDF_PAGE_SELECTOR =
 /** Present before PDF.js stamps `data-page-number` (common on first mobile paint). */
 export const PDF_PAGE_CANDIDATE_SELECTOR = ".page, .pdf-page-view";
 
+const heuristicPageNumbers = new WeakSet<HTMLElement>();
+
+/** True when the page number was stamped from DOM order rather than host evidence. */
+export function hasHeuristicPdfPageNumber(element: HTMLElement): boolean {
+  return heuristicPageNumbers.has(element);
+}
+
 /**
  * HN mounts annotation chrome with `data-page-number` for its own bookkeeping.
  * Those nodes must never win `querySelector("[data-page-number]")` over a real
@@ -69,6 +76,7 @@ export function ensurePdfPageNumbers(root: HTMLElement): number {
     if (element.hasAttribute("data-page-number")) return;
     if (!looksLikePdfPage(element)) return;
     element.dataset.pageNumber = String(index + 1);
+    heuristicPageNumbers.add(element);
     stamped += 1;
   });
   return stamped;

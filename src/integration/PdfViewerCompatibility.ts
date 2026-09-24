@@ -1,4 +1,4 @@
-import { queryPdfPageNodes } from "./pdfPageSelectors";
+import { hasHeuristicPdfPageNumber, queryPdfPageNodes } from "./pdfPageSelectors";
 import { PlatformCapabilities, type PlatformCapabilityReport } from "./PlatformCapabilities";
 
 export type PdfIntegrationStatus = "supported" | "supported-with-fallback" | "degraded" | "unsafe";
@@ -317,6 +317,7 @@ export class PdfViewerCompatibility {
       typeof (eventBus as unknown as { on?: unknown }).on === "function" &&
       typeof (eventBus as unknown as { off?: unknown }).off === "function");
     const hasPageNumber = Boolean(page?.dataset.pageNumber && Number(page.dataset.pageNumber) >= 1);
+    const trustworthyPageNumbers = hasPageNumber && !hasHeuristicPdfPageNumber(page!);
     const hasGeometry = Boolean(page);
     const profile: PdfIntegrationProfile = {
       schemaVersion: 1,
@@ -329,7 +330,9 @@ export class PdfViewerCompatibility {
       viewerGeneration: 1,
       strategies: {
         viewerRoot: viewerRoot ? "validated-dom-selector" : "missing",
-        pages: page ? (hasPageNumber ? "numbered-dom-shell" : "heuristic-page-shell") : "missing",
+        pages: page
+          ? (trustworthyPageNumbers ? "numbered-dom-shell" : "heuristic-page-shell")
+          : "missing",
         scrollRoot: "adapter-fallback-chain",
         scale: typeof privateViewer?.currentScale === "number" ? "private-viewer" : "page-geometry-fallback",
         zoomEvents: hasEventBus ? "optional-event-bus" : "geometry-fallback",
@@ -339,7 +342,7 @@ export class PdfViewerCompatibility {
       capabilities: {
         viewerRoot: Boolean(viewerRoot),
         pageElements: Boolean(page),
-        trustworthyPageNumbers: hasPageNumber,
+        trustworthyPageNumbers,
         geometryReadable: hasGeometry,
         scrollRoot: Boolean(viewerRoot),
         toolbarHost: Boolean(toolbarHost),

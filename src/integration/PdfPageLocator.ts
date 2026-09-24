@@ -1,6 +1,7 @@
 import type { PdfJsViewerLike } from "./PdfViewerCompatibility";
 import {
   ensurePdfPageNumbers,
+  hasHeuristicPdfPageNumber,
   isHandwritingPageChrome,
   looksLikePdfPage,
   queryPdfPageNodes
@@ -40,7 +41,10 @@ export class PdfPageLocator {
     }
     return [...candidates.entries()]
       .sort(([a], [b]) => a - b)
-      .map(([_, elements]) => this.info(this.preferLivePageElement(...elements)));
+      .map(([_, elements]) => {
+        const element = this.preferLivePageElement(...elements);
+        return this.info(element, elements.length, this.isPageSelectionSafe(elements, element));
+      });
   }
 
   /** Current ephemeral DOM-shell generation for a logical page. */
@@ -58,7 +62,8 @@ export class PdfPageLocator {
       )
     ).filter((element) => !isHandwritingPageChrome(element));
     if (numbered.length > 0) {
-      return this.info(this.preferLivePageElement(...numbered));
+      const element = this.preferLivePageElement(...numbered);
+      return this.info(element, numbered.length, this.isPageSelectionSafe(numbered, element));
     }
     const fallback: HTMLElement[] = [];
     for (const element of this.viewerRoot.querySelectorAll<HTMLElement>(`[data-page-number="${pageNumber}"]`)) {
@@ -66,7 +71,8 @@ export class PdfPageLocator {
       fallback.push(element);
     }
     if (fallback.length === 0) return undefined;
-    return this.info(this.preferLivePageElement(...fallback));
+    const element = this.preferLivePageElement(...fallback);
+    return this.info(element, fallback.length, this.isPageSelectionSafe(fallback, element));
   }
 
   /**
@@ -125,7 +131,7 @@ export class PdfPageLocator {
     return this.privateViewer?.currentPageNumber ?? this.pages()[0]?.pageNumber ?? 1;
   }
 
-  private info(element: HTMLElement): PdfPageInfo {
+  private info(element: HTMLElement, candidateCount = 1, identitySafe = true): PdfPageInfo {
     const rect = element.getBoundingClientRect();
     const pageNumber = Number(element.dataset.pageNumber) || 1;
     const scale = this.scaleFor(element);
@@ -146,8 +152,29 @@ export class PdfPageLocator {
       element,
       mountGeneration: this.mountGeneration(pageNumber),
       geometryConfidence,
-      geometrySafe: width > 1 && height > 1 && Number.isFinite(width) && Number.isFinite(height)
+      geometrySafe: width > 1 && height > 1 && Number.isFinite(width) && Number.isFinite(height),
+      identityConfidence: !identitySafe
+        ? "ambiguous"
+        : hasHeuristicPdfPageNumber(element)
+          ? "heuristic"
+          : (candidateCount > 1 ? "derived" : "authoritative"),
+      identitySafe: identitySafe && !hasHeuristicPdfPageNumber(element),
+      candidateCount
     };
+  }
+
+  private isPageSelectionSafe(candidates: HTMLElement[], selected: HTMLElement): boolean {
+    if (candidates.length <= 1) return true;
+    const connected = candidates.filter((element) => element.isConnected);
+    const pool = connected.length > 0 ? connected : candidates;
+    const withCanvas = pool.filter((element) => Boolean(pdfRenderCanvas(element)));
+    if (withCanvas.length === 1) return withCanvas[0] === selected;
+    const hitReceiving = this.pickHitReceivingShell(withCanvas.length > 0 ? withCanvas : pool);
+    if (hitReceiving) return hitReceiving === selected;
+    const withOverlay = pool.filter((element) => Boolean(
+      element.querySelector(":scope > .native-pdf-handwriting-page-overlay")
+    ));
+    return withOverlay.length === 1 && withOverlay[0] === selected;
   }
 
   private geometryConfidence(
