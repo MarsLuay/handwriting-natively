@@ -162,6 +162,7 @@ describe("PostUiInputProbe", () => {
       fallbackEligible: true
     });
     expect(contact?.correlationId).toBe("pen-routing-1");
+    expect(contact?.penContactId).toBe("pen-routing-1");
     probe.handoffStage(2_001, 42, "router-received", { page: 3, routerGeneration: 19 });
     probe.handoffStage(2_002, 42, "route", { route: "draw", routeReason: "stylus-draw" });
     probe.handoffStage(2_003, 42, "native-evidence", { nativeMovementObserved: false, maxScrollDeltaPx: 0 });
@@ -169,6 +170,7 @@ describe("PostUiInputProbe", () => {
 
     expect(result).toMatchObject({
       correlationId: "pen-routing-1",
+      penContactId: "pen-routing-1",
       outcome: "post-ui-pen-success",
       contact: expect.objectContaining({
         routerReceived: true,
@@ -194,6 +196,7 @@ describe("PostUiInputProbe", () => {
     expect(probe.finishHandoff(4_002, 9, "pointerdown", "pen-seen-document-not-router"))
       .toMatchObject({
         outcome: "pen-seen-document-not-router",
+        penContactId: "pen-routing-1",
         contact: expect.objectContaining({
           documentSeen: true,
           routerReceived: false,
