@@ -1,16 +1,17 @@
 # Architecture
 
-Handwriting Natively adds one annotation system to Obsidian's direct and embedded PDF experiences. Both routes share input policy, tools, toolbar, history, sidecar storage, autosave, export, and recovery.
+Handwriting Natively adds one annotation system to Obsidian's direct and embedded document experiences. PDF pages and one-page image surfaces implement the same `AnnotationSurface` contract, so both routes share input policy, tools, toolbar, history, sidecar storage, autosave, and recovery. PDF export, page mutation, PDF.js find integration, and thumbnail actions are optional PDF surface extensions rather than requirements of the shared runtime.
 
 ## Boundaries
 
 - `integration/`: only owner of undocumented Obsidian PDF objects, DOM selectors, PDF.js compatibility probes, viewer discovery, page location, and reversible patches.
 - `focus-view/`: embed Annotate chrome and helpers that open a PDF leaf (not a private-class viewer).
 - `input/`: Pointer Events policy. It decides before capture or `preventDefault()`.
-- `ink/`: strokes, filtering, rendering, simplification, hit testing. Coordinates use PDF page space.
+- `runtime/AnnotationSurface.ts`: the minimal page-surface contract (`AnnotationPageInfo`, page-local geometry, view/scroll lifecycle, overlay/UI mounting, and teardown) plus optional PDF capability hooks.
+- `ink/`: strokes, filtering, rendering, simplification, hit testing. Coordinates use page-local document space for every surface.
 - `tools/`: tool state and behavior. Preferences stay outside annotation documents.
 - `storage/`: versioned sidecars, identity, serialized autosave, manual save, recovery, atomic writes.
-- `pdf/`: page transforms, explicit source-PDF page mutations, coordinate mapping, and annotated-copy export.
+- `pdf/`: PDF-only page transforms, explicit source-PDF page mutations, coordinate mapping, and annotated-copy export.
 - `history/`: commands used by edits, undo, redo, autosave scheduling.
 - `ui/`: one accessible toolbar and dropdown system used by both viewing routes.
 
@@ -38,9 +39,10 @@ Open PDF, select Pen, Pencil, Highlighter, or Laser. Pen/pencil/highlighter pers
 
 ## Coordinate and input invariants
 
-- Persisted annotation geometry is page-space data; viewport CSS pixels, scroll offsets, zoom, rotation, and device-pixel-ratio are render-time inputs only.
-- Pointer Events are the authoritative input stream when available. Pen ownership is plugin-local, touch remains native PDF navigation, and no global `touch-action: none` is applied.
+- Persisted annotation geometry is page-local document data; viewport CSS pixels, scroll offsets, zoom, rotation, and device-pixel-ratio are render-time inputs only.
+- Pointer Events are the authoritative input stream when available. Pen ownership is plugin-local, touch remains host navigation, and no global `touch-action: none` is applied.
 - Viewer/page generations invalidate stale async work. A replacement page is revalidated before an overlay accepts input.
+- A non-PDF surface may expose only page geometry and lifecycle. The shared session does not require PDF.js objects, PDF selectors, native text layers, or source-PDF mutation callbacks.
 
 ## Offline behavior
 

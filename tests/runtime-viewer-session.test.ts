@@ -1,6 +1,6 @@
 import { PDFDocument } from "pdf-lib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ObsidianPdfAdapter, PdfViewState } from "../src/integration/ObsidianPdfAdapter";
+import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from "../src/runtime/AnnotationSurface";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation } from "../src/model";
 import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
@@ -23,7 +23,7 @@ class MemoryFiles implements TextFileAdapter {
   async remove(path: string): Promise<void> { this.values.delete(path); }
 }
 
-class FakeAdapter implements ObsidianPdfAdapter {
+class FakeAdapter implements AnnotationSurface {
   readonly kind = "direct" as const;
   readonly host = document.createElement("div");
   readonly root = document.createElement("div");
@@ -42,13 +42,13 @@ class FakeAdapter implements ObsidianPdfAdapter {
     document.body.append(this.host);
   }
 
-  pages(): PdfPageInfo[] {
+  pages(): AnnotationPageInfo[] {
     return [{ pageNumber: 1, width: 600, height: 800, scale: 1, rotation: 0, element: this.pageElement }];
   }
-  page(pageNumber: number): PdfPageInfo | undefined {
+  page(pageNumber: number): AnnotationPageInfo | undefined {
     return this.pages().find((page) => page.pageNumber === pageNumber);
   }
-  getViewState(): PdfViewState { return { pageNumber: 1, scrollFraction: 0, scale: 1, rotation: 0 }; }
+  getViewState(): AnnotationViewState { return { pageNumber: 1, scrollFraction: 0, scale: 1, rotation: 0 }; }
   restoreViewState(): void {}
   focusPage(pageNumber: number): boolean { this.focusedPages.push(pageNumber); return Boolean(this.page(pageNumber)); }
   scrollElement(): HTMLElement { return this.root; }
@@ -76,6 +76,10 @@ class FakeAdapter implements ObsidianPdfAdapter {
     return { errors: [], warnings: [] };
   }
   destroy(): void { this.destroyed = true; this.root.remove(); }
+}
+
+class FakePdfSurface extends FakeAdapter {
+  readonly supportsPdfExport = true as const;
 }
 
 function pointer(
@@ -119,13 +123,13 @@ describe("viewer runtime tracer", () => {
     source.addPage([600, 800]);
     const sourceBytes = await source.save();
     const files = new MemoryFiles();
-    const adapter = new FakeAdapter();
+    const adapter = new FakePdfSurface();
     let exported: Uint8Array | undefined;
     let exportedSvg: { name: string; svg: string } | undefined;
     const settings = structuredClone(DEFAULT_SETTINGS);
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -226,6 +230,31 @@ describe("viewer runtime tracer", () => {
     expect(adapter.destroyed).toBe(true);
   });
 
+  it("runs the shared session against a non-PDF surface without PDF extensions", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.png",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readDocument: async () => new Uint8Array([1, 2, 3]),
+      notice: () => undefined
+    });
+
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180));
+    await session.manualSave();
+
+    const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(3);
+    await expect(session.destroy()).resolves.toBe(true);
+    expect(adapter.destroyed).toBe(true);
+  });
+
   it("pencil-first: pen annotates without Draw toggle; touch never inks", async () => {
     const source = await PDFDocument.create();
     source.addPage([600, 800]);
@@ -236,7 +265,7 @@ describe("viewer runtime tracer", () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/pencil-first.pdf",
+      documentPath: "Notes/pencil-first.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -277,7 +306,7 @@ describe("viewer runtime tracer", () => {
     settings.mouseDragScroll = true;
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/mouse-policy.pdf",
+      documentPath: "Notes/mouse-policy.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -310,7 +339,7 @@ describe("viewer runtime tracer", () => {
     const inactiveAdapter = new FakeAdapter();
     const inactiveSession = await ViewerInkSession.create({
       adapter: inactiveAdapter,
-      pdfPath: "Notes/inactive.pdf",
+      documentPath: "Notes/inactive.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -334,7 +363,7 @@ describe("viewer runtime tracer", () => {
     const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -388,7 +417,7 @@ describe("viewer runtime tracer", () => {
     const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -441,7 +470,7 @@ describe("viewer runtime tracer", () => {
 
     const session = await ViewerInkSession.create({
       adapter: new FakeAdapter(),
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars,
       recovery: new RecoveryRepository(files, "recovery"),
@@ -477,7 +506,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -529,7 +558,7 @@ describe("viewer runtime tracer", () => {
 
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -576,7 +605,7 @@ describe("viewer runtime tracer", () => {
 
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -632,7 +661,7 @@ describe("viewer runtime tracer", () => {
 
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -669,7 +698,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -718,7 +747,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -768,7 +797,7 @@ describe("viewer runtime tracer", () => {
 
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -835,7 +864,7 @@ describe("viewer runtime tracer", () => {
 
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -893,7 +922,7 @@ describe("viewer runtime tracer", () => {
 
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -928,7 +957,7 @@ describe("viewer runtime tracer", () => {
     const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -1017,7 +1046,7 @@ describe("viewer runtime tracer", () => {
     const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -1079,7 +1108,7 @@ describe("viewer runtime tracer", () => {
     const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -1137,7 +1166,7 @@ describe("viewer runtime tracer", () => {
     const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -1236,7 +1265,7 @@ describe("viewer runtime tracer", () => {
     settings.mouseDragScroll = false;
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -1272,7 +1301,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -1300,7 +1329,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -1327,7 +1356,7 @@ describe("viewer runtime tracer", () => {
     settings.mouseDragScroll = false;
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1362,7 +1391,7 @@ describe("viewer runtime tracer", () => {
     settings.toolPreferences.activeTool = "pen";
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1391,7 +1420,7 @@ describe("viewer runtime tracer", () => {
     });
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1428,7 +1457,7 @@ describe("viewer runtime tracer", () => {
     });
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1493,7 +1522,7 @@ describe("viewer runtime tracer", () => {
     settings.toolPreferences.pen.stabilization = "off";
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1550,7 +1579,7 @@ describe("viewer runtime tracer", () => {
     settings.toolPreferences.pen.stabilization = "medium";
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1595,7 +1624,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -1644,7 +1673,7 @@ describe("viewer runtime tracer", () => {
     const saveSettings = vi.fn(async () => undefined);
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1682,7 +1711,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1749,7 +1778,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1790,7 +1819,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1849,7 +1878,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1894,7 +1923,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1945,7 +1974,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -1990,7 +2019,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -2048,7 +2077,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -2112,7 +2141,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -2149,7 +2178,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -2189,7 +2218,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -2246,7 +2275,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -2293,7 +2322,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -2331,7 +2360,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -2367,7 +2396,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
       recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
@@ -2418,7 +2447,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -2457,7 +2486,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -2496,7 +2525,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -2566,7 +2595,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -2635,7 +2664,7 @@ describe("viewer runtime tracer", () => {
     settings.toolPreferences.activeTool = "pen";
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/selection-clear.pdf",
+      documentPath: "Notes/selection-clear.pdf",
       settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -2666,7 +2695,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars,
       recovery,
@@ -2698,7 +2727,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars,
       recovery,
@@ -2727,7 +2756,7 @@ describe("viewer runtime tracer", () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars,
       recovery,
@@ -2772,7 +2801,7 @@ describe("viewer runtime tracer", () => {
 
     const reloaded = await ViewerInkSession.create({
       adapter: new FakeAdapter(),
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings,
       sidecars,
       recovery,
@@ -2800,7 +2829,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -2849,7 +2878,7 @@ describe("viewer runtime tracer", () => {
     const nativeDelete = new Promise<void>((resolve) => { finishDelete = resolve; });
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -2908,7 +2937,7 @@ describe("viewer runtime tracer", () => {
     const initialPages = adapter.pages.bind(adapter);
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -2939,7 +2968,7 @@ describe("viewer runtime tracer", () => {
     const writeSourcePdf = vi.fn(async (_bytes: Uint8Array) => undefined);
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -2974,7 +3003,7 @@ describe("viewer runtime tracer", () => {
     const writeSourcePdf = vi.fn(async (_bytes: Uint8Array) => undefined);
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -3006,7 +3035,7 @@ describe("viewer runtime tracer", () => {
     const writes: Uint8Array[] = [];
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -3038,7 +3067,7 @@ describe("viewer runtime tracer", () => {
     let insertedCount = 0;
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -3085,7 +3114,7 @@ describe("viewer runtime tracer", () => {
     const insert = vi.fn(async () => 2);
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -3117,7 +3146,7 @@ describe("viewer runtime tracer", () => {
     adapter.root.append(page2);
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
@@ -3157,7 +3186,7 @@ describe("viewer runtime tracer", () => {
     const notices: string[] = [];
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/example.pdf",
+      documentPath: "Notes/example.pdf",
       settings: structuredClone(DEFAULT_SETTINGS),
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),

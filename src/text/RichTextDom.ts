@@ -1,4 +1,4 @@
-import type { PdfTextRun, TextStyle } from "../model";
+import type { TextRun, TextStyle } from "../model";
 import { createDetachedSpan } from "../vendor/createDetached";
 import { isElementInDocument, setElementCssProps } from "../dom/typeGuards";
 import { normalizeTextRuns, plainTextFromRuns, type TextRunStyle } from "./RichTextRuns";
@@ -16,7 +16,7 @@ const BLOCK_TAGS = new Set(["ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DIV", 
  * opening, formatting, or committing text—not on every input event—so native
  * contenteditable continues to own its caret and IME composition state.
  */
-export function renderTextRuns(root: HTMLElement, runs: readonly PdfTextRun[], scale = 1): void {
+export function renderTextRuns(root: HTMLElement, runs: readonly TextRun[], scale = 1): void {
   const ownerDocument = root.ownerDocument;
   const fragments = normalizeTextRuns(runs).map((run) => {
     const span = createDetachedSpan(ownerDocument);
@@ -44,8 +44,8 @@ export function rescaleTextRuns(root: HTMLElement, scale = 1): void {
 }
 
 /** Read contenteditable DOM into canonical, UTF-16-addressable style runs. */
-export function readTextRuns(root: HTMLElement, fallbackStyle: TextStyle): PdfTextRun[] {
-  const pieces: PdfTextRun[] = [];
+export function readTextRuns(root: HTMLElement, fallbackStyle: TextStyle): TextRun[] {
+  const pieces: TextRun[] = [];
   const append = (text: string, style: TextRunStyle): void => {
     if (text) pieces.push({ text, ...style });
   };
@@ -144,7 +144,7 @@ function styleFromElement(element: HTMLElement, fallback: TextRunStyle): TextRun
   }
 }
 
-function styleFromRun(run: PdfTextRun): TextRunStyle {
+function styleFromRun(run: TextRun): TextRunStyle {
   return {
     color: run.color,
     fontSize: run.fontSize,

@@ -1,6 +1,6 @@
 import { isHTMLCanvasElement } from "../dom/typeGuards";
-import type { PdfPageInfo } from "../integration/PdfPageLocator";
-import type { PageRotation } from "./PdfCoordinateMapper";
+import type { AnnotationPageInfo } from "../runtime/AnnotationSurface";
+import type { PageRotation } from "../runtime/PageCoordinateMapper";
 
 export interface PageCoordinateLayout {
   offsetX: number;
@@ -65,7 +65,7 @@ export function overlayOffsetInParent(
   };
 }
 
-export function resolvePageCoordinateLayout(page: PdfPageInfo): PageCoordinateLayout {
+export function resolvePageCoordinateLayout(page: AnnotationPageInfo): PageCoordinateLayout {
   const hostRect = page.element.getBoundingClientRect();
   const rotation = normalizeRotation(page.rotation);
   const pdfWidth = rotation === 90 || rotation === 270 ? page.height : page.width;

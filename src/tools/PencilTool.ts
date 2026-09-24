@@ -1,4 +1,4 @@
-import type { DrawingToolPreferences, PdfPoint } from "../model";
+import type { DrawingToolPreferences, PagePoint } from "../model";
 import { normalizedCoordinateScale } from "../util/math";
 
 export interface PencilSample { width: number; opacity: number; textureStrength: number }
@@ -50,7 +50,7 @@ export interface GraphiteMark {
   kind: "grain" | "fleck" | "spine";
 }
 
-export function pencilSample(preferences: DrawingToolPreferences, point: PdfPoint): PencilSample {
+export function pencilSample(preferences: DrawingToolPreferences, point: PagePoint): PencilSample {
   const pressure = preferences.pressureSensitivity ? Math.min(1, Math.max(0, point.pressure)) : 0.5;
   const tilt = preferences.tiltSensitivity
     ? Math.min(1, (Math.abs(point.tiltX ?? 0) + Math.abs(point.tiltY ?? 0)) / 120)

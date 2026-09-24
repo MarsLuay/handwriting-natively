@@ -1,29 +1,40 @@
-import type { VaultLogLevel } from "../logging/VaultLogSink";
-import type { ViewStateSource } from "../logging/SessionLogger";
-import type { PdfPageInfo } from "./PdfPageLocator";
+import type { AnnotationSurface, AnnotationSurfaceCallbacks, AnnotationViewState } from "../runtime/AnnotationSurface";
 import type { ToolbarPlacement } from "../model";
+import type { PdfFindControllerLike, PdfIntegrationProfile, PdfJsEventBus } from "./PdfViewerCompatibility";
+import type { PlatformCapabilityReport } from "./PlatformCapabilities";
+import type { PdfPageInfo } from "./PdfPageLocator";
 
-export interface PdfViewState {
-  pageNumber: number;
-  scrollFraction: number;
-  scale: number;
-  rotation: number;
+/** @deprecated Use AnnotationViewState in shared runtime code. */
+export type PdfViewState = AnnotationViewState;
+/** @deprecated Use AnnotationSurfaceCallbacks in shared runtime code. */
+export type PdfAdapterCallbacks = AnnotationSurfaceCallbacks;
+
+/** Optional PDF-only capabilities; generic annotation surfaces do not implement this contract. */
+export interface PdfSurfaceExtensions {
+  readonly supportsPdfExport?: true;
+  setBoostedZoom?(enabled: boolean): void;
+  nativeTextLayer?(pageNumber: number): HTMLElement | null;
+  findController?(): PdfFindControllerLike | null;
+  eventBus?(): PdfJsEventBus | null;
+  onPdfEvent?(name: string, handler: (event: unknown) => void): () => void;
+  setInkZoomBurstActive?(next: boolean): void;
+  consumeSidebarFollowZoomMetrics?(): {
+    sidebarFollowActiveDuringZoom: boolean;
+    sidebarFollowFramesDuringBurst: number;
+    maxSidebarOffsetJump: number;
+    sidebarFollowSuppressedTriggers: number;
+  } | null;
 }
 
-export interface PdfAdapterCallbacks {
-  onViewStateChange?(state: PdfViewState, source: ViewStateSource): void;
-  onPagesChanged?(reason: string): void;
-  /** PDF.js replaced page contents (canvas/text layer) without replacing a page node. */
-  onPageContentMutation?(recordCount: number): void;
-  onCompatibilityWarning?(message: string): void;
-  /** Optional vault debug sink (respects settings.vaultDebugLog). */
-  onDebugLog?(level: VaultLogLevel, event: string, payload?: Record<string, unknown>): void;
+export function pdfSurfaceExtensions(surface: AnnotationSurface): PdfSurfaceExtensions | null {
+  const candidate = surface as AnnotationSurface & Partial<PdfSurfaceExtensions>;
+  return candidate.supportsPdfExport === true ? candidate as PdfSurfaceExtensions : null;
 }
 
-export interface ObsidianPdfAdapter {
+export interface ObsidianPdfAdapter extends AnnotationSurface, PdfSurfaceExtensions {
   readonly kind: "direct" | "embedded";
-  /** Image sessions reuse the annotation engine but do not expose PDF export actions. */
-  readonly supportsPdfExport?: boolean;
+  /** PDF adapters expose PDF export and viewer capabilities through the optional extension. */
+  readonly supportsPdfExport?: true;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
   pages(): PdfPageInfo[];
@@ -36,21 +47,11 @@ export interface ObsidianPdfAdapter {
   scrollElement(): HTMLElement;
   mountOverlay(pageNumber: number): HTMLElement;
   mountToolbar(toolbar: HTMLElement, placement?: ToolbarPlacement): void;
-  /** Advanced opt-in only; normal PDF zoom stays under Obsidian's default cap. */
-  setBoostedZoom?(enabled: boolean): void;
-  /** Native PDF.js `.textLayer` for a page (find-bar bridge); null when missing. */
-  nativeTextLayer?(pageNumber: number): HTMLElement | null;
-  /** Private find controller when Obsidian exposes it (capability-checked). */
-  findController?(): import("./PdfViewerCompatibility").PdfFindControllerLike | null;
-  /** PDF.js / Obsidian viewer event bus when available. */
-  eventBus?(): import("./PdfViewerCompatibility").PdfJsEventBus | null;
-  /** Subscribe to PDF.js events used by the annotation find bridge. */
-  onPdfEvent?(name: string, handler: (event: unknown) => void): () => void;
   compatibilityReport(): {
     errors: string[];
     warnings: string[];
-    profile?: import("./PdfViewerCompatibility").PdfIntegrationProfile;
-    platform?: import("./PlatformCapabilities").PlatformCapabilityReport;
+    profile?: PdfIntegrationProfile;
+    platform?: PlatformCapabilityReport;
   };
   destroy(): void;
 }

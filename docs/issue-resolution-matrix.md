@@ -14,7 +14,7 @@ This document records what is implemented in the current repository, what is int
 
 ## Integration contract (#131)
 
-`src/integration/` is the only owner of Obsidian/PDF.js selectors and private object probing. The core session receives page/view semantics through `ObsidianPdfAdapter`. Missing private viewer objects, toolbar hosts, find controllers, or EventBus signals degrade independently; missing page identity or trustworthy geometry is unsafe and must fail closed.
+`src/integration/` is the only owner of Obsidian/PDF.js selectors and private object probing. The core session receives generic page/view semantics through `AnnotationSurface`; `ObsidianPdfAdapter` remains the PDF-specific compatibility implementation. Missing private viewer objects, toolbar hosts, find controllers, or EventBus signals degrade independently; missing page identity or trustworthy geometry is unsafe and must fail closed. PDF-only callbacks are optional surface extensions.
 
 The current compatibility evidence is per adapter instance and includes direct/embedded discovery, page-node validation, scroll fallback, optional private viewer access, and bounded teardown. A released Obsidian build is still required to establish a known-good profile.
 
@@ -70,7 +70,7 @@ Record plugin/Obsidian/runtime metadata, compatibility strategy, and copied boun
 
 Drawing presets are persisted, capped, selectable in one action, and editable from the drawing menu. Selecting a preset changes the active tool and settings together, so toolbar state and routed tool state cannot disagree. Stylus-first routing remains the default; mouse behavior remains explicit and touch stays native.
 
-Image annotation is not implemented as a second renderer. The safe future seam is a one-page image document adapter that reuses page-space ink, input, tools, sidecar identity, recovery, and export. PNG/JPEG orientation, transparency, large-image memory, and unsupported HEIC/animated/SVG behavior need fixture and runtime evidence before adding an image adapter.
+Image annotation is not implemented as a second renderer. `ImageViewAdapter` now supplies the one-page `AnnotationSurface` implementation and reuses page-local ink, input, tools, sidecar identity, recovery, and lifecycle without converting the image to a PDF. PDF export, PDF.js find, page insertion/deletion, and scan actions remain unavailable on that surface; flattened image export, orientation/transparency, large-image memory, and unsupported HEIC/animated/SVG behavior remain follow-up evidence for #139/#25.
 
 ## Evidence boundary
 

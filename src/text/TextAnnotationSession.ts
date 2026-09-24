@@ -1,18 +1,18 @@
-import type { PdfTextAnnotation } from "../model";
+import type { TextAnnotation } from "../model";
 
 /** In-memory index for sidecar-backed text annotations. */
 export class TextAnnotationSession {
-  private readonly byPage = new Map<number, PdfTextAnnotation[]>();
+  private readonly byPage = new Map<number, TextAnnotation[]>();
 
-  constructor(initial: readonly PdfTextAnnotation[] = []) {
+  constructor(initial: readonly TextAnnotation[] = []) {
     initial.forEach((annotation) => this.add(annotation));
   }
 
-  add(annotation: PdfTextAnnotation): void {
+  add(annotation: TextAnnotation): void {
     this.byPage.set(annotation.page, [...(this.byPage.get(annotation.page) ?? []), annotation]);
   }
 
-  remove(id: string): PdfTextAnnotation | undefined {
+  remove(id: string): TextAnnotation | undefined {
     for (const [page, annotations] of this.byPage) {
       const index = annotations.findIndex((annotation) => annotation.id === id);
       if (index < 0) continue;
@@ -23,16 +23,16 @@ export class TextAnnotationSession {
     return undefined;
   }
 
-  replace(annotation: PdfTextAnnotation): void {
+  replace(annotation: TextAnnotation): void {
     this.remove(annotation.id);
     this.add(annotation);
   }
 
-  page(page: number): readonly PdfTextAnnotation[] {
+  page(page: number): readonly TextAnnotation[] {
     return this.byPage.get(page) ?? [];
   }
 
-  all(): PdfTextAnnotation[] {
+  all(): TextAnnotation[] {
     return [...this.byPage.values()].flat();
   }
 

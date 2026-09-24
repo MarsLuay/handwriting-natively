@@ -1,4 +1,4 @@
-import type { PdfPoint } from "../model";
+import type { PagePoint } from "../model";
 
 export type StabilizationLevel = "off" | "low" | "medium" | "high";
 
@@ -15,9 +15,9 @@ export const STABILIZATION_ALPHA: Record<StabilizationLevel, number> = {
  * Prefer {@link appendStabilizedPoint} for live preview — batch recomputation
  * moves earlier points and breaks incremental draft stamps.
  */
-export function stabilizePoints(points: readonly PdfPoint[], level: StabilizationLevel): PdfPoint[] {
+export function stabilizePoints(points: readonly PagePoint[], level: StabilizationLevel): PagePoint[] {
   if (points.length < 2 || level === "off") return points.map((point) => ({ ...point }));
-  const result: PdfPoint[] = [{ ...points[0]! }];
+  const result: PagePoint[] = [{ ...points[0]! }];
   const alpha = STABILIZATION_ALPHA[level];
   for (let index = 1; index < points.length; index += 1) {
     const point = points[index]!;
@@ -38,8 +38,8 @@ export function stabilizePoints(points: readonly PdfPoint[], level: Stabilizatio
  * so incremental live draft stamps stay valid with stabilization on.
  */
 export function appendStabilizedPoint(
-  smoothed: PdfPoint[],
-  raw: PdfPoint,
+  smoothed: PagePoint[],
+  raw: PagePoint,
   level: StabilizationLevel
 ): void {
   if (level === "off" || smoothed.length === 0) {
@@ -56,14 +56,14 @@ export function appendStabilizedPoint(
   });
 }
 
-function perpendicularDistance(point: PdfPoint, start: PdfPoint, end: PdfPoint): number {
+function perpendicularDistance(point: PagePoint, start: PagePoint, end: PagePoint): number {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   if (dx === 0 && dy === 0) return Math.hypot(point.x - start.x, point.y - start.y);
   return Math.abs(dy * point.x - dx * point.y + end.x * start.y - end.y * start.x) / Math.hypot(dx, dy);
 }
 
-export function simplifyPoints(points: readonly PdfPoint[], tolerance = 0.35): PdfPoint[] {
+export function simplifyPoints(points: readonly PagePoint[], tolerance = 0.35): PagePoint[] {
   if (points.length <= 2) return points.map((point) => ({ ...point }));
   let maxDistance = 0;
   let split = 0;
