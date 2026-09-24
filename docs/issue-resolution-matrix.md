@@ -36,6 +36,8 @@ The session owns page routers, observers, rAF/timer work, zoom profiling, toolba
 
 No asynchronous callback is allowed to be treated as proof that a newer viewer generation is still valid. New work should use the existing generation and cleanup seams rather than add independent stale flags.
 
+- **Audit outcome:** each viewer session owns its disposable observers, routers, timers, overlays, and persistence handoff; per-document autosave serialization remains the cross-leaf integrity boundary. Deterministic tests cover cancellation, destruction, page replacement, and stale-generation guards, while split/merge leaves and same-document multi-leaf stress remain release validation rather than unverified guarantees.
+
 ## Storage and page mutation (#133, #33)
 
 - Sidecar remains the canonical editable store; source-PDF writes are limited to explicit page actions.
