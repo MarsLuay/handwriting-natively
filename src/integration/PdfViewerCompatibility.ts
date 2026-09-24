@@ -319,14 +319,17 @@ export class PdfViewerCompatibility {
     const hasPageNumber = Boolean(page?.dataset.pageNumber && Number(page.dataset.pageNumber) >= 1);
     const trustworthyPageNumbers = hasPageNumber && !hasHeuristicPdfPageNumber(page!);
     const hasGeometry = Boolean(page);
+    const sidebarObservable = Boolean(toolbarHost || hasEventBus);
     const profile: PdfIntegrationProfile = {
       schemaVersion: 1,
       adapter,
       status: errors.length
         ? "unsafe"
-        : warnings.length
-          ? "supported-with-fallback"
-          : "supported",
+        : !sidebarObservable
+          ? "degraded"
+          : warnings.length
+            ? "supported-with-fallback"
+            : "supported",
       viewerGeneration: 1,
       strategies: {
         viewerRoot: viewerRoot ? "validated-dom-selector" : "missing",
@@ -353,7 +356,7 @@ export class PdfViewerCompatibility {
         scaleEvent: hasEventBus,
         rotationReadable: typeof privateViewer?.pagesRotation === "number" || hasGeometry,
         pageReplacementObservable: Boolean(viewerRoot),
-        sidebarObservable: Boolean(toolbarHost),
+        sidebarObservable,
         embedded: adapter === "embedded"
       },
       counters: {
