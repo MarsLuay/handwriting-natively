@@ -368,6 +368,27 @@ describe("SessionLogger", () => {
     expect(writes[1]?.payload).toMatchObject({ phase: "terminal", outcome: "post-ui-pen-success" });
   });
 
+  it("keeps touch-only probe expiry informational", () => {
+    const writes: Array<{ level: string; event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (level, event, payload) => writes.push({ level, event, payload: payload ?? {} })
+    }, () => true, "0.1.60");
+
+    logger.postUiProbe("terminal", {
+      outcome: "post-ui-probe-expired-no-pen",
+      observedPointerTypes: ["touch"],
+      contactCount: 1,
+      elapsedMs: 1_501,
+      details: { penObserved: false }
+    });
+
+    expect(writes[0]).toMatchObject({
+      level: "info",
+      event: "post-ui input probe",
+      payload: expect.objectContaining({ outcome: "post-ui-probe-expired-no-pen" })
+    });
+  });
+
   it("records correlated handoff failures and lifecycle anchors without annotation contents", () => {
     const writes: Array<{ level: string; event: string; payload: Record<string, unknown> }> = [];
     const logger = new SessionLogger("Notes/example.pdf", {
