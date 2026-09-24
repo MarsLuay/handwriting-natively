@@ -73,6 +73,32 @@ describe("overlayOffsetInParent", () => {
     expect(result.offsetY).toBe(27.5);
   });
 
+  it("ignores jsdom-style widths when the computed border is none", () => {
+    const parent = document.createElement("div");
+    parent.getBoundingClientRect = () => ({
+      x: 10, y: 20, left: 10, top: 20, right: 110, bottom: 120,
+      width: 100, height: 100, toJSON: () => ({})
+    });
+    const mockWindow = {
+      getComputedStyle: () => ({
+        borderLeftWidth: "24px",
+        borderTopWidth: "24px",
+        borderLeftStyle: "none",
+        borderTopStyle: "none"
+      }) as CSSStyleDeclaration
+    } as unknown as Window & typeof globalThis;
+    Object.defineProperty(parent.ownerDocument, "defaultView", { value: mockWindow, configurable: true });
+
+    const contentRect = {
+      x: 30, y: 50, left: 30, top: 50, right: 80, bottom: 90,
+      width: 50, height: 40, toJSON: () => ({})
+    } as DOMRect;
+
+    const result = overlayOffsetInParent(parent, contentRect);
+    expect(result.offsetX).toBe(20);
+    expect(result.offsetY).toBe(30);
+  });
+
   it("falls back to clientLeft/clientTop when getComputedStyle does not return finite numeric values", () => {
     const parent = document.createElement("div");
     parent.getBoundingClientRect = () => ({

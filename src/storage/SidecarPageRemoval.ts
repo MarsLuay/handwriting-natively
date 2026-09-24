@@ -58,17 +58,16 @@ export function insertPagesIntoSidecar(
   if (!Number.isInteger(insertedPageCount) || insertedPageCount < 1) {
     throw new Error("Inserted page count must be a positive integer.");
   }
-  const shift = (page: number): number => page >= insertedPage ? page + insertedPageCount : page;
   return {
     ...sidecar,
     pages: sidecar.pages.map((page) => ({
       ...page,
-      page: shiftPageNumberByCount(page.page, insertedPage, count),
+      page: shiftPageNumberByCount(page.page, insertedPage, insertedPageCount),
       strokes: page.strokes.map((stroke) => stroke.page >= insertedPage
-        ? { ...stroke, page: shiftPageNumberByCount(stroke.page, insertedPage, count) }
+        ? { ...stroke, page: shiftPageNumberByCount(stroke.page, insertedPage, insertedPageCount) }
         : stroke),
       ...(page.texts ? { texts: page.texts.map((text) => text.page >= insertedPage
-        ? { ...text, page: shiftPageNumberByCount(text.page, insertedPage, count) }
+        ? { ...text, page: shiftPageNumberByCount(text.page, insertedPage, insertedPageCount) }
         : text) } : {})
     })),
     updatedAt
