@@ -57,7 +57,6 @@ import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
 import { insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
-import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultFs";
 import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
@@ -845,7 +844,6 @@ export class ViewerInkSession {
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
-      drawEnabled: this.drawEnabled,
       supportedMoreActions: [
         ...(pdfExtensions && options.writeExport
           ? ["export", "export-editable"] as const
