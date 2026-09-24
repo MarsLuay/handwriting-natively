@@ -25,7 +25,7 @@ import {
   resolveMouseInputMode,
   type MouseInputMode
 } from "../input/annotationInputPolicy";
-import { PullToAddPageGesture } from "../input/PullToAddPageGesture";
+import { AddPageControl } from "../ui/AddPageControl";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
@@ -836,7 +836,7 @@ export class ViewerInkSession {
   private readonly resizeObserver: ResizeObserver | null;
   private readonly logger: SessionLogger;
   private readonly viewerMousePan: ViewerMousePan;
-  private readonly pullToAddPage: PullToAddPageGesture | null;
+  private readonly addPageControl: AddPageControl | null;
   private readonly thumbnailSidebarActions: PdfThumbnailSidebarActions | null;
   private pageMutationInFlight = false;
   /** PDF find integration is an optional surface extension. */
@@ -1060,7 +1060,6 @@ export class ViewerInkSession {
             ...details,
           });
         }
-        this.feedPullToAddFromPan(phase, details);
         if (this.panProfile) this.panProfile.maxPluginCallbackMs = Math.max(this.panProfile.maxPluginCallbackMs, performance.now() - panStarted);
       },
       onPanClaim: (event, details) => {
@@ -1070,23 +1069,13 @@ export class ViewerInkSession {
         });
       }
     });
-    this.pullToAddPage = options.onInsertPage
-      ? new PullToAddPageGesture(adapter.host.ownerDocument, {
+    this.addPageControl = options.onInsertPage
+      ? new AddPageControl({
         enabled: () => !this.destroyed && typeof this.options.onInsertPage === "function",
         isBusy: () => this.pageMutationInFlight || Boolean(this.pageMutationShield) || this.pendingInsertedPageFocus !== null,
-        canAnnotatePointer: (event) => this.canAnnotatePointerEvent(event),
-        scrollRoot: () => adapter.scrollElement(),
         host: () => adapter.root,
-        withinTarget: (target) => {
-          if (!(target instanceof Element)) return false;
-          if (target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown, .native-pdf-handwriting-selection-toolbar")) {
-            return false;
-          }
-          return adapter.root.contains(target);
-        },
-        onCommit: () => this.addPageAt(Number.MAX_SAFE_INTEGER),
-        onLog: (phase, details) => this.logger.pullToAdd(phase, details)
-      })
+        onCommit: () => this.addPageAt(Number.MAX_SAFE_INTEGER)
+      }, adapter.host.ownerDocument)
       : null;
     this.thumbnailSidebarActions = options.onDeletePage && options.onInsertPage
       ? new PdfThumbnailSidebarActions(adapter.host, {
@@ -3623,6 +3612,7 @@ export class ViewerInkSession {
 
   refresh(reason = "manual"): void {
     if (this.destroyed) return;
+    this.addPageControl?.refresh();
     if (this.zoomProfile) this.zoomProfile.refreshExecutions += 1;
     if (this.panProfile) this.panProfile.refreshes += 1;
     if (
@@ -5199,7 +5189,7 @@ export class ViewerInkSession {
     this.surfaces.clear();
     this.selectionToolbar.destroy();
     this.viewerMousePan.destroy();
-    this.pullToAddPage?.destroy();
+    this.addPageControl?.destroy();
     this.thumbnailSidebarActions?.destroy();
     this.findBridge?.destroy();
     this.handledDrawPointers.clear();
@@ -5348,21 +5338,6 @@ export class ViewerInkSession {
       pressure: event.pressure,
       ...details
     });
-  }
-
-  /** Grab-pan at the bottom edge feeds the GoodNotes-style pull-to-add-page gesture. */
-  private feedPullToAddFromPan(phase: MousePanPhase, details: Record<string, unknown>): void {
-    const gesture = this.pullToAddPage;
-    if (!gesture) return;
-    if (phase === "move") {
-      const deltaY = typeof details.deltaY === "number" ? details.deltaY : 0;
-      const changed = details.changed === true;
-      gesture.feedScrollAttempt(deltaY, changed);
-      return;
-    }
-    if (phase === "end" || phase === "cancel" || phase === "abort") {
-      gesture.feedScrollEnd();
-    }
   }
 
   private mousePanContext(reason?: string): Record<string, unknown> {
