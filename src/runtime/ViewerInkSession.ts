@@ -204,6 +204,8 @@ interface ObsidianUiShellSnapshot {
   kind: ObsidianUiShellKind;
   active: boolean;
   details: Record<string, unknown>;
+  nestedShellCount: number;
+  nestedShellIds: Array<number | null>;
   openedAt: number | null;
   openedByPointerType: string | null;
   lastInputPointerType: string | null;
@@ -230,10 +232,22 @@ function classifyObsidianUiShell(shell: Element): ObsidianUiShellKind {
   return "unknown";
 }
 
+function canonicalObsidianUiShell(shell: Element): Element {
+  const kind = classifyObsidianUiShell(shell);
+  let canonical = shell;
+  let ancestor = shell.parentElement;
+  while (ancestor) {
+    if (classifyObsidianUiShell(ancestor) === kind) canonical = ancestor;
+    ancestor = ancestor.parentElement;
+  }
+  return canonical;
+}
+
 function findObsidianUiShell(element: Element): ObsidianUiShellRef | null {
   const shell = element.closest(OBSIDIAN_UI_SHELL_SELECTOR);
   if (!shell) return null;
-  return { kind: classifyObsidianUiShell(shell), shell };
+  const canonical = canonicalObsidianUiShell(shell);
+  return { kind: classifyObsidianUiShell(canonical), shell: canonical };
 }
 
 /**
@@ -1162,7 +1176,7 @@ export class ViewerInkSession {
           const shell = removed.matches(OBSIDIAN_UI_SHELL_SELECTOR)
             ? removed
             : removed.querySelector(OBSIDIAN_UI_SHELL_SELECTOR);
-          if (shell) removedShells.push(shell);
+          if (shell) removedShells.push(canonicalObsidianUiShell(shell));
         }
       }
       this.captureUiShellSnapshots(doc, true, removedShells);
@@ -1183,15 +1197,34 @@ export class ViewerInkSession {
     const transitions: Record<string, unknown>[] = [];
     const now = Date.now();
     const routerGenerations = this.currentRouterGenerations();
-    for (const shell of [...doc.querySelectorAll(OBSIDIAN_UI_SHELL_SELECTOR)]) {
+    const candidatesByShell = new Map<Element, Element[]>();
+    for (const candidate of [...doc.querySelectorAll(OBSIDIAN_UI_SHELL_SELECTOR)]) {
+      const shell = canonicalObsidianUiShell(candidate);
+      const candidates = candidatesByShell.get(shell) ?? [];
+      candidates.push(candidate);
+      candidatesByShell.set(shell, candidates);
+    }
+    for (const [shell, candidates] of candidatesByShell) {
       const kind = classifyObsidianUiShell(shell);
       const active = isActiveObsidianUiShell(shell, kind);
       const previous = this.uiShellSnapshots.get(shell);
       const opened = active && !previous?.active;
+      const nestedShellIds = candidates
+        .filter((candidate) => candidate !== shell)
+        .map((candidate) => getDebugNodeId(candidate))
+        .slice(0, 8);
+      const details = {
+        ...(hitElementDetails(shell) ?? {}),
+        canonicalSurfaceId: getDebugNodeId(shell),
+        nestedShellCount: candidates.length,
+        nestedShellIds
+      };
       const snapshot: ObsidianUiShellSnapshot = {
         kind,
         active,
-        details: hitElementDetails(shell) ?? {},
+        details,
+        nestedShellCount: candidates.length,
+        nestedShellIds,
         openedAt: active ? (previous?.openedAt ?? (opened ? now : null)) : null,
         openedByPointerType: active ? (previous?.openedByPointerType ?? (opened ? this.lastUiInputPointerType : null)) : null,
         lastInputPointerType: active ? (previous?.lastInputPointerType ?? this.lastUiInputPointerType) : null,
@@ -1202,6 +1235,9 @@ export class ViewerInkSession {
         this.logger.uiSurface("open", {
           surfaceKind: kind,
           surfaceId: getDebugNodeId(shell),
+          canonicalSurfaceId: getDebugNodeId(shell),
+          nestedShellCount: snapshot.nestedShellCount,
+          nestedShellIds: snapshot.nestedShellIds,
           openedAt: now,
           openedByPointerType: snapshot.openedByPointerType,
           lastInputPointerType: snapshot.lastInputPointerType,
@@ -1216,6 +1252,9 @@ export class ViewerInkSession {
           kind,
           reason: "active-to-closed",
           surfaceId: getDebugNodeId(shell),
+          canonicalSurfaceId: getDebugNodeId(shell),
+          nestedShellCount: previous.nestedShellCount,
+          nestedShellIds: previous.nestedShellIds,
           openedAt: previous.openedAt,
           closedAt: now,
           durationMs: previous.openedAt === null ? null : Math.max(0, now - previous.openedAt),
@@ -1241,6 +1280,9 @@ export class ViewerInkSession {
           kind: previous.kind,
           reason: "removed",
           surfaceId: getDebugNodeId(shell),
+          canonicalSurfaceId: getDebugNodeId(shell),
+          nestedShellCount: previous.nestedShellCount,
+          nestedShellIds: previous.nestedShellIds,
           openedAt: previous.openedAt,
           closedAt: now,
           durationMs: previous.openedAt === null ? null : Math.max(0, now - previous.openedAt),
@@ -1258,12 +1300,16 @@ export class ViewerInkSession {
         this.lastUiSurfaceCloseAt = now;
         this.logger.uiSurface("close", transition);
       }
-      for (const shell of removedShells) {
+      for (const shell of new Set(removedShells.map((candidate) => canonicalObsidianUiShell(candidate)))) {
         if (this.uiShellSnapshots.has(shell)) continue;
+        const canonicalShell = canonicalObsidianUiShell(shell);
         const transition = {
-          kind: classifyObsidianUiShell(shell),
+          kind: classifyObsidianUiShell(canonicalShell),
           reason: "removed",
-          surfaceId: getDebugNodeId(shell),
+          surfaceId: getDebugNodeId(canonicalShell),
+          canonicalSurfaceId: getDebugNodeId(canonicalShell),
+          nestedShellCount: 1,
+          nestedShellIds: [],
           openedAt: null,
           closedAt: now,
           durationMs: null,
