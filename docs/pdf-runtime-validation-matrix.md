@@ -13,6 +13,7 @@ This matrix is the manual-runtime companion to the deterministic compatibility f
 | Zoom fallback and inner-layer churn | `tests/pdf-sidebar-rail-offset.test.ts`, `tests/zoom-ink-compositing.test.ts`, `tests/runtime-viewer-session.test.ts` | geometry/event fallback, no plugin-owned remount, generation-safe reattachment |
 | Unsafe geometry/identity | `tests/annotation-safety.test.ts` | pointer and persistence gates reject the affected page |
 | Full synthetic interaction matrix | `tests/fixtures/pdfInteractionScenarios.ts`, `tests/pdf-interaction-fixtures.test.ts` | versioned direct/embedded scenarios cover sidecar, export/reopen, generation, zoom, sidebar, and cleanup assertions |
+| Explicit page-end creation | `tests/add-page-control.test.ts`, `tests/pdf-page-actions.test.ts` | accessible control follows the highest page, debounces activation, and reuses guarded page mutation |
 
 ## Manual qualification rows
 
