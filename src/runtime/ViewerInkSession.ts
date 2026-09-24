@@ -1011,7 +1011,7 @@ export class ViewerInkSession {
       ? new PullToAddPageGesture(adapter.host.ownerDocument, {
         enabled: () => !this.destroyed && typeof this.options.onInsertPage === "function",
         isBusy: () => this.pageMutationInFlight || Boolean(this.pageMutationShield) || this.pendingInsertedPageFocus !== null,
-        isDrawing: () => this.hasActiveAnnotationGesture(),
+        canAnnotatePointer: (event) => this.canAnnotatePointerEvent(event),
         scrollRoot: () => adapter.scrollElement(),
         host: () => adapter.root,
         withinTarget: (target) => {
