@@ -26,7 +26,7 @@ host.component.pdfViewer
 host.component.viewer
 ```
 
-When present, the object may provide `currentPageNumber`, `currentScale`, `pagesRotation`, and an `eventBus`. These paths are assumptions, not public Obsidian API. They are optional; DOM metrics remain the fallback. Compatibility reporting includes a versioned per-adapter profile: supported, supported-with-fallback, or unsafe; selected viewer/page/scale/zoom/sidebar strategies; capability booleans; failed probes; and bounded warnings. A changed object graph is therefore visible in session diagnostics without dumping private DOM or object contents.
+When present, the object may provide `currentPageNumber`, `currentScale`, `pagesRotation`, and an `eventBus`. These paths are assumptions, not public Obsidian API. They are optional; DOM metrics remain the fallback. Compatibility reporting includes a stable schema-versioned, per-adapter profile with status `supported`, `supported-with-fallback`, `degraded`, or `unsafe`; selected viewer/page/scale/zoom/sidebar strategies; capability booleans for viewer root, page identity, geometry, scroll, private viewer, EventBus, scale, page lifecycle, replacement, sidebar, and embedded mode; bounded counters; failed probes; and bounded warnings. The adapter emits one sanitized `pdf integration profile` record on attach. A changed object graph is therefore visible in session diagnostics without dumping private DOM or object contents.
 
 ## Lifecycle and cleanup
 
@@ -34,4 +34,4 @@ Adapters register scroll handlers, mutation observers, and PDF.js event-bus call
 
 Page overlays mount transparent with `pointer-events: none`. Annotation mode explicitly adds `.is-editing`; leaving annotation mode removes it. This prevents the adapter from stealing text selection, links, search, mouse, touch, or trackpad behavior by default.
 
-Direct and embedded adapters differ only in discovery and compatibility probing. Both expose the same state, page, overlay, toolbar, profile, and cleanup contract. The profile is evidence for runtime validation, not a claim that a released Obsidian build has been tested.
+Direct and embedded adapters differ only in discovery and compatibility probing. Both expose the same state, page, overlay, toolbar, profile, and cleanup contract. The profile is evidence for runtime validation, not a claim that a released Obsidian build has been tested. A profile is per viewer instance; Obsidian version metadata may be included as context but never selects compatibility by itself. Missing optional capabilities keep core annotation available through a bounded fallback or degraded status, while missing viewer/page/geometry evidence remains unsafe and blocks attachment.

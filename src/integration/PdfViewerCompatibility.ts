@@ -1,12 +1,15 @@
 import { queryPdfPageNodes } from "./pdfPageSelectors";
 import { PlatformCapabilities, type PlatformCapabilityReport } from "./PlatformCapabilities";
 
-export type PdfIntegrationStatus = "supported" | "supported-with-fallback" | "unsafe";
+export type PdfIntegrationStatus = "supported" | "supported-with-fallback" | "degraded" | "unsafe";
 
+/** Stable, bounded evidence emitted for one live PDF adapter instance. */
 export interface PdfIntegrationProfile {
   schemaVersion: 1;
   adapter: "direct" | "embedded";
   status: PdfIntegrationStatus;
+  /** The viewer generation is advanced by adapter lifecycle work (#148). */
+  viewerGeneration: number;
   strategies: {
     viewerRoot: string;
     pages: string;
@@ -16,7 +19,16 @@ export interface PdfIntegrationProfile {
     pageLifecycle: string;
     sidebar: string;
   };
+  /** Capability names are stable; values never contain DOM or private objects. */
   capabilities: Record<string, boolean>;
+  /** Bounded counters are suitable for copied diagnostics and session summaries. */
+  counters: {
+    rebinds: number;
+    viewerReplacements: number;
+    pageReplacements: number;
+    fallbackUses: number;
+    attachRetries: number;
+  };
   failedProbes: string[];
   warnings: string[];
 }
@@ -304,13 +316,20 @@ export class PdfViewerCompatibility {
     const hasEventBus = Boolean(eventBus &&
       typeof (eventBus as unknown as { on?: unknown }).on === "function" &&
       typeof (eventBus as unknown as { off?: unknown }).off === "function");
+    const hasPageNumber = Boolean(page?.dataset.pageNumber && Number(page.dataset.pageNumber) >= 1);
+    const hasGeometry = Boolean(page);
     const profile: PdfIntegrationProfile = {
       schemaVersion: 1,
       adapter,
-      status: errors.length ? "unsafe" : warnings.length ? "supported-with-fallback" : "supported",
+      status: errors.length
+        ? "unsafe"
+        : warnings.length
+          ? "supported-with-fallback"
+          : "supported",
+      viewerGeneration: 1,
       strategies: {
         viewerRoot: viewerRoot ? "validated-dom-selector" : "missing",
-        pages: page ? "numbered-dom-shell" : "missing",
+        pages: page ? (hasPageNumber ? "numbered-dom-shell" : "heuristic-page-shell") : "missing",
         scrollRoot: "adapter-fallback-chain",
         scale: typeof privateViewer?.currentScale === "number" ? "private-viewer" : "page-geometry-fallback",
         zoomEvents: hasEventBus ? "optional-event-bus" : "geometry-fallback",
@@ -320,16 +339,31 @@ export class PdfViewerCompatibility {
       capabilities: {
         viewerRoot: Boolean(viewerRoot),
         pageElements: Boolean(page),
+        trustworthyPageNumbers: hasPageNumber,
+        geometryReadable: hasGeometry,
+        scrollRoot: Boolean(viewerRoot),
         toolbarHost: Boolean(toolbarHost),
         privateViewer: Boolean(privateViewer),
-        findController: Boolean(findController),
         eventBus: hasEventBus,
-        scaleReadable: typeof privateViewer?.currentScale === "number" || Boolean(page),
-        rotationReadable: typeof privateViewer?.pagesRotation === "number" || Boolean(page),
+        scaleReadable: typeof privateViewer?.currentScale === "number" || hasGeometry,
+        pageRenderEvent: hasEventBus,
+        scaleEvent: hasEventBus,
+        rotationReadable: typeof privateViewer?.pagesRotation === "number" || hasGeometry,
+        pageReplacementObservable: Boolean(viewerRoot),
+        sidebarObservable: Boolean(toolbarHost),
         embedded: adapter === "embedded"
       },
-      failedProbes: [...errors],
-      warnings: [...warnings]
+      counters: {
+        rebinds: 0,
+        viewerReplacements: 0,
+        pageReplacements: 0,
+        fallbackUses: hasEventBus ? 0 : 1,
+        attachRetries: 0
+      },
+      // These fields are copied into normal diagnostics; keep them bounded and
+      // never include selectors beyond the fixed probe messages above.
+      failedProbes: errors.slice(0, 8),
+      warnings: warnings.slice(0, 8)
     };
     const result: CompatibilityResult = {
       compatible: errors.length === 0,

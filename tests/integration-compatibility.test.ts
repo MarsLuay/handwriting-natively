@@ -110,7 +110,22 @@ describe("platform and PDF compatibility evidence", () => {
       schemaVersion: 1,
       adapter: "direct",
       status: "supported-with-fallback",
-      capabilities: { viewerRoot: true, pageElements: true, embedded: false }
+      viewerGeneration: 1,
+      capabilities: {
+        viewerRoot: true,
+        pageElements: true,
+        trustworthyPageNumbers: true,
+        geometryReadable: true,
+        scrollRoot: true,
+        embedded: false
+      },
+      counters: {
+        rebinds: 0,
+        viewerReplacements: 0,
+        pageReplacements: 0,
+        fallbackUses: 1,
+        attachRetries: 0
+      }
     });
   });
 
@@ -118,6 +133,19 @@ describe("platform and PDF compatibility evidence", () => {
     const missingRoot = PdfViewerCompatibility.direct(document.createElement("div"));
     expect(missingRoot.compatible).toBe(false);
     expect(missingRoot.profile.status).toBe("unsafe");
+    expect(missingRoot.profile.capabilities).toMatchObject({
+      viewerRoot: false,
+      pageElements: false,
+      geometryReadable: false,
+      pageReplacementObservable: false
+    });
+    expect(missingRoot.profile.counters).toEqual({
+      rebinds: 0,
+      viewerReplacements: 0,
+      pageReplacements: 0,
+      fallbackUses: 1,
+      attachRetries: 0
+    });
     expect(missingRoot.profile.failedProbes).toEqual([expect.stringContaining("PDF viewer root missing")]);
     expect(missingRoot.errors).toEqual([expect.stringContaining("PDF viewer root missing")]);
 
