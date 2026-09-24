@@ -40,7 +40,7 @@ export interface PullToAddPageCallbacks {
   /** Block while drawing ink, saving, or inserting. */
   isBusy?(): boolean;
   /** True while Draw mode is on — ink pointers (pen/mouse) must not start pull. */
-  isDrawing?: () => boolean;
+  canAnnotatePointer?: (event: PointerEvent) => boolean;
   scrollRoot(): HTMLElement;
   /** Overlay mounts relative to this host (PDF leaf / adapter root). */
   host(): HTMLElement;
@@ -558,7 +558,7 @@ export class PullToAddPageGesture {
 
   /** Pen and mouse ink in Draw mode; touch may still pull/overscroll. */
   private shouldYieldToInk(event: PointerEvent): boolean {
-    if (!this.callbacks.isDrawing?.()) return false;
+    if (!this.callbacks.canAnnotatePointer?.(event)) return false;
     return event.pointerType === "pen" || event.pointerType === "mouse";
   }
 
