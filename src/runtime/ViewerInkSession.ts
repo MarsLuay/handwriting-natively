@@ -1,6 +1,11 @@
 import type { DrawingTool, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarPlacement, ToolPreferences } from "../model";
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
-import type { AnnotationSurface, AnnotationPageInfo } from "./AnnotationSurface";
+import type {
+  AnnotationPageLifecycleChange,
+  AnnotationSurface,
+  AnnotationPageInfo,
+  AnnotationZoomChange
+} from "./AnnotationSurface";
 import { pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
 import { describeTarget } from "../dom/describeElement";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
@@ -3796,6 +3801,27 @@ export class ViewerInkSession {
       x: clientCenterX - rootRect.left - 140,
       y: clientTopY - rootRect.top - 56
     };
+  }
+
+  onPageLifecycleChange(change: AnnotationPageLifecycleChange): void {
+    const adapterGeneration = "viewerGeneration" in this.options.adapter
+      ? this.options.adapter.viewerGeneration
+      : change.viewerGeneration;
+    if (change.viewerGeneration !== adapterGeneration) return;
+    if (change.kind === "viewer-replaced") {
+      this.onPagesChanged("viewer-replaced");
+      return;
+    }
+    this.onPagesChanged(`page-${change.kind}`);
+  }
+
+  onZoomChange(change: AnnotationZoomChange): void {
+    const adapterGeneration = "viewerGeneration" in this.options.adapter
+      ? this.options.adapter.viewerGeneration
+      : change.viewerGeneration;
+    if (change.viewerGeneration !== adapterGeneration) return;
+    const source: ViewStateSource = change.phase === "settled" ? "data-scale" : "scalechanging";
+    this.onViewStateChange(this.options.adapter.getViewState(), source);
   }
 
   onViewStateChange(state: AnnotationViewState, source: ViewStateSource): void {

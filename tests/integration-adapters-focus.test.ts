@@ -83,6 +83,40 @@ describe("PDF adapters", () => {
     expect(pageChanges).toHaveBeenCalledTimes(callsBeforeDestroy);
   });
 
+  it("emits semantic zoom and page lifecycle signals, then cleans them up", async () => {
+    vi.useFakeTimers();
+    const host = compatibleHost();
+    const listeners = new Map<string, Set<(payload: unknown) => void>>();
+    const eventBus = {
+      on: (name: string, handler: (payload: unknown) => void) => {
+        const handlers = listeners.get(name) ?? new Set();
+        handlers.add(handler);
+        listeners.set(name, handlers);
+      },
+      off: (name: string, handler: (payload: unknown) => void) => listeners.get(name)?.delete(handler),
+      emit: (name: string, payload: unknown = {}) => listeners.get(name)?.forEach((handler) => handler(payload))
+    };
+    const zoom = vi.fn();
+    const lifecycle = vi.fn();
+    const adapter = await NativePdfViewAdapter.attach(host, {
+      onZoomChange: zoom,
+      onPageLifecycleChange: lifecycle
+    }, { privateViewer: { currentScale: 1, eventBus } });
+
+    eventBus.emit("scalechanging", { scale: 1.25 });
+    eventBus.emit("pagerendered", { pageNumber: 1 });
+    expect(zoom.mock.calls.map(([change]) => change.phase)).toEqual(["begin", "change"]);
+    expect(lifecycle).toHaveBeenCalledWith(expect.objectContaining({ kind: "render", viewerGeneration: 1 }));
+
+    vi.advanceTimersByTime(120);
+    expect(zoom.mock.calls.at(-1)?.[0]).toMatchObject({ phase: "settled", source: "viewer-event" });
+    const callsBeforeDestroy = zoom.mock.calls.length;
+    adapter.destroy();
+    eventBus.emit("scalechanging", { scale: 1.5 });
+    expect(zoom.mock.calls).toHaveLength(callsBeforeDestroy);
+    vi.useRealTimers();
+  });
+
   it("keeps page-space zoom alignment and restores the zoom patch on cleanup", async () => {
     const host = compatibleHost();
     const stateChanges = vi.fn();

@@ -1,6 +1,7 @@
 import { createDetachedDiv } from "../vendor/createDetached";
 import { isElement, isHTMLElement } from "../dom/typeGuards";
 import type { ViewStateSource } from "../logging/SessionLogger";
+import type { AnnotationPageLifecycleChange, AnnotationZoomChange } from "../runtime/AnnotationSurface";
 import type { ToolbarPlacement } from "../model";
 import type { ObsidianPdfAdapter, PdfAdapterCallbacks, PdfViewState } from "./ObsidianPdfAdapter";
 import { PdfPageLocator, type PdfPageInfo } from "./PdfPageLocator";
@@ -40,6 +41,8 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private destroyed = false;
   private viewerReplacementNotified = false;
   private currentViewerGeneration = 1;
+  private zoomSettleTimer: number | null = null;
+  private zoomSignalActive = false;
 
   get viewerGeneration(): number {
     return this.currentViewerGeneration;
@@ -98,6 +101,11 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.callbacks = callbacks;
     this.locator = new PdfPageLocator(this.root, compatibility.privateViewer);
     this.registerCleanup(() => this.zoomBoost?.destroy());
+    this.registerCleanup(() => {
+      if (this.zoomSettleTimer !== null) window.clearTimeout(this.zoomSettleTimer);
+      this.zoomSettleTimer = null;
+      this.zoomSignalActive = false;
+    });
     for (const warning of compatibility.warnings) callbacks.onCompatibilityWarning?.(warning);
     // Emit one bounded, sanitized profile for this adapter generation. The
     // profile contains only booleans, strategies, counters, and fixed probe
@@ -137,6 +145,53 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       reason,
       viewerGeneration: this.currentViewerGeneration
     });
+    this.callbacks.onPageLifecycleChange?.({
+      kind: "viewer-replaced",
+      viewerGeneration: this.currentViewerGeneration
+    });
+  }
+
+  private emitPageLifecycle(kind: AnnotationPageLifecycleChange["kind"], pageNumbers?: number[]): void {
+    const pages = this.pages().slice(0, 64);
+    const numbers = (pageNumbers ?? pages.map((page) => page.pageNumber)).slice(0, 64);
+    const mountGenerations: Record<string, number> = {};
+    for (const page of pages) {
+      if (numbers.includes(page.pageNumber) && page.mountGeneration !== undefined) {
+        mountGenerations[String(page.pageNumber)] = page.mountGeneration;
+      }
+    }
+    this.callbacks.onPageLifecycleChange?.({
+      kind,
+      viewerGeneration: this.currentViewerGeneration,
+      pageNumbers: numbers,
+      mountGenerations
+    });
+  }
+
+  private emitZoomChange(
+    phase: AnnotationZoomChange["phase"],
+    source: AnnotationZoomChange["source"],
+    generation = this.currentViewerGeneration
+  ): void {
+    if (this.destroyed || generation !== this.currentViewerGeneration) return;
+    const scale = this.getViewState().scale;
+    this.callbacks.onZoomChange?.({ phase, scale, source, viewerGeneration: generation });
+  }
+
+  private noteZoomChange(source: AnnotationZoomChange["source"], generation: number): void {
+    if (generation !== this.currentViewerGeneration || this.destroyed) return;
+    if (!this.zoomSignalActive) {
+      this.zoomSignalActive = true;
+      this.emitZoomChange("begin", source, generation);
+    }
+    this.emitZoomChange("change", source, generation);
+    if (this.zoomSettleTimer !== null) window.clearTimeout(this.zoomSettleTimer);
+    this.zoomSettleTimer = window.setTimeout(() => {
+      this.zoomSettleTimer = null;
+      if (this.destroyed || generation !== this.currentViewerGeneration) return;
+      this.emitZoomChange("settled", source, generation);
+      this.zoomSignalActive = false;
+    }, 120);
   }
 
   setBoostedZoom(enabled: boolean): void {
@@ -787,6 +842,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.registerCleanup(() => scroller.removeEventListener("scroll", onScroll));
 
     const observer = new MutationObserver((records) => {
+      if (!isBoundGenerationCurrent()) return;
       let childListChanged = false;
       let scaleChanged = false;
       let rotationChanged = false;
@@ -822,9 +878,17 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       }
       if (childListChanged) {
         this.logPageStructureMutations(pageStructureRecords, scaleChanged, rotationChanged);
+        this.compatibility.profile.counters.pageReplacements = Math.min(
+          999,
+          this.compatibility.profile.counters.pageReplacements + 1
+        );
+        this.emitPageLifecycle("replace");
         this.callbacks.onPagesChanged?.("pages-dom");
       }
-      else if (scaleChanged) notify("data-scale");
+      if (scaleChanged) {
+        notify("data-scale");
+        this.noteZoomChange("mutation-fallback", boundGeneration);
+      }
       else if (rotationChanged) notify("rotationchanging");
     });
     observer.observe(this.root, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-page-number", "data-rotation", "data-scale"] });
@@ -849,7 +913,23 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       ["scalechanging", "scalechanging"],
       ["rotationchanging", "rotationchanging"]
     ] as const) {
-      const handler = (): void => notify(source);
+      const handler = (): void => {
+        if (!isBoundGenerationCurrent()) return;
+        notify(source);
+        if (event === "scalechanging") this.noteZoomChange("viewer-event", boundGeneration);
+      };
+      eventBus?.on?.(event, handler);
+      this.registerCleanup(() => eventBus?.off?.(event, handler));
+    }
+    for (const [event, kind] of [["pagesloaded", "mount"], ["pagerendered", "render"]] as const) {
+      const handler = (payload: unknown): void => {
+        if (!isBoundGenerationCurrent()) return;
+        const pageNumber = typeof payload === "object" && payload !== null
+          && typeof (payload as { pageNumber?: unknown }).pageNumber === "number"
+          ? (payload as { pageNumber: number }).pageNumber
+          : undefined;
+        this.emitPageLifecycle(kind, pageNumber !== undefined ? [pageNumber] : undefined);
+      };
       eventBus?.on?.(event, handler);
       this.registerCleanup(() => eventBus?.off?.(event, handler));
     }
