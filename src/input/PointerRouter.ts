@@ -784,6 +784,16 @@ export class PointerRouter {
     return this.callbacks.projectCursor?.(clientX, clientY) ?? { x: clientX, y: clientY };
   }
 
+  /** Exact page element captured by this listener generation, for diagnostics. */
+  boundElement(): HTMLElement {
+    return this.element;
+  }
+
+  /** True once destroy() has aborted this listener generation. */
+  isAborted(): boolean {
+    return this.abort.signal.aborted;
+  }
+
   /** True when this router is still listening on the given page node. */
   bindsTo(element: HTMLElement): boolean {
     return this.element === element;
@@ -791,7 +801,7 @@ export class PointerRouter {
 
   /** Listeners survive only while the abort signal is live and the page is in the document. */
   isAlive(): boolean {
-    return !this.abort.signal.aborted && this.element.isConnected;
+    return !this.isAborted() && this.element.isConnected;
   }
 
   activePenIds(): number[] {

@@ -1,13 +1,18 @@
 export type PostUiProbeOutcome =
   | "post-ui-pen-missing-before-document-listener"
   | "post-ui-pen-missed-page-router"
+  | "post-ui-pen-seen-document-not-router"
+  | "post-ui-pen-fallback-rejected"
+  | "post-ui-pen-already-handled"
   | "post-ui-pen-ui-occluded"
   | "post-ui-pen-routed-native"
   | "post-ui-pen-entered-pan"
   | "post-ui-pen-stale-router"
   | "post-ui-pen-claim-failed"
   | "post-ui-pen-cancelled-before-ink"
-  | "post-ui-pen-success";
+  | "post-ui-pen-success"
+  | "post-ui-probe-expired-no-pen"
+  | "post-ui-probe-touch-contact";
 
 export type PostUiProbeStage =
   | "document"
@@ -15,10 +20,14 @@ export type PostUiProbeStage =
   | "router-received"
   | "router-rejected"
   | "route"
+  | "fallback"
   | "pan"
+  | "native"
   | "claim"
   | "stroke-start"
-  | "terminal";
+  | "terminal"
+  | "lifecycle"
+  | "zoom";
 
 export interface PostUiProbeArmContext {
   sessionId: string;
@@ -32,6 +41,7 @@ export interface PostUiProbeArmContext {
 export interface PostUiProbeContactSummary {
   armId: string;
   correlationId: string;
+  contactNumber: number;
   pointerId: number;
   pointerType: string;
   startedAt: number;
@@ -41,10 +51,20 @@ export interface PostUiProbeContactSummary {
   routeReason: string | null;
   page: number | null;
   routerGeneration: number | null;
+  eventPhase: number | null;
+  composedPathLength: number | null;
+  targetOwnership: string | null;
+  fallbackConsidered: boolean;
+  fallbackDecision: string | null;
   panObserved: boolean;
   panAccepted: boolean;
+  nativeScrollBefore: { left: number; top: number } | null;
+  nativeMaxScrollDeltaPx: number;
+  nativeScrollAfter: { left: number; top: number } | null;
   strokeStarted: boolean;
   terminal: string | null;
+  terminalState: string | null;
+  details: Record<string, unknown>;
 }
 
 export interface PostUiProbeResult {
@@ -59,9 +79,15 @@ export interface PostUiProbeResult {
   details: Record<string, unknown>;
 }
 
+interface ScrollSnapshot {
+  left: number;
+  top: number;
+}
+
 interface ProbeContact {
   armId: string;
   correlationId: string;
+  contactNumber: number;
   pointerId: number;
   pointerType: string;
   startedAt: number;
@@ -70,10 +96,19 @@ interface ProbeContact {
   routeReason: string | null;
   page: number | null;
   routerGeneration: number | null;
+  eventPhase: number | null;
+  composedPathLength: number | null;
+  targetOwnership: string | null;
+  fallbackConsidered: boolean;
+  fallbackDecision: string | null;
   panObserved: boolean;
   panAccepted: boolean;
+  nativeScrollBefore: ScrollSnapshot | null;
+  nativeMaxScrollDeltaPx: number;
+  nativeScrollAfter: ScrollSnapshot | null;
   strokeStarted: boolean;
   terminal: string | null;
+  terminalState: string | null;
   finalized: boolean;
   details: Record<string, unknown>;
 }
@@ -86,7 +121,16 @@ interface ActiveProbe {
   pointerDownCount: number;
   observedPointerTypes: Set<string>;
   contacts: Map<number, ProbeContact>;
+  penContactCount: number;
   acceptingContacts: boolean;
+}
+
+function scrollSnapshot(value: unknown): ScrollSnapshot | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { left?: unknown; top?: unknown };
+  return typeof candidate.left === "number" && typeof candidate.top === "number"
+    ? { left: candidate.left, top: candidate.top }
+    : null;
 }
 
 export class PostUiInputProbe {
@@ -106,6 +150,7 @@ export class PostUiInputProbe {
       pointerDownCount: 0,
       observedPointerTypes: new Set<string>(),
       contacts: new Map<number, ProbeContact>(),
+      penContactCount: 0,
       acceptingContacts: true
     };
     return { armId, expiresAt: now + PostUiInputProbe.WINDOW_MS };
@@ -132,9 +177,11 @@ export class PostUiInputProbe {
 
     const existing = active.contacts.get(pointerId);
     if (existing) return this.summary(existing, now);
+    const contactNumber = pointerType === "pen" ? ++active.penContactCount : 0;
     const contact: ProbeContact = {
       armId: active.armId,
       correlationId: `${active.armId}-contact-${active.contacts.size + 1}`,
+      contactNumber,
       pointerId,
       pointerType: pointerType || "(empty)",
       startedAt: now,
@@ -143,12 +190,25 @@ export class PostUiInputProbe {
       routeReason: null,
       page: null,
       routerGeneration: null,
+      eventPhase: null,
+      composedPathLength: null,
+      targetOwnership: null,
+      fallbackConsidered: false,
+      fallbackDecision: null,
       panObserved: false,
       panAccepted: false,
+      nativeScrollBefore: null,
+      nativeMaxScrollDeltaPx: 0,
+      nativeScrollAfter: null,
       strokeStarted: false,
       terminal: null,
+      terminalState: null,
       finalized: false,
-      details: {}
+      details: {
+        documentSeen: true,
+        contactNumber,
+        ...(pointerType === "pen" ? { eligiblePenContact: true } : { eligiblePenContact: false })
+      }
     };
     active.contacts.set(pointerId, contact);
     return this.summary(contact, now);
@@ -172,15 +232,35 @@ export class PostUiInputProbe {
     if (typeof details.routerGeneration === "number") contact.routerGeneration = details.routerGeneration;
     if (typeof details.route === "string") contact.route = details.route;
     if (typeof details.routeReason === "string") contact.routeReason = details.routeReason;
+    if (typeof details.eventPhase === "number") contact.eventPhase = details.eventPhase;
+    if (typeof details.composedPathLength === "number") contact.composedPathLength = details.composedPathLength;
+    if (typeof details.targetOwnership === "string") contact.targetOwnership = details.targetOwnership;
+    if (details.fallbackConsidered === true) contact.fallbackConsidered = true;
+    if (typeof details.fallbackDecision === "string") contact.fallbackDecision = details.fallbackDecision;
     if (stage === "pan") {
       contact.panObserved = true;
       if (details.accepted === true) contact.panAccepted = true;
+    }
+    if (stage === "native") {
+      const before = scrollSnapshot(details.scrollBefore);
+      const after = scrollSnapshot(details.scrollAfter);
+      contact.nativeScrollBefore ??= before;
+      if (after) contact.nativeScrollAfter = after;
+      const delta = typeof details.nativeScrollDeltaPx === "number"
+        ? Math.max(0, details.nativeScrollDeltaPx)
+        : before && after
+          ? Math.max(Math.abs(after.left - before.left), Math.abs(after.top - before.top))
+          : 0;
+      contact.nativeMaxScrollDeltaPx = Math.max(contact.nativeMaxScrollDeltaPx, delta);
     }
     if (stage === "stroke-start") {
       contact.strokeStarted = true;
       if (this.active) this.active.acceptingContacts = false;
     }
-    if (stage === "terminal" && typeof details.terminal === "string") contact.terminal = details.terminal;
+    if (stage === "terminal") {
+      if (typeof details.terminal === "string") contact.terminal = details.terminal;
+      if (typeof details.terminalState === "string") contact.terminalState = details.terminalState;
+    }
     return this.summary(contact, now);
   }
 
@@ -193,19 +273,9 @@ export class PostUiInputProbe {
     const active = this.active;
     const contact = active?.contacts.get(pointerId);
     if (!active || !contact || contact.finalized) return null;
-    this.stage(now, pointerId, "terminal", { ...details, terminal });
+    this.stage(now, pointerId, "terminal", { ...details, terminal, terminalState: terminal });
     contact.finalized = true;
-    return {
-      armId: active.armId,
-      correlationId: contact.correlationId,
-      outcome: this.outcomeFor(contact),
-      elapsedMs: Math.max(0, now - active.armedAt),
-      pointerDownCount: active.pointerDownCount,
-      observedPointerTypes: [...active.observedPointerTypes],
-      contactCount: active.contacts.size,
-      contact: this.summary(contact, now),
-      details: { ...this.contextDetails(active), ...contact.details, ...details }
-    };
+    return this.result(active, contact, this.outcomeFor(contact), now, details);
   }
 
   finishWithOutcome(
@@ -217,7 +287,7 @@ export class PostUiInputProbe {
     const active = this.active;
     const contact = active?.contacts.get(pointerId);
     if (!active || !contact || contact.finalized) return null;
-    this.stage(now, pointerId, "terminal", { ...details, terminal: "pointerdown", outcome });
+    this.stage(now, pointerId, "terminal", { ...details, terminal: "pointerdown", terminalState: "explicit", outcome });
     contact.finalized = true;
     return this.result(active, contact, outcome, now, details);
   }
@@ -237,7 +307,7 @@ export class PostUiInputProbe {
       results.push({
         armId: active.armId,
         correlationId: null,
-        outcome: "post-ui-pen-missing-before-document-listener",
+        outcome: "post-ui-probe-expired-no-pen",
         elapsedMs: Math.max(0, now - active.armedAt),
         pointerDownCount: active.pointerDownCount,
         observedPointerTypes: [...active.observedPointerTypes],
@@ -246,6 +316,7 @@ export class PostUiInputProbe {
         details: {
           ...this.contextDetails(active),
           expired: true,
+          noPenContact: true,
           observedPointerTypes: [...active.observedPointerTypes]
         }
       });
@@ -254,12 +325,21 @@ export class PostUiInputProbe {
   }
 
   private outcomeFor(contact: ProbeContact): PostUiProbeOutcome {
+    if (contact.pointerType !== "pen") return "post-ui-probe-touch-contact";
     if (contact.strokeStarted) return "post-ui-pen-success";
     if (contact.details.pageOccludedByUi === true || contact.details.occluded === true) {
       return "post-ui-pen-ui-occluded";
     }
     if (contact.details.staleRouter === true) return "post-ui-pen-stale-router";
-    if (!contact.stages.includes("router-received")) return "post-ui-pen-missed-page-router";
+    if (contact.details.alreadyHandled === true || contact.details.rejection === "already-handled") {
+      return "post-ui-pen-already-handled";
+    }
+    if (contact.details.fallbackRejected === true) return "post-ui-pen-fallback-rejected";
+    if (!contact.stages.includes("router-received")) {
+      return contact.details.legacyMissedPageRouter === true
+        ? "post-ui-pen-missed-page-router"
+        : "post-ui-pen-seen-document-not-router";
+    }
     if (contact.panAccepted) return "post-ui-pen-entered-pan";
     if (contact.route === "native" || contact.route === "touch-pan" || contact.route === "touch-zoom-pan") {
       return "post-ui-pen-routed-native";
@@ -305,6 +385,7 @@ export class PostUiInputProbe {
     return {
       armId: contact.armId,
       correlationId: contact.correlationId,
+      contactNumber: contact.contactNumber,
       pointerId: contact.pointerId,
       pointerType: contact.pointerType,
       startedAt: contact.startedAt,
@@ -314,10 +395,20 @@ export class PostUiInputProbe {
       routeReason: contact.routeReason,
       page: contact.page,
       routerGeneration: contact.routerGeneration,
+      eventPhase: contact.eventPhase,
+      composedPathLength: contact.composedPathLength,
+      targetOwnership: contact.targetOwnership,
+      fallbackConsidered: contact.fallbackConsidered,
+      fallbackDecision: contact.fallbackDecision,
       panObserved: contact.panObserved,
       panAccepted: contact.panAccepted,
+      nativeScrollBefore: contact.nativeScrollBefore,
+      nativeMaxScrollDeltaPx: contact.nativeMaxScrollDeltaPx,
+      nativeScrollAfter: contact.nativeScrollAfter,
       strokeStarted: contact.strokeStarted,
-      terminal: contact.terminal
+      terminal: contact.terminal,
+      terminalState: contact.terminalState,
+      details: { ...contact.details }
     };
   }
 }
