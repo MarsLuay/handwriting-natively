@@ -737,6 +737,67 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
+  it("clears plugin ownership when the page blurs or becomes hidden", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const releasePointerCapture = vi.fn();
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture
+    });
+    const onCancel = vi.fn();
+    const lifecycle = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true,
+      onCancel,
+      onTouchLifecycle: lifecycle
+    });
+
+    element.dispatchEvent(pointer("pen", 66));
+    window.dispatchEvent(new Event("blur"));
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(router.activePenIds()).toEqual([]);
+    expect(router.activeRoutedPointerIds()).toEqual([]);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    expect(releasePointerCapture).toHaveBeenCalledWith(66);
+    expect(lifecycle).toHaveBeenCalledWith(
+      "pointercancel",
+      expect.any(Event),
+      expect.objectContaining({ reason: "lifecycle-blur", trackedBefore: 0, trackedAfter: 0 })
+    );
+
+    // A later finger starts a fresh native gesture; it is not mistaken for the
+    // canceled pen or a second touch in the old gesture.
+    const finger = pointer("touch", 67);
+    element.dispatchEvent(finger);
+    expect(finger.defaultPrevented).toBe(false);
+
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    element.dispatchEvent(pointer("pen", 68));
+    const hidden = new Event("visibilitychange");
+    document.dispatchEvent(hidden);
+    visibility.mockRestore();
+    expect(onCancel).toHaveBeenCalledTimes(2);
+    expect(router.activePenIds()).toEqual([]);
+    expect(router.activeRoutedPointerIds()).toEqual([]);
+    expect(lifecycle).toHaveBeenCalledWith(
+      "pointercancel",
+      hidden,
+      expect.objectContaining({ reason: "lifecycle-visibilitychange", trackedBefore: 1, trackedAfter: 0 })
+    );
+
+    element.dispatchEvent(pointer("pen", 69));
+    window.dispatchEvent(new Event("pagehide"));
+    expect(onCancel).toHaveBeenCalledTimes(3);
+    expect(router.activePenIds()).toEqual([]);
+    expect(router.activeRoutedPointerIds()).toEqual([]);
+
+    router.destroy();
+    element.remove();
+  });
+
   it("shows a circular, scale-adjusted eraser cursor without intercepting hover", async () => {
     const element = document.createElement("div");
     element.getBoundingClientRect = () => ({
