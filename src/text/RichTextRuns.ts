@@ -1,7 +1,7 @@
-import type { PdfTextRun } from "../model";
+import type { TextRun } from "../model";
 
 /** The editable formatting carried by a text run. */
-export type TextRunStyle = Omit<PdfTextRun, "text">;
+export type TextRunStyle = Omit<TextRun, "text">;
 
 /** A partial style change applied to an existing character range. */
 export type TextRunStylePatch = Partial<TextRunStyle>;
@@ -24,8 +24,8 @@ export type TextRunStyleQuery =
  * Text offsets in this module are UTF-16 code-unit offsets, matching DOM
  * `Range` and `Selection` offsets.
  */
-export function normalizeTextRuns(runs: readonly PdfTextRun[]): PdfTextRun[] {
-  const merged: PdfTextRun[] = [];
+export function normalizeTextRuns(runs: readonly TextRun[]): TextRun[] {
+  const merged: TextRun[] = [];
   for (const source of runs) {
     if (!source.text) continue;
     const run = copyRun(source);
@@ -43,26 +43,26 @@ export function normalizeTextRuns(runs: readonly PdfTextRun[]): PdfTextRun[] {
 export const mergeTextRuns = normalizeTextRuns;
 
 /** Convert a rich run list into its exact plain-text content. */
-export function plainTextFromRuns(runs: readonly PdfTextRun[]): string {
+export function plainTextFromRuns(runs: readonly TextRun[]): string {
   return runs.map((run) => run.text).join("");
 }
 
 /** Convert plain text into one run without retaining external object references. */
-export function plainTextToRuns(text: string, style: TextRunStyle): PdfTextRun[] {
+export function plainTextToRuns(text: string, style: TextRunStyle): TextRun[] {
   return text ? [copyRun({ text, ...style })] : [];
 }
 
 /** Return a styled, independent slice of a run list using a half-open range. */
 export function sliceTextRuns(
-  runs: readonly PdfTextRun[],
+  runs: readonly TextRun[],
   start: number,
   end: number
-): PdfTextRun[] {
+): TextRun[] {
   const normalized = normalizeTextRuns(runs);
   const [from, to] = orderedOffsets(normalized, start, end);
   if (from === to) return [];
 
-  const sliced: PdfTextRun[] = [];
+  const sliced: TextRun[] = [];
   let position = 0;
   for (const run of normalized) {
     const runStart = position;
@@ -84,16 +84,16 @@ export function sliceTextRuns(
  * caller should retain a pending insertion style until text is actually typed.
  */
 export function patchTextRunRange(
-  runs: readonly PdfTextRun[],
+  runs: readonly TextRun[],
   start: number,
   end: number,
   patch: TextRunStylePatch
-): PdfTextRun[] {
+): TextRun[] {
   const normalized = normalizeTextRuns(runs);
   const [from, to] = orderedOffsets(normalized, start, end);
   if (from === to || Object.keys(patch).length === 0) return normalized;
 
-  const patched: PdfTextRun[] = [];
+  const patched: TextRun[] = [];
   let position = 0;
   for (const run of normalized) {
     const runStart = position;
@@ -121,7 +121,7 @@ export function patchTextRunRange(
  * run wins; at the end of text the preceding run wins.
  */
 export function styleAtTextOffset(
-  runs: readonly PdfTextRun[],
+  runs: readonly TextRun[],
   offset: number
 ): TextRunStyle | undefined {
   const normalized = normalizeTextRuns(runs);
@@ -138,7 +138,7 @@ export function styleAtTextOffset(
 
 /** Safely report whether a selection has one style, mixed styles, or no text. */
 export function styleForTextRange(
-  runs: readonly PdfTextRun[],
+  runs: readonly TextRun[],
   start: number,
   end: number
 ): TextRunStyleQuery {
@@ -176,7 +176,7 @@ export function sameTextRunStyle(left: TextRunStyle, right: TextRunStyle): boole
     left.strikethrough === right.strikethrough;
 }
 
-function orderedOffsets(runs: readonly PdfTextRun[], start: number, end: number): [number, number] {
+function orderedOffsets(runs: readonly TextRun[], start: number, end: number): [number, number] {
   const length = textLength(runs);
   const first = clampOffset(start, length);
   const second = clampOffset(end, length);
@@ -189,11 +189,11 @@ function clampOffset(offset: number, length: number): number {
   return Math.trunc(offset);
 }
 
-function textLength(runs: readonly PdfTextRun[]): number {
+function textLength(runs: readonly TextRun[]): number {
   return runs.reduce((length, run) => length + run.text.length, 0);
 }
 
-function copyRun(run: PdfTextRun, text = run.text): PdfTextRun {
+function copyRun(run: TextRun, text = run.text): TextRun {
   return { text, ...copyStyle(run) };
 }
 

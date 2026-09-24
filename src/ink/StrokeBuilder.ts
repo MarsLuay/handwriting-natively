@@ -1,4 +1,4 @@
-import type { DrawingTool, InkStroke, PdfPoint } from "../model";
+import type { DrawingTool, InkStroke, PagePoint } from "../model";
 import {
   appendStabilizedPoint,
   simplifyPoints,
@@ -20,9 +20,9 @@ export interface StrokeBuilderOptions {
 }
 
 export class StrokeBuilder {
-  private readonly points: PdfPoint[] = [];
+  private readonly points: PagePoint[] = [];
   /** Causal preview path — indices never move after append (safe for incremental draft). */
-  private readonly smoothedPoints: PdfPoint[] = [];
+  private readonly smoothedPoints: PagePoint[] = [];
   constructor(private readonly options: StrokeBuilderOptions) {}
 
   get id(): string {
@@ -44,7 +44,7 @@ export class StrokeBuilder {
     return this.options.stabilization ?? "off";
   }
 
-  add(point: PdfPoint): void {
+  add(point: PagePoint): void {
     if (![point.x, point.y, point.pressure, point.time].every(Number.isFinite)) throw new TypeError("Invalid stroke point");
     const raw = { ...point, pressure: Math.max(0, Math.min(1, point.pressure)) };
     this.points.push(raw);
@@ -75,7 +75,7 @@ export class StrokeBuilder {
     return discarded;
   }
 
-  preview(simplifyEnabled = true): readonly PdfPoint[] {
+  preview(simplifyEnabled = true): readonly PagePoint[] {
     if (!simplifyEnabled) return this.points.map((point) => ({ ...point }));
     // Causal smoothed path (not batch stabilizePoints) — prior coords stay fixed.
     return this.smoothedPoints.map((point) => ({ ...point }));
@@ -101,7 +101,7 @@ export class StrokeBuilder {
     return this.toStroke(this.preview(simplifyEnabled).map((point) => ({ ...point })));
   }
 
-  private toStroke(points: PdfPoint[]): InkStroke {
+  private toStroke(points: PagePoint[]): InkStroke {
     const now = (this.options.now ?? (() => new Date().toISOString()))();
     return {
       id: this.options.id, page: this.options.page, tool: this.options.tool,

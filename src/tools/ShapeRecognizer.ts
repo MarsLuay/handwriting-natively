@@ -1,4 +1,4 @@
-import type { PdfPoint } from "../model";
+import type { PagePoint } from "../model";
 
 /** Stationary hold before the active stroke snaps to a recognised shape. */
 export const SHAPE_RECOGNITION_HOLD_MS = 500;
@@ -7,16 +7,16 @@ export type RecognizedShape = "line" | "arrow" | "rectangle" | "square" | "trian
 
 export interface ShapeRecognition {
   kind: RecognizedShape;
-  points: PdfPoint[];
+  points: PagePoint[];
 }
 
-type Point = Pick<PdfPoint, "x" | "y">;
+type Point = Pick<PagePoint, "x" | "y">;
 
 const distance = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
 const midpoint = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 
 /** Opposite point stays fixed while a held, recognised shape is resized. */
-export function shapeResizeAnchor(points: readonly PdfPoint[], handle: Point): PdfPoint {
+export function shapeResizeAnchor(points: readonly PagePoint[], handle: Point): PagePoint {
   if (!points.length) throw new TypeError("Cannot resize an empty shape");
   return points.reduce((farthest, point) =>
     distance(point, handle) > distance(farthest, handle) ? point : farthest
@@ -24,7 +24,7 @@ export function shapeResizeAnchor(points: readonly PdfPoint[], handle: Point): P
 }
 
 /** Closest clean shape point becomes the draggable handle after recognition. */
-export function shapeResizeHandle(points: readonly PdfPoint[], pointer: Point): PdfPoint {
+export function shapeResizeHandle(points: readonly PagePoint[], pointer: Point): PagePoint {
   if (!points.length) throw new TypeError("Cannot resize an empty shape");
   return points.reduce((nearest, point) =>
     distance(point, pointer) < distance(nearest, pointer) ? point : nearest
@@ -38,11 +38,11 @@ export function shapeResizeHandle(points: readonly PdfPoint[], pointer: Point): 
  * circles, stars) intact.
  */
 export function resizeShapePoints(
-  points: readonly PdfPoint[],
+  points: readonly PagePoint[],
   anchor: Point,
   handle: Point,
   target: Point
-): PdfPoint[] {
+): PagePoint[] {
   const startX = handle.x - anchor.x;
   const startY = handle.y - anchor.y;
   const targetX = target.x - anchor.x;
@@ -86,7 +86,7 @@ function simplify(points: readonly Point[], tolerance: number): Point[] {
   return [...simplify(points.slice(0, farthest + 1), tolerance).slice(0, -1), ...simplify(points.slice(farthest), tolerance)];
 }
 
-function stamp(points: readonly Point[], template: PdfPoint): PdfPoint[] {
+function stamp(points: readonly Point[], template: PagePoint): PagePoint[] {
   return points.map((point) => ({ ...template, x: point.x, y: point.y }));
 }
 
@@ -113,7 +113,7 @@ function looksLikeEllipse(points: readonly Point[], box: ReturnType<typeof bound
   return deviations.reduce((sum, value) => sum + value, 0) / deviations.length < 0.26;
 }
 
-function regularEllipse(box: ReturnType<typeof bounds>, template: PdfPoint): PdfPoint[] {
+function regularEllipse(box: ReturnType<typeof bounds>, template: PagePoint): PagePoint[] {
   const center = { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 };
   return stamp(Array.from({ length: 33 }, (_, index) => {
     const theta = (Math.PI * 2 * index) / 32;
@@ -121,7 +121,7 @@ function regularEllipse(box: ReturnType<typeof bounds>, template: PdfPoint): Pdf
   }), template);
 }
 
-function regularCircle(box: ReturnType<typeof bounds>, template: PdfPoint): PdfPoint[] {
+function regularCircle(box: ReturnType<typeof bounds>, template: PagePoint): PagePoint[] {
   const center = { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 };
   const radius = (box.width + box.height) / 4;
   return stamp(Array.from({ length: 33 }, (_, index) => {
@@ -144,7 +144,7 @@ function isRightAngle(previous: Point, current: Point, next: Point): boolean {
   return scale > 1 && Math.abs((ax * bx + ay * by) / scale) < 0.35;
 }
 
-function regularSquare(vertices: readonly Point[], template: PdfPoint): PdfPoint[] | null {
+function regularSquare(vertices: readonly Point[], template: PagePoint): PagePoint[] | null {
   if (vertices.length !== 4) return null;
   const sides = vertices.map((vertex, index) => distance(vertex, vertices[(index + 1) % vertices.length]!));
   const shortest = Math.min(...sides);
@@ -173,7 +173,7 @@ function regularSquare(vertices: readonly Point[], template: PdfPoint): PdfPoint
   return stamp([...corners, corners[0]!], template);
 }
 
-function regularRectangle(vertices: readonly Point[], template: PdfPoint): PdfPoint[] {
+function regularRectangle(vertices: readonly Point[], template: PagePoint): PagePoint[] {
   const sides = vertices.map((vertex, index) => distance(vertex, vertices[(index + 1) % vertices.length]!));
   const firstSide = {
     x: vertices[1]!.x - vertices[0]!.x,
@@ -197,7 +197,7 @@ function regularRectangle(vertices: readonly Point[], template: PdfPoint): PdfPo
   return stamp([...corners, corners[0]!], template);
 }
 
-function regularizeStar(vertices: readonly Point[], template: PdfPoint): PdfPoint[] | null {
+function regularizeStar(vertices: readonly Point[], template: PagePoint): PagePoint[] | null {
   if (vertices.length !== 10) return null;
   const center = vertices.reduce((sum, point) => ({ x: sum.x + point.x / vertices.length, y: sum.y + point.y / vertices.length }), { x: 0, y: 0 });
   const radii = vertices.map((point) => distance(point, center));
@@ -218,7 +218,7 @@ function regularizeStar(vertices: readonly Point[], template: PdfPoint): PdfPoin
   return stamp([...snapped, snapped[0]!], template);
 }
 
-function regularHeart(box: ReturnType<typeof bounds>, template: PdfPoint): PdfPoint[] {
+function regularHeart(box: ReturnType<typeof bounds>, template: PagePoint): PagePoint[] {
   const raw = Array.from({ length: 33 }, (_, index) => {
     const theta = (Math.PI * 2 * index) / 32;
     return { x: 16 * Math.sin(theta) ** 3, y: 13 * Math.cos(theta) - 5 * Math.cos(2 * theta) - 2 * Math.cos(3 * theta) - Math.cos(4 * theta) };
@@ -246,7 +246,7 @@ function looksLikeHeart(vertices: readonly Point[], box: ReturnType<typeof bound
  * Conservative stationary-hold recognition. Ambiguous input returns null so it
  * remains ordinary ink; recognising a wrong shape is worse than doing nothing.
  */
-export function recognizeHeldShape(input: readonly PdfPoint[]): ShapeRecognition | null {
+export function recognizeHeldShape(input: readonly PagePoint[]): ShapeRecognition | null {
   if (input.length < 2) return null;
   const plain = input.map(({ x, y }) => ({ x, y }));
   const box = bounds(plain);

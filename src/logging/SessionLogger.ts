@@ -1,4 +1,4 @@
-import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
+import type { AnnotationViewState } from "../runtime/AnnotationSurface";
 import type { VaultLogSink } from "./VaultLogSink";
 
 const PREFIX = "[Handwriting Natively]";
@@ -94,7 +94,7 @@ interface InputLifecycleRecord {
 
 export class SessionLogger {
   private static readonly INPUT_LIFECYCLE_LIMIT = 40;
-  private lastViewState: PdfViewState | null = null;
+  private lastViewState: AnnotationViewState | null = null;
   private refreshWindowStart = 0;
   private refreshWindowCount = 0;
   private zoomRepaintWindowStart = 0;
@@ -195,7 +195,7 @@ export class SessionLogger {
     });
   }
 
-  viewState(state: PdfViewState, source: ViewStateSource): void {
+  viewState(state: AnnotationViewState, source: ViewStateSource): void {
     const previousScale = this.lastViewState?.scale ?? state.scale;
     this.lastViewState = { ...state };
     const delta = state.scale - previousScale;
