@@ -1,0 +1,53 @@
+﻿{
+    "schema_version":  2,
+    "task_goal":  "Implement smallest safe offline-provable portion of MarsLuay/handwriting-natively#130",
+    "acceptance_criteria":  "docs/project-memory/architecture.md",
+    "confirmed_facts":  [
+
+                        ],
+    "assumptions":  [
+                        "handoff written from session wrapper"
+                    ],
+    "important_files":  [
+                            "src/input/PointerRouter.ts"
+                        ],
+    "important_symbols":  [
+
+                          ],
+    "decisions":  [
+                      {
+                          "decision":  "snapshot via agent-session-start",
+                          "rationale":  "Own five-file implementation committed as ba0d7e451dde18e4012b2a4e5432912f2e069e44. Repository audit reports no active leases for the stale external integrations; it classifies the issue-141/remaining-open-issues ancestry as orphaned useful work. User scope forbids touching other issues/worktrees, while pushing this branch would publish those unrelated commits. Preserve history; do not rewrite, recover, integrate, or push mixed branch. Hardware validation remains blocked."
+                      }
+                  ],
+    "files_changed":  [
+                          "src/input/PointerRouter.ts"
+                      ],
+    "verification_performed":  [
+                                   "docs/issue-resolution-matrix.md"
+                               ],
+    "baseline_failures":  [
+
+                          ],
+    "current_failures":  [
+
+                         ],
+    "unresolved_risks":  [
+
+                         ],
+    "remaining_steps":  [
+
+                        ],
+    "next_recommended_action":  "tests/input-pointer-routing.test.ts",
+    "source_session_id":  "issue-130-3006d3a2",
+    "active_subproject":  "docs/project-memory/verified.jsonl",
+    "raw_artifact_refs":  [
+
+                          ],
+    "contract_id":  "",
+    "contract_hash":  "",
+    "route_id":  "",
+    "context_packet_hash":  "",
+    "recovery_disposition":  "",
+    "trigger":  "milestone"
+}
