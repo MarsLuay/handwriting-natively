@@ -28,7 +28,7 @@ Pointer Events are authoritative when available:
 - Touch Events are only lifecycle/compatibility observation and never a second drawing engine;
 - no global `touch-action: none` is used.
 
-`PointerRouter` generation cleanup, pointer capture loss, cancel, blur, and session destruction clear stale ownership. Real iPadOS/WKWebView traces are still required before removing any compatibility fallback or claiming Pencil/Scribble behavior.
+`PointerRouter` generation cleanup, pointer capture loss, cancel, blur, hidden visibility, pagehide, and session destruction clear stale ownership. Blur/background cancellation releases plugin captures, cancels unfinished plugin routes, and clears pen/touch bookkeeping without synthesizing native navigation. This boundary is covered by deterministic DOM tests; it does not prove WebKit lifecycle delivery. This issue remains an architecture umbrella: further owner-state consolidation and Touch fallback removal require measured event ordering first. Real iPadOS/WKWebView traces are still required before removing any compatibility fallback or claiming Pencil/Scribble behavior.
 
 ## Lifecycle (#136)
 
