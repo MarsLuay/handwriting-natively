@@ -38,9 +38,9 @@ export interface AnnotationSurfaceCallbacks {
 /**
  * Minimal host contract required by the shared annotation runtime.
  *
- * PDF.js/private-Obsidian capabilities are deliberately optional. A non-PDF
- * surface only implements page geometry, lifecycle, overlay/UI mounting, and
- * teardown; it never has to impersonate a PDF viewer.
+ * PDF.js/private-Obsidian capabilities are deliberately kept outside this
+ * contract. A non-PDF surface only implements page geometry, lifecycle,
+ * overlay/UI mounting, and teardown; it never has to impersonate a PDF viewer.
  */
 export interface AnnotationSurface {
   readonly kind: "direct" | "embedded";

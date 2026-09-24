@@ -47,7 +47,7 @@ export interface PagePoint {
   time: number;
 }
 
-/** @deprecated Use PagePoint in shared annotation code. */
+/** Compatibility alias for PDF export and legacy sidecar helpers. */
 export type PdfPoint = PagePoint;
 
 export interface InkStroke {
@@ -103,9 +103,8 @@ export interface TextRun {
   strikethrough: boolean;
 }
 
-/** @deprecated Use TextAnnotation in shared annotation code. */
+/** Compatibility aliases for PDF export and legacy sidecar helpers. */
 export type PdfTextAnnotation = TextAnnotation;
-/** @deprecated Use TextRun in shared annotation code. */
 export type PdfTextRun = TextRun;
 
 export interface DrawingToolPreferences {

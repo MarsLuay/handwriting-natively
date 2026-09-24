@@ -8,7 +8,7 @@ import {
 import { pdfRenderCanvas } from "../pdf/PageCoordinateLayout";
 import type { AnnotationPageInfo } from "../runtime/AnnotationSurface";
 
-/** @deprecated Use AnnotationPageInfo in shared runtime code. */
+/** Compatibility alias for PDF-only locator consumers. */
 export type PdfPageInfo = AnnotationPageInfo;
 
 interface CanonicalPageSize {

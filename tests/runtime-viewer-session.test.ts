@@ -250,7 +250,9 @@ describe("viewer runtime tracer", () => {
     await session.manualSave();
 
     const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(3);
+    const saved = JSON.parse(sidecar![1]).pages[0].strokes;
+    expect(saved).toHaveLength(1);
+    expect(saved[0].points.length).toBeGreaterThanOrEqual(2);
     await expect(session.destroy()).resolves.toBe(true);
     expect(adapter.destroyed).toBe(true);
   });

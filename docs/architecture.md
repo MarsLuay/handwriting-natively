@@ -7,7 +7,7 @@ Handwriting Natively adds one annotation system to Obsidian's direct and embedde
 - `integration/`: only owner of undocumented Obsidian PDF objects, DOM selectors, PDF.js compatibility probes, viewer discovery, page location, and reversible patches.
 - `focus-view/`: embed Annotate chrome and helpers that open a PDF leaf (not a private-class viewer).
 - `input/`: Pointer Events policy. It decides before capture or `preventDefault()`.
-- `runtime/AnnotationSurface.ts`: the minimal page-surface contract (`AnnotationPageInfo`, page-local geometry, view/scroll lifecycle, overlay/UI mounting, and teardown) plus optional PDF capability hooks.
+- `runtime/AnnotationSurface.ts`: the minimal page-surface contract (`AnnotationPageInfo`, page-local geometry, view/scroll lifecycle, overlay/UI mounting, and teardown). PDF capability extensions live in `integration/ObsidianPdfAdapter.ts` and are never required by the shared runtime.
 - `ink/`: strokes, filtering, rendering, simplification, hit testing. Coordinates use page-local document space for every surface.
 - `tools/`: tool state and behavior. Preferences stay outside annotation documents.
 - `storage/`: versioned sidecars, identity, serialized autosave, manual save, recovery, atomic writes.
