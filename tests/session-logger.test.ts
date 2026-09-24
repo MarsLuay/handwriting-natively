@@ -368,6 +368,30 @@ describe("SessionLogger", () => {
     expect(writes[1]?.payload).toMatchObject({ phase: "terminal", outcome: "post-ui-pen-success" });
   });
 
+  it("records correlated handoff failures and lifecycle anchors without annotation contents", () => {
+    const writes: Array<{ level: string; event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (level, event, payload) => writes.push({ level, event, payload: payload ?? {} })
+    }, () => true, "0.1.60");
+
+    logger.inputHandoff("terminal", {
+      correlationId: "pen-routing-1",
+      outcome: "pen-seen-document-not-router",
+      hitTest: { target: "metadata-only" }
+    });
+    logger.uiSurface("close", { surfaceKind: "settings", openedByPointerType: "pen" });
+    logger.zoomLifecycle("zoom-burst-settle", { routerGenerations: [4] });
+    logger.toolChanged({ toolChangeId: "tool-1", previousTool: "pen", nextTool: "eraser" });
+
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ level: "warn", event: "pen input handoff", payload: expect.objectContaining({ correlationId: "pen-routing-1", outcome: "pen-seen-document-not-router" }) }),
+      expect.objectContaining({ event: "ui surface", payload: expect.objectContaining({ phase: "close", surfaceKind: "settings" }) }),
+      expect.objectContaining({ event: "zoom lifecycle", payload: expect.objectContaining({ phase: "zoom-burst-settle" }) }),
+      expect.objectContaining({ event: "tool changed", payload: expect.objectContaining({ nextTool: "eraser" }) })
+    ]));
+    expect(writes[0]?.payload).not.toHaveProperty("annotation");
+  });
+
   it("avoids diagnostics and their input-path sampling work when debug is disabled", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const write = vi.fn();
