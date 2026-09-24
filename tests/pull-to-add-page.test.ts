@@ -449,7 +449,7 @@ describe("PullToAddPageGesture", () => {
     let drawing = true;
     const gesture = new PullToAddPageGesture(document, {
       enabled: () => true,
-      isDrawing: () => drawing,
+      canAnnotatePointer: (event) => drawing && (event.pointerType === "pen" || event.pointerType === "mouse"),
       scrollRoot: () => root,
       host: () => root,
       withinTarget: () => true,
