@@ -21,23 +21,31 @@ const PLAUSIBLE_PDF_MAX = 2500;
 
 export class PdfPageLocator {
   private readonly canonicalByElement = new WeakMap<HTMLElement, CanonicalPageSize>();
+  private readonly activeElementByPage = new Map<number, HTMLElement>();
+  private readonly mountGenerationByPage = new Map<number, number>();
 
   constructor(private readonly viewerRoot: HTMLElement, private readonly privateViewer?: PdfJsViewerLike) {}
 
   pages(): PdfPageInfo[] {
     // PDF.js / Obsidian Mobile can leave duplicate `.page[data-page-number=N]`
-    // shells after pinch zoom. Keep one live shell per number so zoom Maps and
-    // mobile `page(N)` agree (last connected shell with a PDF canvas wins).
-    const byNumber = new Map<number, PdfPageInfo>();
+    // shells after pinch zoom. Choose one live shell per number before creating
+    // page info so stale connected shells cannot consume a new mount generation.
+    const candidates = new Map<number, HTMLElement[]>();
     for (const element of queryPdfPageNodes(this.viewerRoot)) {
-      const info = this.info(element);
-      const previous = byNumber.get(info.pageNumber);
-      byNumber.set(
-        info.pageNumber,
-        previous ? this.info(this.preferLivePageElement(previous.element, element)) : info
-      );
+      const pageNumber = Number(element.dataset.pageNumber);
+      if (!Number.isFinite(pageNumber) || pageNumber < 1) continue;
+      const pageCandidates = candidates.get(pageNumber) ?? [];
+      pageCandidates.push(element);
+      candidates.set(pageNumber, pageCandidates);
     }
-    return [...byNumber.values()].sort((a, b) => a.pageNumber - b.pageNumber);
+    return [...candidates.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([_, elements]) => this.info(this.preferLivePageElement(...elements)));
+  }
+
+  /** Current ephemeral DOM-shell generation for a logical page. */
+  mountGeneration(pageNumber: number): number {
+    return this.mountGenerationByPage.get(pageNumber) ?? 0;
   }
 
   page(pageNumber: number): PdfPageInfo | undefined {
@@ -123,7 +131,36 @@ export class PdfPageLocator {
     const scale = this.scaleFor(element);
     const rotation = this.number(element.dataset.rotation, this.number(this.privateViewer?.pagesRotation, 0));
     const { width, height } = this.canonicalSize(element, rect, scale, rotation);
-    return { pageNumber, width, height, scale, rotation, element };
+    const active = this.activeElementByPage.get(pageNumber);
+    if (active !== element) {
+      this.activeElementByPage.set(pageNumber, element);
+      this.mountGenerationByPage.set(pageNumber, this.mountGeneration(pageNumber) + 1);
+    }
+    const geometryConfidence = this.geometryConfidence(element, rect, scale, rotation);
+    return {
+      pageNumber,
+      width,
+      height,
+      scale,
+      rotation,
+      element,
+      mountGeneration: this.mountGeneration(pageNumber),
+      geometryConfidence,
+      geometrySafe: width > 1 && height > 1 && Number.isFinite(width) && Number.isFinite(height)
+    };
+  }
+
+  private geometryConfidence(
+    element: HTMLElement,
+    _rect: DOMRect,
+    scale: number,
+    rotation: number
+  ): "authoritative" | "derived" | "heuristic" {
+    if (this.sizeFromDataset(element)) return "authoritative";
+    if (this.sizeFromCanvasCss(element, scale, rotation) || this.sizeFromCanvasBitmap(element, scale, rotation)) {
+      return "derived";
+    }
+    return "heuristic";
   }
 
   private canonicalSize(

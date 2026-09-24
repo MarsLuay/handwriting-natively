@@ -38,6 +38,16 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private readonly callbacks: PdfAdapterCallbacks;
   private zoomBoost: PdfZoomBoostHandle | null = null;
   private destroyed = false;
+  private viewerReplacementNotified = false;
+  private currentViewerGeneration = 1;
+
+  get viewerGeneration(): number {
+    return this.currentViewerGeneration;
+  }
+
+  pageMountGeneration(pageNumber: number): number {
+    return this.locator.mountGeneration(pageNumber);
+  }
   private sidebarRailFrame: number | null = null;
   private sidebarFollowFrame: number | null = null;
   private sidebarFollowUntil = 0;
@@ -112,6 +122,21 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
 
   page(pageNumber: number): PdfPageInfo | undefined {
     return this.locator.page(pageNumber);
+  }
+
+  private replaceViewerGeneration(reason: string): void {
+    if (this.destroyed || this.root.isConnected || this.viewerReplacementNotified) return;
+    this.viewerReplacementNotified = true;
+    this.currentViewerGeneration += 1;
+    this.compatibility.profile.viewerGeneration = this.currentViewerGeneration;
+    this.compatibility.profile.counters.viewerReplacements = Math.min(
+      999,
+      this.compatibility.profile.counters.viewerReplacements + 1
+    );
+    this.logAdapterEvent("warn", "pdf viewer generation replaced", {
+      reason,
+      viewerGeneration: this.currentViewerGeneration
+    });
   }
 
   setBoostedZoom(enabled: boolean): void {
@@ -750,7 +775,12 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   }
 
   private listen(): void {
-    const notify = (source: ViewStateSource): void => this.callbacks.onViewStateChange?.(this.getViewState(), source);
+    const boundGeneration = this.currentViewerGeneration;
+    const isBoundGenerationCurrent = (): boolean => !this.destroyed && boundGeneration === this.currentViewerGeneration;
+    const notify = (source: ViewStateSource): void => {
+      if (!isBoundGenerationCurrent()) return;
+      this.callbacks.onViewStateChange?.(this.getViewState(), source);
+    };
     const onScroll = (): void => notify("scroll");
     const scroller = this.scrollElement();
     scroller.addEventListener("scroll", onScroll, { passive: true });
@@ -802,8 +832,13 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
 
     // PDF++ may replace the whole viewer under the leaf host — root observer dies with the old node.
     const hostObserver = new MutationObserver(() => {
-      if (this.destroyed) return;
-      if (!this.root.isConnected) this.callbacks.onPagesChanged?.("host-dom");
+      if (this.destroyed || !this.root.isConnected) {
+        if (!this.destroyed && !this.root.isConnected) {
+          this.replaceViewerGeneration("host-dom");
+          this.callbacks.onPagesChanged?.("host-dom");
+        }
+        return;
+      }
     });
     hostObserver.observe(this.host, { childList: true, subtree: true });
     this.registerCleanup(() => hostObserver.disconnect());
