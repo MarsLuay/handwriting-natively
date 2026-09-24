@@ -1,9 +1,9 @@
-import type { InkStroke, PdfTextAnnotation } from "../model";
+import type { InkStroke, TextAnnotation } from "../model";
 
 export class StrokeClipboard {
-  private static data: { strokes: InkStroke[]; texts: PdfTextAnnotation[]; sourcePage: number } | null = null;
+  private static data: { strokes: InkStroke[]; texts: TextAnnotation[]; sourcePage: number } | null = null;
 
-  static store(strokes: readonly InkStroke[], sourcePage: number, texts: readonly PdfTextAnnotation[] = []): void {
+  static store(strokes: readonly InkStroke[], sourcePage: number, texts: readonly TextAnnotation[] = []): void {
     this.data = {
       strokes: strokes.map((stroke) => structuredClone(stroke)),
       texts: texts.map((text) => structuredClone(text)),
@@ -11,7 +11,7 @@ export class StrokeClipboard {
     };
   }
 
-  static peek(): { strokes: InkStroke[]; texts: PdfTextAnnotation[]; sourcePage: number } | null {
+  static peek(): { strokes: InkStroke[]; texts: TextAnnotation[]; sourcePage: number } | null {
     return this.data;
   }
 

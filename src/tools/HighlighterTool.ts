@@ -1,4 +1,4 @@
-import type { DrawingToolPreferences, PdfPoint } from "../model";
+import type { DrawingToolPreferences, PagePoint } from "../model";
 import { normalizedCoordinateScale } from "../util/math";
 
 export interface HighlighterPoint {
@@ -19,7 +19,7 @@ export interface HighlighterStrokeOptions {
 }
 
 export function highlighterSampleWidth(
-  preferences: DrawingToolPreferences, point: PdfPoint, coordinateScale = 1
+  preferences: DrawingToolPreferences, point: PagePoint, coordinateScale = 1
 ): number {
   const pressure = preferences.pressureSensitivity ? Math.min(1, Math.max(0, point.pressure)) : 1;
   const thinned = 1 - preferences.thinning * (1 - pressure);

@@ -1,4 +1,4 @@
-import type { InkStroke, PdfTextAnnotation } from "../model";
+import type { InkStroke, TextAnnotation } from "../model";
 import type { InkSession } from "../ink/InkSession";
 import type { TextAnnotationSession } from "../text/TextAnnotationSession";
 import type { Command } from "./CommandHistory";
@@ -58,8 +58,8 @@ export class ReplaceAnnotationSelectionCommand implements Command {
     private readonly beforeStrokes: readonly InkStroke[],
     private readonly afterStrokes: readonly InkStroke[],
     private readonly texts: TextAnnotationSession,
-    private readonly beforeTexts: readonly PdfTextAnnotation[],
-    private readonly afterTexts: readonly PdfTextAnnotation[]
+    private readonly beforeTexts: readonly TextAnnotation[],
+    private readonly afterTexts: readonly TextAnnotation[]
   ) {
     if (beforeStrokes.length !== afterStrokes.length || beforeTexts.length !== afterTexts.length) {
       throw new Error("Replacement sets must have equal lengths");

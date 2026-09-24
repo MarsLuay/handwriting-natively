@@ -6,15 +6,10 @@ import {
   queryPdfPageNodes
 } from "./pdfPageSelectors";
 import { pdfRenderCanvas } from "../pdf/PageCoordinateLayout";
+import type { AnnotationPageInfo } from "../runtime/AnnotationSurface";
 
-export interface PdfPageInfo {
-  pageNumber: number;
-  width: number;
-  height: number;
-  scale: number;
-  rotation: number;
-  element: HTMLElement;
-}
+/** Compatibility alias for PDF-only locator consumers. */
+export type PdfPageInfo = AnnotationPageInfo;
 
 interface CanonicalPageSize {
   width: number;

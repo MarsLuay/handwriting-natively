@@ -1,4 +1,4 @@
-import type { InkStroke, PdfTextAnnotation } from "../model";
+import type { InkStroke, TextAnnotation } from "../model";
 import type { SidecarSchemaV1 } from "./SidecarSchema";
 
 function remapPageNumber(page: number, deletedPage: number): number {
@@ -9,7 +9,7 @@ function remapStroke(stroke: InkStroke, deletedPage: number): InkStroke {
   return stroke.page > deletedPage ? { ...stroke, page: remapPageNumber(stroke.page, deletedPage) } : stroke;
 }
 
-function remapText(text: PdfTextAnnotation, deletedPage: number): PdfTextAnnotation {
+function remapText(text: TextAnnotation, deletedPage: number): TextAnnotation {
   return text.page > deletedPage ? { ...text, page: remapPageNumber(text.page, deletedPage) } : text;
 }
 

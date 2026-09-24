@@ -1,11 +1,11 @@
-import type { InkStroke, PdfPoint, PdfTextAnnotation } from "../model";
+import type { InkStroke, PagePoint, TextAnnotation } from "../model";
 import { strokeBounds, type Bounds } from "../ink/StrokeHitTesting";
 
 const OVERLAY_MARGIN_PX = 4;
 /** Strokes whose span is at most this many stroke-widths count as tap/dot marks. */
 const SHORT_STROKE_SPAN_WIDTHS = 4;
 
-export type Point = Pick<PdfPoint, "x" | "y">;
+export type Point = Pick<PagePoint, "x" | "y">;
 export type SelectionShape =
   | { type: "freeform"; points: Point[] }
   | { type: "rectangle"; bounds: Bounds };
@@ -150,7 +150,7 @@ export function boundingShapeFromStrokes(strokes: readonly InkStroke[]): Selecti
  */
 export function boundingShapeFromSelection(
   strokes: readonly InkStroke[],
-  texts: readonly Pick<PdfTextAnnotation, "x" | "y" | "width" | "height">[]
+  texts: readonly Pick<TextAnnotation, "x" | "y" | "width" | "height">[]
 ): SelectionShape | null {
   const inkShape = boundingShapeFromStrokes(strokes);
   const inkBounds = inkShape ? shapeBounds(inkShape) : undefined;

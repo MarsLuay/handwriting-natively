@@ -37,7 +37,8 @@ export function resolveDrawingTool(active: ToolId): DrawingTool {
   return isDrawingTool(active) ? active : "pen";
 }
 
-export interface PdfPoint {
+/** Page-local pointer sample; the same geometry works for PDF and image pages. */
+export interface PagePoint {
   x: number;
   y: number;
   pressure: number;
@@ -45,6 +46,9 @@ export interface PdfPoint {
   tiltY?: number;
   time: number;
 }
+
+/** Compatibility alias for PDF export and legacy sidecar helpers. */
+export type PdfPoint = PagePoint;
 
 export interface InkStroke {
   id: string;
@@ -54,11 +58,8 @@ export interface InkStroke {
   width: number;
   opacity: number;
   inputType: "pen" | "mouse" | "touch";
-  points: PdfPoint[];
-  /**
-   * Highlighter-only subtractive eraser paths (PDF space).
-   * Rendered with destination-out so erase punches holes without splitting the stroke.
-   */
+  points: PagePoint[];
+  /** Highlighter-only subtractive eraser paths in page-local coordinates. */
   eraseMasks?: InkEraseMask[];
   createdAt: string;
   updatedAt: string;
@@ -66,13 +67,13 @@ export interface InkStroke {
 
 /** Circular eraser capsule stored on a highlighter stroke. */
 export interface InkEraseMask {
-  points: Array<Pick<PdfPoint, "x" | "y">>;
-  /** Eraser radius in PDF units. */
+  points: Array<Pick<PagePoint, "x" | "y">>;
+  /** Eraser radius in page-local units. */
   radius: number;
 }
 
-/** Editable text placed by the Text tool; source PDF content is never changed. */
-export interface PdfTextAnnotation {
+/** Editable text placed by the Text tool; source document content is never changed. */
+export interface TextAnnotation {
   id: string;
   page: number;
   text: string;
@@ -86,13 +87,13 @@ export interface PdfTextAnnotation {
   bold: boolean;
   italic: boolean;
   strikethrough: boolean;
-  runs: PdfTextRun[];
-  sourceRuns: PdfTextRun[];
+  runs: TextRun[];
+  sourceRuns: TextRun[];
   createdAt: string;
   updatedAt: string;
 }
 
-export interface PdfTextRun {
+export interface TextRun {
   text: string;
   color: string;
   fontSize: number;
@@ -101,6 +102,10 @@ export interface PdfTextRun {
   italic: boolean;
   strikethrough: boolean;
 }
+
+/** Compatibility aliases for PDF export and legacy sidecar helpers. */
+export type PdfTextAnnotation = TextAnnotation;
+export type PdfTextRun = TextRun;
 
 export interface DrawingToolPreferences {
   color: string;

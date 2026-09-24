@@ -1,4 +1,4 @@
-import type { PdfPageInfo } from "../integration/PdfPageLocator";
+import type { AnnotationPageInfo } from "./AnnotationSurface";
 
 export interface SelectPagesForInkMountOptions {
   mobile: boolean;
@@ -18,9 +18,9 @@ export interface SelectPagesForInkMountOptions {
  * page ± pad only — no N-wide rect scans (unreliable during pinch anyway).
  */
 export function selectPagesForInkMount(
-  pages: PdfPageInfo[],
+  pages: AnnotationPageInfo[],
   options: SelectPagesForInkMountOptions
-): PdfPageInfo[] {
+): AnnotationPageInfo[] {
   if (!options.mobile || pages.length <= 3) return pages;
   const pad = options.pad ?? 1;
   const keep = new Set<number>();

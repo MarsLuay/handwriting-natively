@@ -29,6 +29,7 @@ import { installPdfZoomBoost, type PdfZoomBoostHandle } from "./PdfZoomBoost";
 
 export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   abstract readonly kind: "direct" | "embedded";
+  readonly supportsPdfExport = true as const;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
   protected readonly locator: PdfPageLocator;

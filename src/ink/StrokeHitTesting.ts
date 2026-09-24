@@ -1,8 +1,8 @@
-import type { InkStroke, PdfPoint } from "../model";
+import type { InkStroke, PagePoint } from "../model";
 
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
 
-export function distanceToSegment(point: Pick<PdfPoint, "x" | "y">, start: Pick<PdfPoint, "x" | "y">, end: Pick<PdfPoint, "x" | "y">): number {
+export function distanceToSegment(point: Pick<PagePoint, "x" | "y">, start: Pick<PagePoint, "x" | "y">, end: Pick<PagePoint, "x" | "y">): number {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   if (dx === 0 && dy === 0) return Math.hypot(point.x - start.x, point.y - start.y);
@@ -10,7 +10,7 @@ export function distanceToSegment(point: Pick<PdfPoint, "x" | "y">, start: Pick<
   return Math.hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy));
 }
 
-export function hitTestStroke(stroke: InkStroke, point: Pick<PdfPoint, "x" | "y">, radius = 0): boolean {
+export function hitTestStroke(stroke: InkStroke, point: Pick<PagePoint, "x" | "y">, radius = 0): boolean {
   const threshold = stroke.width / 2 + radius;
   if (stroke.points.length === 1) return distanceToSegment(point, stroke.points[0]!, stroke.points[0]!) <= threshold;
   for (let index = 1; index < stroke.points.length; index += 1) {

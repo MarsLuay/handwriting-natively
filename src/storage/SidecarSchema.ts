@@ -1,4 +1,4 @@
-import type { InkStroke, PdfTextAnnotation, PdfTextRun } from "../model";
+import type { InkStroke, TextAnnotation, TextRun } from "../model";
 
 export const SIDECAR_SCHEMA_VERSION = 1 as const;
 
@@ -19,7 +19,7 @@ export interface SidecarPage {
   height: number;
   rotation: 0 | 90 | 180 | 270;
   strokes: InkStroke[];
-  texts?: PdfTextAnnotation[];
+  texts?: TextAnnotation[];
 }
 
 export interface SidecarSchemaV1 {
@@ -58,12 +58,12 @@ const isStroke = (value: unknown): value is InkStroke => {
       isFiniteNumber(point.time));
 };
 
-const isTextRun = (value: unknown): value is PdfTextRun => isRecord(value) &&
+const isTextRun = (value: unknown): value is TextRun => isRecord(value) &&
   typeof value.text === "string" && typeof value.color === "string" &&
   isFiniteNumber(value.fontSize) && value.fontSize > 0 && typeof value.fontFamily === "string" &&
   typeof value.bold === "boolean" && typeof value.italic === "boolean" && typeof value.strikethrough === "boolean";
 
-const isText = (value: unknown): value is PdfTextAnnotation => isRecord(value) &&
+const isText = (value: unknown): value is TextAnnotation => isRecord(value) &&
   typeof value.id === "string" && Number.isInteger(value.page) && typeof value.text === "string" &&
   isFiniteNumber(value.x) && isFiniteNumber(value.y) && isFiniteNumber(value.width) && value.width > 0 &&
   isFiniteNumber(value.height) && value.height > 0 && typeof value.color === "string" &&
@@ -87,10 +87,10 @@ function normalizeLegacyText(value: unknown): unknown {
   const bold = value.bold === true;
   const italic = value.italic === true;
   const strikethrough = value.strikethrough === true;
-  const fallback: PdfTextRun = {
+  const fallback: TextRun = {
     text: value.text, color: value.color, fontSize: value.fontSize, fontFamily, bold, italic, strikethrough
   };
-  const normalizeRun = (run: unknown): PdfTextRun => {
+  const normalizeRun = (run: unknown): TextRun => {
     if (!isRecord(run) || typeof run.text !== "string") return { ...fallback };
     return {
       text: run.text,
