@@ -1183,21 +1183,61 @@ describe("viewer runtime tracer", () => {
     });
     const modal = document.createElement("div");
     modal.className = "modal-container";
+    const modalBackdrop = document.createElement("div");
+    modalBackdrop.className = "modal-bg";
+    const modalBody = document.createElement("div");
+    modalBody.className = "modal";
     const tabContent = document.createElement("div");
     tabContent.className = "vertical-tab-content";
-    const setting = document.createElement("div");
+    let setting = document.createElement("div");
     setting.className = "setting-item-description";
     tabContent.append(setting);
-    modal.append(tabContent);
+    modalBody.append(tabContent);
+    modalBackdrop.append(modalBody);
+    modal.append(modalBackdrop);
     document.body.append(modal);
     const originalElementFromPoint = document.elementFromPoint;
     const originalElementsFromPoint = document.elementsFromPoint;
 
     try {
-      // Simulate Settings open → close → open again.
+      // Simulate Settings open → close → reopen. Each logical opening emits once.
       modal.classList.add("mod-open");
-      modal.classList.remove("mod-open");
-      modal.classList.add("mod-open");
+      await Promise.resolve();
+      modal.remove();
+      await Promise.resolve();
+      document.body.append(modal);
+      await Promise.resolve();
+      const modalOpens = logs.filter(({ event, payload }) => event === "ui surface" && payload.phase === "open" && payload.surfaceKind === "modal");
+      expect(modalOpens).toHaveLength(2);
+      expect(modalOpens[0]?.payload).toMatchObject({ nestedShellCount: 3 });
+      expect(modalOpens[1]?.payload.surfaceId).toBe(modalOpens[0]?.payload.surfaceId);
+      const modalSurfaceId = modalOpens[0]?.payload.surfaceId;
+
+      const menu = document.createElement("div");
+      menu.className = "menu";
+      modal.append(menu);
+      await Promise.resolve();
+      const stackedModal = document.createElement("div");
+      stackedModal.className = "modal-container mod-open";
+      const stackedModalBody = document.createElement("div");
+      stackedModalBody.className = "modal";
+      stackedModal.append(stackedModalBody);
+      document.body.append(stackedModal);
+      await Promise.resolve();
+      const surfaceOpens = logs.filter(({ event, payload }) => event === "ui surface" && payload.phase === "open");
+      expect(surfaceOpens).toHaveLength(4);
+      expect(surfaceOpens.map(({ payload }) => payload.surfaceKind)).toEqual(expect.arrayContaining(["modal", "menu"]));
+      const modalSurfaceIds = surfaceOpens
+        .filter(({ payload }) => payload.surfaceKind === "modal")
+        .map(({ payload }) => payload.surfaceId);
+      expect(new Set(modalSurfaceIds).size).toBe(2);
+
+      const replacement = document.createElement("div");
+      replacement.className = "setting-item-description";
+      setting.replaceWith(replacement);
+      setting = replacement;
+      await Promise.resolve();
+      expect(logs.filter(({ event, payload }) => event === "ui surface" && payload.phase === "open")).toHaveLength(4);
 
       Object.defineProperty(document, "elementFromPoint", {
         configurable: true,
@@ -1216,10 +1256,22 @@ describe("viewer runtime tracer", () => {
         payload: expect.objectContaining({ reason: "ui-occluded", pageOccludedByUi: true })
       }));
 
-      // Close modal: remove from DOM so pen can draw again.
+      // Close menu and modal: remove them from the DOM so pen can draw again.
+      menu.remove();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const menuCloses = logs.filter(({ event, payload }) => event === "ui surface" && payload.phase === "close" && payload.kind === "menu");
+      expect(menuCloses).toHaveLength(1);
+      stackedModal.remove();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const stackedModalCloses = logs.filter(({ event, payload }) => event === "ui surface" && payload.phase === "close" && payload.kind === "modal");
+      expect(stackedModalCloses).toHaveLength(2);
+      expect(stackedModalCloses.find(({ payload }) => payload.surfaceId !== modalSurfaceId)?.payload.surfaceId).not.toBe(modalSurfaceId);
       modal.remove();
       // Let the bounded UI-shell observer arm the post-Settings trace.
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const modalCloses = logs.filter(({ event, payload }) => event === "ui surface" && payload.phase === "close" && payload.kind === "modal");
+      expect(modalCloses).toHaveLength(3);
+      expect(modalCloses.at(-1)?.payload.surfaceId).toBe(modalSurfaceId);
       expect(logs).toContainEqual(expect.objectContaining({
         event: "post-ui input probe",
         payload: expect.objectContaining({ phase: "armed", transition: expect.objectContaining({ reason: "removed" }) })
