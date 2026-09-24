@@ -11,7 +11,7 @@ const context = {
 };
 
 describe("PostUiInputProbe", () => {
-  it("reports a neutral expiry when the bounded window contains touch-only input", () => {
+  it("reports missing Pencil input when the bounded window expires without a pen document event", () => {
     const probe = new PostUiInputProbe();
     probe.arm(100, context);
     probe.pointerDown(120, 1, "touch");
