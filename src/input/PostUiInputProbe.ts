@@ -380,10 +380,19 @@ export class PostUiInputProbe {
     const active = this.active;
     const contact = active?.contacts.get(pointerId);
     if (!active || !contact || contact.finalized) return null;
-    this.applyStage(contact, "terminal", { ...details, terminal });
+    this.stage(now, pointerId, "terminal", { ...details, terminal });
     contact.finalized = true;
-    if (contact.pointerType !== "pen") return null;
-    return this.result(active, contact, this.outcomeFor(contact), now, details);
+    return {
+      armId: active.armId,
+      correlationId: contact.correlationId,
+      outcome: this.outcomeFor(contact),
+      elapsedMs: Math.max(0, now - active.armedAt),
+      pointerDownCount: active.pointerDownCount,
+      observedPointerTypes: [...active.observedPointerTypes],
+      contactCount: active.contacts.size,
+      contact: this.summary(contact, now),
+      details: { ...this.contextDetails(active), ...contact.details, ...details }
+    };
   }
 
   finishWithOutcome(
