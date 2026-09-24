@@ -1,7 +1,7 @@
-import type { InkStroke, PdfPoint } from "../model";
+import type { InkStroke, PagePoint } from "../model";
 import { clamp01 } from "../util/math";
 
-type Point = Pick<PdfPoint, "x" | "y">;
+type Point = Pick<PagePoint, "x" | "y">;
 type Interval = readonly [start: number, end: number];
 interface Bounds { minX: number; minY: number; maxX: number; maxY: number; }
 
@@ -103,7 +103,7 @@ function complement(intervals: readonly Interval[]): Interval[] {
   return result;
 }
 
-function interpolate(start: PdfPoint, end: PdfPoint, t: number): PdfPoint {
+function interpolate(start: PagePoint, end: PagePoint, t: number): PagePoint {
   const optional = (a: number | undefined, b: number | undefined): number | undefined =>
     a === undefined && b === undefined ? undefined : (a ?? b ?? 0) + ((b ?? a ?? 0) - (a ?? b ?? 0)) * t;
   const tiltX = optional(start.tiltX, end.tiltX);
@@ -149,7 +149,7 @@ function segmentMayTouchPath(start: Point, end: Point, pathBounds: Bounds, radiu
     && minY <= pathBounds.maxY + radius;
 }
 
-function eraseStroke(stroke: InkStroke, path: readonly Point[], radius: number, pathBounds: Bounds): PdfPoint[][] | null {
+function eraseStroke(stroke: InkStroke, path: readonly Point[], radius: number, pathBounds: Bounds): PagePoint[][] | null {
   if (stroke.points.length === 0 || path.length === 0) return null;
   if (stroke.points.length === 1) {
     const touched = path.length === 1
@@ -158,8 +158,8 @@ function eraseStroke(stroke: InkStroke, path: readonly Point[], radius: number, 
     return touched ? [] : null;
   }
 
-  const fragments: PdfPoint[][] = [];
-  let active: PdfPoint[] | undefined;
+  const fragments: PagePoint[][] = [];
+  let active: PagePoint[] | undefined;
   let changed = false;
   for (let index = 1; index < stroke.points.length; index += 1) {
     const start = stroke.points[index - 1]!;

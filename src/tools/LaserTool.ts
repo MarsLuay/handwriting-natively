@@ -1,4 +1,4 @@
-import type { PdfPoint } from "../model";
+import type { PagePoint } from "../model";
 
 export interface LaserPoint {
   x: number;
@@ -337,8 +337,8 @@ function paintLaserTrail(
 
 /** Map PDF/page points through a viewport mapper for canvas paint. */
 export function mapLaserPoints(
-  points: readonly PdfPoint[],
-  toViewport: (point: PdfPoint) => { x: number; y: number }
+  points: readonly PagePoint[],
+  toViewport: (point: PagePoint) => { x: number; y: number }
 ): LaserPoint[] {
   return points.map((point) => {
     const view = toViewport(point);

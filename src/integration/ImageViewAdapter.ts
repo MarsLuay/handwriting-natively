@@ -1,38 +1,37 @@
 import { createDetachedDiv } from "../vendor/createDetached";
 import type { ToolbarPlacement } from "../model";
-import type { PdfPageInfo } from "./PdfPageLocator";
-import type { ObsidianPdfAdapter, PdfAdapterCallbacks, PdfViewState } from "./ObsidianPdfAdapter";
+import type { AnnotationPageInfo, AnnotationSurface, AnnotationSurfaceCallbacks, AnnotationViewState } from "../runtime/AnnotationSurface";
 
 /**
  * Adapter for Obsidian's native image view. Images are represented as one
  * page so the existing page-space ink, sidecar, and pointer machinery can be
  * reused without teaching the PDF integration about image DOM internals.
  */
-export class ImageViewAdapter implements ObsidianPdfAdapter {
+export class ImageViewAdapter implements AnnotationSurface {
   readonly kind = "direct" as const;
-  readonly supportsPdfExport = false;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
 
   private readonly image: HTMLImageElement;
   private readonly pageElement: HTMLElement;
-  private readonly callbacks: PdfAdapterCallbacks;
+  private readonly callbacks: AnnotationSurfaceCallbacks;
   private readonly cleanup: Array<() => void> = [];
   private readonly mounted = new Set<HTMLElement>();
   private readonly wrappedImage: boolean;
   private destroyed = false;
 
-  private constructor(host: HTMLElement, image: HTMLImageElement, callbacks: PdfAdapterCallbacks) {
+  private constructor(host: HTMLElement, image: HTMLImageElement, callbacks: AnnotationSurfaceCallbacks) {
     this.host = host;
     this.image = image;
     this.callbacks = callbacks;
+    const originalParent = image.parentElement;
     this.pageElement = this.wrapImage(image);
     this.root = this.pageElement;
-    this.wrappedImage = this.pageElement !== image.parentElement;
+    this.wrappedImage = this.pageElement !== originalParent;
     this.installObservers();
   }
 
-  static attach(host: HTMLElement, callbacks: PdfAdapterCallbacks = {}): ImageViewAdapter {
+  static attach(host: HTMLElement, callbacks: AnnotationSurfaceCallbacks = {}): ImageViewAdapter {
     const image = host.matches("img")
       ? host as HTMLImageElement
       : host.querySelector<HTMLImageElement>("img");
@@ -40,15 +39,15 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
     return new ImageViewAdapter(host, image, callbacks);
   }
 
-  pages(): PdfPageInfo[] {
+  pages(): AnnotationPageInfo[] {
     return [this.pageInfo()];
   }
 
-  page(pageNumber: number): PdfPageInfo | undefined {
+  page(pageNumber: number): AnnotationPageInfo | undefined {
     return pageNumber === 1 ? this.pageInfo() : undefined;
   }
 
-  getViewState(): PdfViewState {
+  getViewState(): AnnotationViewState {
     const page = this.pageInfo();
     const scrollRoot = this.scrollElement();
     const denominator = Math.max(1, scrollRoot.scrollHeight - scrollRoot.clientHeight);
@@ -60,7 +59,7 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
     };
   }
 
-  restoreViewState(state: PdfViewState): void {
+  restoreViewState(state: AnnotationViewState): void {
     if (state.pageNumber !== 1) return;
     this.pageElement.scrollIntoView?.({ block: "start" });
     const scrollRoot = this.scrollElement();
@@ -138,7 +137,7 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
     }
   }
 
-  private pageInfo(): PdfPageInfo {
+  private pageInfo(): AnnotationPageInfo {
     const rect = this.image.getBoundingClientRect();
     const width = this.image.naturalWidth > 0 ? this.image.naturalWidth : Math.max(1, rect.width);
     const height = this.image.naturalHeight > 0 ? this.image.naturalHeight : Math.max(1, rect.height);
@@ -150,6 +149,7 @@ export class ImageViewAdapter implements ObsidianPdfAdapter {
       height,
       scale: Math.min(scaleX, scaleY) > 0 ? Math.min(scaleX, scaleY) : 1,
       rotation: 0,
+      coordinateOrigin: "top-left",
       element: this.pageElement
     };
   }

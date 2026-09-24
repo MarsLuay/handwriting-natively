@@ -1,7 +1,7 @@
-import type { DrawingTool, InkStroke, PdfPoint, PdfTextAnnotation, PdfTextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarPlacement, ToolPreferences } from "../model";
+import type { DrawingTool, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarPlacement, ToolPreferences } from "../model";
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
-import type { ObsidianPdfAdapter } from "../integration/ObsidianPdfAdapter";
-import type { PdfPageInfo } from "../integration/PdfPageLocator";
+import type { AnnotationSurface, AnnotationPageInfo } from "./AnnotationSurface";
+import { pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
 import { describeTarget } from "../dom/describeElement";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
@@ -29,7 +29,7 @@ import { StrokeBuilder } from "../ink/StrokeBuilder";
 import { StrokeClipboard } from "../ink/StrokeClipboard";
 import { simplifyPoints } from "../ink/StrokeStabilizer";
 import { WetInkRenderer } from "../ink/WetInkRenderer";
-import { PdfCoordinateMapper, type PageRotation } from "../pdf/PdfCoordinateMapper";
+import { PageCoordinateMapper, type PageRotation } from "./PageCoordinateMapper";
 import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type PageCoordinateLayout } from "../pdf/PageCoordinateLayout";
 import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { getDebugNodeId } from "../dom/debugNodeId";
@@ -66,7 +66,7 @@ import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
 import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../logging/SessionLogger";
 import { BoundedTiming, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
 import type { VaultLogSink } from "../logging/VaultLogSink";
-import type { PdfViewState } from "../integration/ObsidianPdfAdapter";
+import type { AnnotationViewState } from "./AnnotationSurface";
 import { describeScrollElement, scrollPdfByDetailed } from "../integration/PdfScrollRoot";
 import { TextAnnotationSession } from "../text/TextAnnotationSession";
 import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../text/TextAnnotationCommands";
@@ -87,8 +87,8 @@ const wheelPanReplayDepth = new WeakMap<Document, number>();
 
 interface PointerHitTest {
   targetPage: HTMLElement | null;
-  geometricPage: PdfPageInfo | null;
-  safeRecoveryPage: PdfPageInfo | null;
+  geometricPage: AnnotationPageInfo | null;
+  safeRecoveryPage: AnnotationPageInfo | null;
   firstInteractiveHit: Element | null;
   firstInteractiveHitBelongsToPage: boolean;
   pageOccludedByUi: boolean;
@@ -350,14 +350,14 @@ function replayWheelPan<T>(ownerDocument: Document, work: () => T): T {
 }
 
 export interface SessionDiagnostics {
-  pdfPath: string;
-  compatibility: ReturnType<ObsidianPdfAdapter["compatibilityReport"]>;
+  documentPath: string;
+  compatibility: ReturnType<AnnotationSurface["compatibilityReport"]>;
   debug: DebugState;
 }
 
 export interface ViewerInkSessionOptions {
-  adapter: ObsidianPdfAdapter;
-  pdfPath: string;
+  adapter: AnnotationSurface;
+  documentPath: string;
   /** Content-derived identity captured once while the source PDF is opened. */
   contentHash?: string;
   /** Version stamped onto bounded copied diagnostics profiles. */
@@ -367,10 +367,14 @@ export interface ViewerInkSessionOptions {
   recovery: RecoveryRepository;
   saveSettings(preferences: ToolPreferences): Promise<void>;
   savePluginSettings?(patch: Partial<PluginSettings>): Promise<void>;
-  readSourcePdf(): Promise<Uint8Array>;
+  /** Reads source bytes for content identity; works for PDF and image documents. */
+  readDocument?(this: void): Promise<Uint8Array>;
+  /** Compatibility callback for PDF integrations that have not migrated yet. */
+  readSourcePdf?(this: void): Promise<Uint8Array>;
   /** Writes the current source PDF bytes after a validated page import. */
   writeSourcePdf?(bytes: Uint8Array): Promise<void>;
-  writeExport(name: string, bytes: Uint8Array): Promise<string | void>;
+  /** Optional document export supplied by a surface-specific integration. */
+  writeExport?(name: string, bytes: Uint8Array): Promise<string | void>;
   /** Writes a separate selected-ink SVG beside the source PDF. */
   writeSvgExport?(this: void, name: string, svg: string): Promise<string | void>;
   /** Inserts a blank page at the requested one-indexed PDF position. */
@@ -411,7 +415,7 @@ export interface ViewerInkSessionOptions {
 interface LaserTrail {
   id: string;
   page: number;
-  points: PdfPoint[];
+  points: PagePoint[];
   color: string;
   width: number;
   opacity: number;
@@ -528,7 +532,7 @@ interface ZoomProfileState {
 }
 
 interface PageSurface {
-  page: PdfPageInfo;
+  page: AnnotationPageInfo;
   overlay: HTMLElement;
   canvas: HTMLCanvasElement;
   /** Ephemeral active-stroke layer. The committed ink canvas stays untouched while drawing. */
@@ -566,7 +570,7 @@ interface PageSurface {
   /** Stroke-local input conditioning; never changes already-captured ink. */
   pressureConditioner: PressureConditioner | undefined;
   /** Previous canonical point used for distance-aware pressure conditioning. */
-  pressureLastPdfPoint: Pick<PdfPoint, "x" | "y"> | undefined;
+  pressureLastPagePoint: Pick<PagePoint, "x" | "y"> | undefined;
   /** Mouse fallback captured with the drawing style at pointer-down. */
   simulateMousePressure: boolean;
   /** True while the live StrokeBuilder is a non-persisted laser draft. */
@@ -574,13 +578,13 @@ interface PageSurface {
   /** Samples dropped from the current ephemeral laser draft. */
   laserDiscardedPoints: number;
   shapeHoldTimer: number | null;
-  shapePreview: PdfPoint[] | null;
+  shapePreview: PagePoint[] | null;
   shapeResize: ShapeResize | null;
-  editPath: PdfPoint[];
+  editPath: PagePoint[];
   editTool: "eraser" | "lasso" | undefined;
   eraserSize: number | undefined;
   eraserWholeStrokes: boolean | undefined;
-  textIntent: { start: PdfPoint; hit: PdfTextAnnotation | null; pointerType: string } | null;
+  textIntent: { start: PagePoint; hit: TextAnnotation | null; pointerType: string } | null;
 }
 
 /** A one-shot bitmap cover kept alive while Obsidian replaces a source PDF. */
@@ -594,11 +598,11 @@ interface PageMutationShield {
 
 interface ActiveTextEditor {
   surface: PageSurface;
-  existing: PdfTextAnnotation | null;
-  draft: PdfTextAnnotation;
+  existing: TextAnnotation | null;
+  draft: TextAnnotation;
   style: TextStyle;
   /** Canonical text formatting; DOM is synchronized after input but not re-rendered. */
-  runs: PdfTextRun[];
+  runs: TextRun[];
   /** Last root-relative selection, retained while a toolbar takes focus. */
   selection: TextSelectionOffsets | null;
   /** Formatting used for the next insertion after a collapsed style change. */
@@ -615,9 +619,9 @@ interface ActiveTextEditor {
 
 interface TextMoveDrag {
   page: number;
-  start: PdfPoint;
-  before: PdfTextAnnotation;
-  preview: PdfTextAnnotation;
+  start: PagePoint;
+  before: TextAnnotation;
+  preview: TextAnnotation;
 }
 
 type TextBoxHandle = "n" | "e" | "s" | "w" | "nw" | "ne" | "sw" | "se";
@@ -626,9 +630,9 @@ type TextBoxHandle = "n" | "e" | "s" | "w" | "nw" | "ne" | "sw" | "se";
 interface TextBoxTransformDrag {
   surface: PageSurface;
   pointerId: number;
-  start: Pick<PdfPoint, "x" | "y">;
-  before: PdfTextAnnotation;
-  preview: PdfTextAnnotation;
+  start: Pick<PagePoint, "x" | "y">;
+  before: TextAnnotation;
+  preview: TextAnnotation;
   mode: "move" | "resize";
   handle: TextBoxHandle;
   /** Static box translated live for Move; resize keeps its text stationary. */
@@ -639,8 +643,8 @@ interface TextBoxTransformDrag {
 
 interface ShapeResize {
   recognition: ShapeRecognition;
-  anchor: PdfPoint;
-  handle: PdfPoint;
+  anchor: PagePoint;
+  handle: PagePoint;
 }
 
 export class ViewerInkSession {
@@ -664,12 +668,12 @@ export class ViewerInkSession {
   private readonly autosave: AutosaveQueue<SidecarSchemaV1>;
   private readonly saveCoordinator: SaveCoordinator;
   private selected: InkStroke[] = [];
-  private selectedTexts: PdfTextAnnotation[] = [];
+  private selectedTexts: TextAnnotation[] = [];
   private selectionShape: SelectionShape | null = null;
   private selectionPage: number | null = null;
-  private moveDrag: { page: number; start: PdfPoint; before: InkStroke[]; beforeTexts: PdfTextAnnotation[]; beforeShape: SelectionShape } | null = null;
+  private moveDrag: { page: number; start: PagePoint; before: InkStroke[]; beforeTexts: TextAnnotation[]; beforeShape: SelectionShape } | null = null;
   private movePreview: InkStroke[] | null = null;
-  private moveTextPreview: PdfTextAnnotation[] | null = null;
+  private moveTextPreview: TextAnnotation[] | null = null;
   private moveShapePreview: SelectionShape | null = null;
   private activeTextEditor: ActiveTextEditor | null = null;
   private textMoveDrag: TextMoveDrag | null = null;
@@ -792,7 +796,8 @@ export class ViewerInkSession {
   private readonly pullToAddPage: PullToAddPageGesture | null;
   private readonly thumbnailSidebarActions: PdfThumbnailSidebarActions | null;
   private pageMutationInFlight = false;
-  private readonly findBridge: AnnotationFindBridge;
+  /** PDF find integration is an optional surface extension. */
+  private readonly findBridge: AnnotationFindBridge | null;
   /** Last applied browser direct-manipulation policy for mounted PDF pages. */
   private touchDrawPolicyEnabled: boolean | null = null;
   private readonly pointerProbeAbort = new AbortController();
@@ -819,11 +824,11 @@ export class ViewerInkSession {
 
   private constructor(private readonly options: ViewerInkSessionOptions) {
     const identityInput: DocumentIdentityInput = {
-      vaultPath: options.pdfPath,
+      vaultPath: options.documentPath,
       ...(options.contentHash ? { contentHash: options.contentHash } : {})
     };
     this.identity = createDocumentIdentity(identityInput);
-    this.logger = new SessionLogger(options.pdfPath, options.vaultLog, options.debugEnabled, options.pluginVersion);
+    this.logger = new SessionLogger(options.documentPath, options.vaultLog, options.debugEnabled, options.pluginVersion);
     this.textToolActive = options.settings.toolPreferences.activeTool === "text";
     this.lastObservedTool = options.settings.toolPreferences.activeTool;
     this.logger.textTool("tool-initial", {
@@ -834,13 +839,15 @@ export class ViewerInkSession {
       fontFamily: options.settings.toolPreferences.text.fontFamily
     });
     this.syncEffectiveDrawState("session-create", "session");
+    const pdfExtensions = pdfSurfaceExtensions(options.adapter);
     this.toolbar = new AnnotationToolbar({
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
       supportedMoreActions: [
-        "export",
-        "export-editable",
+        ...(pdfExtensions && options.writeExport
+          ? ["export", "export-editable"] as const
+          : []),
         ...(options.onImportPages && options.writeSourcePdf ? ["import-page" as const] : []),
         ...(options.openScanDocument && options.onInsertScannedPages && (options.runtimePlatform?.().mobile ?? false)
           ? ["scan-document" as const]
@@ -1028,11 +1035,11 @@ export class ViewerInkSession {
         onMenuEvent: (phase, details) => this.logger.thumbnailMenu(phase, details)
       })
       : null;
-    this.findBridge = new AnnotationFindBridge({
-      getFindController: () => adapter.findController?.() ?? null,
-      getEventBus: () => adapter.eventBus?.() ?? null,
+    this.findBridge = pdfExtensions ? new AnnotationFindBridge({
+      getFindController: () => pdfExtensions.findController?.() ?? null,
+      getEventBus: () => pdfExtensions.eventBus?.() ?? null,
       getPageElement: (pageNumber) => adapter.page(pageNumber)?.element ?? null,
-      getNativeTextLayer: (pageNumber) => adapter.nativeTextLayer?.(pageNumber) ?? null,
+      getNativeTextLayer: (pageNumber) => pdfExtensions.nativeTextLayer?.(pageNumber) ?? null,
       textsForPage: (pageNumber) => this.texts.page(pageNumber),
       annotatedPageNumbers: () => {
         const pages = new Set<number>();
@@ -1048,7 +1055,7 @@ export class ViewerInkSession {
         if (!(this.options.debugEnabled?.() ?? false)) return;
         this.options.vaultLog?.write("info", `find-bridge:${phase}`, details);
       }
-    });
+    }) : null;
     this.installPointerProbe(adapter);
   }
 
@@ -1168,7 +1175,7 @@ export class ViewerInkSession {
       viewerGeneration: this.viewerGeneration,
       pageGeneration: generations.length ? Math.max(...generations) : null,
       mountedPages: [...this.surfaces.keys()].sort((a, b) => a - b),
-      documentPath: this.options.pdfPath,
+      documentPath: this.options.documentPath,
       transition
     };
     const now = Date.now();
@@ -1592,7 +1599,7 @@ export class ViewerInkSession {
     this.scheduleMobileScrollRefresh();
   }
 
-  private mobileMountSetUnchanged(pages: PdfPageInfo[]): boolean {
+  private mobileMountSetUnchanged(pages: AnnotationPageInfo[]): boolean {
     if (pages.length !== this.surfaces.size) return false;
     return pages.every((page) => {
       const surface = this.surfaces.get(page.pageNumber);
@@ -2980,7 +2987,7 @@ export class ViewerInkSession {
     const platform = options.runtimePlatform?.() ?? { mobile: false, phone: false };
     const domPageCount = options.adapter.pages().length;
     await urgent("session create begin", {
-      document: options.pdfPath,
+      document: options.documentPath,
       mobile: platform.mobile,
       phone: platform.phone,
       domPageCount,
@@ -2992,13 +2999,15 @@ export class ViewerInkSession {
     });
     let contentHash: string | undefined;
     try {
-      const sourceBytes = await options.readSourcePdf();
+      const readDocument = options.readDocument ?? options.readSourcePdf;
+      if (!readDocument) throw new Error("Document bytes unavailable for identity");
+      const sourceBytes = await readDocument();
       // An empty byte array is a test/fallback signal, not a useful PDF
       // identity. Real PDFs always receive a content-derived key.
       if (sourceBytes.byteLength > 0) contentHash = hashDocumentContent(sourceBytes);
     } catch (error) {
       await urgent("session content identity unavailable", {
-        document: options.pdfPath,
+        document: options.documentPath,
         error: error instanceof Error ? error.message : String(error)
       });
     }
@@ -3007,17 +3016,17 @@ export class ViewerInkSession {
       ...(contentHash ? { contentHash } : {})
     });
     await urgent("session create constructor ok", {
-      document: options.pdfPath,
+      document: options.documentPath,
       mobile: platform.mobile
     });
-    options.adapter.setBoostedZoom?.(options.settings.boostedPdfZoom);
+    pdfSurfaceExtensions(options.adapter)?.setBoostedZoom?.(options.settings.boostedPdfZoom);
     session.persistEpoch = options.claimPersistEpoch?.(session.identity.id) ?? 1;
     await urgent("session create sidecar begin", {
-      document: options.pdfPath,
+      document: options.documentPath,
       documentId: session.identity.id
     });
     const identityInput: DocumentIdentityInput = {
-      vaultPath: options.pdfPath,
+      vaultPath: options.documentPath,
       ...(contentHash ? { contentHash } : {})
     };
     const sidecarResult = await options.sidecars.loadForDocumentWithStatus(identityInput);
@@ -3037,11 +3046,11 @@ export class ViewerInkSession {
     ];
     if (conflicts.length) {
       const paths = conflicts.flatMap(({ conflict }) => conflict.paths).join(", ");
-      const message = `Conflicting annotation snapshots found for ${options.pdfPath}; preserved files require review: ${paths}`;
+      const message = `Conflicting annotation snapshots found for ${options.documentPath}; preserved files require review: ${paths}`;
       options.adapter.destroy();
       options.notice(message);
       await urgent("session create annotation conflict", {
-        document: options.pdfPath,
+        document: options.documentPath,
         documentId: session.identity.id,
         conflicts
       });
@@ -3068,7 +3077,7 @@ export class ViewerInkSession {
       options.notice(`Malformed annotation data moved to ${paths}. ${outcome}`);
     }
     await urgent("session create sidecar ok", {
-      document: options.pdfPath,
+      document: options.documentPath,
       documentId: session.identity.id,
       sidecarStrokes,
       sidecarTexts,
@@ -3104,14 +3113,14 @@ export class ViewerInkSession {
       for (const text of page.texts ?? []) session.texts.add(text);
     }
     await urgent("session create hydrate ok", {
-      document: options.pdfPath,
+      document: options.documentPath,
       loadedStrokes,
       loadedTexts,
       pagesWithInk: stored?.pages?.length ?? 0
     });
     options.adapter.mountToolbar(session.toolbar.element, session.currentToolbarPlacement());
     await urgent("session create toolbar ok", {
-      document: options.pdfPath,
+      document: options.documentPath,
       toolbarPlacement: session.currentToolbarPlacement()
     });
     session.logger.sessionAttach({
@@ -3133,7 +3142,7 @@ export class ViewerInkSession {
     session.refreshDiagnostics();
     const mountPages = session.pagesForInkMount();
     await urgent("session create refresh begin", {
-      document: options.pdfPath,
+      document: options.documentPath,
       mobile: platform.mobile,
       phone: platform.phone,
       domPageCount,
@@ -3144,7 +3153,7 @@ export class ViewerInkSession {
     });
     session.refresh("create");
     await urgent("session create refresh ok", {
-      document: options.pdfPath,
+      document: options.documentPath,
       surfaces: session.surfaces.size,
       mountPages: [...session.surfaces.keys()].sort((a, b) => a - b),
       toolbarPlacement: session.currentToolbarPlacement(),
@@ -3281,13 +3290,13 @@ export class ViewerInkSession {
    * Desktop: every DOM page. Mobile: currentPage ± 1 via O(1) `adapter.page`
    * (never scan all 900+ page rects on scroll).
    */
-  private pagesForInkMount(): PdfPageInfo[] {
+  private pagesForInkMount(): AnnotationPageInfo[] {
     if (!this.runtimePlatform().mobile) {
       return this.options.adapter.pages();
     }
     const pad = 1;
     const currentPage = this.options.adapter.getViewState().pageNumber;
-    const resolved: PdfPageInfo[] = [];
+    const resolved: AnnotationPageInfo[] = [];
     for (let pageNumber = currentPage - pad; pageNumber <= currentPage + pad; pageNumber += 1) {
       if (pageNumber < 1) continue;
       const page = this.options.adapter.page(pageNumber);
@@ -3392,7 +3401,7 @@ export class ViewerInkSession {
     };
   }
 
-  onViewStateChange(state: PdfViewState, source: ViewStateSource): void {
+  onViewStateChange(state: AnnotationViewState, source: ViewStateSource): void {
     this.logger.viewState(state, source);
     if (this.zoomProfile) {
       if (source === "scroll") this.zoomProfile.scrollEvents += 1;
@@ -3744,7 +3753,7 @@ export class ViewerInkSession {
     });
   }
 
-  private reattachSurface(surface: PageSurface, page: PdfPageInfo): boolean {
+  private reattachSurface(surface: PageSurface, page: AnnotationPageInfo): boolean {
     if (!page.element.isConnected || surface.page.element !== page.element) return false;
     if (surface.overlay.isConnected) {
       if (!page.element.contains(surface.overlay)) return false;
@@ -3763,7 +3772,7 @@ export class ViewerInkSession {
     return true;
   }
 
-  private remountSurfaceOnPageReplacement(surface: PageSurface, page: PdfPageInfo): void {
+  private remountSurfaceOnPageReplacement(surface: PageSurface, page: AnnotationPageInfo): void {
     const previousPage = surface.page.element;
     this.logger.inputLifecycleEvent("page-dom-replacement", {
       page: page.pageNumber,
@@ -3787,7 +3796,7 @@ export class ViewerInkSession {
     surface.router = this.createPageRouter(surface);
   }
 
-  private tryReattachDisconnectedSurfaces(pages: PdfPageInfo[]): boolean {
+  private tryReattachDisconnectedSurfaces(pages: AnnotationPageInfo[]): boolean {
     let reattached = false;
     for (const page of pages) {
       const surface = this.surfaces.get(page.pageNumber);
@@ -3807,7 +3816,7 @@ export class ViewerInkSession {
     return reattached;
   }
 
-  private canSyncPagesWithoutRefresh(pages: PdfPageInfo[]): boolean {
+  private canSyncPagesWithoutRefresh(pages: AnnotationPageInfo[]): boolean {
     if (pages.length !== this.surfaces.size) return false;
     return pages.every((page) => {
       const surface = this.surfaces.get(page.pageNumber);
@@ -3860,7 +3869,9 @@ export class ViewerInkSession {
       if (this.isDirty()) await this.manualSave();
       const before = this.snapshot();
       const beforeMetrics = new Map(this.pageMetrics);
-      const beforePdf = await this.options.readSourcePdf();
+      const readDocument = this.options.readDocument ?? this.options.readSourcePdf;
+      if (!readDocument) return;
+      const beforePdf = await readDocument();
       const expectedPageCount = this.options.adapter.pages().length + mutation.pageCount;
       this.pendingInsertedPageFocus = {
         pageNumber: mutation.pageNumber,
@@ -3988,7 +3999,7 @@ export class ViewerInkSession {
   }
 
   /** Focus only once native PDF.js has published the post-insert page count. */
-  private focusInsertedPageIfReady(reason: string, pages: PdfPageInfo[]): void {
+  private focusInsertedPageIfReady(reason: string, pages: AnnotationPageInfo[]): void {
     const pending = this.pendingInsertedPageFocus;
     if (!pending || pages.length < pending.expectedPageCount) return;
     if (!this.options.adapter.focusPage(pending.pageNumber)) return;
@@ -4298,7 +4309,7 @@ export class ViewerInkSession {
 
   getDiagnostics(): SessionDiagnostics {
     return {
-      pdfPath: this.options.pdfPath,
+      documentPath: this.options.documentPath,
       compatibility: this.options.adapter.compatibilityReport(),
       debug: this.debugState
     };
@@ -4551,14 +4562,20 @@ export class ViewerInkSession {
     });
     try {
       await this.autosave.flush(this.identity.id);
+      if (!this.options.writeExport || !pdfSurfaceExtensions(this.options.adapter)) {
+        this.options.notice("Document export is unavailable for this annotation surface.");
+        return;
+      }
+      const readDocument = this.options.readDocument ?? this.options.readSourcePdf;
+      if (!readDocument) throw new Error("Document bytes unavailable for export");
       const bytes = await this.exporter.export({
-        sourceBytes: await this.options.readSourcePdf(),
+        sourceBytes: await readDocument(),
         getStrokes: () => this.ink.all(),
         getTexts: () => this.texts.all(),
         mode,
         pageMetrics: this.exportPageMetrics()
       });
-      const sourceName = this.options.pdfPath.split("/").pop() ?? "document.pdf";
+      const sourceName = this.options.documentPath.split("/").pop() ?? "document.pdf";
       const name = mode === "editable" ? editableAnnotatedFilename(sourceName) : annotatedFilename(sourceName);
       const path = await this.options.writeExport(name, bytes);
       this.options.notice(`Exported ${typeof path === "string" ? path : name}. Original PDF unchanged.`);
@@ -4584,7 +4601,7 @@ export class ViewerInkSession {
       this.options.notice("The selected PDF ink has no drawable points.");
       return;
     }
-    const sourceName = this.options.pdfPath.split("/").pop() ?? "document.pdf";
+    const sourceName = this.options.documentPath.split("/").pop() ?? "document.pdf";
     const base = sourceName.replace(/\.pdf$/i, "") || "document";
     const name = `${base}_selected_ink.svg`;
     const path = await this.options.writeSvgExport(name, exported.svg);
@@ -4697,7 +4714,7 @@ export class ViewerInkSession {
     this.viewerMousePan.destroy();
     this.pullToAddPage?.destroy();
     this.thumbnailSidebarActions?.destroy();
-    this.findBridge.destroy();
+    this.findBridge?.destroy();
     this.handledDrawPointers.clear();
     this.clearPostUiProbeTimer();
     this.uiShellSnapshots.clear();
@@ -4872,7 +4889,7 @@ export class ViewerInkSession {
     };
   }
 
-  private mountPage(page: PdfPageInfo): PageSurface {
+  private mountPage(page: AnnotationPageInfo): PageSurface {
     this.claimInputOwner(page.element, page.pageNumber);
     this.rememberPageMetrics(page);
     const overlay = this.options.adapter.mountOverlay(page.pageNumber);
@@ -4918,7 +4935,7 @@ export class ViewerInkSession {
       liveDrawPaintedPoints: 0,
       builder: undefined,
       pressureConditioner: undefined,
-      pressureLastPdfPoint: undefined,
+      pressureLastPagePoint: undefined,
       simulateMousePressure: false,
       laserDraft: false,
       laserDiscardedPoints: 0,
@@ -5268,7 +5285,7 @@ export class ViewerInkSession {
       hitEntries = [];
     }
 
-    const pagesByElement = new Map<HTMLElement, PdfPageInfo>();
+    const pagesByElement = new Map<HTMLElement, AnnotationPageInfo>();
     for (const surface of this.surfaces.values()) pagesByElement.set(surface.page.element, surface.page);
     // Avoid scanning every desktop page on every pen down. The mounted surface
     // set is the routing authority; add only a directly hit replacement shell
@@ -5451,7 +5468,7 @@ export class ViewerInkSession {
       reason,
       sessionId: this.identity.id,
       attached: this.isAttached(),
-      pdfPath: this.options.pdfPath,
+      documentPath: this.options.documentPath,
       currentPdfPage: view.pageNumber,
       currentScale: view.scale,
       mountedPages: [...this.surfaces.keys()].sort((a, b) => a - b),
@@ -5530,7 +5547,7 @@ export class ViewerInkSession {
     this.logInkInputAnomaly(event, hitTest, "pen-occlusion-anomaly");
   }
 
-  private pageInfoForHitElement(hitPage: HTMLElement, pageNumber: number, surface: PageSurface): PdfPageInfo {
+  private pageInfoForHitElement(hitPage: HTMLElement, pageNumber: number, surface: PageSurface): AnnotationPageInfo {
     const fromAdapter = this.options.adapter.page(pageNumber);
     if (fromAdapter && fromAdapter.element === hitPage) return fromAdapter;
     // Keep stored metrics; only the shell identity changes for this remount.
@@ -5540,6 +5557,7 @@ export class ViewerInkSession {
       height: surface.page.height,
       scale: surface.page.scale,
       rotation: surface.page.rotation,
+      ...(surface.page.coordinateOrigin ? { coordinateOrigin: surface.page.coordinateOrigin } : {}),
       element: hitPage
     };
   }
@@ -6294,7 +6312,7 @@ export class ViewerInkSession {
     }
     if (route === "text") {
       if (this.selected.length || this.selectedTexts.length) {
-        const point = this.toPdfPoint(surface, samples[0]!, true);
+        const point = this.toPagePoint(surface, samples[0]!, true);
         this.logger.textTool("selection-clear-click-away", {
           page: surface.page.pageNumber,
           selectedPage: this.selectionPage,
@@ -6314,7 +6332,7 @@ export class ViewerInkSession {
       const laser = activeTool === "laser";
       if (laser) {
         surface.pressureConditioner = undefined;
-        surface.pressureLastPdfPoint = undefined;
+        surface.pressureLastPagePoint = undefined;
         surface.simulateMousePressure = false;
         const laserPrefs = preferences.laser;
         surface.laserDraft = true;
@@ -6329,7 +6347,7 @@ export class ViewerInkSession {
           inputType: inkInputType(samples[0]?.pointerType ?? event.pointerType),
           stabilization: "medium"
         });
-        for (const point of this.toPdfPoints(surface, samples, false)) surface.builder.add(point);
+        for (const point of this.toPagePoints(surface, samples, false)) surface.builder.add(point);
         this.trimLaserDraft(surface, performance.now());
         const first = surface.builder.preview(true)[0];
         if (first) {
@@ -6351,7 +6369,7 @@ export class ViewerInkSession {
             strokeSize: drawing.width
           }
         );
-        surface.pressureLastPdfPoint = undefined;
+        surface.pressureLastPagePoint = undefined;
         surface.simulateMousePressure = drawing.simulateMousePressure;
         surface.builder = new StrokeBuilder({
           id: this.id(),
@@ -6363,7 +6381,7 @@ export class ViewerInkSession {
           inputType: inkInputType(samples[0]?.pointerType ?? event.pointerType),
           stabilization: drawing.stabilization
         });
-        for (const point of this.toPdfPoints(surface, samples, surface.simulateMousePressure, surface.pressureConditioner)) surface.builder.add(point);
+        for (const point of this.toPagePoints(surface, samples, surface.simulateMousePressure, surface.pressureConditioner)) surface.builder.add(point);
         const first = surface.builder.preview(this.simplifyStrokesEnabled())[0];
         if (first) {
           this.lastPointerPdf = { x: first.x, y: first.y };
@@ -6374,7 +6392,7 @@ export class ViewerInkSession {
       }
     } else {
       if (activeTool === "lasso" && (this.selected.length > 0 || this.selectedTexts.length > 0)) {
-        const point = this.toPdfPoint(surface, samples[0]!, true);
+        const point = this.toPagePoint(surface, samples[0]!, true);
         if (!this.selectionShape || this.selectionPage !== surface.page.pageNumber || !shapeContainsPoint(this.selectionShape, point)) {
           const clearedPage = this.selectionPage;
           // Caller always renderPage(surface) below — only paint a different page here.
@@ -6387,7 +6405,7 @@ export class ViewerInkSession {
       surface.editTool = activeTool === "eraser" || this.isRightMouseEraser(event) ? "eraser" : "lasso";
       surface.eraserSize = surface.editTool === "eraser" ? preferences.eraser.size : undefined;
       surface.eraserWholeStrokes = surface.editTool === "eraser" ? preferences.eraser.eraseWholeStrokes : undefined;
-      surface.editPath = this.toPdfPoints(surface, samples, true);
+      surface.editPath = this.toPagePoints(surface, samples, true);
       surface.liveEraserPaintedPoints = 0;
       if (surface.editPath[0]) this.lastPointerPdf = { x: surface.editPath[0].x, y: surface.editPath[0].y };
     }
@@ -6397,7 +6415,7 @@ export class ViewerInkSession {
 
   private pointerMove(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void {
     if (this.moveDrag?.page === surface.page.pageNumber) {
-      const current = this.toPdfPoint(surface, samples.at(-1)!, true);
+      const current = this.toPagePoint(surface, samples.at(-1)!, true);
       const dx = current.x - this.moveDrag.start.x;
       const dy = current.y - this.moveDrag.start.y;
       this.movePreview = translateStrokes(this.moveDrag.before, dx, dy);
@@ -6412,7 +6430,7 @@ export class ViewerInkSession {
     }
     if (route === "draw" && surface.builder) {
       const simulate = surface.laserDraft ? false : surface.simulateMousePressure;
-      const points = this.toPdfPoints(surface, samples, simulate, surface.laserDraft ? undefined : surface.pressureConditioner);
+      const points = this.toPagePoints(surface, samples, simulate, surface.laserDraft ? undefined : surface.pressureConditioner);
       for (const point of points) surface.builder.add(point);
       const lastPoint = points.at(-1);
       if (lastPoint) this.resizeLockedShape(surface, lastPoint);
@@ -6424,7 +6442,7 @@ export class ViewerInkSession {
       }
       if (isDrawingTool(this.activeTool()) && !surface.shapeResize) this.scheduleHeldShape(surface);
     } else if (route === "edit") {
-      surface.editPath.push(...this.toPdfPoints(surface, samples, true));
+      surface.editPath.push(...this.toPagePoints(surface, samples, true));
     }
     // The laser fade loop owns live laser painting. Rendering each pointer event
     // duplicates full-canvas work and falls behind high-rate stylus input.
@@ -6434,7 +6452,7 @@ export class ViewerInkSession {
   private pointerEnd(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void {
     this.cancelLivePaint(surface);
     if (this.moveDrag?.page === surface.page.pageNumber) {
-      const current = this.toPdfPoint(surface, samples.at(-1)!, true);
+      const current = this.toPagePoint(surface, samples.at(-1)!, true);
       const dx = current.x - this.moveDrag.start.x;
       const dy = current.y - this.moveDrag.start.y;
       const drag = this.moveDrag;
@@ -6474,7 +6492,7 @@ export class ViewerInkSession {
     if (route === "draw" && surface.builder) {
       this.commitActiveDraw(surface, samples, "pointerup");
     } else if (route === "edit") {
-      surface.editPath.push(...this.toPdfPoints(surface, samples, true));
+      surface.editPath.push(...this.toPagePoints(surface, samples, true));
       const tool = this.options.settings.toolPreferences.activeTool;
       const phase = tool === "eraser" ? "eraser" : "lasso";
       const path = [...surface.editPath];
@@ -6502,7 +6520,7 @@ export class ViewerInkSession {
     this.cancelHeldShape(surface);
     const laserDraft = surface.laserDraft;
     const simulate = laserDraft ? false : surface.simulateMousePressure;
-    const points = this.toPdfPoints(surface, samples, simulate, laserDraft ? undefined : surface.pressureConditioner);
+    const points = this.toPagePoints(surface, samples, simulate, laserDraft ? undefined : surface.pressureConditioner);
     for (const point of points) builder.add(point);
     const lastPoint = points.at(-1);
     if (lastPoint) this.resizeLockedShape(surface, lastPoint);
@@ -6517,7 +6535,7 @@ export class ViewerInkSession {
     };
     surface.builder = undefined;
     surface.pressureConditioner = undefined;
-    surface.pressureLastPdfPoint = undefined;
+    surface.pressureLastPagePoint = undefined;
     surface.simulateMousePressure = false;
     surface.laserDraft = false;
     surface.shapePreview = null;
@@ -6601,7 +6619,7 @@ export class ViewerInkSession {
     if (route === "draw") this.finishStrokePerformance(surface, "pointercancel");
     surface.builder = undefined;
     surface.pressureConditioner = undefined;
-    surface.pressureLastPdfPoint = undefined;
+    surface.pressureLastPagePoint = undefined;
     surface.simulateMousePressure = false;
     this.cancelHeldShape(surface);
     if (surface.shapeResize) {
@@ -6750,7 +6768,7 @@ export class ViewerInkSession {
     }, SHAPE_RECOGNITION_HOLD_MS);
   }
 
-  private resizeLockedShape(surface: PageSurface, target: PdfPoint): void {
+  private resizeLockedShape(surface: PageSurface, target: PagePoint): void {
     const resize = surface.shapeResize;
     if (!resize) return;
     surface.shapePreview = resizeShapePoints(resize.recognition.points, resize.anchor, resize.handle, target);
@@ -6771,7 +6789,7 @@ export class ViewerInkSession {
   }
 
   private beginTextIntent(surface: PageSurface, sample: PointerSample, event: PointerEvent): void {
-    const point = this.toPdfPoint(surface, sample, true);
+    const point = this.toPagePoint(surface, sample, true);
     const activeEditor = this.activeTextEditor;
     if (activeEditor) {
       this.logText(activeEditor.surface, "outside-click-close", {
@@ -6799,7 +6817,7 @@ export class ViewerInkSession {
   }
 
   private updateTextIntent(surface: PageSurface, sample: PointerSample, event: PointerEvent): void {
-    const point = this.toPdfPoint(surface, sample, true);
+    const point = this.toPagePoint(surface, sample, true);
     if (this.textMoveDrag?.page === surface.page.pageNumber) {
       const dx = point.x - this.textMoveDrag.start.x;
       const dy = point.y - this.textMoveDrag.start.y;
@@ -6870,7 +6888,7 @@ export class ViewerInkSession {
     this.renderTextAnnotations(surface);
   }
 
-  private textAt(page: number, point: Pick<PdfPoint, "x" | "y">): PdfTextAnnotation | null {
+  private textAt(page: number, point: Pick<PagePoint, "x" | "y">): TextAnnotation | null {
     const pageTexts = this.texts.page(page);
     for (let i = pageTexts.length - 1; i >= 0; i--) {
       const text = pageTexts[i];
@@ -6890,7 +6908,7 @@ export class ViewerInkSession {
     });
   }
 
-  private textGeometry(text: Pick<PdfTextAnnotation, "x" | "y" | "width" | "height" | "fontSize" | "fontFamily" | "bold" | "italic" | "strikethrough">): Record<string, unknown> {
+  private textGeometry(text: Pick<TextAnnotation, "x" | "y" | "width" | "height" | "fontSize" | "fontFamily" | "bold" | "italic" | "strikethrough">): Record<string, unknown> {
     return {
       x: round(text.x), y: round(text.y), width: round(text.width), height: round(text.height),
       fontSize: text.fontSize, fontFamily: text.fontFamily,
@@ -6916,7 +6934,7 @@ export class ViewerInkSession {
     };
   }
 
-  private openTextEditor(surface: PageSurface, existing: PdfTextAnnotation | null, at?: Pick<PdfPoint, "x" | "y">): void {
+  private openTextEditor(surface: PageSurface, existing: TextAnnotation | null, at?: Pick<PagePoint, "x" | "y">): void {
     this.commitActiveTextEditor();
     const clearedSelection = this.selected.length > 0 || this.selectedTexts.length > 0;
     // Editing has its own dotted DOM boundary. Suspend the canvas selection
@@ -7176,7 +7194,7 @@ export class ViewerInkSession {
     const base = before ?? editor.draft;
     const displayStyle = styleAtTextOffset(runs, 0) ?? editor.insertionStyle;
     const largestFontSize = Math.max(displayStyle.fontSize, ...runs.map((run) => run.fontSize));
-    const annotation: PdfTextAnnotation = {
+    const annotation: TextAnnotation = {
       ...base,
       ...displayStyle,
       text,
@@ -7197,7 +7215,7 @@ export class ViewerInkSession {
     if (this.needsPagePaint(annotation.page)) this.renderTextAnnotations(editor.surface);
   }
 
-  private textStyle(text: PdfTextAnnotation): TextStyle {
+  private textStyle(text: TextAnnotation): TextStyle {
     return {
       color: text.color, fontSize: text.fontSize, fontFamily: text.fontFamily,
       bold: text.bold, italic: text.italic, strikethrough: text.strikethrough
@@ -7357,7 +7375,7 @@ export class ViewerInkSession {
   private applyTextElementStyle(
     surface: PageSurface,
     element: HTMLElement,
-    annotation: Pick<PdfTextAnnotation, "x" | "y" | "width" | "height">,
+    annotation: Pick<TextAnnotation, "x" | "y" | "width" | "height">,
     style: TextStyle
   ): void {
     const origin = this.mapper(surface).toViewport({ x: annotation.x, y: annotation.y });
@@ -7429,7 +7447,7 @@ export class ViewerInkSession {
   /** Reuse unchanged text DOM so zoom settles do not remove/reinsert visible words. */
   private syncCurrentTextBoxes(
     surface: PageSurface,
-    annotations: readonly PdfTextAnnotation[],
+    annotations: readonly TextAnnotation[],
     selected: ReadonlySet<string>
   ): boolean {
     const boxes = [...surface.textLayer.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")];
@@ -7452,7 +7470,7 @@ export class ViewerInkSession {
   }
 
   /** Geometry/state identity only — never store document text in a DOM data attribute. */
-  private textBoxRenderSignature(annotation: PdfTextAnnotation, selected: boolean): string {
+  private textBoxRenderSignature(annotation: TextAnnotation, selected: boolean): string {
     return [
       annotation.updatedAt, annotation.x, annotation.y, annotation.width, annotation.height,
       annotation.color, annotation.fontSize, annotation.fontFamily, annotation.bold, annotation.italic,
@@ -7461,7 +7479,7 @@ export class ViewerInkSession {
     ].join("|");
   }
 
-  private positionTextBox(surface: PageSurface, box: HTMLElement, annotation: PdfTextAnnotation): void {
+  private positionTextBox(surface: PageSurface, box: HTMLElement, annotation: TextAnnotation): void {
     const origin = this.mapper(surface).toViewport({ x: annotation.x, y: annotation.y });
     const scale = this.displayScale(surface);
     Object.assign(box.style, {
@@ -7537,7 +7555,7 @@ export class ViewerInkSession {
   }
 
   /** NPDE-style frame: edge strips move, circular dots resize. */
-  private attachTextBoxOutline(surface: PageSurface, box: HTMLElement, annotation: PdfTextAnnotation): void {
+  private attachTextBoxOutline(surface: PageSurface, box: HTMLElement, annotation: TextAnnotation): void {
     if (!this.textBoxesInteractable()) return;
     const outline = createDetachedDiv(box.ownerDocument);
     outline.className = "native-pdf-handwriting-text-selection-frame native-pdf-handwriting-selection-control";
@@ -7560,7 +7578,7 @@ export class ViewerInkSession {
 
   private startTextBoxTransform(
     surface: PageSurface,
-    rendered: PdfTextAnnotation,
+    rendered: TextAnnotation,
     mode: "move" | "resize",
     handle: TextBoxHandle,
     outline: HTMLElement,
@@ -7578,7 +7596,7 @@ export class ViewerInkSession {
     const drag: TextBoxTransformDrag = {
       surface,
       pointerId: event.pointerId,
-      start: this.textPointerToPdfPoint(surface, event),
+      start: this.textPointerToPagePoint(surface, event),
       before: structuredClone(annotation),
       preview: structuredClone(annotation),
       mode,
@@ -7611,7 +7629,7 @@ export class ViewerInkSession {
     if (!drag || event.pointerId !== drag.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
-    const point = this.textPointerToPdfPoint(drag.surface, event);
+    const point = this.textPointerToPagePoint(drag.surface, event);
     if (drag.mode === "move") {
       drag.preview = {
         ...drag.before,
@@ -7673,12 +7691,12 @@ export class ViewerInkSession {
     event?.preventDefault();
   }
 
-  private textPointerToPdfPoint(surface: PageSurface, event: PointerEvent): Pick<PdfPoint, "x" | "y"> {
+  private textPointerToPagePoint(surface: PageSurface, event: PointerEvent): Pick<PagePoint, "x" | "y"> {
     const rect = surface.overlay.getBoundingClientRect();
-    return this.mapper(surface).toPdf({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+    return this.mapper(surface).toPage({ x: event.clientX - rect.left, y: event.clientY - rect.top });
   }
 
-  private resizeTextAnnotation(before: PdfTextAnnotation, handle: TextBoxHandle, point: Pick<PdfPoint, "x" | "y">): PdfTextAnnotation {
+  private resizeTextAnnotation(before: TextAnnotation, handle: TextBoxHandle, point: Pick<PagePoint, "x" | "y">): TextAnnotation {
     const minimumWidth = 24;
     const minimumHeight = Math.max(12, before.fontSize * 1.35);
     let left = before.x;
@@ -7696,8 +7714,8 @@ export class ViewerInkSession {
   private layoutTextBoxOutline(
     surface: PageSurface,
     outline: HTMLElement,
-    annotation: PdfTextAnnotation,
-    reference: PdfTextAnnotation
+    annotation: TextAnnotation,
+    reference: TextAnnotation
   ): void {
     const origin = this.mapper(surface).toViewport({ x: annotation.x, y: annotation.y });
     const referenceOrigin = this.mapper(surface).toViewport({ x: reference.x, y: reference.y });
@@ -7717,7 +7735,7 @@ export class ViewerInkSession {
       || this.selectionPage !== surface.page.pageNumber
       || (!this.selected.length && !this.selectedTexts.length)
     ) return false;
-    const point = this.toPdfPoint(surface, sample, true);
+    const point = this.toPagePoint(surface, sample, true);
     if (!shapeContainsPoint(this.selectionShape, point)) return false;
     this.moveDrag = {
       page: surface.page.pageNumber,
@@ -7737,11 +7755,11 @@ export class ViewerInkSession {
   }
 
   private translateTextAnnotations(
-    texts: readonly PdfTextAnnotation[],
+    texts: readonly TextAnnotation[],
     dx: number,
     dy: number,
     now = new Date().toISOString()
-  ): PdfTextAnnotation[] {
+  ): TextAnnotation[] {
     return texts.map((text) => ({ ...text, x: text.x + dx, y: text.y + dy, updatedAt: now }));
   }
 
@@ -7994,7 +8012,7 @@ export class ViewerInkSession {
     const textById = new Map(this.texts.page(this.selectionPage).map((text) => [text.id, text]));
     const syncedTexts = this.selectedTexts
       .map((text) => textById.get(text.id))
-      .filter((text): text is PdfTextAnnotation => text !== undefined);
+      .filter((text): text is TextAnnotation => text !== undefined);
     if (!synced.length && !syncedTexts.length) {
       const selectedTextCount = this.selectedTexts.length;
       const selectedStrokeCount = this.selected.length;
@@ -8510,7 +8528,7 @@ export class ViewerInkSession {
 
   private paintLaserPoints(
     surface: PageSurface,
-    points: readonly PdfPoint[],
+    points: readonly PagePoint[],
     color: string,
     width: number,
     opacity: number,
@@ -8722,7 +8740,7 @@ export class ViewerInkSession {
 
   private drawPoints(
     surface: PageSurface,
-    points: readonly PdfPoint[],
+    points: readonly PagePoint[],
     color: string,
     width: number,
     opacity: number,
@@ -8826,18 +8844,18 @@ export class ViewerInkSession {
     context.restore();
   }
 
-  private toPdfPoints(
+  private toPagePoints(
     surface: PageSurface,
     samples: readonly PointerSample[],
     simulateMousePressure: boolean,
     pressureConditioner?: PressureConditioner
-  ): PdfPoint[] {
+  ): PagePoint[] {
     const overlayRect = surface.overlay.getBoundingClientRect();
     const mapper = this.mapper(surface);
-    let previous = pressureConditioner ? surface.pressureLastPdfPoint : undefined;
+    let previous = pressureConditioner ? surface.pressureLastPagePoint : undefined;
     const points = samples.map((sample) => {
       const viewport = { x: sample.clientX - overlayRect.left, y: sample.clientY - overlayRect.top };
-      const point = mapper.toPdf(viewport);
+      const point = mapper.toPage(viewport);
       // Pen zero on pointerdown is meaningful (conditioner floor). Move-path hover
       // (pressure ≤ PEN_HOVER_PRESSURE_EPSILON) is filtered in PointerRouter.
       // Non-pen keeps simulated-pressure fallback before profile choice.
@@ -8851,19 +8869,19 @@ export class ViewerInkSession {
       previous = { x: point.x, y: point.y };
       return { x: point.x, y: point.y, pressure, tiltX: sample.tiltX, tiltY: sample.tiltY, time: sample.timeStamp };
     });
-    if (pressureConditioner) surface.pressureLastPdfPoint = previous;
+    if (pressureConditioner) surface.pressureLastPagePoint = previous;
     return points;
   }
 
-  private toPdfPoint(surface: PageSurface, sample: PointerSample, simulateMousePressure: boolean): PdfPoint {
-    return this.toPdfPoints(surface, [sample], simulateMousePressure)[0]!;
+  private toPagePoint(surface: PageSurface, sample: PointerSample, simulateMousePressure: boolean): PagePoint {
+    return this.toPagePoints(surface, [sample], simulateMousePressure)[0]!;
   }
 
   private projectInkScreenPoint(surface: PageSurface, clientX: number, clientY: number): { x: number; y: number } {
     const overlayRect = surface.overlay.getBoundingClientRect();
     const viewport = { x: clientX - overlayRect.left, y: clientY - overlayRect.top };
     const mapper = this.mapper(surface);
-    const projected = mapper.toViewport(mapper.toPdf(viewport));
+    const projected = mapper.toViewport(mapper.toPage(viewport));
     return { x: overlayRect.left + projected.x, y: overlayRect.top + projected.y };
   }
 
@@ -8879,7 +8897,7 @@ export class ViewerInkSession {
     const contentRect = pdfRenderCanvas(surface.page.element)?.getBoundingClientRect();
     const viewport = { x: sample.clientX - overlayRect.left, y: sample.clientY - overlayRect.top };
     const mapper = this.mapper(surface);
-    const pdf = mapper.toPdf(viewport);
+    const pdf = mapper.toPage(viewport);
     const inkScreen = this.projectInkScreenPoint(surface, sample.clientX, sample.clientY);
     this.logger.positionAlign({
       phase,
@@ -9018,12 +9036,12 @@ export class ViewerInkSession {
 
   private syncFindBridgePage(pageNumber: number): void {
     if (this.destroyed) return;
-    this.findBridge.syncPage(pageNumber, this.texts.page(pageNumber));
+    this.findBridge?.syncPage(pageNumber, this.texts.page(pageNumber));
   }
 
   private findLayoutForAnnotation(
     pageNumber: number,
-    annotation: PdfTextAnnotation
+    annotation: TextAnnotation
   ): AnnotationFindPageLayout | null {
     const surface = this.surfaces.get(pageNumber);
     if (!surface) return null;
@@ -9039,7 +9057,7 @@ export class ViewerInkSession {
     };
   }
 
-  private expectedAnchorNormalized(point: PdfPoint, metrics: { width: number; height: number }, rotation: PageRotation): { x: number; y: number } {
+  private expectedAnchorNormalized(point: PagePoint, metrics: { width: number; height: number }, rotation: PageRotation): { x: number; y: number } {
     switch (rotation) {
       case 0: return { x: point.x / metrics.width, y: (metrics.height - point.y) / metrics.height };
       case 90: return { x: point.y / metrics.height, y: point.x / metrics.width };
@@ -9048,16 +9066,17 @@ export class ViewerInkSession {
     }
   }
 
-  private mapper(surface: PageSurface): PdfCoordinateMapper {
+  private mapper(surface: PageSurface): PageCoordinateMapper {
     const layout = this.pageLayout(surface);
     const metrics = this.metricsFor(surface);
-    return new PdfCoordinateMapper({
+    return new PageCoordinateMapper({
       width: metrics.width,
       height: metrics.height,
       scale: layout.scale,
       scaleX: layout.scaleX,
       scaleY: layout.scaleY,
       rotation: this.rotation(surface.page.rotation),
+      origin: surface.page.coordinateOrigin ?? "bottom-left",
       offsetX: 0,
       offsetY: 0
     });
@@ -9118,7 +9137,7 @@ export class ViewerInkSession {
     };
   }
 
-  private rememberPageMetrics(page: PdfPageInfo): void {
+  private rememberPageMetrics(page: AnnotationPageInfo): void {
     if (!(page.width > 1 && page.height > 1)) return;
     const existing = this.pageMetrics.get(page.pageNumber);
     // Prefer first trusted sidecar/live size; only replace placeholder or clearly wrong CSS-pixel sizes.
@@ -9141,7 +9160,7 @@ export class ViewerInkSession {
   private snapshot(): SidecarSchemaV1 {
     const now = new Date().toISOString();
     const stored = new Map<number, InkStroke[]>();
-    const storedTexts = new Map<number, PdfTextAnnotation[]>();
+    const storedTexts = new Map<number, TextAnnotation[]>();
     for (const stroke of this.ink.all()) stored.set(stroke.page, [...(stored.get(stroke.page) ?? []), stroke]);
     for (const text of this.texts.all()) storedTexts.set(text.page, [...(storedTexts.get(text.page) ?? []), text]);
     const known = new Map(this.options.adapter.pages().map((page) => [page.pageNumber, page]));
@@ -9340,7 +9359,7 @@ export class ViewerInkSession {
   }
 
   setBoostedPdfZoom(enabled: boolean): void {
-    this.options.adapter.setBoostedZoom?.(enabled);
+    pdfSurfaceExtensions(this.options.adapter)?.setBoostedZoom?.(enabled);
   }
 
   /** False after PDF++ (or Obsidian) tears down the PDF DOM under this session. */
@@ -9425,7 +9444,7 @@ export class ViewerInkSession {
     surface: PageSurface,
     phase: DrawPositionLog["phase"],
     tool: string,
-    points: readonly PdfPoint[],
+    points: readonly PagePoint[],
     terminal: Pick<DrawPositionLog, "termination" | "terminalDetail"> = {}
   ): void {
     if (!points.length) return;
@@ -9513,7 +9532,7 @@ function rectMismatch(pdf: RectSnapshot, ink: RectSnapshot): number {
   );
 }
 
-function drawBounds(points: readonly PdfPoint[]): NonNullable<DrawPositionLog["bounds"]> {
+function drawBounds(points: readonly PagePoint[]): NonNullable<DrawPositionLog["bounds"]> {
   let minX = points[0]!.x;
   let minY = points[0]!.y;
   let maxX = minX;
@@ -9527,7 +9546,7 @@ function drawBounds(points: readonly PdfPoint[]): NonNullable<DrawPositionLog["b
   return { minX: round(minX), minY: round(minY), maxX: round(maxX), maxY: round(maxY) };
 }
 
-function pathBoundsWithPadding(points: readonly Pick<PdfPoint, "x" | "y">[], padding: number): Bounds {
+function pathBoundsWithPadding(points: readonly Pick<PagePoint, "x" | "y">[], padding: number): Bounds {
   const safePadding = Number.isFinite(padding) && padding > 0 ? padding : 0;
   let minX = Infinity;
   let minY = Infinity;

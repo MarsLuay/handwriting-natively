@@ -1,4 +1,4 @@
-import type { DrawingToolPreferences, PdfPoint } from "../model";
+import type { DrawingToolPreferences, PagePoint } from "../model";
 import { normalizedCoordinateScale } from "../util/math";
 
 export interface PenPoint {
@@ -18,7 +18,7 @@ export interface PenStrokeOptions {
   coordinateScale?: number;
 }
 
-export function penSampleWidth(preferences: DrawingToolPreferences, point: PdfPoint, coordinateScale = 1): number {
+export function penSampleWidth(preferences: DrawingToolPreferences, point: PagePoint, coordinateScale = 1): number {
   const pressure = preferences.pressureSensitivity ? Math.min(1, Math.max(0, point.pressure)) : 0.5;
   const scale = normalizedCoordinateScale(coordinateScale);
   return Math.max(0.35 * scale, preferences.width * (1 - preferences.thinning + preferences.thinning * pressure * 2));

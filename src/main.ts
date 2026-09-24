@@ -16,7 +16,8 @@ import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
 import { isSupportedImageFile } from "./integration/ImageFileTypes";
-import type { ObsidianPdfAdapter, PdfAdapterCallbacks } from "./integration/ObsidianPdfAdapter";
+import type { AnnotationSurface, AnnotationSurfaceCallbacks } from "./runtime/AnnotationSurface";
+import { pdfSurfaceExtensions } from "./integration/ObsidianPdfAdapter";
 import { PdfViewerCompatibility } from "./integration/PdfViewerCompatibility";
 import { describePdfPageDom } from "./integration/pdfPageSelectors";
 import { EmbedAnnotateChrome, findExistingEmbedChrome } from "./focus-view/EmbedAnnotateChrome";
@@ -396,7 +397,7 @@ export default class NativePdfInkPlugin extends Plugin {
     if (!writeSync) {
       this.vaultDebugLog.write("warn", "sync persist unavailable", {
         reason,
-        document: session.getDiagnostics().pdfPath
+        document: session.getDiagnostics().documentPath
       });
       return;
     }
@@ -555,7 +556,7 @@ export default class NativePdfInkPlugin extends Plugin {
           phone: Platform.isPhone,
           hostChildCount: view.containerEl?.childElementCount ?? null
         });
-        let adapter: ObsidianPdfAdapter;
+        let adapter: AnnotationSurface;
         if (isPdf) {
           await this.vaultDebugLog.writeUrgent("info", "session attach resolve-viewer", {
             document: file.path
@@ -700,7 +701,7 @@ export default class NativePdfInkPlugin extends Plugin {
     }
   }
 
-  private sessionAdapterCallbacks(getSession: () => ViewerInkSession | undefined): PdfAdapterCallbacks {
+  private sessionAdapterCallbacks(getSession: () => ViewerInkSession | undefined): AnnotationSurfaceCallbacks {
     return {
       onPagesChanged: (reason) => getSession()?.onPagesChanged(reason),
       onViewStateChange: (state, source) => getSession()?.onViewStateChange(state, source),
@@ -716,13 +717,13 @@ export default class NativePdfInkPlugin extends Plugin {
 
   private async createInkSession(
     file: TFile,
-    adapter: ObsidianPdfAdapter,
+    adapter: AnnotationSurface,
     options: { onDetached?: () => void } = {}
   ): Promise<ViewerInkSession> {
     const textFiles = createVaultFsTextAdapter(this.app.vault);
     return ViewerInkSession.create({
       adapter,
-      pdfPath: file.path,
+      documentPath: file.path,
       pluginVersion: this.manifest.version,
       settings: this.inkSettings,
       sidecars: new SidecarRepository(textFiles, this.inkSettings.sidecarFolder),
@@ -731,18 +732,21 @@ export default class NativePdfInkPlugin extends Plugin {
       savePluginSettings: async (patch) => {
         await this.saveSettings({ ...this.inkSettings, ...patch });
       },
-      readSourcePdf: async () => new Uint8Array(await this.app.vault.readBinary(file)),
-      writeSourcePdf: async (bytes) => {
-        await this.app.vault.modifyBinary(file, bytes.slice().buffer);
-      },
-      onInsertPage: (pageNumber) => this.insertPageInPlace(file, pageNumber),
-      onImportPages: (afterPage) => this.prepareImportedPages(file, afterPage),
-      openScanDocument: () => new Promise((resolve) => new ScanDocumentModal(this.app, resolve).open()),
-      onInsertScannedPages: (pageNumber, pages) => this.insertScannedPagesInPlace(file, pageNumber, pages),
-      writeExport: async (name, bytes) => this.writeAndOpenExport(file, name, bytes),
-      onDeletePage: (pageNumber) => this.deletePageInPlace(file, pageNumber),
-      onDeletePages: (pageNumbers) => this.deletePagesInPlace(file, pageNumbers),
-      writeSvgExport: async (name, svg) => this.writeSvgExport(file, name, svg),
+      readDocument: async () => new Uint8Array(await this.app.vault.readBinary(file)),
+      ...(pdfSurfaceExtensions(adapter) ? {
+        // PDF mutation/export callbacks are surface extensions; image surfaces omit them.
+        writeSourcePdf: async (bytes: Uint8Array) => {
+          await this.app.vault.modifyBinary(file, bytes.slice().buffer);
+        },
+        onInsertPage: (pageNumber: number) => this.insertPageInPlace(file, pageNumber),
+        onImportPages: (afterPage: number) => this.prepareImportedPages(file, afterPage),
+        openScanDocument: () => new Promise((resolve) => new ScanDocumentModal(this.app, resolve).open()),
+        onInsertScannedPages: (pageNumber: number, pages: readonly ScanDocumentPage[]) => this.insertScannedPagesInPlace(file, pageNumber, pages),
+        writeExport: async (name: string, bytes: Uint8Array) => this.writeAndOpenExport(file, name, bytes),
+        onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber),
+        onDeletePages: (pageNumbers: readonly number[]) => this.deletePagesInPlace(file, pageNumbers),
+        writeSvgExport: async (name: string, svg: string) => this.writeSvgExport(file, name, svg)
+      } : {}),
       notice: (message) => new Notice(message),
       decideUnsaved: () => this.decideUnsaved(),
       mouseDragScrollEnabled: () => this.inkSettings.mouseDragScroll,

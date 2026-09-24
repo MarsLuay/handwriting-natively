@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EmbeddedPdfAdapter } from "../src/integration/EmbeddedPdfAdapter";
+import { ImageViewAdapter } from "../src/integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "../src/integration/NativePdfViewAdapter";
 import { OBSIDIAN_DEFAULT_MAX_SCALE } from "../src/integration/PdfZoomBoost";
 
@@ -318,6 +319,42 @@ describe("PDF adapters", () => {
     expect(toolbar.classList.contains("is-sidebar-right")).toBe(true);
     expect(rail?.parentElement?.lastElementChild).toBe(rail);
     adapter.destroy();
+  });
+
+  it("provides one-page image geometry through the generic surface contract", () => {
+    const host = document.createElement("div");
+    const image = document.createElement("img");
+    Object.defineProperty(image, "naturalWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(image, "naturalHeight", { configurable: true, value: 800 });
+    image.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400,
+      width: 600, height: 400, toJSON: () => ({})
+    });
+    host.append(image);
+    document.body.append(host);
+
+    const pagesChanged = vi.fn();
+    const adapter = ImageViewAdapter.attach(host, { onPagesChanged: pagesChanged });
+    expect(adapter.pages()).toMatchObject([{
+      pageNumber: 1,
+      width: 1200,
+      height: 800,
+      scale: 0.5,
+      rotation: 0,
+      coordinateOrigin: "top-left"
+    }]);
+    const overlay = adapter.mountOverlay(1);
+    const toolbar = document.createElement("div");
+    adapter.mountToolbar(toolbar);
+    expect(overlay.parentElement).toBe(adapter.root);
+    expect(toolbar.isConnected).toBe(true);
+
+    image.dispatchEvent(new Event("load"));
+    expect(pagesChanged).toHaveBeenCalledWith("image-load");
+    adapter.destroy();
+    expect(image.parentElement).toBe(host);
+    expect(overlay.isConnected).toBe(false);
+    expect(toolbar.isConnected).toBe(false);
   });
 
   it("does not start sidebar tracking for PDF/text style churn when the rail is right", async () => {

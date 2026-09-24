@@ -262,7 +262,7 @@ async function createSession(
   settings.toolPreferences.activeTool = "pen";
   return ViewerInkSession.create({
     adapter,
-    pdfPath: "Notes/zoom-ink.pdf",
+    documentPath: "Notes/zoom-ink.pdf",
     pluginVersion: "test-0.1",
     settings,
     sidecars: new SidecarRepository(files, "annotations"),
@@ -553,7 +553,7 @@ describe("zoom ink compositing", () => {
 
     const session = await ViewerInkSession.create({
       adapter,
-      pdfPath: "Notes/zoom-sidebar.pdf",
+      documentPath: "Notes/zoom-sidebar.pdf",
       settings: (() => {
         const settings = structuredClone(DEFAULT_SETTINGS);
         settings.autosave = false;
