@@ -10,6 +10,7 @@ This document records what is implemented in the current repository, what is int
 - Input is converted from client coordinates to page space once at the session boundary. Rendering, selection, erasing, and export consume the same page-space model.
 - A scroll or zoom event must never mutate sidecar coordinates. During zoom, scale change and final geometry settle are separate signals.
 - Required fixture coverage includes non-integer zoom, DPR changes, rotation, mixed page sizes, scrolling, and export alignment. Current automated coverage exercises the mapper and zoom paths; unusual CropBox/MediaBox fixtures and live mobile traces remain follow-up work.
+- **Audit outcome:** the current mapper intentionally covers the legacy zero-origin page model and keeps viewport/CSS/backing transforms separate. Full `PageViewport`/`viewBox`/`userUnit` fidelity, asymmetric export fixtures, and hardware traces are scoped follow-ups rather than claims of shipped support; future work must preserve these invariants instead of widening the PDF integration boundary opportunistically.
 
 ## Integration contract (#131)
 
