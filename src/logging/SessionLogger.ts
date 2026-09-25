@@ -704,6 +704,13 @@ export class SessionLogger {
     });
   }
 
+  handwritingUiMissing(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "handwriting-ui-missing", {
+      document: this.documentPath,
+      ...details
+    });
+  }
+
   /** Placement transitions make stale More-menu state and failed remounts diagnosable. */
   toolbarPlacement(phase: "request" | "applied" | "error", details: Record<string, unknown> = {}): void {
     this.emit(phase === "error" ? "warn" : "info", "toolbar placement", {
