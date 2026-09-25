@@ -30,6 +30,8 @@ class FakeAdapter implements AnnotationSurface {
   pageElement = document.createElement("div");
   readonly toolbarHost = document.createElement("div");
   readonly focusedPages: number[] = [];
+  readonly restoredViewStates: AnnotationViewState[] = [];
+  viewState: AnnotationViewState = { pageNumber: 1, scrollFraction: 0, scale: 1, rotation: 0 };
   destroyed = false;
 
   constructor() {
@@ -48,8 +50,11 @@ class FakeAdapter implements AnnotationSurface {
   page(pageNumber: number): AnnotationPageInfo | undefined {
     return this.pages().find((page) => page.pageNumber === pageNumber);
   }
-  getViewState(): AnnotationViewState { return { pageNumber: 1, scrollFraction: 0, scale: 1, rotation: 0 }; }
-  restoreViewState(): void {}
+  getViewState(): AnnotationViewState { return { ...this.viewState }; }
+  restoreViewState(state: AnnotationViewState): void {
+    this.restoredViewStates.push({ ...state });
+    this.viewState = { ...state };
+  }
   focusPage(pageNumber: number): boolean { this.focusedPages.push(pageNumber); return Boolean(this.page(pageNumber)); }
   scrollElement(): HTMLElement { return this.root; }
   mountOverlay(pageNumber: number): HTMLElement {
@@ -3258,6 +3263,59 @@ describe("viewer runtime tracer", () => {
 
     expect(adapter.focusedPages).toEqual([2]);
     expect(document.querySelectorAll(".native-pdf-handwriting-page-mutation-snapshot")).toHaveLength(1);
+    await session.destroy();
+  });
+
+  it("restores Add Page zoom mode and correlates bounded lifecycle diagnostics", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    adapter.viewState = {
+      pageNumber: 1,
+      scrollFraction: 0.82,
+      scale: 2.1789,
+      scaleMode: 2.1789,
+      rotation: 0
+    };
+    const page2 = document.createElement("div");
+    page2.dataset.pageNumber = "2";
+    adapter.root.append(page2);
+    const initialPages = adapter.pages.bind(adapter);
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      onInsertPage: async () => {
+        const pages = [...initialPages(), { pageNumber: 2, width: 600, height: 800, scale: 1, rotation: 0, element: page2 }];
+        vi.spyOn(adapter, "pages").mockReturnValue(pages);
+        vi.spyOn(adapter, "page").mockImplementation((pageNumber) => pages.find((page) => page.pageNumber === pageNumber));
+        return 2;
+      },
+      vaultLog: {
+        write: (_level, event, payload) => logs.push({ event, payload: payload ?? {} })
+      },
+      debugEnabled: () => true,
+      notice: () => undefined
+    });
+
+    await session.addPageAt(2);
+
+    expect(adapter.restoredViewStates).toHaveLength(1);
+    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.1789, scaleMode: 2.1789, scrollFraction: 0.82 });
+    const lifecycle = logs
+      .filter((entry) => entry.event === "add-page lifecycle")
+      .map((entry) => entry.payload);
+    expect(lifecycle.map((entry) => entry.phase)).toEqual(["before-mutation", "mutation-complete"]);
+    expect(lifecycle).toHaveLength(2);
+    const beforeLifecycle = lifecycle[0]!;
+    const afterLifecycle = lifecycle[1]!;
+    expect(beforeLifecycle.addPageOperationId).toBe(afterLifecycle.addPageOperationId);
+    expect(afterLifecycle).toMatchObject({ beforeScale: 2.1789, afterScale: 2.1789, staleSurfaceOverlap: false });
     await session.destroy();
   });
 

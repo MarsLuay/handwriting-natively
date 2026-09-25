@@ -725,6 +725,18 @@ export class SessionLogger {
     });
   }
 
+  addPageLifecycle(
+    phase: "before-mutation" | "mutation-complete" | "restored" | "scale-changed" | "stale-surface-overlap",
+    details: Record<string, unknown> = {}
+  ): void {
+    const warning = phase === "scale-changed" || phase === "stale-surface-overlap";
+    this.emit(warning ? "warn" : "info", "add-page lifecycle", {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   sessionAttach(details: {
     scrollRoot: string;
     panCapture: string;
