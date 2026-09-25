@@ -8,7 +8,7 @@ import {
   type AnnotationPageInfo,
   type AnnotationZoomChange
 } from "./AnnotationSurface";
-import { pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
+import { imageSurfaceExtensions, pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
 import { describeTarget } from "../dom/describeElement";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
@@ -87,6 +87,7 @@ import {
   type HnDevProbeMetric
 } from "./DevProbeDiagnostics";
 import type { ScanDocumentPage } from "../scanning/ScanDocument";
+import { ImageRasterExportService, type ImageRasterFormat, type ImageRasterRenderTarget } from "../image/ImageRasterExportService";
 
 const INPUT_OWNER_REGISTRY_KEY = "__nativePdfHandwritingInputOwners";
 const detachedInputOwners = new WeakMap<HTMLElement, ViewerInkSession>();
@@ -750,6 +751,7 @@ export class ViewerInkSession {
   private readonly pageSafetyDiagnostics = new Map<number, string>();
   private readonly ownedInputPages = new Set<HTMLElement>();
   private readonly exporter = new PdfExportService();
+  private readonly imageExporter = new ImageRasterExportService();
   private readonly createdAt = new Date().toISOString();
   private readonly toolbar: AnnotationToolbar;
   private readonly selectionToolbar: SelectionToolbar;
@@ -954,6 +956,7 @@ export class ViewerInkSession {
     });
     this.syncEffectiveDrawState("session-create", "session");
     const pdfExtensions = pdfSurfaceExtensions(options.adapter);
+    const imageExtensions = imageSurfaceExtensions(options.adapter);
     this.toolbar = new AnnotationToolbar({
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
@@ -961,6 +964,9 @@ export class ViewerInkSession {
       supportedMoreActions: [
         ...(pdfExtensions && options.writeExport
           ? ["export", "export-editable"] as const
+          : []),
+        ...(imageExtensions?.imageElement && options.writeExport
+          ? ["export-image"] as const
           : []),
         ...(options.onImportPages && options.writeSourcePdf ? ["import-page" as const] : []),
         ...(options.openScanDocument && options.onInsertScannedPages && (options.runtimePlatform?.().mobile ?? false)
@@ -5167,6 +5173,61 @@ export class ViewerInkSession {
       this.logger.textTool("export-complete", { mode, textCount: this.texts.all().length, byteCount: bytes.length });
     } catch (error) {
       this.logger.textTool("export-error", { mode, textCount: this.texts.all().length, error: this.errorMessage(error) });
+      throw error;
+    }
+  }
+
+  async exportImageCopy(): Promise<void> {
+    const mode = "image";
+    this.logger.textTool("export-start", {
+      mode,
+      textCount: this.texts.all().length,
+      textPageCount: new Set(this.texts.all().map((text) => text.page)).size,
+      richTextCount: this.texts.all().filter((text) => text.runs.length > 1).length,
+      unicodeTextCount: this.texts.all().filter((text) => /[^\\x20-\\x7e\\n]/.test(text.text)).length
+    });
+    try {
+      this.commitActiveTextEditor("image-export");
+      for (const surface of this.surfaces.values()) this.commitActiveDrawBeforeSurfaceLoss(surface, "image-export");
+      await this.autosave.flush(this.identity.id);
+      const imageExtensions = imageSurfaceExtensions(this.options.adapter);
+      const image = imageExtensions?.imageElement?.();
+      if (!this.options.writeExport || !image) {
+        this.options.notice("Image export is unavailable for this annotation surface.");
+        return;
+      }
+      const page = this.options.adapter.page(1);
+      if (!page) throw new Error("Annotated image page is unavailable");
+      const sourceName = this.options.documentPath.split("/").pop() ?? "image.png";
+      const sourceExtension = sourceName.split(".").pop()?.toLowerCase();
+      const format: ImageRasterFormat = sourceExtension === "png" ? "png" : "jpeg";
+      const outputExtension = format === "png" ? "png" : sourceExtension === "jpeg" ? "jpeg" : "jpg";
+      const output = await this.imageExporter.export({
+        source: image,
+        ownerDocument: image.ownerDocument,
+        width: page.width,
+        height: page.height,
+        format,
+        render: (target) => this.renderImageAnnotations(target, page)
+      });
+      const stem = sourceName.replace(/\\.[a-z0-9]+$/i, "") || "image";
+      const name = `${stem}_annotated.${outputExtension}`;
+      const path = await this.options.writeExport(name, output.bytes);
+      this.options.notice(`Exported ${typeof path === "string" ? path : name}. Original image unchanged.`);
+      this.logger.textTool("export-complete", {
+        mode,
+        textCount: this.texts.all().length,
+        byteCount: output.bytes.length,
+        width: output.width,
+        height: output.height,
+        format
+      });
+    } catch (error) {
+      this.logger.textTool("export-error", {
+        mode,
+        textCount: this.texts.all().length,
+        error: this.errorMessage(error)
+      });
       throw error;
     }
   }
@@ -9952,6 +10013,181 @@ export class ViewerInkSession {
     context.restore();
   }
 
+  private renderImageAnnotations(target: ImageRasterRenderTarget, page: AnnotationPageInfo): void {
+    const scale = Math.min(target.scaleX, target.scaleY);
+    const mapper = new PageCoordinateMapper({
+      width: page.width,
+      height: page.height,
+      scale,
+      scaleX: target.scaleX,
+      scaleY: target.scaleY,
+      rotation: normalizeRotation(page.rotation),
+      origin: page.coordinateOrigin ?? "bottom-left"
+    });
+    for (const stroke of this.ink.page(1)) {
+      this.drawPointsForMapper(
+        target.context,
+        mapper,
+        scale,
+        stroke.points,
+        stroke.color,
+        stroke.width,
+        stroke.opacity,
+        stroke.tool,
+        false,
+        stroke.id,
+        "full",
+        stroke.eraseMasks
+      );
+    }
+    this.drawImageTextAnnotations(target.context, mapper, target.scaleX, target.scaleY, this.texts.page(1));
+  }
+
+  private drawPointsForMapper(
+    context: CanvasRenderingContext2D,
+    mapper: PageCoordinateMapper,
+    scale: number,
+    points: readonly PagePoint[],
+    color: string,
+    width: number,
+    opacity: number,
+    tool: DrawingTool,
+    selected = false,
+    strokeId?: string,
+    graphiteQuality: "full" | "draft" = "full",
+    eraseMasks?: InkStroke["eraseMasks"]
+  ): void {
+    if (!points.length) return;
+    context.save();
+    if (tool === "pencil") {
+      const prefs = this.options.settings.toolPreferences.pencil;
+      const viewPoints = points.map((point) => {
+        const view = mapper.toViewport(point);
+        return { x: view.x, y: view.y, pressure: point.pressure, tiltX: point.tiltX, tiltY: point.tiltY };
+      });
+      drawGraphiteStroke(context, viewPoints, {
+        color,
+        width: Math.max(0.5 * scale, width * scale),
+        opacity,
+        textureStrength: prefs.textureStrength,
+        pressureSensitivity: prefs.pressureSensitivity,
+        tiltSensitivity: prefs.tiltSensitivity,
+        thinning: prefs.thinning,
+        seed: strokeId ? seedFromId(strokeId) : seedFromId(`${viewPoints[0]!.x}:${viewPoints[0]!.y}`),
+        quality: graphiteQuality,
+        coordinateScale: scale
+      });
+    } else if (tool === "highlighter") {
+      const prefs = this.options.settings.toolPreferences.highlighter;
+      const viewPoints = points.map((point) => {
+        const view = mapper.toViewport(point);
+        return { x: view.x, y: view.y, pressure: point.pressure };
+      });
+      const highlighterOptions = {
+        color,
+        width: Math.max(2 * scale, width * scale),
+        opacity,
+        pressureSensitivity: prefs.pressureSensitivity,
+        thinning: prefs.thinning,
+        coordinateScale: scale
+      };
+      if (eraseMasks?.length) {
+        drawHighlighterStrokeWithMasks(context, viewPoints, highlighterOptions, eraseMasks.map((mask) => ({
+          radius: Math.max(0.5, mask.radius * scale),
+          points: mask.points.map((point) => {
+            const view = mapper.toViewport(point);
+            return { x: view.x, y: view.y };
+          })
+        })));
+      } else {
+        drawHighlighterStroke(context, viewPoints, highlighterOptions);
+      }
+    } else {
+      const prefs = this.options.settings.toolPreferences.pen;
+      const viewPoints = points.map((point) => {
+        const view = mapper.toViewport(point);
+        return { x: view.x, y: view.y, pressure: point.pressure };
+      });
+      drawPenStroke(context, viewPoints, {
+        color,
+        width: Math.max(0.5 * scale, width * scale),
+        opacity,
+        pressureSensitivity: prefs.pressureSensitivity,
+        thinning: prefs.thinning,
+        coordinateScale: scale
+      });
+    }
+    if (selected) {
+      context.globalAlpha = 0.9;
+      context.strokeStyle = "#2563eb";
+      context.lineWidth = Math.max(0.5, width * scale) + 4;
+      context.setLineDash([4, 3]);
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      const first = mapper.toViewport(points[0]!);
+      context.beginPath();
+      context.moveTo(first.x, first.y);
+      for (const point of points.slice(1)) {
+        const view = mapper.toViewport(point);
+        context.lineTo(view.x, view.y);
+      }
+      context.stroke();
+    }
+    context.restore();
+  }
+
+  private drawImageTextAnnotations(
+    context: CanvasRenderingContext2D,
+    mapper: PageCoordinateMapper,
+    scaleX: number,
+    scaleY: number,
+    annotations: readonly TextAnnotation[]
+  ): void {
+    for (const annotation of annotations) {
+      const origin = mapper.toViewport({ x: annotation.x, y: annotation.y });
+      const maxWidth = Math.max(24 * scaleX, annotation.width * scaleX);
+      const paddingX = 3 * scaleX;
+      const paddingY = 2 * scaleY;
+      const fallbackRuns = plainTextToRuns(annotation.text, this.textStyle(annotation));
+      const runs = normalizeTextRuns(annotation.runs);
+      const source = runs.length && plainTextFromRuns(runs) === annotation.text ? runs : fallbackRuns;
+      let x = origin.x + paddingX;
+      let y = origin.y + paddingY;
+      const lineStart = x;
+      let lineHeight = Math.max(1, annotation.fontSize * scaleY * 1.35);
+      for (const run of source) {
+        const fontSize = Math.max(1, run.fontSize * scaleY);
+        lineHeight = Math.max(lineHeight, fontSize * 1.35);
+        context.fillStyle = run.color;
+        context.font = `${run.italic ? "italic " : ""}${run.bold ? "700" : "400"} ${fontSize}px ${run.fontFamily}`;
+        for (const character of run.text) {
+          if (character === "\\n") {
+            x = lineStart;
+            y += lineHeight;
+            continue;
+          }
+          const measured = typeof context.measureText === "function" ? context.measureText(character).width : fontSize * 0.6;
+          if (x > lineStart && x + measured > origin.x + maxWidth) {
+            x = lineStart;
+            y += lineHeight;
+          }
+          context.fillText(character, x, y + fontSize);
+          if (run.strikethrough) {
+            context.save();
+            context.strokeStyle = run.color;
+            context.lineWidth = Math.max(1, scaleY);
+            context.beginPath();
+            context.moveTo(x, y + fontSize * 0.62);
+            context.lineTo(x + measured, y + fontSize * 0.62);
+            context.stroke();
+            context.restore();
+          }
+          x += measured;
+        }
+      }
+    }
+  }
+
   private drawStroke(
     surface: PageSurface,
     stroke: InkStroke,
@@ -9986,97 +10222,20 @@ export class ViewerInkSession {
     context: CanvasRenderingContext2D = surface.context,
     eraseMasks?: InkStroke["eraseMasks"]
   ): void {
-    if (!points.length) return;
-    const mapper = this.mapper(surface);
-    const scale = this.displayScale(surface);
-    context.save();
-    if (tool === "pencil") {
-      const prefs = this.options.settings.toolPreferences.pencil;
-      const viewPoints = points.map((point) => {
-        const view = mapper.toViewport(point);
-        return {
-          x: view.x,
-          y: view.y,
-          pressure: point.pressure,
-          tiltX: point.tiltX,
-          tiltY: point.tiltY
-        };
-      });
-      drawGraphiteStroke(context, viewPoints, {
-        color,
-        width: Math.max(0.5 * scale, width * scale),
-        opacity,
-        textureStrength: prefs.textureStrength,
-        pressureSensitivity: prefs.pressureSensitivity,
-        tiltSensitivity: prefs.tiltSensitivity,
-        thinning: prefs.thinning,
-        seed: strokeId ? seedFromId(strokeId) : seedFromId(`${viewPoints[0]!.x}:${viewPoints[0]!.y}`),
-        quality: graphiteQuality,
-        coordinateScale: scale
-      });
-    } else if (tool === "highlighter") {
-      const prefs = this.options.settings.toolPreferences.highlighter;
-      const viewPoints = points.map((point) => {
-        const view = mapper.toViewport(point);
-        return { x: view.x, y: view.y, pressure: point.pressure };
-      });
-      const highlighterOptions = {
-        color,
-        width: Math.max(2 * scale, width * scale),
-        opacity,
-        pressureSensitivity: prefs.pressureSensitivity,
-        thinning: prefs.thinning,
-        coordinateScale: scale
-      };
-      if (eraseMasks?.length) {
-        drawHighlighterStrokeWithMasks(
-          context,
-          viewPoints,
-          highlighterOptions,
-          eraseMasks.map((mask) => ({
-            radius: Math.max(0.5, mask.radius * scale),
-            points: mask.points.map((point) => {
-              const view = mapper.toViewport(point);
-              return { x: view.x, y: view.y };
-            })
-          }))
-        );
-      } else {
-        drawHighlighterStroke(context, viewPoints, highlighterOptions);
-      }
-    } else {
-      const prefs = this.options.settings.toolPreferences.pen;
-      const viewPoints = points.map((point) => {
-        const view = mapper.toViewport(point);
-        return { x: view.x, y: view.y, pressure: point.pressure };
-      });
-      drawPenStroke(context, viewPoints, {
-        color,
-        width: Math.max(0.5 * scale, width * scale),
-        opacity,
-        pressureSensitivity: prefs.pressureSensitivity,
-        thinning: prefs.thinning,
-        coordinateScale: scale
-      });
-    }
-
-    if (selected) {
-      context.globalAlpha = 0.9;
-      context.strokeStyle = "#2563eb";
-      context.lineWidth = Math.max(0.5, width * scale) + 4;
-      context.setLineDash([4, 3]);
-      context.lineCap = "round";
-      context.lineJoin = "round";
-      const first = mapper.toViewport(points[0]!);
-      context.beginPath();
-      context.moveTo(first.x, first.y);
-      for (const point of points.slice(1)) {
-        const view = mapper.toViewport(point);
-        context.lineTo(view.x, view.y);
-      }
-      context.stroke();
-    }
-    context.restore();
+    this.drawPointsForMapper(
+      context,
+      this.mapper(surface),
+      this.displayScale(surface),
+      points,
+      color,
+      width,
+      opacity,
+      tool,
+      selected,
+      strokeId,
+      graphiteQuality,
+      eraseMasks
+    );
   }
 
   private toPagePoints(
@@ -10651,6 +10810,10 @@ export class ViewerInkSession {
     }
     if (action === "export") {
       await this.exportCopy().catch((error) => this.options.notice(`Export failed: ${this.errorMessage(error)}`));
+      return;
+    }
+    if (action === "export-image") {
+      await this.exportImageCopy().catch((error) => this.options.notice(`Image export failed: ${this.errorMessage(error)}`));
       return;
     }
     if (action === "export-editable") {

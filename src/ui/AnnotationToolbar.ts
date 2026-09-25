@@ -20,6 +20,7 @@ const DRAWING_LABELS: Record<DrawingTool, string> = {
 export type MoreAction =
   | "export"
   | "export-editable"
+  | "export-image"
   | "import-page"
   | "scan-document"
   | "toolbar-main"
@@ -404,6 +405,7 @@ export class AnnotationToolbar {
     const labels: Record<MoreAction, string> = {
       export: "Export PDF",
       "export-editable": "Export editable PDF annotations",
+      "export-image": "Export annotated image",
       "import-page": "Import page",
       "scan-document": "Scan document",
       "toolbar-main": "Toolbar: PDF bar",

@@ -30,6 +30,17 @@ export function pdfSurfaceExtensions(surface: AnnotationSurface): PdfSurfaceExte
   return candidate.supportsPdfExport === true ? candidate : null;
 }
 
+/** Optional image-only capability kept outside the generic annotation contract. */
+export interface ImageSurfaceExtensions {
+  readonly supportsImageExport?: true;
+  imageElement?(): HTMLImageElement | null;
+}
+
+export function imageSurfaceExtensions(surface: AnnotationSurface): ImageSurfaceExtensions | null {
+  const candidate = surface as AnnotationSurface & Partial<ImageSurfaceExtensions>;
+  return candidate.supportsImageExport === true ? candidate : null;
+}
+
 export interface ObsidianPdfAdapter extends AnnotationSurface, PdfSurfaceExtensions {
   readonly kind: "direct" | "embedded";
   /** Monotonic per-adapter viewer generation; native and embedded leaves are independent. */
