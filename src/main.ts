@@ -294,6 +294,17 @@ export default class NativePdfInkPlugin extends Plugin {
       phone: Platform.isPhone,
       vaultDebugLog: this.inkSettings.vaultDebugLog
     });
+    // A plugin can be enabled/reloaded after Obsidian has already published
+    // layout-ready. Mobile does not always emit another layout or file-open
+    // event for the PDF that is already visible, so make the first attach
+    // attempt independent of those lifecycle notifications.
+    void this.vaultDebugLog.writeUrgent("info", "session attach scan requested", {
+      reason: "plugin-onload",
+      delayMs: 0,
+      mobile: Platform.isMobile,
+      phone: Platform.isPhone
+    });
+    this.scheduleDebouncedScan(0);
   }
 
   /** Catch uncaught errors before the WebView dies so mobile crash logs still land on disk. */
@@ -930,16 +941,18 @@ export default class NativePdfInkPlugin extends Plugin {
         registrySize: this.sessions.size,
         attachingLeaves: this.attachingLeaves.size
       });
+      let adapter: AnnotationSurface | undefined;
+      let attachStage = "started";
       let session: ViewerInkSession | undefined;
       let detached = false;
       try {
+        attachStage = "resolve-viewer";
         await this.vaultDebugLog.writeUrgent("info", "session attach prepare", {
           document: file.path,
           mobile: Platform.isMobile,
           phone: Platform.isPhone,
           hostChildCount: view.containerEl?.childElementCount ?? null
         });
-        let adapter: AnnotationSurface;
         if (isPdf) {
           await this.vaultDebugLog.writeUrgent("info", "session attach resolve-viewer", {
             document: file.path
@@ -980,6 +993,8 @@ export default class NativePdfInkPlugin extends Plugin {
             this.sessionAdapterCallbacks(() => session)
           );
         }
+        if (!adapter) throw new Error("Annotation adapter unavailable after attach");
+        attachStage = "adapter-attached";
         await this.vaultDebugLog.writeUrgent("info", "session attach adapter-ok", {
           document: file.path,
           mobile: Platform.isMobile,
@@ -1005,6 +1020,7 @@ export default class NativePdfInkPlugin extends Plugin {
             pageCountAfter: adapter.pages().length
           });
         }
+        attachStage = "session-create";
         session = await this.createInkSession(file, adapter, {
           ...(restoredAddPage ? { restoredAddPageMutation: restoredAddPage } : {}),
           onAddPageMutationStart: (state) => this.pendingAddPageRestore.set(file.path, state),
@@ -1030,6 +1046,7 @@ export default class NativePdfInkPlugin extends Plugin {
               .catch(() => undefined);
           }
         });
+        attachStage = "session-created";
         if (this.unloaded) {
           this.syncPersistSession(session, "unloaded-during-attach");
           await this.trackSessionDestroy(leaf, session, "unloaded-during-attach", { silent: true, alreadyPersisted: true })
@@ -1052,7 +1069,9 @@ export default class NativePdfInkPlugin extends Plugin {
           continue;
         }
         const recoveringMissingSession = this.missingSessionRecoveryLeaves.has(leaf);
+        attachStage = "session-register";
         this.registerSession(leaf, session, replacementAttach ? "replacement-attach" : "attach");
+        attachStage = "registered";
         this.replacementAttachLeaves.delete(leaf);
         this.missingSessionRecoveryLeaves.delete(leaf);
         this.attachRetry.clear(file.path);
@@ -1077,6 +1096,25 @@ export default class NativePdfInkPlugin extends Plugin {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (!session && adapter) {
+          try {
+            adapter.destroy();
+            await this.vaultDebugLog.writeUrgent("info", "session attach adapter cleanup", {
+              document: file.path,
+              stage: attachStage,
+              reason: "attach-failed-before-session-registration",
+              destroyed: true
+            });
+          } catch (cleanupError) {
+            await this.vaultDebugLog.writeUrgent("warn", "session attach adapter cleanup failed", {
+              document: file.path,
+              stage: attachStage,
+              reason: "attach-failed-before-session-registration",
+              destroyed: false,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+            });
+          }
+        }
         const pagesMissing = message.includes("PDF page nodes missing");
         let dom: Record<string, unknown> = { viewerRoot: false };
         try {
@@ -1098,6 +1136,7 @@ export default class NativePdfInkPlugin extends Plugin {
           stack: error instanceof Error ? error.stack ?? null : null,
           mobile: Platform.isMobile,
           phone: Platform.isPhone,
+          stage: attachStage,
           pagesMissing,
           ...dom
         });

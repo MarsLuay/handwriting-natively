@@ -27,6 +27,19 @@ describe("main PDF page actions", () => {
     expect(mainSource).toContain("ImageViewAdapter.attach");
   });
 
+  it("starts an attach scan even when layout-ready was published before plugin load", () => {
+    const onload = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("  /** Catch uncaught errors"));
+    expect(onload).toContain('"session attach scan requested"');
+    expect(onload).toContain('reason: "plugin-onload"');
+    expect(onload).toContain("this.scheduleDebouncedScan(0);");
+  });
+
+  it("cleans a partially attached adapter when session creation fails", () => {
+    expect(mainSource).toContain('"session attach adapter cleanup"');
+    expect(mainSource).toContain('reason: "attach-failed-before-session-registration"');
+    expect(mainSource).toContain("stage: attachStage");
+  });
+
   it("wires thumbnail blank-page and delete actions through in-place callbacks", () => {
     expect(mainSource).toContain("onInsertPage: (pageNumber: number) => this.insertPageInPlace(file, pageNumber)");
     expect(mainSource).toContain("onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber)");
