@@ -176,6 +176,7 @@ export default class NativePdfInkPlugin extends Plugin {
       await this.loadData() as Partial<PluginSettings> | null,
       this.app.vault.configDir
     );
+    await this.vaultDebugLog.clear();
     this.addSettingTab(new NativePdfInkSettingTab(this.app, this));
     this.addRibbonIcon("file-plus-2", "Create handwritten PDF", () => void this.createPdfNote());
 
