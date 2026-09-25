@@ -508,6 +508,15 @@ export default class NativePdfInkPlugin extends Plugin {
 
   /** Snapshot runtime metadata only when the user explicitly copies logs. */
   getCopiedLogDiagnostics(): CopiedLogDiagnostics {
+    for (const session of this.sessions.values()) {
+      try {
+        session.writeCopiedLogUiSnapshot();
+      } catch (error) {
+        this.vaultDebugLog.write("warn", "handwriting-ui-snapshot-failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
     const platform = Platform.isIosApp
       ? "iOS"
       : Platform.isAndroidApp

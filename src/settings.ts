@@ -452,12 +452,15 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("Copy logs").onClick(async () => {
           try {
+            // Snapshot active UI state before flushing so the copied log contains
+            // the exact toolbar/remount state that triggered the report.
+            const diagnostics = this.host.getCopiedLogDiagnostics();
             const logs = await this.host.readAllLogs();
             if (!logs) {
               new Notice("No vault debug logs are available. Enable vault debug log and reproduce the issue first.");
               return;
             }
-            await navigator.clipboard.writeText(getCopiedLogText(logs, this.host.getCopiedLogDiagnostics()));
+            await navigator.clipboard.writeText(getCopiedLogText(logs, diagnostics));
             new Notice("Debug logs and current diagnostics copied.");
           } catch (error) {
             console.error("Handwriting Natively could not copy logs", error);
