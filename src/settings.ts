@@ -168,6 +168,19 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         }
       },
       {
+        name: "Enable on images",
+        desc: "Enable Handwriting Natively annotation for static PNG and JPEG/JPG image files.",
+        render: (setting: Setting) => {
+          setting.addToggle((toggle) =>
+            toggle.setValue(this.host.inkSettings.enabledSurfaces.image).onChange(async (value) => {
+              await this.persistPatch({
+                enabledSurfaces: { ...this.host.inkSettings.enabledSurfaces, image: value }
+              });
+            })
+          );
+        }
+      },
+      {
         name: "Autosave",
         desc: "Save completed edits automatically. Enabled by default.",
         render: (setting: Setting) => {

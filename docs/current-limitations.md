@@ -16,7 +16,7 @@ Automated compatibility evidence covers the adapter boundary and explicit host-s
 - MacBook Force Touch trackpad pressure is not available in Obsidian (Electron); stylus pressure works when the OS exposes it.
 - Annotation edits do not modify source PDFs. Add/Delete/Import/Scan page actions intentionally rewrite the open PDF and remap sidecar/recovery data; export remains a separate-copy workflow. Reorder/duplicate and persistent page UUIDs are not yet supported.
 - Drawing presets are local settings, capped at eight entries, and do not change saved annotation data. Preset selection is one action; device-specific toolbar sizing still needs the release matrix.
-- Image annotation is intentionally not shipped yet. A future one-page image adapter must establish EXIF orientation, transparency, large-image memory, and export behavior before changing the PDF-only integration boundary.
+- Static PNG and JPEG/JPG image annotation uses the shared one-page surface and sidecar; source images remain read-only, browser-native EXIF orientation is not applied a second time, and handwriting backing stores use the shared pixel budget. WebP, HEIC/HEIF, GIF, SVG, embedded images, and flattened image export remain unsupported. Live Obsidian image-view and device coverage is still manual evidence.
 
 Remaining manual compatibility evidence:
 

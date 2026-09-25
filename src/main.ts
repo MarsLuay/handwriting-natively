@@ -435,10 +435,30 @@ export default class NativePdfInkPlugin extends Plugin {
     }
   }
 
+  private async detachDisabledImageSessions(): Promise<void> {
+    for (const [leaf, session] of [...this.sessions]) {
+      const view = leaf.view;
+      const file = view instanceof FileView ? view.file : (view as FileView).file;
+      if (!(file instanceof TFile) || !isSupportedImageFile(file)) continue;
+      this.sessions.delete(leaf);
+      this.syncPersistSession(session, "image-disabled");
+      try {
+        await session.destroy({ silent: true, alreadyPersisted: true });
+      } catch (error) {
+        await this.vaultDebugLog.writeUrgent("warn", "image session disable failed", {
+          document: file.path,
+          imageHandwritingEnabled: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
   async saveSettings(settings: PluginSettings): Promise<void> {
     const previousPlacement = this.inkSettings.toolbarPlacement;
     const previousBoostedZoom = this.inkSettings.boostedPdfZoom;
     const previousPdfEnabled = this.inkSettings.enabledSurfaces.pdf;
+    const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
     this.inkSettings = settings;
     await this.saveData(settings);
     if (previousPdfEnabled !== settings.enabledSurfaces.pdf) {
@@ -449,6 +469,16 @@ export default class NativePdfInkPlugin extends Plugin {
         pdfHandwritingEnabled: settings.enabledSurfaces.pdf
       });
       if (!settings.enabledSurfaces.pdf) await this.detachDisabledPdfSessions();
+      this.scheduleDebouncedScan(0);
+    }
+    if (previousImageEnabled !== settings.enabledSurfaces.image) {
+      this.vaultDebugLog.write("info", "content-surface-setting-changed", {
+        surface: "image",
+        previous: previousImageEnabled,
+        current: settings.enabledSurfaces.image,
+        imageHandwritingEnabled: settings.enabledSurfaces.image
+      });
+      if (!settings.enabledSurfaces.image) await this.detachDisabledImageSessions();
       this.scheduleDebouncedScan(0);
     }
     this.vaultDebugLog.write("info", "plugin settings saved", {
@@ -542,6 +572,7 @@ export default class NativePdfInkPlugin extends Plugin {
       sessions: this.sessions.size,
       attachingLeaves: this.attachingLeaves.size,
       pdfHandwritingEnabled: this.inkSettings.enabledSurfaces.pdf,
+      imageHandwritingEnabled: this.inkSettings.enabledSurfaces.image,
       mobile: Platform.isMobile,
       phone: Platform.isPhone
     });
@@ -553,14 +584,17 @@ export default class NativePdfInkPlugin extends Plugin {
       const pdfDisabled = file instanceof TFile
         && file.extension.toLowerCase() === "pdf"
         && !this.inkSettings.enabledSurfaces.pdf;
-      if (!live.has(leaf) || pdfDisabled) {
+      const imageDisabled = file instanceof TFile
+        && isSupportedImageFile(file)
+        && !this.inkSettings.enabledSurfaces.image;
+      if (!live.has(leaf) || pdfDisabled || imageDisabled) {
         this.sessions.delete(leaf);
-        this.syncPersistSession(session, pdfDisabled ? "pdf-disabled" : "leaf-closed");
+        this.syncPersistSession(session, pdfDisabled ? "pdf-disabled" : imageDisabled ? "image-disabled" : "leaf-closed");
         void session.destroy({ silent: true, alreadyPersisted: true });
-        if (pdfDisabled) {
-          await this.vaultDebugLog.writeUrgent("info", "pdf session disabled", {
+        if (pdfDisabled || imageDisabled) {
+          await this.vaultDebugLog.writeUrgent("info", `${pdfDisabled ? "pdf" : "image"} session disabled`, {
             document: file.path,
-            pdfHandwritingEnabled: false,
+            ...(pdfDisabled ? { pdfHandwritingEnabled: false } : { imageHandwritingEnabled: false }),
             reason: "content-surface-setting-changed"
           });
         }
@@ -586,6 +620,14 @@ export default class NativePdfInkPlugin extends Plugin {
         await this.vaultDebugLog.writeUrgent("info", "pdf session disabled", {
           document: file.path,
           pdfHandwritingEnabled: false,
+          reason: "content-surface-setting-disabled"
+        });
+        continue;
+      }
+      if (isImage && !this.inkSettings.enabledSurfaces.image) {
+        await this.vaultDebugLog.writeUrgent("info", "image session disabled", {
+          document: file.path,
+          imageHandwritingEnabled: false,
           reason: "content-surface-setting-disabled"
         });
         continue;

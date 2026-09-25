@@ -1,15 +1,10 @@
 import type { TFile } from "obsidian";
 
-/** Image types that Obsidian can open in its native image view. */
+/** Static image types supported by the shared annotation surface. */
 export const HANDWRITING_IMAGE_EXTENSIONS = new Set([
-  "avif",
-  "bmp",
-  "gif",
   "jpeg",
   "jpg",
-  "png",
-  "svg",
-  "webp"
+  "png"
 ]);
 
 export function isSupportedImageExtension(extension: string): boolean {
