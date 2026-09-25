@@ -153,6 +153,20 @@ export class PhysicalContactTracker {
   private readonly pointerContacts = new Map<number, ContactState>();
   private readonly touchContacts = new Map<number, ContactState>();
 
+  constructor(private readonly idPrefix = "physical-contact") {}
+
+  get activeContactCount(): number {
+    return this.contacts.size;
+  }
+
+  pointerContactId(pointerId: number): string | null {
+    return this.pointerContacts.get(pointerId)?.physicalContactId ?? null;
+  }
+
+  touchContactId(identifier: number): string | null {
+    return this.touchContacts.get(identifier)?.physicalContactId ?? null;
+  }
+
   pointerDown(now: number, sample: RawPointerContactSample): PhysicalContactRecord[] {
     return this.startPointer(now, sample);
   }
@@ -264,7 +278,7 @@ export class PhysicalContactTracker {
 
   private createContact(now: number): ContactState {
     const contact: ContactState = {
-      physicalContactId: `physical-contact-${++this.sequence}`,
+      physicalContactId: `${this.idPrefix}-${++this.sequence}`,
       startedAt: now,
       lastEventAt: now,
       pointerIds: new Set<number>(),
