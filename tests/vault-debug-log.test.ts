@@ -57,6 +57,19 @@ describe("VaultDebugLog", () => {
     expect(files.get("debug.md")).toContain("captured-before-disable");
   });
 
+  it("clears previous entries before a newly loaded plugin writes diagnostics", async () => {
+    const { vault, files } = createVault();
+    files.set("logs/debug.md", "old diagnostic\n");
+    const log = new VaultDebugLog(() => vault, () => "logs/debug.md", () => true);
+
+    await log.clear();
+    log.write("info", "new diagnostic");
+    await log.flush();
+
+    expect(files.get("logs/debug.md")).not.toContain("old diagnostic");
+    expect(files.get("logs/debug.md")).toContain("new diagnostic");
+  });
+
   it("merges plugin and Obsidian version context into every event", async () => {
     const { vault, files } = createVault();
     const log = new VaultDebugLog(

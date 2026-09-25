@@ -66,6 +66,26 @@ export class VaultDebugLog implements VaultLogSink {
     await this.flush();
   }
 
+  /** Start a newly loaded plugin with a clean debug log. */
+  clear(): Promise<void> {
+    if (this.flushTimer !== null) {
+      window.clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.buffer.splice(0);
+    this.flushQueue = this.flushQueue.then(async () => {
+      try {
+        const vault = this.vault();
+        const filePath = normalizeVaultRelativePath(this.path());
+        await ensureParentFolder(vault, filePath);
+        await vault.adapter.write(filePath, "");
+      } catch (error) {
+        console.error("[Handwriting Natively] vault debug log clear failed", error);
+      }
+    });
+    return this.flushQueue;
+  }
+
   destroy(): void {
     this.destroyed = true;
     if (this.flushTimer !== null) {
