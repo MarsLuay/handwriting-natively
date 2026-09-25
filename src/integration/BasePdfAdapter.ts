@@ -27,6 +27,7 @@ import type { CompatibilityResult } from "./PdfViewerCompatibility";
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import { PDF_PAGE_SELECTOR } from "./pdfPageSelectors";
 import { installPdfZoomBoost, type PdfZoomBoostHandle } from "./PdfZoomBoost";
+import { getDebugNodeId } from "../dom/debugNodeId";
 
 export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   abstract readonly kind: "direct" | "embedded";
@@ -108,8 +109,8 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     });
     for (const warning of compatibility.warnings) callbacks.onCompatibilityWarning?.(warning);
     // Emit one bounded, sanitized profile for this adapter generation. The
-    // profile contains only booleans, strategies, counters, and fixed probe
-    // messages; raw DOM/private viewer objects never cross the diagnostics boundary.
+    // profile contains only bounded scalar/strategy/counter data and fixed
+    // probe messages; raw DOM/private viewer objects never cross the diagnostics boundary.
     callbacks.onDebugLog?.("info", "pdf integration profile", {
       schemaVersion: compatibility.profile.schemaVersion,
       adapter: compatibility.profile.adapter,
@@ -118,6 +119,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       strategies: { ...compatibility.profile.strategies },
       capabilities: { ...compatibility.profile.capabilities },
       counters: { ...compatibility.profile.counters },
+      viewerElementDebugId: getDebugNodeId(this.root),
       failedProbes: compatibility.profile.failedProbes.slice(0, 8),
       warnings: compatibility.profile.warnings.slice(0, 8)
     });
@@ -143,7 +145,8 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     );
     this.logAdapterEvent("warn", "pdf viewer generation replaced", {
       reason,
-      viewerGeneration: this.currentViewerGeneration
+      viewerGeneration: this.currentViewerGeneration,
+      oldViewerElementDebugId: getDebugNodeId(this.root)
     });
     this.callbacks.onPageLifecycleChange?.({
       kind: "viewer-replaced",

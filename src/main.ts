@@ -734,7 +734,10 @@ export default class NativePdfInkPlugin extends Plugin {
             this.sessions.delete(leaf);
             this.syncPersistSession(current, "on-detached");
             void current.destroy({ silent: true, alreadyPersisted: true });
-            this.scheduleDebouncedScan(300);
+            // The replacement viewer may already be present in this same host
+            // mutation. Attach immediately; NativePdfViewAdapter still waits
+            // for numbered pages, and stale adapter generations remain gated.
+            this.scheduleDebouncedScan(0);
           }
         });
         if (this.unloaded) {

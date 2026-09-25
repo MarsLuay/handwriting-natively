@@ -393,6 +393,7 @@ export interface AddPageMutationRestoreState {
   pageMountGenerationsBefore: Array<number | null>;
   routerGenerationsBefore: number[];
   viewerGenerationBefore: number | null;
+  viewerElementDebugIdBefore?: number | null;
   pageDomIds: Array<number | null>;
   canvasIds: Array<number | null>;
   overlayIds: Array<number | null>;
@@ -783,6 +784,14 @@ export class ViewerInkSession {
   private readonly imageExporter = new ImageRasterExportService();
   private readonly createdAt = new Date().toISOString();
   private readonly toolbar: AnnotationToolbar;
+  /** Bounded generation for the shared toolbar's current mount ownership. */
+  private toolbarUiGeneration = 0;
+  private lastToolbarMountReason = "not-mounted";
+  private lastToolbarUnmountReason: string | null = null;
+  private lastHandwritingUiMissingKey = "";
+  private uiIntegrityTimer: number | null = null;
+  private readonly previousViewerElementDebugId: number | null;
+  private lastAddPageOperationId: string | null;
   private readonly selectionToolbar: SelectionToolbar;
   private readonly history: CommandHistory;
   /** Pages dirtied by the next history.execute — avoids full multi-page refresh. */
@@ -971,6 +980,8 @@ export class ViewerInkSession {
   private static readonly PAGE_MUTATION_SHIELD_RENDER_QUIET_MS = 120;
 
   private constructor(private readonly options: ViewerInkSessionOptions) {
+    this.previousViewerElementDebugId = options.restoredAddPageMutation?.viewerElementDebugIdBefore ?? null;
+    this.lastAddPageOperationId = options.restoredAddPageMutation?.operationId ?? null;
     const identityInput: DocumentIdentityInput = {
       vaultPath: options.documentPath,
       ...(options.contentHash ? { contentHash: options.contentHash } : {})
@@ -3898,7 +3909,7 @@ export class ViewerInkSession {
       loadedTexts,
       pagesWithInk: stored?.pages?.length ?? 0
     });
-    options.adapter.mountToolbar(session.toolbar.element, session.currentToolbarPlacement());
+    session.reconcileToolbarMount("session-create");
     await urgent("session create toolbar ok", {
       document: options.documentPath,
       toolbarPlacement: session.currentToolbarPlacement()
@@ -3956,6 +3967,7 @@ export class ViewerInkSession {
 
   refresh(reason = "manual"): void {
     if (this.destroyed) return;
+    this.reconcileToolbarMount(reason);
     this.addPageControl?.refresh();
     if (this.zoomProfile) this.zoomProfile.refreshExecutions += 1;
     if (this.panProfile) this.panProfile.refreshes += 1;
@@ -4283,8 +4295,14 @@ export class ViewerInkSession {
       window.clearTimeout(this.detachCheckTimer);
       this.detachCheckTimer = null;
     }
+    if (this.uiIntegrityTimer !== null) {
+      window.clearTimeout(this.uiIntegrityTimer);
+      this.uiIntegrityTimer = null;
+    }
 
     this.focusInsertedPageIfReady(reason, pages);
+    this.reconcileToolbarMount(reason);
+    this.scheduleUiIntegrityCheck(reason);
 
     if (this.isZoomGestureActive() && ViewerInkSession.shouldCompositeDuring(this.zoomBurstReason)) {
       this.scheduleZoomRepaint(`pages-${reason}`, this.options.adapter.getViewState().scale);
@@ -4338,6 +4356,108 @@ export class ViewerInkSession {
     }
     this.logger.pagesChanged(`detach:${reason}`, 0, {});
     this.options.onDetached?.();
+  }
+
+  private reconcileToolbarMount(reason: string): void {
+    if (this.destroyed || !this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) return;
+    const placement = this.currentToolbarPlacement();
+    const toolbar = this.toolbar.element;
+    const rail = toolbar.closest<HTMLElement>(".native-pdf-handwriting-rail");
+    const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
+    const sidebarExpected = placement !== "main";
+    const sidebarConnected = sidebarExpected
+      && toolbarConnected
+      && Boolean(rail)
+      && this.options.adapter.host.contains(rail)
+      && rail!.classList.contains(`is-${placement}`);
+    const placementMatches = sidebarExpected
+      ? sidebarConnected
+      : toolbarConnected && !rail;
+    if (placementMatches) return;
+
+    this.lastToolbarUnmountReason = toolbar.isConnected ? `reconcile:${reason}` : reason;
+    this.toolbarUiGeneration = Math.min(999, this.toolbarUiGeneration + 1);
+    try {
+      this.options.adapter.mountToolbar(toolbar, placement);
+      this.lastToolbarMountReason = reason;
+    } catch (error) {
+      if (reason === "session-create") throw error;
+    }
+  }
+
+  private scheduleUiIntegrityCheck(reason: string): void {
+    if (this.destroyed) return;
+    if (this.uiIntegrityTimer !== null) window.clearTimeout(this.uiIntegrityTimer);
+    this.uiIntegrityTimer = window.setTimeout(() => {
+      this.uiIntegrityTimer = null;
+      this.verifyHandwritingUi(reason);
+    }, 0);
+  }
+
+  private verifyHandwritingUi(reason: string): void {
+    if (this.destroyed || !this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) return;
+    const state = this.handwritingUiState(reason);
+    const missing = state.toolbarExpected === true
+      && (!state.toolbarConnected || (state.sidebarExpected === true && !state.sidebarConnected));
+    if (!missing) return;
+    const key = JSON.stringify([
+      state.viewerGeneration,
+      state.toolbarGeneration,
+      state.pageCount,
+      state.currentPage,
+      state.toolbarConnected,
+      state.sidebarConnected
+    ]);
+    if (key === this.lastHandwritingUiMissingKey) return;
+    this.lastHandwritingUiMissingKey = key;
+    this.logger.handwritingUiMissing(state);
+  }
+
+  private handwritingUiState(reason: string, details: Record<string, unknown> = {}): Record<string, unknown> {
+    const placement = this.currentToolbarPlacement();
+    const toolbar = this.toolbar.element;
+    const rail = toolbar.closest<HTMLElement>(".native-pdf-handwriting-rail");
+    const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
+    const sidebarExpected = placement !== "main";
+    const sidebarConnected = sidebarExpected
+      && toolbarConnected
+      && Boolean(rail)
+      && this.options.adapter.host.contains(rail)
+      && rail!.classList.contains(`is-${placement}`);
+    let currentPage: number | null = null;
+    try {
+      currentPage = this.options.adapter.getViewState().pageNumber;
+    } catch {
+      currentPage = null;
+    }
+    return {
+      viewerGeneration: this.addPageViewerGeneration(),
+      viewerElementDebugId: getDebugNodeId(this.options.adapter.root),
+      oldViewerElementDebugId: this.previousViewerElementDebugId,
+      sessionGeneration: this.viewerGeneration,
+      toolbarGeneration: this.toolbarUiGeneration,
+      hostDebugId: getDebugNodeId(this.options.adapter.host),
+      mountReason: this.lastToolbarMountReason,
+      unmountReason: this.lastToolbarUnmountReason,
+      reason,
+      connectedState: {
+        host: this.options.adapter.host.isConnected,
+        viewer: this.options.adapter.root.isConnected,
+        toolbar: toolbar.isConnected,
+        toolbarInHost: toolbarConnected,
+        sidebar: Boolean(rail?.isConnected)
+      },
+      viewerConnected: this.options.adapter.root.isConnected,
+      toolbarExpected: true,
+      toolbarConnected,
+      sidebarExpected,
+      sidebarConnected,
+      toolbarPlacement: placement,
+      pageCount: Math.min(999, this.options.adapter.pages().length),
+      currentPage,
+      ...(this.lastAddPageOperationId ? { addPageOperationId: this.lastAddPageOperationId } : {}),
+      ...details
+    };
   }
 
   /**
@@ -4759,6 +4879,7 @@ export class ViewerInkSession {
       pageMountGenerationsBefore: pages.map((page) => page.mountGeneration ?? null),
       routerGenerationsBefore: this.currentRouterGenerations(),
       viewerGenerationBefore: this.addPageViewerGeneration(),
+      viewerElementDebugIdBefore: getDebugNodeId(this.options.adapter.root),
       pageDomIds: pages.map((page) => getDebugNodeId(page.element)),
       canvasIds: pages.map((page) => getDebugNodeId(pdfRenderCanvas(page.element))),
       overlayIds: mounted.map(([, surface]) => getDebugNodeId(surface.overlay)),
@@ -4856,6 +4977,7 @@ export class ViewerInkSession {
       if (this.isDirty()) await this.manualSave();
       const before = this.snapshot();
       mutation = this.captureAddPageMutationState(this.id(), startedAt);
+      this.lastAddPageOperationId = mutation.operationId;
       this.options.onAddPageMutationStart?.(mutation);
       this.logger.addPageLifecycle("before-mutation", this.addPageLifecycleDetails(mutation));
       this.pendingInsertedPageFocus = {
@@ -11140,7 +11262,8 @@ export class ViewerInkSession {
 
   remountToolbar(): void {
     if (this.destroyed) return;
-    this.options.adapter.mountToolbar(this.toolbar.element, this.currentToolbarPlacement());
+    this.reconcileToolbarMount("settings");
+    this.scheduleUiIntegrityCheck("settings");
   }
 
   setBoostedPdfZoom(enabled: boolean): void {

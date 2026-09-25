@@ -3228,6 +3228,70 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("remounts the shared handwriting toolbar after a page lifecycle replacement", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      notice: () => undefined
+    });
+    const toolbar = adapter.toolbarHost.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    expect(toolbar).not.toBeNull();
+
+    toolbar?.remove();
+    (session as unknown as { onPagesChanged(reason: string): void }).onPagesChanged("pages-settled");
+
+    expect(toolbar?.isConnected).toBe(true);
+    expect(adapter.toolbarHost.querySelectorAll(".native-pdf-handwriting-toolbar")).toHaveLength(1);
+    await session.destroy();
+  });
+
+  it("reports missing handwriting UI ownership after a settled lifecycle when remount cannot connect", async () => {
+    vi.useFakeTimers();
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: { write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} }) }
+    });
+    adapter.toolbarHost.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar")?.remove();
+    vi.spyOn(adapter, "mountToolbar").mockImplementation(() => undefined);
+
+    (session as unknown as { onPagesChanged(reason: string): void }).onPagesChanged("pages-settled");
+    await vi.runAllTimersAsync();
+
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: "handwriting-ui-missing",
+        payload: expect.objectContaining({
+          viewerConnected: true,
+          toolbarExpected: true,
+          toolbarConnected: false,
+          pageCount: 1,
+          currentPage: 1,
+          mountReason: "pages-settled",
+          unmountReason: "pages-settled"
+        })
+      })
+    ]));
+    await session.destroy();
+  });
+
   it("focuses the inserted native PDF page after its reload publishes the new count", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
