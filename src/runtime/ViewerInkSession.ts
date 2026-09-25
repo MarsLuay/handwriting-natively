@@ -29,7 +29,7 @@ import { AddPageControl } from "../ui/AddPageControl";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
-import { InkSession } from "../ink/InkSession";
+import { InkSession, type InkLifecycleEvent } from "../ink/InkSession";
 import { DamageLedger } from "../ink/DamageLedger";
 import type { Bounds } from "../ink/StrokeHitTesting";
 import { StrokeBuilder } from "../ink/StrokeBuilder";
@@ -696,7 +696,7 @@ interface ShapeResize {
 export class ViewerInkSession {
   private static nextViewerGeneration = 1;
   private readonly viewerGeneration = ViewerInkSession.nextViewerGeneration++;
-  private readonly ink = new InkSession();
+  private readonly ink: InkSession;
   private readonly texts = new TextAnnotationSession();
   private readonly identity;
   private readonly surfaces = new Map<number, PageSurface>();
@@ -737,6 +737,8 @@ export class ViewerInkSession {
   private uiShellMutationObserver: MutationObserver | null = null;
   private readonly uiShellSnapshots = new Map<Element, ObsidianUiShellSnapshot>();
   private readonly postUiInputProbe = new PostUiInputProbe();
+  /** Stroke identity is diagnostic-only and bounded to recent model lifecycles. */
+  private readonly strokePenContactIds = new Map<string, string | null>();
   private readonly penScrollEvidence = new Map<number, PenScrollEvidence>();
   private postUiProbeTimer: number | null = null;
   private lastUiInputPointerType = "programmatic";
@@ -886,6 +888,7 @@ export class ViewerInkSession {
     };
     this.identity = createDocumentIdentity(identityInput);
     this.logger = new SessionLogger(options.documentPath, options.vaultLog, options.debugEnabled, options.pluginVersion);
+    this.ink = new InkSession([], (event) => this.recordInkLifecycle(event));
     this.textToolActive = options.settings.toolPreferences.activeTool === "text";
     this.lastObservedTool = options.settings.toolPreferences.activeTool;
     this.logger.textTool("tool-initial", {
@@ -5055,7 +5058,7 @@ export class ViewerInkSession {
         ? `Clear freehand on page ${dirtyPages[0]}`
         : `Clear freehand on ${dirtyPages.length} pages`,
       execute: () => {
-        for (const stroke of strokes) this.ink.remove(stroke.id);
+        for (const stroke of strokes) this.ink.remove(stroke.id, "clear-freehand");
       },
       undo: () => {
         for (const stroke of strokes) this.ink.add(stroke);
@@ -5533,7 +5536,8 @@ export class ViewerInkSession {
           this.commitActiveDrawBeforeSurfaceLoss(surface, "router-rebind-recovery");
         }
         this.pointerStart(surface, samples, route, event);
-        if (route === "draw" && surface.builder) {
+        if (route === "draw" && surface.builder && !surface.laserDraft) {
+          this.recordStrokeLifecycleStart(surface, event);
           this.recordPostUiProbeStage(event, "stroke-start", {
             page: surface.page.pageNumber,
             pointCount: surface.builder.preview(this.simplifyStrokesEnabled()).length,
@@ -6542,6 +6546,52 @@ export class ViewerInkSession {
     if (phase === "end" || phase === "cancel" || phase === "abort") this.finishPanPerformance(phase);
   }
 
+  private recordStrokeLifecycleStart(surface: PageSurface, event: PointerEvent): void {
+    const builder = surface.builder;
+    if (!builder || surface.laserDraft) return;
+    const penContactId = event.pointerType === "pen"
+      ? this.postUiInputProbe.handoffCorrelationId(event.pointerId)
+      : null;
+    this.rememberStrokePenContact(builder.id, penContactId);
+    this.logger.strokeLifecycle("stroke-route-start", {
+      strokeId: builder.id,
+      penContactId,
+      page: surface.page.pageNumber,
+      tool: builder.style.tool,
+      inputType: event.pointerType || "(empty)"
+    });
+    this.logger.strokeLifecycle("stroke-create", {
+      strokeId: builder.id,
+      penContactId,
+      page: surface.page.pageNumber,
+      tool: builder.style.tool,
+      inputType: event.pointerType || "(empty)"
+    });
+  }
+
+  private rememberStrokePenContact(strokeId: string, penContactId: string | null): void {
+    while (this.strokePenContactIds.size >= 128 && !this.strokePenContactIds.has(strokeId)) {
+      const oldest = this.strokePenContactIds.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.strokePenContactIds.delete(oldest);
+    }
+    this.strokePenContactIds.set(strokeId, penContactId);
+  }
+
+  private recordInkLifecycle(event: InkLifecycleEvent): void {
+    const penContactId = this.strokePenContactIds.get(event.stroke.id) ?? null;
+    this.logger.strokeLifecycle(event.phase, {
+      strokeId: event.stroke.id,
+      penContactId,
+      page: event.stroke.page,
+      tool: event.stroke.tool,
+      strokeCountBefore: event.strokeCountBefore,
+      strokeCountAfter: event.strokeCountAfter,
+      modelPresent: event.modelPresent,
+      ...(event.reason ? { reason: event.reason } : {})
+    });
+  }
+
   private finishStrokePerformance(surface: PageSurface, outcome: string): void {
     const profile = surface.strokePerformance;
     if (!profile) return;
@@ -7169,6 +7219,15 @@ export class ViewerInkSession {
       this.ensureLaserFadeLoop();
     } else {
       const tool = resolveDrawingTool(this.activeTool());
+      const penContactId = this.strokePenContactIds.get(stroke.id) ?? null;
+      this.logger.strokeLifecycle("stroke-pointerup", {
+        strokeId: stroke.id,
+        penContactId,
+        page: stroke.page,
+        tool,
+        termination,
+        terminalDetail: terminalDetail ?? null
+      });
       this.logger.inkRenderer(surface.page.pageNumber, {
         tool,
         pointCount: stroke.points.length,
@@ -7178,6 +7237,14 @@ export class ViewerInkSession {
         committedRenderer: "tool-renderer"
       });
       this.executeHistory(new AddStrokeCommand(this.ink, stroke), stroke.page);
+      this.logger.strokeLifecycle("stroke-commit", {
+        strokeId: stroke.id,
+        penContactId,
+        page: stroke.page,
+        tool,
+        termination,
+        modelPresent: this.ink.page(stroke.page).some((candidate) => candidate.id === stroke.id)
+      });
       this.lastPointerPdf = stroke.points.at(-1)
         ? { x: stroke.points.at(-1)!.x, y: stroke.points.at(-1)!.y }
         : this.lastPointerPdf;
@@ -8379,7 +8446,7 @@ export class ViewerInkSession {
     this.executeHistory({
       label: "Delete annotations",
       execute: () => {
-        strokes.forEach((stroke) => this.ink.remove(stroke.id));
+        strokes.forEach((stroke) => this.ink.remove(stroke.id, "selection-delete"));
         texts.forEach((text) => this.texts.remove(text.id));
       },
       undo: () => {
@@ -8438,7 +8505,7 @@ export class ViewerInkSession {
     this.executeHistory({
       label: "Paste annotations",
       execute: () => { pasted.forEach((stroke) => this.ink.add(stroke)); pastedTexts.forEach((text) => this.texts.add(text)); },
-      undo: () => { pasted.forEach((stroke) => this.ink.remove(stroke.id)); pastedTexts.forEach((text) => this.texts.remove(text.id)); }
+      undo: () => { pasted.forEach((stroke) => this.ink.remove(stroke.id, "history-undo-paste")); pastedTexts.forEach((text) => this.texts.remove(text.id)); }
     }, targetPage);
     this.selected = pasted;
     this.selectedTexts = pastedTexts;
@@ -8472,7 +8539,7 @@ export class ViewerInkSession {
     const command: Command = {
       label: "Duplicate annotations",
       execute: () => { duplicates.forEach((stroke) => this.ink.add(stroke)); textDuplicates.forEach((text) => this.texts.add(text)); },
-      undo: () => { duplicates.forEach((stroke) => this.ink.remove(stroke.id)); textDuplicates.forEach((text) => this.texts.remove(text.id)); }
+      undo: () => { duplicates.forEach((stroke) => this.ink.remove(stroke.id, "history-undo-duplicate")); textDuplicates.forEach((text) => this.texts.remove(text.id)); }
     };
     this.executeHistory(command, this.selectionPage);
     this.selected = duplicates;

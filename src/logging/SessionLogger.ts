@@ -344,6 +344,20 @@ export class SessionLogger {
     });
   }
 
+  /** Bounded stroke identity and in-memory model lifecycle diagnostics. */
+  strokeLifecycle(
+    phase: "stroke-route-start" | "stroke-create" | "stroke-model-insert" | "stroke-pointerup" | "stroke-commit" | "stroke-model-remove",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit("info", "stroke lifecycle", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      phase,
+      ...details
+    });
+  }
+
   /** One bounded summary per completed plugin-participating pan burst. */
   panProfile(details: Record<string, unknown>): void {
     this.emit("info", "ink pan profile", {

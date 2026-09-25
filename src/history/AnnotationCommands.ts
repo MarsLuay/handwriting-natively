@@ -7,7 +7,7 @@ export class AddStrokeCommand implements Command {
   readonly label = "Add stroke";
   constructor(private readonly session: InkSession, private readonly stroke: InkStroke) {}
   execute(): void { this.session.add(this.stroke); }
-  undo(): void { this.session.remove(this.stroke.id); }
+  undo(): void { this.session.remove(this.stroke.id, "history-undo"); }
 }
 
 export class AddStrokesCommand implements Command {
@@ -15,14 +15,14 @@ export class AddStrokesCommand implements Command {
   private readonly strokes: InkStroke[];
   constructor(private readonly session: InkSession, strokes: readonly InkStroke[]) { this.strokes = [...strokes]; }
   execute(): void { this.strokes.forEach((stroke) => this.session.add(stroke)); }
-  undo(): void { this.strokes.forEach((stroke) => this.session.remove(stroke.id)); }
+  undo(): void { this.strokes.forEach((stroke) => this.session.remove(stroke.id, "history-undo")); }
 }
 
 export class DeleteStrokesCommand implements Command {
   readonly label = "Delete strokes";
   private readonly strokes: InkStroke[];
   constructor(private readonly session: InkSession, strokes: readonly InkStroke[]) { this.strokes = [...strokes]; }
-  execute(): void { this.strokes.forEach((stroke) => this.session.remove(stroke.id)); }
+  execute(): void { this.strokes.forEach((stroke) => this.session.remove(stroke.id, "delete-strokes")); }
   undo(): void { this.strokes.forEach((stroke) => this.session.add(stroke)); }
 }
 
@@ -36,8 +36,8 @@ export class ReplacePageStrokesCommand implements Command {
     this.after = [...after];
   }
 
-  execute(): void { this.session.replacePage(this.page, this.after); }
-  undo(): void { this.session.replacePage(this.page, this.before); }
+  execute(): void { this.session.replacePage(this.page, this.after, "erase-stroke-segments"); }
+  undo(): void { this.session.replacePage(this.page, this.before, "history-undo-erase-stroke-segments"); }
 }
 
 export class ReplaceStrokesCommand implements Command {

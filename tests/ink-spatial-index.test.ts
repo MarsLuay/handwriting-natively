@@ -45,6 +45,20 @@ describe("ink spatial index", () => {
     expect(session.pageIntersecting(1, { minX: 350, minY: 350, maxX: 450, maxY: 450 }).map((item) => item.id)).toEqual(["three"]);
   });
 
+  it("emits bounded insert and explicit removal lifecycle events", () => {
+    const events: Array<{ phase: string; stroke: InkStroke; reason?: string; modelPresent: boolean }> = [];
+    const session = new InkSession([], (event) => events.push(event));
+    const created = stroke("created", 1, 20, 20);
+
+    session.add(created);
+    session.remove(created.id, "selection-delete");
+
+    expect(events).toEqual([
+      expect.objectContaining({ phase: "stroke-model-insert", stroke: created, modelPresent: true }),
+      expect.objectContaining({ phase: "stroke-model-remove", stroke: created, reason: "selection-delete", modelPresent: false })
+    ]);
+  });
+
   it("ignores malformed or empty strokes without poisoning nearby queries", () => {
     const malformed = stroke("bad", 1, 0, 0);
     malformed.points = [];
