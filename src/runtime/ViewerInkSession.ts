@@ -16,6 +16,7 @@ import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMuta
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
 import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
+import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type DocumentInputOwnershipHandle } from "../input/DocumentInputOwnership";
 import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
 import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
 import {
@@ -960,8 +961,15 @@ export class ViewerInkSession {
   /** Last applied browser direct-manipulation policy for mounted PDF pages. */
   private touchDrawPolicyEnabled: boolean | null = null;
   private readonly pointerProbeAbort = new AbortController();
+  private readonly documentInputOwnerId = `session-${this.viewerGeneration}`;
+  private readonly documentInputRegistrationSource = "ViewerInkSession.installPointerProbe";
+  private documentInputOwnership: DocumentInputOwnershipHandle | null = null;
+  private documentInputOwnershipRevoked = false;
   /** Bounded raw browser contact correlation; observation only, never routing ownership. */
-  private readonly physicalContactTracker = new PhysicalContactTracker();
+  private readonly physicalContactTracker = new PhysicalContactTracker(`physical-contact-${this.documentInputOwnerId}`);
+  /** A browser event object must never be processed twice by one collector. */
+  private readonly seenPhysicalPointerEvents = new WeakSet<PointerEvent>();
+  private readonly seenPhysicalTouchEvents = new WeakSet<TouchEvent>();
   /** Links a live PointerEvent id to the bounded physical-contact trace. */
   private readonly physicalContactIdsByPointer = new Map<number, string>();
   /** Dedup document fallback vs page-router handleDown by pointer and router generation. */
@@ -1248,6 +1256,12 @@ export class ViewerInkSession {
 
   private installPointerProbe(adapter: ViewerInkSessionOptions["adapter"]): void {
     const doc = adapter.host.ownerDocument;
+    this.documentInputOwnership = acquireDocumentInputOwnership(doc, {
+      ownerId: this.documentInputOwnerId,
+      sessionGeneration: this.viewerGeneration,
+      registrationSource: this.documentInputRegistrationSource,
+      onReplaced: (reason) => this.revokeDocumentInputOwnership(reason)
+    });
     const options = { capture: true, signal: this.pointerProbeAbort.signal };
 
     const within = (target: EventTarget | null): boolean => {
@@ -1262,6 +1276,31 @@ export class ViewerInkSession {
     this.installWheelProbes(doc, options, within, adapter);
     this.installGestureProbes(doc, options, within);
     this.installUiShellMutationWatch(doc);
+  }
+
+  private revokeDocumentInputOwnership(reason: "replacement" | "released"): void {
+    if (this.documentInputOwnershipRevoked) return;
+    this.documentInputOwnershipRevoked = true;
+    this.logger.inputLifecycleEvent("document-input-ownership-revoked", {
+      ownerId: this.documentInputOwnerId,
+      collectorId: this.documentInputOwnership?.collectorId ?? null,
+      sessionGeneration: this.viewerGeneration,
+      reason,
+      registrationSource: this.documentInputRegistrationSource
+    });
+    this.pointerProbeAbort.abort();
+    this.viewerMousePan.destroy();
+    for (const surface of this.surfaces.values()) {
+      surface.router?.destroy();
+      surface.router = null;
+      this.clearTouchDrawPolicy(surface.page.element);
+      this.releaseInputOwner(surface.page.element);
+    }
+    this.ownedInputPages.clear();
+    this.uiShellMutationObserver?.disconnect();
+    this.uiShellMutationObserver = null;
+    this.physicalContactIdsByPointer.clear();
+    this.clearPostUiProbeTimer();
   }
 
   private noteUiInput(event: PointerEvent): void {
@@ -1906,6 +1945,11 @@ export class ViewerInkSession {
       const contact = record.contact;
       this.logger.pointerSeen({
         source: "physical-contact",
+        collectorId: this.documentInputOwnership?.collectorId ?? null,
+        ownerId: this.documentInputOwnerId,
+        sessionGeneration: this.viewerGeneration,
+        registrationScope: "document",
+        registrationSource: this.documentInputRegistrationSource,
         phase: record.phase,
         physicalContactId: contact.physicalContactId,
         representation: contact.representation,
@@ -1945,6 +1989,8 @@ export class ViewerInkSession {
     eventType: RawPointerContactSample["eventType"]
   ): void {
     if (!(this.options.debugEnabled?.() ?? false)) return;
+    if (this.seenPhysicalPointerEvents.has(event)) return;
+    this.seenPhysicalPointerEvents.add(event);
     const now = Date.now();
     const sample = this.rawPointerContactSample(event, eventType);
     const records = this.physicalContactTracker.expire(now);
@@ -1961,6 +2007,8 @@ export class ViewerInkSession {
     eventType: RawTouchContactEvent["eventType"]
   ): void {
     if (!(this.options.debugEnabled?.() ?? false)) return;
+    if (this.seenPhysicalTouchEvents.has(event)) return;
+    this.seenPhysicalTouchEvents.add(event);
     const now = Date.now();
     const raw = this.rawTouchContactEvent(event, eventType);
     const records = this.physicalContactTracker.expire(now);
@@ -4536,6 +4584,7 @@ export class ViewerInkSession {
       toolbarPlacement: placement,
       pageCount: Math.min(999, this.options.adapter.pages().length),
       currentPage,
+      documentInputOwnership: documentInputOwnershipSnapshot(this.options.adapter.host.ownerDocument),
       ...(this.lastAddPageOperationId ? { addPageOperationId: this.lastAddPageOperationId } : {}),
       ...details
     };
@@ -5504,12 +5553,13 @@ export class ViewerInkSession {
   /** Bounded ownership state for plugin-level session registry diagnostics. */
   getUiLifecycleSnapshot(reason = "session-registry"): Record<string, unknown> {
     const pageRouters = [...this.surfaces.values()].filter((surface) => surface.router).length;
+    const ownsDocumentInput = this.documentInputOwnership?.isOwner() === true && !this.pointerProbeAbort.signal.aborted;
     const activeInputCollectors = {
-      documentProbeListener: this.pointerProbeAbort.signal.aborted ? 0 : 1,
+      documentProbeListener: ownsDocumentInput ? 1 : 0,
       pageRouters,
       ownedInputPages: this.ownedInputPages.size,
       physicalContactPointers: this.physicalContactIdsByPointer.size,
-      viewerMousePan: this.destroyed ? 0 : 1
+      viewerMousePan: ownsDocumentInput && !this.destroyed ? 1 : 0
     };
     const base = (() => {
       try {
@@ -5891,6 +5941,9 @@ export class ViewerInkSession {
 
   async destroy(options: { silent?: boolean; alreadyPersisted?: boolean } = {}): Promise<boolean> {
     if (this.destroyed) return true;
+    // Remove document-level probes before any persistence/close await so a
+    // registry removal cannot leave a stale session observing the next event.
+    this.revokeDocumentInputOwnership("released");
     this.syncEffectiveDrawState(options.silent ? "session-destroy" : "plugin-unload", "lifecycle");
     this.finishPanPerformance(options.silent ? "session-destroy" : "plugin-unload");
     this.releasePageMutationShield("session-destroy");
@@ -6000,6 +6053,8 @@ export class ViewerInkSession {
     this.uiShellSnapshots.clear();
     this.uiShellMutationObserver?.disconnect();
     this.uiShellMutationObserver = null;
+    this.documentInputOwnership?.release();
+    this.documentInputOwnership = null;
     this.pointerProbeAbort.abort();
     this.toolbar.destroy();
     this.options.adapter.destroy();
