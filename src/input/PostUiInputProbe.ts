@@ -14,6 +14,8 @@ export type PostUiProbeOutcome =
   | "pen-routing-regression"
   | "post-tool-change-routing-regression";
 
+export type PostUiProbeOutcomeClass = "classification" | "routing" | "annotation-native-conflict" | "lifecycle";
+
 export type PostUiProbeStage =
   | "document"
   | "document-capture"
@@ -43,9 +45,16 @@ export interface PostUiProbeArmContext {
   lastPageReplacementAt?: number | null;
 }
 
+export interface PostUiProbeTraceFrame {
+  at: number;
+  stage: PostUiProbeStage;
+  details: Record<string, unknown>;
+}
+
 export interface PostUiProbeContactSummary {
   armId: string;
   correlationId: string;
+  physicalContactId: string | null;
   penContactId: string;
   pointerId: number;
   pointerType: string;
@@ -57,6 +66,8 @@ export interface PostUiProbeContactSummary {
   fallbackConsidered: boolean;
   fallbackEligible: boolean | null;
   fallbackRejectedReason: string | null;
+  lastObservedStage: PostUiProbeStage | null;
+  rollingContext: PostUiProbeTraceFrame[];
   stages: PostUiProbeStage[];
   route: string | null;
   routeReason: string | null;
@@ -74,6 +85,7 @@ export interface PostUiProbeResult {
   correlationId: string | null;
   penContactId: string | null;
   outcome: PostUiProbeOutcome;
+  outcomeClass: PostUiProbeOutcomeClass;
   elapsedMs: number;
   pointerDownCount: number;
   observedPointerTypes: string[];
@@ -85,6 +97,7 @@ export interface PostUiProbeResult {
 interface ProbeContact {
   armId: string;
   correlationId: string;
+  physicalContactId: string | null;
   pointerId: number;
   pointerType: string;
   startedAt: number;
@@ -94,6 +107,8 @@ interface ProbeContact {
   fallbackConsidered: boolean;
   fallbackEligible: boolean | null;
   fallbackRejectedReason: string | null;
+  lastObservedStage: PostUiProbeStage | null;
+  rollingContext: PostUiProbeTraceFrame[];
   stages: PostUiProbeStage[];
   route: string | null;
   routeReason: string | null;
@@ -129,6 +144,7 @@ export class PostUiInputProbe {
   static readonly WINDOW_MS = 1_500;
   static readonly MAX_POINTER_DOWNS = 4;
   static readonly MAX_HANDOFF_CONTACTS = 8;
+  static readonly MAX_TRACE_CONTEXT = 8;
 
   private sequence = 0;
   private handoffSequence = 0;
@@ -163,7 +179,12 @@ export class PostUiInputProbe {
     return this.active?.armId ?? null;
   }
 
-  pointerDown(now: number, pointerId: number, pointerType: string): PostUiProbeContactSummary | null {
+  pointerDown(
+    now: number,
+    pointerId: number,
+    pointerType: string,
+    details: Record<string, unknown> = {}
+  ): PostUiProbeContactSummary | null {
     const active = this.active;
     if (!active || now >= active.expiresAt || !active.acceptingContacts) return null;
     if (active.pointerDownCount >= PostUiInputProbe.MAX_POINTER_DOWNS) return null;
@@ -180,7 +201,7 @@ export class PostUiInputProbe {
       pointerId,
       normalizedType,
       normalizedType === "pen" ? ++active.penContactCount : null,
-      { documentSeen: true }
+      { documentSeen: true, ...details }
     );
     active.contacts.set(pointerId, contact);
     return this.summary(contact, now);
@@ -234,7 +255,7 @@ export class PostUiInputProbe {
   ): PostUiProbeContactSummary | null {
     const contact = this.handoffContacts.get(pointerId);
     if (!contact || contact.finalized) return null;
-    this.applyStage(contact, stage, details);
+    this.applyStage(contact, stage, details, now);
     return this.summary(contact, now);
   }
 
@@ -247,7 +268,7 @@ export class PostUiInputProbe {
   ): PostUiProbeResult | null {
     const contact = this.handoffContacts.get(pointerId);
     if (!contact || contact.finalized) return null;
-    this.applyStage(contact, "terminal", { ...details, terminal });
+    this.applyStage(contact, "terminal", { ...details, terminal }, now);
     contact.finalized = true;
     const result = this.resultWithoutContext(contact, outcome ?? this.outcomeFor(contact), now, details);
     this.handoffContacts.delete(pointerId);
@@ -277,7 +298,7 @@ export class PostUiInputProbe {
   ): PostUiProbeContactSummary | null {
     const contact = this.active?.contacts.get(pointerId);
     if (!contact || contact.finalized) return null;
-    this.applyStage(contact, stage, details);
+    this.applyStage(contact, stage, details, now);
     if (stage === "stroke-start" && this.active) this.active.acceptingContacts = false;
     return this.summary(contact, now);
   }
@@ -291,7 +312,7 @@ export class PostUiInputProbe {
     const active = this.active;
     const contact = active?.contacts.get(pointerId);
     if (!active || !contact || contact.finalized) return null;
-    this.applyStage(contact, "terminal", { ...details, terminal });
+    this.applyStage(contact, "terminal", { ...details, terminal }, now);
     contact.finalized = true;
     if (contact.pointerType !== "pen") return null;
     return this.result(active, contact, this.outcomeFor(contact), now, details);
@@ -306,7 +327,7 @@ export class PostUiInputProbe {
     const active = this.active;
     const contact = active?.contacts.get(pointerId);
     if (!active || !contact || contact.finalized) return null;
-    this.applyStage(contact, "terminal", { ...details, terminal: "pointerdown", outcome });
+    this.applyStage(contact, "terminal", { ...details, terminal: "pointerdown", outcome }, now);
     contact.finalized = true;
     if (contact.pointerType !== "pen") return null;
     return this.result(active, contact, outcome, now, details);
@@ -334,6 +355,7 @@ export class PostUiInputProbe {
         correlationId: null,
         penContactId: null,
         outcome: "post-ui-probe-expired-no-pen",
+        outcomeClass: "classification",
         elapsedMs: Math.max(0, now - active.armedAt),
         pointerDownCount: active.pointerDownCount,
         observedPointerTypes,
@@ -360,9 +382,16 @@ export class PostUiInputProbe {
     penContactIndex: number | null,
     details: Record<string, unknown>
   ): ProbeContact {
+    const physicalContactId = typeof details.physicalContactId === "string" ? details.physicalContactId : null;
+    const initialTrace: PostUiProbeTraceFrame = {
+      at: startedAt,
+      stage: "document",
+      details: boundedTraceDetails(details)
+    };
     return {
       armId,
       correlationId,
+      physicalContactId,
       pointerId,
       pointerType,
       startedAt,
@@ -372,6 +401,8 @@ export class PostUiInputProbe {
       fallbackConsidered: false,
       fallbackEligible: null,
       fallbackRejectedReason: null,
+      lastObservedStage: "document",
+      rollingContext: [initialTrace],
       stages: ["document"],
       route: null,
       routeReason: null,
@@ -387,16 +418,21 @@ export class PostUiInputProbe {
     };
   }
 
-  private applyStage(contact: ProbeContact, stage: PostUiProbeStage, details: Record<string, unknown>): void {
+  private applyStage(contact: ProbeContact, stage: PostUiProbeStage, details: Record<string, unknown>, at: number): void {
     if (!contact.stages.includes(stage)) contact.stages.push(stage);
+    contact.lastObservedStage = stage;
+    contact.rollingContext.push({ at, stage, details: boundedTraceDetails(details) });
+    if (contact.rollingContext.length > PostUiInputProbe.MAX_TRACE_CONTEXT) {
+      contact.rollingContext.splice(0, contact.rollingContext.length - PostUiInputProbe.MAX_TRACE_CONTEXT);
+    }
     Object.assign(contact.details, details);
     if (stage === "document" || stage === "document-capture") contact.documentSeen = true;
     if (stage === "router-received") contact.routerReceived = true;
     if (stage === "fallback") {
       contact.fallbackConsidered = details.fallbackConsidered !== false;
       contact.fallbackEligible = typeof details.fallbackEligible === "boolean" ? details.fallbackEligible : contact.fallbackEligible;
-      if (typeof details.fallbackRejectedReason === "string") contact.fallbackRejectedReason = details.fallbackRejectedReason;
     }
+    if (typeof details.fallbackRejectedReason === "string") contact.fallbackRejectedReason = details.fallbackRejectedReason;
     if (typeof details.page === "number") contact.page = details.page;
     if (typeof details.routerGeneration === "number") contact.routerGeneration = details.routerGeneration;
     if (typeof details.route === "string") contact.route = details.route;
@@ -430,6 +466,17 @@ export class PostUiInputProbe {
     return "post-ui-pen-cancelled-before-ink";
   }
 
+  private outcomeClass(outcome: PostUiProbeOutcome): PostUiProbeOutcomeClass {
+    if (outcome === "post-ui-probe-expired-no-pen" || outcome === "post-ui-pen-missing-before-document-listener") {
+      return "classification";
+    }
+    if (outcome === "post-ui-pen-routed-native" || outcome === "post-ui-pen-entered-pan" || outcome === "post-ui-pen-ui-occluded") {
+      return "annotation-native-conflict";
+    }
+    if (outcome === "post-ui-pen-success" || outcome === "post-ui-pen-cancelled-before-ink") return "lifecycle";
+    return "routing";
+  }
+
   private result(
     active: ActiveProbe,
     contact: ProbeContact,
@@ -442,12 +489,24 @@ export class PostUiInputProbe {
       correlationId: contact.correlationId,
       penContactId: contact.correlationId,
       outcome,
+      outcomeClass: this.outcomeClass(outcome),
       elapsedMs: Math.max(0, now - active.armedAt),
       pointerDownCount: active.pointerDownCount,
       observedPointerTypes: [...active.observedPointerTypes],
       contactCount: active.contacts.size,
       contact: this.summary(contact, now),
-      details: { ...this.contextDetails(active), ...contact.details, ...details }
+      details: {
+        ...this.contextDetails(active),
+        ...contact.details,
+        physicalContactId: contact.physicalContactId,
+        trace: {
+          physicalContactId: contact.physicalContactId,
+          lastObservedStage: contact.lastObservedStage,
+          fallbackRejectedReason: contact.fallbackRejectedReason,
+          rollingContext: contact.rollingContext
+        },
+        ...details
+      }
     };
   }
 
@@ -462,12 +521,23 @@ export class PostUiInputProbe {
       correlationId: contact.correlationId,
       penContactId: contact.correlationId,
       outcome,
+      outcomeClass: this.outcomeClass(outcome),
       elapsedMs: Math.max(0, now - contact.startedAt),
       pointerDownCount: 1,
       observedPointerTypes: [contact.pointerType],
       contactCount: 1,
       contact: this.summary(contact, now),
-      details: { ...contact.details, ...details }
+      details: {
+        ...contact.details,
+        physicalContactId: contact.physicalContactId,
+        trace: {
+          physicalContactId: contact.physicalContactId,
+          lastObservedStage: contact.lastObservedStage,
+          fallbackRejectedReason: contact.fallbackRejectedReason,
+          rollingContext: contact.rollingContext
+        },
+        ...details
+      }
     };
   }
 
@@ -492,6 +562,7 @@ export class PostUiInputProbe {
     return {
       armId: contact.armId,
       correlationId: contact.correlationId,
+      physicalContactId: contact.physicalContactId,
       penContactId: contact.correlationId,
       pointerId: contact.pointerId,
       pointerType: contact.pointerType,
@@ -503,6 +574,11 @@ export class PostUiInputProbe {
       fallbackConsidered: contact.fallbackConsidered,
       fallbackEligible: contact.fallbackEligible,
       fallbackRejectedReason: contact.fallbackRejectedReason,
+      lastObservedStage: contact.lastObservedStage,
+      rollingContext: contact.rollingContext.map((frame) => ({
+        ...frame,
+        details: { ...frame.details }
+      })),
       stages: [...contact.stages],
       route: contact.route,
       routeReason: contact.routeReason,
@@ -515,4 +591,24 @@ export class PostUiInputProbe {
       terminal: contact.terminal
     };
   }
+}
+
+function boundedTraceDetails(details: Record<string, unknown>): Record<string, unknown> {
+  const bounded: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(details).slice(0, 32)) {
+    bounded[key] = boundedTraceValue(value, 0);
+  }
+  return bounded;
+}
+
+function boundedTraceValue(value: unknown, depth: number): unknown {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (depth >= 3) return "[bounded]";
+  if (Array.isArray(value)) return value.slice(0, 12).map((item) => boundedTraceValue(item, depth + 1));
+  if (typeof value !== "object") return "[bounded]";
+  const bounded: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value).slice(0, 24)) {
+    bounded[key] = boundedTraceValue(child, depth + 1);
+  }
+  return bounded;
 }

@@ -474,6 +474,19 @@ export class SessionLogger {
     });
   }
 
+  /** One terminal, bounded anomaly summary for a failed/conflicting physical contact. */
+  physicalContactTrace(details: Record<string, unknown> = {}): void {
+    const outcome = typeof details.outcome === "string" ? details.outcome : "";
+    if (!outcome || outcome === "post-ui-pen-success") return;
+    this.emit("warn", "physical contact routing trace", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      phase: "terminal",
+      ...details
+    });
+  }
+
   /** Foreground UI lifecycle markers stay separate from pointer routing records. */
   uiSurface(phase: "open" | "close", details: Record<string, unknown> = {}): void {
     this.emit("info", "ui surface", {
