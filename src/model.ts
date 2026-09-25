@@ -174,7 +174,16 @@ export interface ToolPreferences {
   activePresetId: string | null;
 }
 
+export interface EnabledSurfaceSettings {
+  /** Handwriting integration capability switches; future surfaces stay schema-ready. */
+  pdf: boolean;
+  image: boolean;
+  markdown: boolean;
+}
+
 export interface PluginSettings {
+  /** Supported-content capability switches; missing legacy values default to enabled. */
+  enabledSurfaces: EnabledSurfaceSettings;
   autosave: boolean;
   autosaveDelayMs: number;
   saveWhenClosing: boolean;
@@ -281,6 +290,7 @@ export function createDefaultToolPreferences(): ToolPreferences {
 export function createDefaultSettings(configDir: string): PluginSettings {
   const root = configDir.replace(/\\/g, "/").replace(/\/+$/, "");
   return {
+  enabledSurfaces: { pdf: true, image: true, markdown: true },
   autosave: true,
   autosaveDelayMs: 750,
   saveWhenClosing: true,
@@ -340,6 +350,7 @@ export function mergeSettings(
     : defaults.pdfTemplatePath;
   const pressureProfile = cleaned.pressureProfile;
   const pressureCalibration = normalizePressureCalibration(cleaned.pressureCalibration, defaults.pressureCalibration);
+  const savedEnabledSurfaces = cleaned.enabledSurfaces as Partial<EnabledSurfaceSettings> | undefined;
   const savedToolPreferences = { ...(cleaned.toolPreferences ?? {}) } as Record<string, unknown>;
   delete savedToolPreferences.pan;
   // Shape recognition used to be a separate active tool. It is now an enabled-by-default
@@ -353,6 +364,11 @@ export function mergeSettings(
   const merged = {
     ...defaults,
     ...cleaned,
+    enabledSurfaces: {
+      pdf: savedEnabledSurfaces?.pdf !== false,
+      image: savedEnabledSurfaces?.image !== false,
+      markdown: savedEnabledSurfaces?.markdown !== false
+    },
     toolbarPlacement: toolbarPlacement === "left" || toolbarPlacement === "right" || toolbarPlacement === "main"
       ? toolbarPlacement
       : defaults.toolbarPlacement,

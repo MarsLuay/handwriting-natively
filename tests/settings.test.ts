@@ -93,6 +93,16 @@ describe("safe defaults", () => {
     expect(copied).toContain("Device pixel ratio: unavailable");
   });
 
+  it("defaults PDF handwriting on and preserves future surface switches", () => {
+    expect(DEFAULT_SETTINGS.enabledSurfaces).toEqual({ pdf: true, image: true, markdown: true });
+    expect(mergeSettings(undefined).enabledSurfaces.pdf).toBe(true);
+    expect(mergeSettings({ enabledSurfaces: { pdf: false } } as never).enabledSurfaces).toEqual({
+      pdf: false,
+      image: true,
+      markdown: true
+    });
+  });
+
   it("enables autosave", () => {
     expect(DEFAULT_SETTINGS.autosave).toBe(true);
     expect(DEFAULT_SETTINGS.autosaveDelayMs).toBe(750);
