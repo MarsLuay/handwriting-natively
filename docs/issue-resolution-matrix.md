@@ -70,7 +70,7 @@ Record plugin/Obsidian/runtime metadata, compatibility strategy, and copied boun
 
 Drawing presets are persisted, capped, selectable in one action, and editable from the drawing menu. Selecting a preset changes the active tool and settings together, so toolbar state and routed tool state cannot disagree. Stylus-first routing remains the default; mouse behavior remains explicit and touch stays native.
 
-Image annotation is not implemented as a second renderer. `ImageViewAdapter` now supplies the one-page `AnnotationSurface` implementation and reuses page-local ink, input, tools, sidecar identity, recovery, and lifecycle without converting the image to a PDF. PDF export, PDF.js find, page insertion/deletion, and scan actions remain unavailable on that surface; flattened image export, orientation/transparency, large-image memory, and unsupported HEIC/animated/SVG behavior remain follow-up evidence for #139/#25.
+Image annotation is not implemented as a second renderer. `ImageViewAdapter` supplies the one-page `AnnotationSurface` implementation for static PNG and JPEG/JPG files and reuses page-local ink, input, tools, sidecar identity, recovery, and lifecycle without converting the image to a PDF. The source image is read-only during annotation; browser-native displayed orientation is not transformed a second time, and the shared backing-store budget bounds handwriting canvases. PDF export, PDF.js find, page insertion/deletion, scan actions, and flattened image export remain unavailable on that surface. WebP, HEIC/HEIF, GIF, SVG, and other unsupported image views remain unannotated.
 
 ## Evidence boundary
 

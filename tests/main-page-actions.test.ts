@@ -20,6 +20,13 @@ describe("main PDF page actions", () => {
     expect(mainSource).toContain("this.embedChrome.delete(host)");
   });
 
+  it("gates image sessions on the durable image-surface switch", () => {
+    expect(mainSource).toContain("enabledSurfaces.image");
+    expect(mainSource).toContain("detachDisabledImageSessions");
+    expect(mainSource).toContain("imageHandwritingEnabled");
+    expect(mainSource).toContain("ImageViewAdapter.attach");
+  });
+
   it("wires thumbnail blank-page and delete actions through in-place callbacks", () => {
     expect(mainSource).toContain("onInsertPage: (pageNumber: number) => this.insertPageInPlace(file, pageNumber)");
     expect(mainSource).toContain("onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber)");
