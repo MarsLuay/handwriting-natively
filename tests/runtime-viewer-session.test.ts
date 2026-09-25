@@ -168,7 +168,13 @@ describe("viewer runtime tracer", () => {
     expect(dragMove.defaultPrevented).toBe(true);
 
     expect(adapter.toolbarHost.querySelector("[data-control='draw']")).toBeNull();
+    expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
+    settings.mouseLeftDragDraw = false;
+    session.updateMouseInputBindings();
     expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(false);
+    settings.mouseLeftDragDraw = true;
+    session.updateMouseInputBindings();
+    expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
 
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150));
@@ -739,8 +745,8 @@ describe("viewer runtime tracer", () => {
     });
 
     const quarantinePath = `${sourcePath}.corrupt-20260201T030405678Z`;
-    expect(notices).toEqual([`Malformed annotation data moved to ${quarantinePath}. Opened with empty annotations.`]);
-    expect(await files.read(quarantinePath)).toBe("{");
+    expect(notices).toEqual(["Malformed annotation data with no valid backup was removed; affected stores start empty. Opened with empty annotations."]);
+    expect(files.values.has(quarantinePath)).toBe(false);
     expect(files.values.has(sourcePath)).toBe(false);
     expect(logs).toContainEqual({
       event: "sidecar quarantined",
@@ -797,7 +803,7 @@ describe("viewer runtime tracer", () => {
 
     const quarantinePath = `${sourcePath}.corrupt-20260201T030405678Z`;
     expect(notices).toEqual([
-      `Malformed annotation data moved to ${quarantinePath}. Automatically restored sidecar from validated backup.`
+      `Malformed annotation data was moved to ${quarantinePath}. Automatically restored sidecar from validated backup.`
     ]);
     expect(await files.read(sourcePath)).toBe(await files.read(`debug/sidecar-${sourcePath.split("/").at(-1)}.backup`));
     expect(await files.read(quarantinePath)).toBe("\u0000\u0000");

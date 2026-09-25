@@ -172,10 +172,32 @@ describe("safe defaults", () => {
   it("defaults mouse input mode to pan and migrates mouseDragScroll", () => {
     expect(DEFAULT_SETTINGS.mouseInputMode).toBe("pan");
     expect(DEFAULT_SETTINGS.mouseDragScroll).toBe(true);
+    expect(DEFAULT_SETTINGS.mouseLeftDragDraw).toBe(true);
+    expect(DEFAULT_SETTINGS.mouseRightDragErase).toBe(false);
     expect(mergeSettings({ mouseDragScroll: false }).mouseInputMode).toBe("native");
     expect(mergeSettings({ mouseDragScroll: false }).mouseDragScroll).toBe(false);
     expect(mergeSettings({ mouseInputMode: "annotate" }).mouseDragScroll).toBe(false);
     expect(mergeSettings({ mouseInputMode: "annotate" }).mouseInputMode).toBe("annotate");
+  });
+
+  it("preserves mouse drag binding changes and migrates the legacy right-button eraser toggle", () => {
+    expect(mergeSettings({ mouseLeftDragDraw: false, mouseRightDragErase: true })).toMatchObject({
+      mouseLeftDragDraw: false,
+      mouseRightDragErase: true
+    });
+    expect(mergeSettings({
+      toolPreferences: { eraser: { eraseWithRightMouseButton: true } } as never
+    })).toMatchObject({
+      mouseRightDragErase: true,
+      toolPreferences: { eraser: { eraseWithRightMouseButton: true } }
+    });
+    expect(mergeSettings({
+      mouseRightDragErase: false,
+      toolPreferences: { eraser: { eraseWithRightMouseButton: true } } as never
+    })).toMatchObject({
+      mouseRightDragErase: false,
+      toolPreferences: { eraser: { eraseWithRightMouseButton: false } }
+    });
   });
 
   it("drops the retired finger-draw preference (fingers stay native; stylus annotates)", () => {

@@ -64,8 +64,8 @@ export interface PointerRouterCallbacks {
   activeTool(): ToolId;
   /** Event-aware annotation gate (pen/touch/mouse policy). Replaces global Draw mode. */
   canAnnotatePointer(event: PointerEvent): boolean;
-  /** True when primary mouse may annotate (cursor chrome / right-click eraser). */
-  mouseAnnotationEnabled?(): boolean;
+  /** True when the requested mouse button is bound to an annotation gesture. */
+  mouseAnnotationEnabled?(button?: number): boolean;
   rightMouseEraserEnabled?(): boolean;
   onStylusEraserStart?(): void;
   onStylusEraserEnd?(): void;
@@ -209,6 +209,12 @@ export class PointerRouter {
       if (multi) return { route: "touch-zoom-pan", reason: "multi-touch-native" };
       // Fingers always leave native scroll/pinch. Annotation is stylus + optional mouse only.
       return { route: "touch-pan", reason: "touch-native" };
+    }
+    if (event.pointerType === "mouse"
+      && this.callbacks.mouseAnnotationEnabled
+      && !isStylusEraserInput(event)
+      && !this.callbacks.mouseAnnotationEnabled(event.button)) {
+      return { route: "native", reason: "mouse-button-binding" };
     }
     if (!this.callbacks.canAnnotatePointer(event)) {
       return { route: "native", reason: "annotation-policy" };
@@ -869,7 +875,7 @@ export class PointerRouter {
   }
 
   private readonly suppressRightMouseEraserMenu = (event: MouseEvent): void => {
-    if (!this.callbacks.mouseAnnotationEnabled?.() || !this.callbacks.rightMouseEraserEnabled?.() || event.button !== 2) return;
+    if (!this.callbacks.mouseAnnotationEnabled?.(event.button) || !this.callbacks.rightMouseEraserEnabled?.() || event.button !== 2) return;
     event.preventDefault();
   };
 
@@ -930,7 +936,7 @@ export class PointerRouter {
   private paintDrawCursor(clientX: number, clientY: number, pointerType?: string): void {
     const tool = this.callbacks.activeTool();
     const type = pointerType ?? this.lastCursorPointerType ?? "mouse";
-    const pointerAllows = type === "pen" || this.callbacks.mouseAnnotationEnabled?.() === true;
+    const pointerAllows = type === "pen" || this.callbacks.mouseAnnotationEnabled?.(0) === true;
     const visible = pointerAllows && isInkDrawTool(tool);
     if (!visible) {
       this.hideDrawCursor();
@@ -960,7 +966,7 @@ export class PointerRouter {
 
   private paintEraserCursor(clientX: number, clientY: number, pointerType?: string): void {
     const type = pointerType ?? this.lastCursorPointerType ?? "mouse";
-    const pointerAllows = type === "pen" || this.callbacks.mouseAnnotationEnabled?.() === true;
+    const pointerAllows = type === "pen" || this.callbacks.mouseAnnotationEnabled?.(0) === true;
     const visible = pointerAllows && this.callbacks.activeTool() === "eraser";
     if (!visible) {
       this.hideEraserCursor();

@@ -699,6 +699,8 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
     const previousAutomaticAnnotationRecovery = this.inkSettings.automaticAnnotationRecovery;
     const previousAnnotationBackupPath = this.inkSettings.annotationBackupPath;
+    const previousMouseLeftDragDraw = this.inkSettings.mouseLeftDragDraw;
+    const previousMouseRightDragErase = this.inkSettings.mouseRightDragErase;
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
     await this.saveData(settings);
@@ -725,7 +727,9 @@ export default class NativePdfInkPlugin extends Plugin {
     this.vaultDebugLog.write("info", "plugin settings saved", {
       changedKeys: [
         ...(previousPlacement !== settings.toolbarPlacement ? ["toolbarPlacement"] : []),
-        ...(previousBoostedZoom !== settings.boostedPdfZoom ? ["boostedPdfZoom"] : [])
+        ...(previousBoostedZoom !== settings.boostedPdfZoom ? ["boostedPdfZoom"] : []),
+        ...(previousMouseLeftDragDraw !== settings.mouseLeftDragDraw ? ["mouseLeftDragDraw"] : []),
+        ...(previousMouseRightDragErase !== settings.mouseRightDragErase ? ["mouseRightDragErase"] : [])
       ]
     });
     if (previousPlacement !== settings.toolbarPlacement) {
@@ -733,6 +737,12 @@ export default class NativePdfInkPlugin extends Plugin {
     }
     if (previousBoostedZoom !== settings.boostedPdfZoom) {
       for (const session of this.allSessions()) session.setBoostedPdfZoom(settings.boostedPdfZoom);
+    }
+    if (
+      previousMouseLeftDragDraw !== settings.mouseLeftDragDraw ||
+      previousMouseRightDragErase !== settings.mouseRightDragErase
+    ) {
+      for (const session of this.allSessions()) session.updateMouseInputBindings();
     }
     if (
       previousAutomaticAnnotationRecovery !== settings.automaticAnnotationRecovery ||
@@ -1227,6 +1237,8 @@ export default class NativePdfInkPlugin extends Plugin {
       notice: (message) => new Notice(message),
       decideUnsaved: () => this.decideUnsaved(),
       mouseDragScrollEnabled: () => this.inkSettings.mouseDragScroll,
+      mouseLeftDragDrawEnabled: () => this.inkSettings.mouseLeftDragDraw,
+      mouseRightDragEraseEnabled: () => this.inkSettings.mouseRightDragErase,
       pressureProfile: () => this.inkSettings.pressureProfile,
       pressureCalibration: () => this.inkSettings.pressureCalibration,
       simplifyStrokesEnabled: () => this.inkSettings.simplifyStrokes,
@@ -1433,7 +1445,8 @@ export default class NativePdfInkPlugin extends Plugin {
   private async saveToolPreferences(preferences: ToolPreferences): Promise<void> {
     this.inkSettings = {
       ...this.inkSettings,
-      toolPreferences: structuredClone(preferences)
+      toolPreferences: structuredClone(preferences),
+      mouseRightDragErase: preferences.eraser.eraseWithRightMouseButton
     };
     await this.saveData(this.inkSettings);
   }
