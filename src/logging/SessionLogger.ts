@@ -364,6 +364,9 @@ export class SessionLogger {
       | "stroke-serialization-omitted"
       | "stroke-persisted"
       | "stroke-reload-restoration"
+      | "stroke-pixel-region-pre"
+      | "stroke-pixel-region-post"
+      | "stroke-pixel-presence-check"
       | "stroke-lifecycle-regression",
     details: Record<string, unknown> = {}
   ): void {

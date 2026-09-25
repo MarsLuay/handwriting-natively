@@ -474,6 +474,30 @@ interface StrokePersistenceLifecycleState {
   lastPersistedRevision: string | null;
 }
 
+interface PixelEvidenceRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface PixelEvidenceSample {
+  available: boolean;
+  pixelCount: number;
+  nonTransparentPixels: number;
+  alphaSum: number;
+  reason?: string;
+}
+
+interface StrokePixelEvidenceState {
+  strokeId: string;
+  paintGeneration: number | null;
+  canvasGeneration: number | null;
+  region: PixelEvidenceRegion | null;
+  before: PixelEvidenceSample | null;
+  lastDelayedPaintGeneration: number | null;
+}
+
 interface StrokePerformanceState {
   startedAt: number;
   page: number;
@@ -764,7 +788,9 @@ export class ViewerInkSession {
   private readonly strokePenContactIds = new Map<string, string | null>();
   private readonly strokeRenderStates = new Map<string, StrokeRenderLifecycleState>();
   private readonly strokePersistenceStates = new Map<string, StrokePersistenceLifecycleState>();
+  private readonly strokePixelEvidenceStates = new Map<string, StrokePixelEvidenceState>();
   private readonly strokeRenderVerificationTimers = new Map<string, number>();
+  private readonly strokePixelVerificationTimers = new Map<string, number>();
   private nextPaintGeneration = 0;
   private readonly penScrollEvidence = new Map<number, PenScrollEvidence>();
   private postUiProbeTimer: number | null = null;
@@ -874,6 +900,7 @@ export class ViewerInkSession {
   private static readonly ZOOM_NATIVE_RENDER_QUIET_MS = 120;
   /** Detect back-to-back page paints during handoff (flash proxy). */
   private static readonly FLASH_DOUBLE_PAINT_MS = 50;
+  private static readonly PIXEL_EVIDENCE_MAX_EDGE = 192;
   private readonly lastPagePaintAt = new Map<number, { at: number; reason: string }>();
   private pasteGeneration = 0;
   private readonly resizeObserver: ResizeObserver | null;
@@ -5248,6 +5275,8 @@ export class ViewerInkSession {
     }
     for (const timer of this.strokeRenderVerificationTimers.values()) window.clearTimeout(timer);
     this.strokeRenderVerificationTimers.clear();
+    for (const timer of this.strokePixelVerificationTimers.values()) window.clearTimeout(timer);
+    this.strokePixelVerificationTimers.clear();
     this.cancelZoomSettleSlice();
     this.cancelZoomOverlayLayout();
     this.cancelZoomCompositeRelease();
@@ -6722,6 +6751,204 @@ export class ViewerInkSession {
     };
     this.strokePersistenceStates.set(strokeId, state);
     return state;
+  }
+
+  private strokePixelEvidenceState(strokeId: string): StrokePixelEvidenceState {
+    const existing = this.strokePixelEvidenceStates.get(strokeId);
+    if (existing) return existing;
+    while (this.strokePixelEvidenceStates.size >= 256) {
+      const oldest = this.strokePixelEvidenceStates.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.strokePixelEvidenceStates.delete(oldest);
+    }
+    const state: StrokePixelEvidenceState = {
+      strokeId,
+      paintGeneration: null,
+      canvasGeneration: null,
+      region: null,
+      before: null,
+      lastDelayedPaintGeneration: null
+    };
+    this.strokePixelEvidenceStates.set(strokeId, state);
+    return state;
+  }
+
+  private pixelEvidenceRegion(surface: PageSurface, stroke: InkStroke, canvas: HTMLCanvasElement): PixelEvidenceRegion | null {
+    if (!canvas.width || !canvas.height || !stroke.points.length) return null;
+    const layout = this.pageLayout(surface);
+    const rect = surface.overlay.getBoundingClientRect();
+    const cssWidth = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
+    const cssHeight = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
+    const scaleX = canvas.width / cssWidth;
+    const scaleY = canvas.height / cssHeight;
+    const mapper = this.mapper(surface);
+    const points = stroke.points.map((point) => mapper.toViewport(point));
+    const minX = Math.min(...points.map((point) => point.x));
+    const maxX = Math.max(...points.map((point) => point.x));
+    const minY = Math.min(...points.map((point) => point.y));
+    const maxY = Math.max(...points.map((point) => point.y));
+    const padding = Math.max(2, stroke.width * this.displayScale(surface) + 2);
+    const rawLeft = Math.floor((minX - padding) * scaleX);
+    const rawTop = Math.floor((minY - padding) * scaleY);
+    const rawRight = Math.ceil((maxX + padding) * scaleX);
+    const rawBottom = Math.ceil((maxY + padding) * scaleY);
+    const clamp = (value: number, lower: number, upper: number): number => Math.max(lower, Math.min(upper, value));
+    const left = clamp(rawLeft, 0, Math.max(0, canvas.width - 1));
+    const top = clamp(rawTop, 0, Math.max(0, canvas.height - 1));
+    const right = clamp(rawRight, left + 1, canvas.width);
+    const bottom = clamp(rawBottom, top + 1, canvas.height);
+    const cap = ViewerInkSession.PIXEL_EVIDENCE_MAX_EDGE;
+    const width = Math.min(cap, Math.max(1, right - left));
+    const height = Math.min(cap, Math.max(1, bottom - top));
+    const centeredLeft = clamp(Math.floor((left + right - width) / 2), 0, Math.max(0, canvas.width - width));
+    const centeredTop = clamp(Math.floor((top + bottom - height) / 2), 0, Math.max(0, canvas.height - height));
+    return { x: centeredLeft, y: centeredTop, width, height };
+  }
+
+  private readPixelEvidence(context: CanvasRenderingContext2D, canvas: HTMLCanvasElement, region: PixelEvidenceRegion | null): PixelEvidenceSample {
+    if (!region || !canvas.width || !canvas.height) {
+      return { available: false, pixelCount: 0, nonTransparentPixels: 0, alphaSum: 0, reason: "affected-region-unavailable" };
+    }
+    try {
+      const data = context.getImageData(region.x, region.y, region.width, region.height).data;
+      let nonTransparentPixels = 0;
+      let alphaSum = 0;
+      for (let index = 3; index < data.length; index += 4) {
+        const alpha = data[index] ?? 0;
+        alphaSum += alpha;
+        if (alpha > 0) nonTransparentPixels += 1;
+      }
+      return {
+        available: true,
+        pixelCount: region.width * region.height,
+        nonTransparentPixels,
+        alphaSum
+      };
+    } catch (error) {
+      return {
+        available: false,
+        pixelCount: region.width * region.height,
+        nonTransparentPixels: 0,
+        alphaSum: 0,
+        reason: this.errorMessage(error)
+      };
+    }
+  }
+
+  private pixelEvidenceDetails(
+    stroke: InkStroke,
+    surface: PageSurface,
+    region: PixelEvidenceRegion | null,
+    sample: PixelEvidenceSample,
+    target: string
+  ): Record<string, unknown> {
+    return {
+      strokeId: stroke.id,
+      penContactId: this.strokePenContactIds.get(stroke.id) ?? null,
+      page: stroke.page,
+      tool: stroke.tool,
+      modelPresent: this.ink.page(stroke.page).some((candidate) => candidate.id === stroke.id),
+      canvasGeneration: surface.canvasGeneration,
+      paintGeneration: surface.paintGeneration,
+      pixelEvidenceAvailable: sample.available,
+      pixelSampleTarget: target,
+      pixelSampleCount: sample.pixelCount,
+      nonTransparentPixels: sample.nonTransparentPixels,
+      alphaSum: sample.alphaSum,
+      affectedRegionWidth: region?.width ?? 0,
+      affectedRegionHeight: region?.height ?? 0,
+      ...(sample.reason ? { reason: sample.reason } : {})
+    };
+  }
+
+  private beginStrokePixelEvidence(surface: PageSurface, stroke: InkStroke, canvas: HTMLCanvasElement, context: CanvasRenderingContext2D): void {
+    if (!this.logger.isEnabled()) return;
+    const state = this.strokePixelEvidenceState(stroke.id);
+    if (state.paintGeneration === surface.paintGeneration && state.region) return;
+    const region = this.pixelEvidenceRegion(surface, stroke, canvas);
+    const before = this.readPixelEvidence(context, canvas, region);
+    state.paintGeneration = surface.paintGeneration;
+    state.canvasGeneration = surface.canvasGeneration;
+    state.region = region;
+    state.before = before;
+    this.logger.strokeLifecycle("stroke-pixel-region-pre", {
+      ...this.pixelEvidenceDetails(stroke, surface, region, before, canvas === surface.canvas ? "committed-canvas" : "ink-layer"),
+      samplePhase: "before",
+      pixelVisibilityVerified: false
+    });
+  }
+
+  private finishStrokePixelEvidence(surface: PageSurface, stroke: InkStroke, canvas: HTMLCanvasElement, context: CanvasRenderingContext2D): void {
+    if (!this.logger.isEnabled()) return;
+    const state = this.strokePixelEvidenceState(stroke.id);
+    if (state.paintGeneration !== surface.paintGeneration || !state.region) return;
+    const after = this.readPixelEvidence(context, canvas, state.region);
+    const before = state.before;
+    const positiveDelta = Boolean(before?.available && after.available)
+      && (after.alphaSum > (before?.alphaSum ?? 0) || after.nonTransparentPixels > (before?.nonTransparentPixels ?? 0));
+    const visibleTarget = canvas === surface.canvas && canvas.isConnected;
+    const verified = visibleTarget && after.available && after.nonTransparentPixels > 0 && positiveDelta;
+    this.logger.strokeLifecycle("stroke-pixel-region-post", {
+      ...this.pixelEvidenceDetails(stroke, surface, state.region, after, visibleTarget ? "committed-canvas" : "ink-layer"),
+      samplePhase: "after",
+      beforePixelEvidenceAvailable: before?.available ?? false,
+      beforeNonTransparentPixels: before?.nonTransparentPixels ?? 0,
+      beforeAlphaSum: before?.alphaSum ?? 0,
+      pixelPresenceObserved: after.available && after.nonTransparentPixels > 0,
+      pixelVisibilityVerified: verified,
+      ...(verified ? {} : {
+        reason: !before?.available ? "pre-sample-unavailable"
+          : !after.available ? "post-sample-unavailable"
+            : !visibleTarget ? "render-target-not-connected"
+              : after.nonTransparentPixels === 0 ? "no-pixels-present"
+                : "no-positive-pixel-delta"
+      })
+    });
+    this.scheduleStrokePixelPresenceVerification(stroke.id, stroke.page);
+  }
+
+  private scheduleStrokePixelPresenceVerification(strokeId: string, page: number): void {
+    if (!this.logger.isEnabled()) return;
+    const existing = this.strokePixelVerificationTimers.get(strokeId);
+    if (existing !== undefined) window.clearTimeout(existing);
+    const state = this.strokePixelEvidenceStates.get(strokeId);
+    if (!state || state.lastDelayedPaintGeneration === state.paintGeneration) return;
+    const paintGeneration = state.paintGeneration;
+    if (paintGeneration === null) return;
+    state.lastDelayedPaintGeneration = paintGeneration;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) return;
+    const timer = view.setTimeout(() => {
+      this.strokePixelVerificationTimers.delete(strokeId);
+      if (this.destroyed) return;
+      const stroke = this.ink.page(page).find((candidate) => candidate.id === strokeId);
+      const surface = this.surfaces.get(page);
+      if (!stroke || !surface || !surface.canvas.width || !surface.canvas.height) {
+        this.logger.strokeLifecycle("stroke-pixel-presence-check", {
+          strokeId,
+          penContactId: this.strokePenContactIds.get(strokeId) ?? null,
+          page,
+          modelPresent: Boolean(stroke),
+          canvasGeneration: surface?.canvasGeneration ?? -1,
+          paintGeneration: surface?.paintGeneration ?? -1,
+          pixelEvidenceAvailable: false,
+          pixelVisibilityVerified: false,
+          reason: !stroke ? "stroke-model-absent" : !surface ? "surface-unavailable" : "canvas-unavailable",
+          verification: "delayed"
+        });
+        return;
+      }
+      const region = this.pixelEvidenceRegion(surface, stroke, surface.canvas);
+      const sample = this.readPixelEvidence(surface.context, surface.canvas, region);
+      const verified = Boolean(surface.canvas.isConnected && sample.available && sample.nonTransparentPixels > 0);
+      this.logger.strokeLifecycle("stroke-pixel-presence-check", {
+        ...this.pixelEvidenceDetails(stroke, surface, region, sample, "committed-canvas"),
+        pixelVisibilityVerified: verified,
+        verification: "delayed",
+        ...(verified ? {} : { reason: !sample.available ? "delayed-sample-unavailable" : !surface.canvas.isConnected ? "canvas-not-connected" : "no-pixels-present" })
+      });
+    }, 180);
+    this.strokePixelVerificationTimers.set(strokeId, timer);
   }
 
   private strokeRenderState(stroke: InkStroke): StrokeRenderLifecycleState {
@@ -9152,11 +9379,16 @@ export class ViewerInkSession {
     if (surface.strokePerformance && graphiteQuality === "full") surface.strokePerformance.vectorRepaints += 1;
     const previous = surface.context;
     surface.context = context;
+    const targetCanvas = context === surface.inkLayerContext && surface.inkLayer ? surface.inkLayer : surface.canvas;
     try {
       for (const stroke of strokes) {
         const drawn = this.movePreview?.find((item) => item.id === stroke.id) ?? stroke;
+        if (graphiteQuality === "full") this.beginStrokePixelEvidence(surface, stroke, targetCanvas, context);
         this.drawStroke(surface, drawn, this.selected.some((item) => item.id === stroke.id), graphiteQuality);
-        if (graphiteQuality === "full") this.recordStrokeRendered(surface, stroke);
+        if (graphiteQuality === "full") {
+          this.recordStrokeRendered(surface, stroke);
+          this.finishStrokePixelEvidence(surface, stroke, targetCanvas, context);
+        }
       }
     } finally {
       surface.context = previous;
