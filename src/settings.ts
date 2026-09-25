@@ -340,6 +340,27 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             }
           },
           {
+            name: "Automatic annotation recovery",
+            desc: "When annotation data is malformed, preserve the damaged file and restore the latest validated backup. Enabled by default.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.automaticAnnotationRecovery).onChange(async (value) => {
+                  await this.persistPatch({ automaticAnnotationRecovery: value });
+                })
+              );
+            }
+          },
+          {
+            name: "Annotation backup folder",
+            desc: "Vault-relative folder for validated sidecar and recovery backups. Defaults to the same folder as the vault debug log.",
+            render: (setting: Setting) => {
+              this.addFolderPathInput(setting, {
+                value: this.host.inkSettings.annotationBackupPath,
+                persist: async (annotationBackupPath) => this.persistPatch({ annotationBackupPath })
+              });
+            }
+          },
+          {
             name: "PDF template",
             desc: "Vault-relative PDF used for new handwritten notes. Only its first page is used; leave empty for blank US Letter paper.",
             render: (setting: Setting) => {
