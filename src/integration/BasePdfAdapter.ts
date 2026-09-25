@@ -206,19 +206,32 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     const page = this.locator.page(this.locator.currentPage()) ?? this.pages()[0];
     const scroller = this.scrollElement();
     const denominator = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
-    const viewerScale = this.compatibility.privateViewer?.currentScale;
+    const viewer = this.compatibility.privateViewer;
+    const viewerScale = viewer?.currentScale;
     const scale = typeof viewerScale === "number" && Number.isFinite(viewerScale) && viewerScale > 0
       ? viewerScale
       : (page?.scale ?? 1);
+    const scaleMode = viewer?.currentScaleValue;
     return {
       pageNumber: page?.pageNumber ?? 1,
       scrollFraction: Math.max(0, Math.min(1, scroller.scrollTop / denominator)),
       scale,
-      rotation: page?.rotation ?? 0
+      rotation: page?.rotation ?? 0,
+      ...(typeof scaleMode === "string" || typeof scaleMode === "number" ? { scaleMode } : {})
     };
   }
 
   restoreViewState(state: PdfViewState): void {
+    const viewer = this.compatibility.privateViewer;
+    if (viewer) {
+      try {
+        if (state.scaleMode !== undefined) viewer.currentScaleValue = state.scaleMode;
+        else if (Number.isFinite(state.scale) && state.scale > 0) viewer.currentScale = state.scale;
+      } catch {
+        // Some Obsidian PDF.js builds expose a read-only scale property.
+        viewer.updateScale?.({ scaleFactor: state.scale });
+      }
+    }
     const page = this.locator.page(state.pageNumber);
     page?.element.scrollIntoView?.({ block: "start" });
     const scroller = this.scrollElement();

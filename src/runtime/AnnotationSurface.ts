@@ -37,6 +37,8 @@ export interface AnnotationViewState {
   scrollFraction: number;
   scale: number;
   rotation: number;
+  /** PDF.js scale mode (`auto`, `page-fit`, etc.) when the host exposes it. */
+  scaleMode?: string | number;
 }
 
 /** Bounded evidence gate shared by adapters and the annotation runtime. */

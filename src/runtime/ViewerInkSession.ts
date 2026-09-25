@@ -381,6 +381,28 @@ export interface SessionDiagnostics {
   debug: DebugState;
 }
 
+export interface AddPageMutationRestoreState {
+  operationId: string;
+  startedAt: number;
+  capturedAt: number;
+  viewState: AnnotationViewState;
+  pageCountBefore: number;
+  currentPageBefore: number;
+  mountedPageNumbers: number[];
+  pageMountGenerationsBefore: Array<number | null>;
+  routerGenerationsBefore: number[];
+  viewerGenerationBefore: number | null;
+  pageDomIds: Array<number | null>;
+  canvasIds: Array<number | null>;
+  overlayIds: Array<number | null>;
+  pageRectsBefore: Array<Record<string, number> | null>;
+  viewportBefore: Record<string, number> | null;
+  scrollBefore: { left: number; top: number; width: number; height: number };
+  /** Runtime-only references used to detect stale connected generations. */
+  beforePageElements?: readonly HTMLElement[];
+  beforeOverlayElements?: readonly HTMLElement[];
+}
+
 export interface ViewerInkSessionOptions {
   adapter: AnnotationSurface;
   documentPath: string;
@@ -405,6 +427,12 @@ export interface ViewerInkSessionOptions {
   writeSvgExport?(this: void, name: string, svg: string): Promise<string | void>;
   /** Inserts a blank page at the requested one-indexed PDF position. */
   onInsertPage?(requestedPageNumber: number): Promise<number>;
+  /** Persists the pre-mutation view state across a native PDF reload. */
+  onAddPageMutationStart?(state: AddPageMutationRestoreState): void;
+  /** Clears a pending restore when the current viewer survived the mutation. */
+  onAddPageMutationResolved?(state: AddPageMutationRestoreState): void;
+  /** Restore captured Add Page state when a source-PDF rewrite recreated the viewer. */
+  restoredAddPageMutation?: AddPageMutationRestoreState;
   /** Opens the source picker and prepares an imported-page PDF without writing it. */
   onImportPages?(afterPage: number): Promise<ImportedPdfPages | null>;
   /** Opens the action-time camera/document review flow. */
@@ -3721,6 +3749,17 @@ export class ViewerInkSession {
       mobile: platform.mobile
     });
     session.lastKnownViewScale = options.adapter.getViewState().scale;
+    if (options.restoredAddPageMutation) {
+      const state = options.restoredAddPageMutation;
+      const details = session.addPageLifecycleDetails(state);
+      session.logger.addPageLifecycle("restored", details);
+      if (details.beforeScale !== details.afterScale || details.beforeScaleMode !== details.afterScaleMode) {
+        session.logger.addPageLifecycle("scale-changed", details);
+      }
+      if (details.staleSurfaceOverlap === true) {
+        session.logger.addPageLifecycle("stale-surface-overlap", details);
+      }
+    }
     return session;
   }
 
@@ -4506,6 +4545,110 @@ export class ViewerInkSession {
     }
   }
 
+  private addPageViewerGeneration(): number | null {
+    const candidate = this.options.adapter as AnnotationSurface & { viewerGeneration?: unknown };
+    return typeof candidate.viewerGeneration === "number" && Number.isFinite(candidate.viewerGeneration)
+      ? candidate.viewerGeneration
+      : null;
+  }
+
+  private captureAddPageMutationState(operationId: string, startedAt: number): AddPageMutationRestoreState {
+    const viewState = this.options.adapter.getViewState();
+    const pages = this.options.adapter.pages().slice(0, 64);
+    const mounted = [...this.surfaces.entries()].slice(0, 64);
+    const scroll = this.options.adapter.scrollElement();
+    return {
+      operationId,
+      startedAt,
+      capturedAt: Date.now(),
+      viewState,
+      pageCountBefore: this.options.adapter.pages().length,
+      currentPageBefore: viewState.pageNumber,
+      mountedPageNumbers: mounted.map(([pageNumber]) => pageNumber),
+      pageMountGenerationsBefore: pages.map((page) => page.mountGeneration ?? null),
+      routerGenerationsBefore: this.currentRouterGenerations(),
+      viewerGenerationBefore: this.addPageViewerGeneration(),
+      pageDomIds: pages.map((page) => getDebugNodeId(page.element)),
+      canvasIds: pages.map((page) => getDebugNodeId(pdfRenderCanvas(page.element))),
+      overlayIds: mounted.map(([, surface]) => getDebugNodeId(surface.overlay)),
+      pageRectsBefore: pages.map((page) => rectDetails(page.element)),
+      viewportBefore: rectDetails(this.options.adapter.root),
+      scrollBefore: {
+        left: scroll.scrollLeft,
+        top: scroll.scrollTop,
+        width: scroll.clientWidth,
+        height: scroll.clientHeight
+      },
+      beforePageElements: pages.map((page) => page.element),
+      beforeOverlayElements: mounted.map(([, surface]) => surface.overlay)
+    };
+  }
+
+  private addPageLifecycleDetails(state: AddPageMutationRestoreState): Record<string, unknown> {
+    const viewState = this.options.adapter.getViewState();
+    const pages = this.options.adapter.pages().slice(0, 64);
+    const mounted = [...this.surfaces.entries()].slice(0, 64);
+    const scroll = this.options.adapter.scrollElement();
+    const pageElements = new Set(pages.map((page) => page.element));
+    const overlayElements = new Set(mounted.map(([, surface]) => surface.overlay));
+    const stalePages = state.beforePageElements
+      ? state.beforePageElements.filter((element) => element.isConnected && !pageElements.has(element)).length
+      : null;
+    const staleOverlays = state.beforeOverlayElements
+      ? state.beforeOverlayElements.filter((element) => element.isConnected && !overlayElements.has(element)).length
+      : null;
+    return {
+      addPageOperationId: state.operationId,
+      startedAt: state.startedAt,
+      capturedAt: state.capturedAt,
+      elapsedMs: Math.max(0, Date.now() - state.startedAt),
+      pageCountBefore: state.pageCountBefore,
+      pageCountAfter: this.options.adapter.pages().length,
+      pageCountDelta: this.options.adapter.pages().length - state.pageCountBefore,
+      expectedPageCountDelta: 1,
+      currentPageBefore: state.currentPageBefore,
+      currentPageAfter: viewState.pageNumber,
+      beforeScale: Number(state.viewState.scale.toFixed(4)),
+      afterScale: Number(viewState.scale.toFixed(4)),
+      beforeScaleMode: state.viewState.scaleMode ?? null,
+      afterScaleMode: viewState.scaleMode ?? null,
+      beforeScrollFraction: Number(state.viewState.scrollFraction.toFixed(4)),
+      afterScrollFraction: Number(viewState.scrollFraction.toFixed(4)),
+      mountedPageNumbersBefore: state.mountedPageNumbers,
+      mountedPageNumbersAfter: mounted.map(([pageNumber]) => pageNumber),
+      pageMountGenerationsBefore: state.pageMountGenerationsBefore,
+      pageMountGenerationsAfter: pages.map((page) => page.mountGeneration ?? null),
+      routerGenerationsBefore: state.routerGenerationsBefore,
+      routerGenerationsAfter: this.currentRouterGenerations(),
+      viewerGenerationBefore: state.viewerGenerationBefore,
+      viewerGenerationAfter: this.addPageViewerGeneration(),
+      pageDomIdsBefore: state.pageDomIds,
+      pageDomIdsAfter: pages.map((page) => getDebugNodeId(page.element)),
+      canvasIdsBefore: state.canvasIds,
+      canvasIdsAfter: pages.map((page) => getDebugNodeId(pdfRenderCanvas(page.element))),
+      overlayIdsBefore: state.overlayIds,
+      overlayIdsAfter: mounted.map(([, surface]) => getDebugNodeId(surface.overlay)),
+      pageRectsBefore: state.pageRectsBefore,
+      pageRectsAfter: pages.map((page) => rectDetails(page.element)),
+      viewportBefore: state.viewportBefore,
+      viewportAfter: rectDetails(this.options.adapter.root),
+      scrollBefore: state.scrollBefore,
+      scrollAfter: {
+        left: scroll.scrollLeft,
+        top: scroll.scrollTop,
+        width: scroll.clientWidth,
+        height: scroll.clientHeight
+      },
+      staleOldPagesConnected: stalePages,
+      staleOldOverlaysConnected: staleOverlays,
+      oldSurfaceDetachMs: state.beforePageElements?.every((element) => !element.isConnected)
+        && state.beforeOverlayElements?.every((element) => !element.isConnected)
+        ? Math.max(0, Date.now() - state.capturedAt)
+        : null,
+      staleSurfaceOverlap: (stalePages ?? 0) > 0 || (staleOverlays ?? 0) > 0
+    };
+  }
+
   async addPageAt(requestedPageNumber: number): Promise<void> {
     if (!this.options.onInsertPage) return;
     if (this.pageMutationInFlight) {
@@ -4513,28 +4656,55 @@ export class ViewerInkSession {
       return;
     }
     this.pageMutationInFlight = true;
+    const startedAt = Date.now();
+    let mutation: AddPageMutationRestoreState | null = null;
     this.logger.pdfPageAction("insert-start", { requestedPageNumber, dirty: this.isDirty() });
     try {
       // The source PDF is replaced in place. Flush first so its sidecar has
       // the just-finished stroke/text edit before PDF.js reloads the document.
       if (this.isDirty()) await this.manualSave();
       const before = this.snapshot();
+      mutation = this.captureAddPageMutationState(this.id(), startedAt);
+      this.options.onAddPageMutationStart?.(mutation);
+      this.logger.addPageLifecycle("before-mutation", this.addPageLifecycleDetails(mutation));
       this.pendingInsertedPageFocus = {
         pageNumber: requestedPageNumber,
-        expectedPageCount: this.options.adapter.pages().length + 1
+        expectedPageCount: mutation.pageCountBefore + 1
       };
       await this.armPageMutationShield("insert", requestedPageNumber);
       const insertedPage = await this.options.onInsertPage(requestedPageNumber);
       if (this.pendingInsertedPageFocus) this.pendingInsertedPageFocus.pageNumber = insertedPage;
+      if (!this.destroyed) {
+        // Restore scale/mode before focusing the newly appended page. This
+        // prevents a PDF.js reload from turning Add Page into an implicit fit.
+        this.options.adapter.restoreViewState(mutation.viewState);
+      }
       this.applyInsertedPageToSession(before, insertedPage);
+      if (!this.destroyed && mutation) {
+        const details = this.addPageLifecycleDetails(mutation);
+        this.logger.addPageLifecycle("mutation-complete", details);
+        if (details.beforeScale !== details.afterScale || details.beforeScaleMode !== details.afterScaleMode) {
+          this.logger.addPageLifecycle("scale-changed", details);
+        }
+        if (details.staleSurfaceOverlap === true) {
+          this.logger.addPageLifecycle("stale-surface-overlap", details);
+        }
+        this.options.onAddPageMutationResolved?.(mutation);
+      }
       this.focusInsertedPageIfReady("insert-complete", this.options.adapter.pages());
-      this.logger.pdfPageAction("insert-complete", { requestedPageNumber, insertedPage });
+      this.logger.pdfPageAction("insert-complete", {
+        requestedPageNumber,
+        insertedPage,
+        ...(mutation ? { addPageOperationId: mutation.operationId } : {})
+      });
       this.options.notice(`Added page ${insertedPage}.`);
     } catch (error) {
       this.pendingInsertedPageFocus = null;
       this.releasePageMutationShield("insert-error");
+      if (mutation && !this.destroyed) this.options.onAddPageMutationResolved?.(mutation);
       this.logger.pdfPageAction("insert-error", {
         requestedPageNumber,
+        ...(mutation ? { addPageOperationId: mutation.operationId } : {}),
         error: this.errorMessage(error)
       });
       this.options.notice(`Could not add a page: ${this.errorMessage(error)}`);

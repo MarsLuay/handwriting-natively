@@ -165,6 +165,33 @@ describe("PDF adapters", () => {
     else delete globals.pdfjsViewer;
   });
 
+  it("captures and restores PDF.js scale mode across a view-state mutation", async () => {
+    const host = compatibleHost();
+    const privateViewer: {
+      currentScale: number;
+      currentScaleValue: string;
+      updateScale: (options: { drawingDelay?: number; scaleFactor?: number | null; steps?: number | null; origin?: unknown }) => void;
+    } = {
+      currentScale: 2.1789,
+      currentScaleValue: "page-width",
+      updateScale: vi.fn()
+    };
+    const adapter = await NativePdfViewAdapter.attach(host, {}, { privateViewer });
+
+    expect(adapter.getViewState()).toMatchObject({ scale: 2.1789, scaleMode: "page-width" });
+    adapter.restoreViewState({
+      pageNumber: 1,
+      scrollFraction: 0.4,
+      scale: 1.25,
+      scaleMode: "page-fit",
+      rotation: 0
+    });
+
+    expect(privateViewer.currentScaleValue).toBe("page-fit");
+    expect(privateViewer.currentScale).toBe(2.1789);
+    adapter.destroy();
+  });
+
   it("replaces stale annotation toolbars when mounting again", async () => {
     const host = compatibleHost();
     const adapter = await NativePdfViewAdapter.attach(host);
