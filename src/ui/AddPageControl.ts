@@ -1,6 +1,9 @@
 import { queryPdfPageNodes } from "../integration/pdfPageSelectors";
 import { createDetachedEl } from "../vendor/createDetached";
 
+const addPageControlOwners = new WeakMap<HTMLElement, AddPageControl>();
+let nextAddPageUiGeneration = 0;
+
 function resolveLastPdfPage(host: HTMLElement): HTMLElement | null {
   const pages = queryPdfPageNodes(host);
   if (pages.length === 0) return null;
@@ -21,6 +24,7 @@ export interface AddPageControlCallbacks {
   isBusy(): boolean;
   host(): HTMLElement;
   onCommit(): void | Promise<void>;
+  onLifecycle?(phase: "mounted" | "duplicate" | "destroyed", details: Record<string, unknown>): void;
 }
 
 /**
@@ -30,6 +34,9 @@ export interface AddPageControlCallbacks {
 export class AddPageControl {
   private readonly abort = new AbortController();
   private readonly button: HTMLButtonElement;
+  private readonly uiGeneration = ++nextAddPageUiGeneration;
+  private mountedHost: HTMLElement | null = null;
+  private reportedHost: HTMLElement | null = null;
   private committing = false;
 
   constructor(
@@ -51,11 +58,31 @@ export class AddPageControl {
   }
 
   refresh(): void {
+    const host = this.callbacks.host();
+    const previous = addPageControlOwners.get(host);
+    if (previous && previous !== this) previous.destroy("replaced");
+    if (this.mountedHost && this.mountedHost !== host && addPageControlOwners.get(this.mountedHost) === this) {
+      addPageControlOwners.delete(this.mountedHost);
+    }
+    addPageControlOwners.set(host, this);
+    this.mountedHost = host;
+
     if (!this.callbacks.enabled()) {
       this.button.remove();
       return;
     }
-    const lastPage = resolveLastPdfPage(this.callbacks.host());
+    const existingControls = [...host.querySelectorAll<HTMLButtonElement>(".native-pdf-handwriting-add-page")]
+      .filter((control) => control !== this.button);
+    const controlCountBefore = existingControls.length + (this.button.isConnected ? 1 : 0);
+    const duplicateControlIds = [this.button, ...existingControls]
+      .filter((control) => control.isConnected)
+      .slice(0, 8)
+      .map(addPageControlId);
+    if (existingControls.length > 0) {
+      for (const control of existingControls) control.remove();
+    }
+    this.button.dataset.nativePdfHandwritingUiGeneration = String(this.uiGeneration);
+    const lastPage = resolveLastPdfPage(host);
     const parent = lastPage?.parentElement;
     if (!lastPage || !parent) {
       this.button.remove();
@@ -64,13 +91,47 @@ export class AddPageControl {
     if (this.button.parentElement !== parent || this.button.previousElementSibling !== lastPage) {
       parent.insertBefore(this.button, lastPage.nextSibling);
     }
+    if (controlCountBefore > 1) {
+      this.callbacks.onLifecycle?.("duplicate", {
+        surface: "bottom",
+        uiGeneration: this.uiGeneration,
+        controlCountBefore,
+        controlCountAfter: host.querySelectorAll(".native-pdf-handwriting-add-page").length,
+        expectedControlCount: 1,
+        connectedControlIds: duplicateControlIds,
+        hostTag: host.tagName.toLowerCase(),
+        hostClasses: [...host.classList].slice(0, 6),
+        injectionSource: "root-reconciliation"
+      });
+    }
+    if (this.reportedHost !== host) {
+      this.reportedHost = host;
+      this.callbacks.onLifecycle?.("mounted", {
+        surface: "bottom",
+        uiGeneration: this.uiGeneration,
+        controlCountAfter: host.querySelectorAll(".native-pdf-handwriting-add-page").length,
+        expectedControlCount: 1,
+        hostTag: host.tagName.toLowerCase(),
+        hostClasses: [...host.classList].slice(0, 6),
+        injectionSource: "root-reconciliation"
+      });
+    }
     this.updateState();
   }
 
-  destroy(): void {
+  destroy(reason = "destroyed"): void {
+    if (this.abort.signal.aborted) return;
+    if (this.mountedHost && addPageControlOwners.get(this.mountedHost) === this) {
+      addPageControlOwners.delete(this.mountedHost);
+    }
     this.abort.abort();
     this.button.remove();
     this.committing = false;
+    this.callbacks.onLifecycle?.("destroyed", {
+      surface: "bottom",
+      uiGeneration: this.uiGeneration,
+      reason
+    });
   }
 
   private updateState(): void {
@@ -93,4 +154,8 @@ export class AddPageControl {
       this.refresh();
     }
   }
+}
+
+function addPageControlId(control: HTMLButtonElement): string {
+  return control.dataset.nativePdfHandwritingUiGeneration ?? (control.id || "unidentified");
 }

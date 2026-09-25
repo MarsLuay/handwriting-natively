@@ -62,6 +62,64 @@ describe("AddPageControl", () => {
     control.destroy();
   });
 
+  it("keeps one bottom Add Page owner when a remount creates a second control instance", () => {
+    const host = document.createElement("div");
+    host.append(page(document, 1));
+    document.body.append(host);
+    const firstCommit = vi.fn();
+    const secondCommit = vi.fn();
+    const first = new AddPageControl({
+      enabled: () => true,
+      isBusy: () => false,
+      host: () => host,
+      onCommit: firstCommit
+    }, document);
+    const second = new AddPageControl({
+      enabled: () => true,
+      isBusy: () => false,
+      host: () => host,
+      onCommit: secondCommit
+    }, document);
+
+    const button = host.querySelector<HTMLButtonElement>(".native-pdf-handwriting-add-page")!;
+    expect(host.querySelectorAll(".native-pdf-handwriting-add-page")).toHaveLength(1);
+    button.click();
+    expect(firstCommit).not.toHaveBeenCalled();
+    expect(secondCommit).toHaveBeenCalledTimes(1);
+
+    first.destroy();
+    expect(host.querySelectorAll(".native-pdf-handwriting-add-page")).toHaveLength(1);
+    second.destroy();
+    expect(host.querySelectorAll(".native-pdf-handwriting-add-page")).toHaveLength(0);
+  });
+
+  it("removes orphan bottom controls and reports bounded duplicate ownership", () => {
+    const host = document.createElement("div");
+    host.append(page(document, 1));
+    for (let index = 0; index < 2; index += 1) {
+      const orphan = document.createElement("button");
+      orphan.className = "native-pdf-handwriting-add-page";
+      host.append(orphan);
+    }
+    document.body.append(host);
+    const lifecycle = vi.fn();
+    const control = new AddPageControl({
+      enabled: () => true,
+      isBusy: () => false,
+      host: () => host,
+      onCommit: vi.fn(),
+      onLifecycle: lifecycle
+    }, document);
+
+    expect(host.querySelectorAll(".native-pdf-handwriting-add-page")).toHaveLength(1);
+    expect(lifecycle).toHaveBeenCalledWith("duplicate", expect.objectContaining({
+      surface: "bottom",
+      controlCountBefore: 2,
+      controlCountAfter: 1
+    }));
+    control.destroy();
+  });
+
   it("does not expose a control when the capability is disabled or busy", () => {
     const host = document.createElement("div");
     host.append(page(document, 1));

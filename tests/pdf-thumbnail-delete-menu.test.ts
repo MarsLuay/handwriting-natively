@@ -401,6 +401,48 @@ describe("PDF thumbnail sidebar actions", () => {
     actions.destroy();
   });
 
+  it("keeps one thumbnail Add Page owner when a remount creates a second action instance", () => {
+    const { host, thumbnailView } = thumbnailHost();
+    const firstAdded = vi.fn();
+    const secondAdded = vi.fn();
+    const first = new PdfThumbnailSidebarActions(host, { onAddPage: firstAdded, onDeletePage: vi.fn() });
+    const second = new PdfThumbnailSidebarActions(host, { onAddPage: secondAdded, onDeletePage: vi.fn() });
+
+    const controls = [...thumbnailView.querySelectorAll<HTMLButtonElement>(".native-pdf-handwriting-thumbnail-add-page")];
+    expect(controls).toHaveLength(1);
+    controls[0]!.click();
+    expect(firstAdded).not.toHaveBeenCalled();
+    expect(secondAdded).toHaveBeenCalledWith(4);
+
+    first.destroy();
+    expect(thumbnailView.querySelectorAll(".native-pdf-handwriting-thumbnail-add-page")).toHaveLength(1);
+    second.destroy();
+    expect(thumbnailView.querySelectorAll(".native-pdf-handwriting-thumbnail-add-page")).toHaveLength(0);
+  });
+
+  it("removes orphan thumbnail controls and reports bounded duplicate ownership", () => {
+    const { host, thumbnailView } = thumbnailHost();
+    for (let index = 0; index < 2; index += 1) {
+      const orphan = document.createElement("button");
+      orphan.className = "native-pdf-handwriting-thumbnail-add-page";
+      thumbnailView.append(orphan);
+    }
+    const lifecycle = vi.fn();
+    const actions = new PdfThumbnailSidebarActions(host, {
+      onAddPage: vi.fn(),
+      onDeletePage: vi.fn(),
+      onUiLifecycle: lifecycle
+    });
+
+    expect(thumbnailView.querySelectorAll(".native-pdf-handwriting-thumbnail-add-page")).toHaveLength(1);
+    expect(lifecycle).toHaveBeenCalledWith("duplicate", expect.objectContaining({
+      surface: "thumbnail",
+      controlCountBefore: 2,
+      controlCountAfter: 1
+    }));
+    actions.destroy();
+  });
+
   it("appends Add page to the native blank-sidebar menu at the insertion position", async () => {
     const { host, sidebar, thumbnailView } = thumbnailHost();
     const first = document.createElement("div");
