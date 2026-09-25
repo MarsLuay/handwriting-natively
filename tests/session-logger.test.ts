@@ -158,6 +158,44 @@ describe("SessionLogger", () => {
     ]));
   });
 
+  it("logs bounded handwriting UI ownership when the expected toolbar is missing", () => {
+    const writes: Array<{ level: string; event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (level, event, payload) => writes.push({ level, event, payload: payload ?? {} })
+    });
+
+    logger.handwritingUiMissing({
+      viewerGeneration: 2,
+      toolbarGeneration: 3,
+      hostDebugId: 11,
+      mountReason: "pages-settled",
+      unmountReason: "root-reconciliation",
+      viewerConnected: true,
+      toolbarExpected: true,
+      toolbarConnected: false,
+      sidebarExpected: true,
+      sidebarConnected: false,
+      pageCount: 3,
+      currentPage: 2,
+      addPageOperationId: "add-page-1"
+    });
+
+    expect(writes).toEqual([
+      expect.objectContaining({
+        level: "warn",
+        event: "handwriting-ui-missing",
+        payload: expect.objectContaining({
+          viewerGeneration: 2,
+          toolbarGeneration: 3,
+          toolbarConnected: false,
+          sidebarConnected: false,
+          pageCount: 3,
+          addPageOperationId: "add-page-1"
+        })
+      })
+    ]);
+  });
+
   it("logs thumbnail page actions without annotation content", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const logger = new SessionLogger("Notes/example.pdf", {
