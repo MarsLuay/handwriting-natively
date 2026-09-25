@@ -831,6 +831,19 @@ export class SessionLogger {
     }, true);
   }
 
+  sidecarRepaired(details: {
+    documentId: string;
+    store: "sidecar" | "recovery";
+    sourcePath: string;
+    quarantinePath: string;
+    backupPath: string;
+  }): void {
+    this.emit("info", "sidecar repaired", {
+      document: this.documentPath,
+      ...details
+    }, true);
+  }
+
   sidecarPersist(details: {
     reason: string;
     documentId: string;

@@ -138,6 +138,82 @@ describe("sidecar storage", () => {
     expect(files.data.has("annotations/doc.json.tmp")).toBe(false);
   });
 
+  it("writes validated sidecar and recovery backups to the configured folder", async () => {
+    const files = new MemoryFiles();
+    const options = { backupFolder: "debug" };
+    const sidecars = new SidecarRepository(files, "annotations", options);
+    const recovery = new RecoveryRepository(files, "annotations/recovery", options);
+
+    await sidecars.save(sidecar());
+    await recovery.save(sidecar());
+
+    expect(parseSidecar(await files.read("debug/sidecar-doc.json.backup"))).toEqual(sidecar());
+    expect(parseSidecar(await files.read("debug/recovery-doc.recovery.json.backup"))).toEqual(sidecar());
+  });
+
+  it("automatically restores the newest validated external backup after quarantine", async () => {
+    const files = new MemoryFiles();
+    const now = () => new Date("2026-02-01T03:04:05.678Z");
+    const repository = new SidecarRepository(files, "annotations", { backupFolder: "debug", now });
+    await repository.save(sidecar());
+    const latest = sidecar();
+    latest.updatedAt = "later";
+    await repository.save(latest);
+    const path = repository.pathFor("doc");
+    files.data.set(path, "\u0000\u0000");
+
+    const result = await repository.loadWithStatus("doc");
+
+    expect(result.data?.updatedAt).toBe("later");
+    expect(result.repaired).toMatchObject({
+      store: "sidecar",
+      sourcePath: path,
+      backupPath: "debug/sidecar-doc.json.backup"
+    });
+    expect(await files.read(path)).toBe(await files.read("debug/sidecar-doc.json.backup"));
+    expect(await files.read(`${path}.corrupt-20260201T030405678Z`)).toBe("\u0000\u0000");
+  });
+
+  it("automatically restores a corrupt recovery snapshot from its validated backup", async () => {
+    const files = new MemoryFiles();
+    const repository = new RecoveryRepository(files, "recovery", {
+      backupFolder: "debug",
+      now: () => new Date("2026-02-01T03:04:05.678Z")
+    });
+    await repository.save(sidecar());
+    const latest = sidecar();
+    latest.updatedAt = "later";
+    await repository.save(latest);
+    const path = repository.pathFor("doc");
+    files.data.set(path, "{");
+
+    const result = await repository.loadWithStatus("doc");
+
+    expect(result.data?.updatedAt).toBe("later");
+    expect(result.repaired).toMatchObject({
+      store: "recovery",
+      backupPath: "debug/recovery-doc.recovery.json.backup"
+    });
+  });
+
+  it("keeps quarantine-only behavior when automatic recovery is disabled", async () => {
+    const files = new MemoryFiles();
+    const repository = new SidecarRepository(files, "annotations", {
+      backupFolder: "debug",
+      automaticRecovery: false,
+      now: () => new Date("2026-02-01T03:04:05.678Z")
+    });
+    const path = repository.pathFor("doc");
+    files.data.set(path, "{");
+    await files.write("debug/sidecar-doc.json.backup", serializeSidecar(sidecar()));
+
+    const result = await repository.loadWithStatus("doc");
+
+    expect(result.data).toBeNull();
+    expect(result.repaired).toBeUndefined();
+    expect(files.data.has(path)).toBe(false);
+  });
+
   it("finds a moved legacy sidecar and reports the explicit path rebind", async () => {
     const files = new MemoryFiles();
     const repository = new SidecarRepository(files, "annotations");

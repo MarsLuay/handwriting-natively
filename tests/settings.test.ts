@@ -208,6 +208,19 @@ describe("safe defaults", () => {
     expect(DEFAULT_SETTINGS.vaultDebugLogPath).toBe(
       "config/plugins/native-pdf-handwriting/debug.md"
     );
+    expect(DEFAULT_SETTINGS.automaticAnnotationRecovery).toBe(true);
+    expect(DEFAULT_SETTINGS.annotationBackupPath).toBe(
+      "config/plugins/native-pdf-handwriting"
+    );
+  });
+
+  it("defaults annotation backups beside a custom debug log and preserves a custom backup folder", () => {
+    expect(mergeSettings({ vaultDebugLogPath: "Logs/handwriting.md" }).annotationBackupPath).toBe("Logs");
+    expect(mergeSettings({ annotationBackupPath: "Backups/handwriting" }).annotationBackupPath)
+      .toBe("Backups/handwriting");
+    expect(mergeSettings({ automaticAnnotationRecovery: false }).automaticAnnotationRecovery).toBe(false);
+    expect(mergeSettings({ annotationBackupPath: "../outside" }).annotationBackupPath)
+      .toBe("config/plugins/native-pdf-handwriting");
   });
 
   it("migrates vault debug log path from .log to .md", () => {

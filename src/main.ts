@@ -697,6 +697,9 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousBoostedZoom = this.inkSettings.boostedPdfZoom;
     const previousPdfEnabled = this.inkSettings.enabledSurfaces.pdf;
     const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
+    const previousAutomaticAnnotationRecovery = this.inkSettings.automaticAnnotationRecovery;
+    const previousAnnotationBackupPath = this.inkSettings.annotationBackupPath;
+    settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
     await this.saveData(settings);
     if (previousPdfEnabled !== settings.enabledSurfaces.pdf) {
@@ -730,6 +733,12 @@ export default class NativePdfInkPlugin extends Plugin {
     }
     if (previousBoostedZoom !== settings.boostedPdfZoom) {
       for (const session of this.allSessions()) session.setBoostedPdfZoom(settings.boostedPdfZoom);
+    }
+    if (
+      previousAutomaticAnnotationRecovery !== settings.automaticAnnotationRecovery ||
+      previousAnnotationBackupPath !== settings.annotationBackupPath
+    ) {
+      for (const session of this.allSessions()) session.updateAnnotationRecoveryOptions(settings);
     }
   }
 
@@ -1187,8 +1196,14 @@ export default class NativePdfInkPlugin extends Plugin {
       documentPath: file.path,
       pluginVersion: this.manifest.version,
       settings: this.inkSettings,
-      sidecars: new SidecarRepository(textFiles, this.inkSettings.sidecarFolder),
-      recovery: new RecoveryRepository(textFiles, `${this.inkSettings.sidecarFolder}/recovery`),
+      sidecars: new SidecarRepository(textFiles, this.inkSettings.sidecarFolder, {
+        automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+        backupFolder: this.inkSettings.annotationBackupPath
+      }),
+      recovery: new RecoveryRepository(textFiles, `${this.inkSettings.sidecarFolder}/recovery`, {
+        automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+        backupFolder: this.inkSettings.annotationBackupPath
+      }),
       saveSettings: async (preferences) => this.saveToolPreferences(preferences),
       savePluginSettings: async (patch) => {
         await this.saveSettings({ ...this.inkSettings, ...patch });
@@ -1444,8 +1459,14 @@ export default class NativePdfInkPlugin extends Plugin {
     const source = new Uint8Array(await this.app.vault.readBinary(file));
     const inserted = await insertMatchingBlankPage(source, requestedPageNumber);
     const files = createVaultFsTextAdapter(this.app.vault);
-    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
-    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
+    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder, {
+      automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+      backupFolder: this.inkSettings.annotationBackupPath
+    });
+    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`, {
+      automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+      backupFolder: this.inkSettings.annotationBackupPath
+    });
     const identityInput = { vaultPath: file.path, contentHash: hashDocumentContent(source) };
     const sidecarBefore = await sidecars.loadForDocument(identityInput);
     const recoveryBefore = await recovery.loadForDocument(identityInput);
@@ -1503,8 +1524,14 @@ export default class NativePdfInkPlugin extends Plugin {
     const source = new Uint8Array(await this.app.vault.readBinary(file));
     const inserted = await insertScannedPages(source, requestedPageNumber, pages);
     const files = createVaultFsTextAdapter(this.app.vault);
-    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
-    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
+    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder, {
+      automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+      backupFolder: this.inkSettings.annotationBackupPath
+    });
+    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`, {
+      automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+      backupFolder: this.inkSettings.annotationBackupPath
+    });
     const documentId = createDocumentIdentity({ vaultPath: file.path }).id;
     const sidecarBefore = await sidecars.load(documentId);
     const recoveryBefore = await recovery.load(documentId);
@@ -1564,8 +1591,14 @@ export default class NativePdfInkPlugin extends Plugin {
     const source = new Uint8Array(await this.app.vault.readBinary(file));
     const deletion = await deletePdfPages(source, requestedPageNumbers);
     const files = createVaultFsTextAdapter(this.app.vault);
-    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder);
-    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`);
+    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder, {
+      automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+      backupFolder: this.inkSettings.annotationBackupPath
+    });
+    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`, {
+      automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+      backupFolder: this.inkSettings.annotationBackupPath
+    });
     const identityInput = { vaultPath: file.path, contentHash: hashDocumentContent(source) };
     const sidecarBefore = await sidecars.loadForDocument(identityInput);
     const recoveryBefore = await recovery.loadForDocument(identityInput);

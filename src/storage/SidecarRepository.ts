@@ -26,6 +26,13 @@ export interface QuarantinedAnnotationFile {
   error: string;
 }
 
+export interface RepairedAnnotationFile {
+  store: AnnotationStoreKind;
+  sourcePath: string;
+  quarantinePath: string;
+  backupPath: string;
+}
+
 export interface DocumentIdentityMatch {
   requested: SidecarDocumentIdentity;
   stored: SidecarDocumentIdentity;
@@ -43,6 +50,7 @@ export interface IdentityConflict {
 export interface AnnotationLoadResult<T> {
   data: T | null;
   quarantined: QuarantinedAnnotationFile | null;
+  repaired?: RepairedAnnotationFile;
   identity?: DocumentIdentityMatch;
   conflict?: IdentityConflict;
 }
@@ -50,6 +58,9 @@ export interface AnnotationLoadResult<T> {
 export interface AnnotationLoadOptions {
   store: AnnotationStoreKind;
   now?: () => Date;
+  automaticRecovery?: boolean;
+  backupFolder?: string;
+  validate?: (data: unknown) => void;
 }
 
 export class SidecarConflictError extends Error {
@@ -80,20 +91,130 @@ export async function loadAnnotationFileWithQuarantine<T>(
   // and must remain authoritative until the adapter error is resolved.
   const contents = await files.read(path);
   try {
-    return { data: parse(contents), quarantined: null };
+    const data = parse(contents);
+    options.validate?.(data);
+    return { data, quarantined: null };
   } catch (error) {
     const quarantinePath = await nextCorruptPath(files, path, options.now?.() ?? new Date());
     await moveWithoutOverwrite(files, path, quarantinePath, contents);
+    const repaired = options.automaticRecovery === false
+      ? null
+      : await restoreFromBackup(files, path, parse, options);
     return {
-      data: null,
+      data: repaired?.data ?? null,
       quarantined: {
         store: options.store,
         sourcePath: path,
         quarantinePath,
         error: error instanceof Error ? error.message : String(error)
-      }
+      },
+      ...(repaired ? {
+        repaired: {
+          store: options.store,
+          sourcePath: path,
+          quarantinePath,
+          backupPath: repaired.backupPath
+        }
+      } : {})
     };
   }
+}
+
+async function restoreFromBackup<T>(
+  files: TextFileAdapter,
+  path: string,
+  parse: (contents: string) => T,
+  options: AnnotationLoadOptions
+): Promise<{ data: T; backupPath: string } | null> {
+  const candidates = [
+    annotationBackupPath(options.backupFolder, path, options.store),
+    `${path}.last-good`
+  ].filter((candidate, index, all): candidate is string => Boolean(candidate) && all.indexOf(candidate) === index);
+  for (const backupPath of candidates) {
+    if (!await files.exists(backupPath)) continue;
+    try {
+      const contents = await files.read(backupPath);
+      const restored = await writeValidatedFile(
+        files,
+        path,
+        contents,
+        parse,
+        options.validate,
+        ".restore.tmp"
+      );
+      return { data: restored, backupPath };
+    } catch {
+      // A stale or malformed backup is not allowed to block a later valid
+      // backup candidate, and is never promoted over the quarantined bytes.
+    }
+  }
+  return null;
+}
+
+/** Return the stable vault-relative backup path for one annotation store. */
+export function annotationBackupPath(
+  backupFolder: string | undefined,
+  sourcePath: string,
+  store: AnnotationStoreKind
+): string | null {
+  if (backupFolder === undefined) return null;
+  const folder = normalizeBackupFolder(backupFolder);
+  if (folder === null) return null;
+  const basename = sourcePath.split(/[\\/]/).at(-1)?.replace(/[^a-zA-Z0-9._-]/g, "_") || "annotation";
+  return `${folder ? `${folder}/` : ""}${store}-${basename}.backup`;
+}
+
+function normalizeBackupFolder(folder: string): string | null {
+  const normalized = folder.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  if (normalized.split("/").some((part) => part === "..")) return null;
+  return normalized.split("/").filter((part) => part && part !== ".").join("/");
+}
+
+async function writeValidatedFile<T>(
+  files: TextFileAdapter,
+  path: string,
+  contents: string,
+  parse: (contents: string) => T,
+  validate: ((data: unknown) => void) | undefined,
+  tempSuffix: string
+): Promise<T> {
+  const temp = `${path}${tempSuffix}`;
+  const previous = await files.exists(path) ? await files.read(path) : null;
+  await files.write(temp, contents);
+  try {
+    const staged = parse(await files.read(temp));
+    validate?.(staged);
+    if (previous !== null) {
+      await files.write(path, contents);
+      if (files.remove) await files.remove(temp);
+    } else if (files.rename) {
+      await files.rename(temp, path);
+    } else {
+      await files.write(path, contents);
+      if (files.remove) await files.remove(temp);
+    }
+    const committed = parse(await files.read(path));
+    validate?.(committed);
+    return committed;
+  } catch (error) {
+    if (files.remove && await files.exists(temp)) await files.remove(temp);
+    if (previous !== null) await files.write(path, previous).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function writeAnnotationBackup(
+  files: TextFileAdapter,
+  sourcePath: string,
+  contents: string,
+  parse: (contents: string) => unknown,
+  validate: ((data: unknown) => void) | undefined,
+  options: AnnotationRepositoryOptions,
+  store: AnnotationStoreKind
+): Promise<void> {
+  const backupPath = annotationBackupPath(options.backupFolder, sourcePath, store);
+  if (!backupPath) return;
+  await writeValidatedFile(files, backupPath, contents, parse, validate, ".tmp");
 }
 
 function safeTimestamp(date: Date): string {
@@ -126,9 +247,18 @@ async function moveWithoutOverwrite(
   await files.remove(sourcePath);
 }
 
-export interface SidecarRepositoryOptions {
+export interface AnnotationRepositoryOptions {
   now?: () => Date;
+  automaticRecovery?: boolean;
+  backupFolder?: string;
 }
+
+export interface AnnotationRecoveryOptions {
+  automaticRecovery: boolean;
+  backupFolder: string;
+}
+
+export type SidecarRepositoryOptions = AnnotationRepositoryOptions;
 
 export interface SaveForDocumentOptions {
   /** Required to turn a content match at another path into an explicit move. */
@@ -146,6 +276,11 @@ export class SidecarRepository {
     private readonly options: SidecarRepositoryOptions = {}
   ) {}
 
+  updateRecoveryOptions(options: AnnotationRecoveryOptions): void {
+    this.options.automaticRecovery = options.automaticRecovery;
+    this.options.backupFolder = options.backupFolder;
+  }
+
   pathFor(documentId: string): string {
     const safe = documentId.replace(/[^a-zA-Z0-9._-]/g, "_");
     return `${this.folder.replace(/[\\/]$/, "")}/${safe}.json`;
@@ -157,11 +292,17 @@ export class SidecarRepository {
 
   async loadWithStatus(documentId: string): Promise<AnnotationLoadResult<SidecarSchemaV1>> {
     const path = this.pathFor(documentId);
-    const result = await loadAnnotationFileWithQuarantine(
+    const result = await loadAnnotationFileWithQuarantine<SidecarSchemaV1>(
       this.files,
       path,
       (contents) => this.migration.migrate(contents),
-      { store: "sidecar", ...(this.options.now ? { now: this.options.now } : {}) }
+      {
+        store: "sidecar",
+        ...(this.options.now ? { now: this.options.now } : {}),
+        ...(this.options.automaticRecovery !== undefined ? { automaticRecovery: this.options.automaticRecovery } : {}),
+        ...(this.options.backupFolder !== undefined ? { backupFolder: this.options.backupFolder } : {}),
+        validate: (data) => validateAnnotationIdentity(data, documentId)
+      }
     );
     if (result.data) this.knownContents.set(path, await this.files.read(path));
     else if (result.quarantined) this.knownContents.delete(path);
@@ -183,11 +324,13 @@ export class SidecarRepository {
     const candidatePaths = new Set(candidates.map((candidate) => this.pathFor(candidate.identity.id)));
     const matches: Array<{ data: SidecarSchemaV1; path: string; matchedBy: DocumentIdentityMatch["matchedBy"] }> = [];
     let quarantined: QuarantinedAnnotationFile | null = null;
+    let repaired: RepairedAnnotationFile | undefined;
 
     for (const candidate of candidates) {
       const path = this.pathFor(candidate.identity.id);
       const result = await this.loadWithStatus(candidate.identity.id);
       quarantined ??= result.quarantined;
+      repaired ??= result.repaired;
       if (result.data && matchesCandidate(result.data.document, candidate.source, input, candidate.identity.vaultPath)) {
         matches.push({ data: result.data, path, matchedBy: candidate.source });
       }
@@ -216,7 +359,7 @@ export class SidecarRepository {
       }
     }
 
-    if (!matches.length) return { data: null, quarantined };
+    if (!matches.length) return { data: null, quarantined, ...(repaired ? { repaired } : {}) };
     const distinctPaths = [...new Set(matches.map((match) => match.path))];
     if (distinctPaths.length > 1) {
       const primary = matches[0]!.data.document;
@@ -229,6 +372,7 @@ export class SidecarRepository {
         return {
           data: null,
           quarantined,
+          ...(repaired ? { repaired } : {}),
           conflict: { paths: distinctPaths, reason: "duplicate-content" }
         };
       }
@@ -241,6 +385,7 @@ export class SidecarRepository {
     return {
       data: match.data,
       quarantined,
+      ...(repaired ? { repaired } : {}),
       identity: {
         requested,
         stored,
@@ -347,6 +492,15 @@ export class SidecarRepository {
         throw error;
       }
       this.knownContents.set(path, next);
+      await writeAnnotationBackup(
+        this.files,
+        path,
+        next,
+        (contents) => this.migration.migrate(contents),
+        (data) => validateAnnotationIdentity(data, sidecar.document.id),
+        this.options,
+        "sidecar"
+      ).catch(() => undefined);
       return;
     }
 
@@ -354,6 +508,15 @@ export class SidecarRepository {
       await this.files.write(path, next);
       this.migration.migrate(await this.files.read(path));
       this.knownContents.set(path, next);
+      await writeAnnotationBackup(
+        this.files,
+        path,
+        next,
+        (contents) => this.migration.migrate(contents),
+        (data) => validateAnnotationIdentity(data, sidecar.document.id),
+        this.options,
+        "sidecar"
+      ).catch(() => undefined);
     } catch (error) {
       if (previous !== null) await this.files.write(path, previous).catch(() => undefined);
       throw error;
@@ -422,4 +585,11 @@ function annotationPayload(sidecar: SidecarSchemaV1): string {
     updatedAt: sidecar.updatedAt,
     ...(sidecar.extensions === undefined ? {} : { extensions: sidecar.extensions })
   });
+}
+
+export function validateAnnotationIdentity(data: unknown, documentId: string): void {
+  const sidecar = data as SidecarSchemaV1;
+  if (sidecar.document.id !== documentId && !(sidecar.document.legacyIds ?? []).includes(documentId)) {
+    throw new Error(`annotation identity mismatch: expected ${documentId}, got ${sidecar.document.id}`);
+  }
 }

@@ -213,6 +213,10 @@ export interface PluginSettings {
   toolbarPlacement: ToolbarPlacement;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
+  /** Restore a validated annotation backup after a corrupt store is quarantined. */
+  automaticAnnotationRecovery: boolean;
+  /** Vault-relative folder for validated sidecar/recovery backups. */
+  annotationBackupPath: string;
   toolPreferences: ToolPreferences;
 }
 
@@ -289,6 +293,7 @@ export function createDefaultToolPreferences(): ToolPreferences {
 /** Build path defaults from Vault#configDir. */
 export function createDefaultSettings(configDir: string): PluginSettings {
   const root = configDir.replace(/\\/g, "/").replace(/\/+$/, "");
+  const vaultDebugLogPath = `${root}/plugins/${PLUGIN_ID}/debug.md`;
   return {
   enabledSurfaces: { pdf: true, image: true, markdown: true },
   autosave: true,
@@ -308,7 +313,9 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   hideStylusAnnotationLabel: false,
   toolbarPlacement: "main",
   vaultDebugLog: false,
-  vaultDebugLogPath: `${root}/plugins/${PLUGIN_ID}/debug.md`,
+  vaultDebugLogPath,
+  automaticAnnotationRecovery: true,
+  annotationBackupPath: parentVaultFolder(vaultDebugLogPath),
   toolPreferences: createDefaultToolPreferences()
   };
 }
@@ -436,6 +443,12 @@ export function mergeSettings(
   merged.vaultDebugLogPath = migrateVaultDebugLogPath(
     remapPluginDataPath(cleaned.vaultDebugLogPath, defaults.vaultDebugLogPath, configDir)
   );
+  merged.automaticAnnotationRecovery = cleaned.automaticAnnotationRecovery !== false;
+  merged.annotationBackupPath = normalizeVaultFolderPath(
+    cleaned.annotationBackupPath,
+    parentVaultFolder(merged.vaultDebugLogPath),
+    configDir
+  );
   const mouseInputMode = resolvePersistedMouseInputMode(cleaned);
   merged.mouseInputMode = mouseInputMode;
   merged.mouseDragScroll = mouseInputMode === "pan";
@@ -453,6 +466,24 @@ function resolvePersistedMouseInputMode(
 /** Prefer `.md` so the vault log opens as a note in Obsidian. */
 function migrateVaultDebugLogPath(path: string): string {
   return path.replace(/\/debug\.log$/i, "/debug.md").replace(/^debug\.log$/i, "debug.md");
+}
+
+function parentVaultFolder(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const separator = normalized.lastIndexOf("/");
+  return separator >= 0 ? normalized.slice(0, separator) : "";
+}
+
+function normalizeVaultFolderPath(saved: unknown, fallback: string, configDir: string): string {
+  if (typeof saved !== "string") return fallback;
+  const normalized = saved.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!normalized) return "";
+  const remapped = remapPluginDataPath(normalized, fallback, configDir)
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+  const parts = remapped.split("/").filter((part) => part && part !== ".");
+  return parts.includes("..") ? fallback : parts.join("/");
 }
 
 function remapPluginDataPath(saved: string | undefined, fallback: string, configDir: string): string {

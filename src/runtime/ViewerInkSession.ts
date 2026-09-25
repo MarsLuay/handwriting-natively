@@ -3858,13 +3858,26 @@ export class ViewerInkSession {
     const quarantined = [sidecarResult.quarantined, recoveryResult.quarantined].filter(
       (result): result is NonNullable<typeof result> => result !== null
     );
+    const repaired = [sidecarResult.repaired, recoveryResult.repaired].filter(
+      (result): result is NonNullable<typeof result> => result !== undefined
+    );
     for (const result of quarantined) {
       session.logger.sidecarQuarantined({ documentId: session.identity.id, ...result });
     }
+    for (const result of repaired) {
+      session.logger.sidecarRepaired({ documentId: session.identity.id, ...result });
+    }
     if (quarantined.length) {
-      const paths = quarantined.map((result) => result.quarantinePath).join(", ");
-      const outcome = stored ? "A valid remaining annotation snapshot was kept." : "Opened with empty annotations.";
-      options.notice(`Malformed annotation data moved to ${paths}. ${outcome}`);
+      const repairedSources = new Set(repaired.map((result) => result.sourcePath));
+      const unrepaired = quarantined.filter((result) => !repairedSources.has(result.sourcePath));
+      const messages = [`Malformed annotation data moved to ${quarantined.map((result) => result.quarantinePath).join(", ")}.`];
+      if (repaired.length) {
+        messages.push(`Automatically restored ${repaired.map((result) => result.store).join(" and ")} from validated backup.`);
+      }
+      if (unrepaired.length) {
+        messages.push(stored ? "A valid remaining annotation snapshot was kept." : "Opened with empty annotations.");
+      }
+      options.notice(messages.join(" "));
     }
     await urgent("session create sidecar ok", {
       document: options.documentPath,
@@ -3877,6 +3890,12 @@ export class ViewerInkSession {
       loadedTexts,
       hasSidecar: Boolean(sidecar),
       hasRecovery: Boolean(recovery),
+      repaired: repaired.map((result) => ({
+        store: result.store,
+        sourcePath: result.sourcePath,
+        quarantinePath: result.quarantinePath,
+        backupPath: result.backupPath
+      })),
       quarantined: quarantined.map((result) => ({
         store: result.store,
         sourcePath: result.sourcePath,
@@ -5958,6 +5977,17 @@ export class ViewerInkSession {
     this.options.adapter.destroy();
     await this.autosave.close().catch(() => undefined);
     return true;
+  }
+
+  updateAnnotationRecoveryOptions(options: Pick<PluginSettings, "automaticAnnotationRecovery" | "annotationBackupPath">): void {
+    this.options.sidecars.updateRecoveryOptions({
+      automaticRecovery: options.automaticAnnotationRecovery,
+      backupFolder: options.annotationBackupPath
+    });
+    this.options.recovery.updateRecoveryOptions({
+      automaticRecovery: options.automaticAnnotationRecovery,
+      backupFolder: options.annotationBackupPath
+    });
   }
 
   private syncAnnotationCursorMode(forceOff = false): void {

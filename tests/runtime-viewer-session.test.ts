@@ -755,6 +755,65 @@ describe("viewer runtime tracer", () => {
     await session.destroy({ silent: true });
   });
 
+  it("automatically repairs a malformed sidecar and reports the validated backup", async () => {
+    const source = await PDFDocument.create();
+    source.addPage([600, 800]);
+    const sourceBytes = await source.save();
+    const files = new MemoryFiles();
+    const now = () => new Date("2026-02-01T03:04:05.678Z");
+    const documentId = createDocumentIdentity({
+      vaultPath: "Notes/example.pdf",
+      contentHash: hashDocumentContent(sourceBytes)
+    }).id;
+    const sidecar: SidecarSchemaV1 = {
+      schemaVersion: 1,
+      document: { id: documentId, vaultPath: "Notes/example.pdf", contentHash: hashDocumentContent(sourceBytes) },
+      pages: [{ page: 1, width: 600, height: 800, rotation: 0, strokes: [] }],
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01"
+    };
+    const sidecars = new SidecarRepository(files, "annotations", { backupFolder: "debug", now });
+    await sidecars.save(sidecar);
+    const sourcePath = sidecars.pathFor(documentId);
+    files.values.set(sourcePath, "\u0000\u0000");
+    const notices: string[] = [];
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+
+    const session = await ViewerInkSession.create({
+      adapter: new FakeAdapter(),
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars,
+      recovery: new RecoveryRepository(files, "recovery", { backupFolder: "debug", now }),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => sourceBytes,
+      writeExport: async () => undefined,
+      notice: (message) => notices.push(message),
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+
+    const quarantinePath = `${sourcePath}.corrupt-20260201T030405678Z`;
+    expect(notices).toEqual([
+      `Malformed annotation data moved to ${quarantinePath}. Automatically restored sidecar from validated backup.`
+    ]);
+    expect(await files.read(sourcePath)).toBe(await files.read(`debug/sidecar-${sourcePath.split("/").at(-1)}.backup`));
+    expect(await files.read(quarantinePath)).toBe("\u0000\u0000");
+    expect(logs).toContainEqual({
+      event: "sidecar repaired",
+      payload: expect.objectContaining({
+        documentId,
+        store: "sidecar",
+        sourcePath,
+        quarantinePath,
+        backupPath: expect.stringContaining("debug/sidecar-")
+      })
+    });
+    await session.destroy({ silent: true });
+  });
+
   it("remounts a router when a replacement PDF page leaves its prior overlay connected", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();

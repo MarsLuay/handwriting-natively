@@ -1,5 +1,9 @@
 import {
   loadAnnotationFileWithQuarantine,
+  validateAnnotationIdentity,
+  writeAnnotationBackup,
+  type AnnotationRepositoryOptions,
+  type AnnotationRecoveryOptions,
   type AnnotationLoadResult,
   type DocumentIdentityMatch,
   type TextFileAdapter
@@ -13,9 +17,7 @@ import {
 import { MigrationManager } from "./MigrationManager";
 import { serializeSidecar, type SidecarDocumentIdentity, type SidecarSchemaV1 } from "./SidecarSchema";
 
-export interface RecoveryRepositoryOptions {
-  now?: () => Date;
-}
+export type RecoveryRepositoryOptions = AnnotationRepositoryOptions;
 
 export class RecoveryRepository {
   private readonly migration = new MigrationManager();
@@ -25,6 +27,11 @@ export class RecoveryRepository {
     private readonly folder: string,
     private readonly options: RecoveryRepositoryOptions = {}
   ) {}
+
+  updateRecoveryOptions(options: AnnotationRecoveryOptions): void {
+    this.options.automaticRecovery = options.automaticRecovery;
+    this.options.backupFolder = options.backupFolder;
+  }
 
   pathFor(id: string): string {
     return `${this.folder.replace(/\/$/, "")}/${id.replace(/[^\w.-]/g, "_")}.recovery.json`;
@@ -36,6 +43,15 @@ export class RecoveryRepository {
     const path = this.path(data.document.id);
     const next = serializeSidecar(data);
     const previous = await this.files.exists(path) ? await this.files.read(path) : null;
+    if (previous !== null) {
+      const lastGoodPath = `${path}.last-good`;
+      await this.files.write(lastGoodPath, previous);
+      try {
+        this.migration.migrate(await this.files.read(lastGoodPath));
+      } catch (error) {
+        throw new Error(`Could not validate last-good recovery backup: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const temp = `${path}.tmp`;
     if (this.files.rename || this.files.remove) {
       await this.files.write(temp, next);
@@ -55,11 +71,29 @@ export class RecoveryRepository {
         if (previous !== null) await this.files.write(path, previous).catch(() => undefined);
         throw error;
       }
+      await writeAnnotationBackup(
+        this.files,
+        path,
+        next,
+        (contents) => this.migration.migrate(contents),
+        (value) => validateAnnotationIdentity(value, data.document.id),
+        this.options,
+        "recovery"
+      ).catch(() => undefined);
       return;
     }
     try {
       await this.files.write(path, next);
       this.migration.migrate(await this.files.read(path));
+      await writeAnnotationBackup(
+        this.files,
+        path,
+        next,
+        (contents) => this.migration.migrate(contents),
+        (value) => validateAnnotationIdentity(value, data.document.id),
+        this.options,
+        "recovery"
+      ).catch(() => undefined);
     } catch (error) {
       if (previous !== null) await this.files.write(path, previous).catch(() => undefined);
       throw error;
@@ -84,10 +118,12 @@ export class RecoveryRepository {
     const candidatePaths = new Set(candidates.map((candidate) => this.pathFor(candidate.identity.id)));
     const matches: Array<{ data: SidecarSchemaV1; path: string; matchedBy: DocumentIdentityMatch["matchedBy"] }> = [];
     let quarantined: AnnotationLoadResult<SidecarSchemaV1>["quarantined"] = null;
+    let repaired: AnnotationLoadResult<SidecarSchemaV1>["repaired"];
 
     for (const candidate of candidates) {
       const result = await this.loadWithStatus(candidate.identity.id);
       quarantined ??= result.quarantined;
+      repaired ??= result.repaired;
       if (result.data && matchesRecoveryCandidate(result.data.document, candidate.source, input, candidate.identity.vaultPath)) {
         matches.push({ data: result.data, path: this.pathFor(candidate.identity.id), matchedBy: candidate.source });
       }
@@ -112,7 +148,7 @@ export class RecoveryRepository {
       }
     }
 
-    if (!matches.length) return { data: null, quarantined };
+    if (!matches.length) return { data: null, quarantined, ...(repaired ? { repaired } : {}) };
     const distinctPaths = [...new Set(matches.map((match) => match.path))];
     if (distinctPaths.length > 1) {
       const first = matches[0]!.data;
@@ -121,7 +157,7 @@ export class RecoveryRepository {
         first.document.aliases?.some((alias) => normalizeVaultPath(alias) === normalizeVaultPath(match.data.document.vaultPath)) === true
       );
       if (!samePayload || !aliasesAccountForExtras) {
-        return { data: null, quarantined, conflict: { paths: distinctPaths, reason: "duplicate-content" } };
+        return { data: null, quarantined, ...(repaired ? { repaired } : {}), conflict: { paths: distinctPaths, reason: "duplicate-content" } };
       }
     }
 
@@ -130,6 +166,7 @@ export class RecoveryRepository {
     return {
       data: match.data,
       quarantined,
+      ...(repaired ? { repaired } : {}),
       identity: {
         requested,
         stored,
@@ -142,11 +179,17 @@ export class RecoveryRepository {
   }
   async loadWithStatus(id: string): Promise<AnnotationLoadResult<SidecarSchemaV1>> {
     const path = this.path(id);
-    return loadAnnotationFileWithQuarantine(
+    return loadAnnotationFileWithQuarantine<SidecarSchemaV1>(
       this.files,
       path,
       (contents) => this.migration.migrate(contents),
-      { store: "recovery", ...(this.options.now ? { now: this.options.now } : {}) }
+      {
+        store: "recovery",
+        ...(this.options.now ? { now: this.options.now } : {}),
+        ...(this.options.automaticRecovery !== undefined ? { automaticRecovery: this.options.automaticRecovery } : {}),
+        ...(this.options.backupFolder !== undefined ? { backupFolder: this.options.backupFolder } : {}),
+        validate: (data) => validateAnnotationIdentity(data, id)
+      }
     );
   }
   async clear(id: string): Promise<void> {
