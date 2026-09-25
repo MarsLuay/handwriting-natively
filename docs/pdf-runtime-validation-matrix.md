@@ -56,6 +56,50 @@ For each live row, record only bounded diagnostics: target/build identifier, ada
 5. Exercise an indistinguishable duplicate shell and invalid geometry; verify `annotation-safety-blocked`, no new stroke, and no unsafe sidecar write.
 6. Repeat after optional find/sidebar/boosted-zoom capabilities are absent; validated pages remain annotatable.
 
+## Automation and physical-device boundary
+
+The matrix has three evidence classes. Automated evidence is deterministic and may run in CI. Manual evidence requires a current Obsidian build and physical input/runtime behavior. Hybrid scenarios use automation for the repeatable contract and manual runs for the host/device portion; neither half silently substitutes for the other.
+
+| Matrix scenario | Evidence class | Automated portion | Manual portion and rationale |
+| --- | --- | --- | --- |
+| Direct/embedded attach and bounded profile schema | `hybrid` | Fixture attach, profile fields, fallback classification, and cleanup | Current Obsidian direct/embedded object graph and first per-instance profile |
+| Missing optional capabilities and unsafe identity/geometry | `hybrid` | Synthetic missing capabilities, duplicate shells, invalid geometry, and safety gates | Confirm the current host exposes the same fallback/unsafe evidence without private-object assumptions |
+| Mouse/trackpad, pen/stylus, Apple Pencil, and touch policy | `hybrid` | Synthetic pointer/touch routing, page-local coordinates, and native-policy assertions | Hardware pressure/hover, Pencil/WebKit delivery, palm behavior, and native gesture ownership |
+| Page boundaries and structure actions | `hybrid` | Fixture PDFs, coordinate assertions, Add/Delete/Import/Scan transactions, remapping, and rollback | Current viewer page shells, camera/permission behavior, and visible page replacement |
+| Zoom, resize, replacement, and split/duplicate leaves | `hybrid` | Synthetic scale/lifecycle events, generation isolation, cancellation, and stale-callback rejection | PDF.js/Obsidian replacement behavior, compositor timing, and multi-leaf host lifecycle |
+| Export, close/reopen, and sidecar recovery | `hybrid` | Source-byte preservation, export/reload fixtures, and recovery fault cases | Current Obsidian vault lifecycle, app restart/background behavior, and platform file access |
+| Background/resume and plugin disable/re-enable | `manual` | Cleanup/state-transition unit coverage only | App suspension, WebView restoration, and host lifecycle cannot be proven by jsdom |
+| DPR/refresh-rate combinations and large-document performance | `manual` | Bounded metric serialization and deterministic workload generation | Device memory, refresh cadence, compositor latency, and current host performance require named hardware |
+
+Every manual qualification row has a first feasible run target. Execute in this order: (1) Windows desktop with mouse/trackpad and pen, (2) macOS desktop with mouse/trackpad, (3) one iPad with Apple Pencil, and (4) one Android tablet with stylus. Add the iPhone touch-only row when a current iOS Obsidian build is available. Record the exact build/device/DPR/refresh-rate metadata before starting; do not infer support from another row.
+
+### Bounded failure record
+
+Record one sanitized failure entry per scenario, without enabling telemetry or copying raw logs:
+
+```text
+matrix: pdf-runtime-validation-matrix/v1
+scenario: <matrix scenario>
+status: failed | blocked
+observedAt: <UTC timestamp>
+pluginVersion: <version>
+obsidianBuild: <build>
+platform: <platform>
+device: <model or "unknown">
+dpr: <number or "unknown">
+refreshRateHz: <number or "unknown">
+adapter: direct | embedded | image | unknown
+profile: schema=<n>, status=<supported|degraded|unsafe|unknown>
+generations: viewer=<n>, pages=<bounded list>
+strategies: <selected bounded strategy names>
+boundedEvidence: <event names/counters and relevant profile fields only>
+expected: <short contract>
+actual: <short observed result>
+nextAction: <reproduce | repair | rerun | hardware-needed>
+```
+
+Failure records must exclude prompts, account data, raw DOM, private viewer objects, PDF/annotation contents, full hashes, and unbounded pointer/per-frame logs. A bounded copied profile or event summary is sufficient to link the failure to a matrix row.
+
 ## Known-good promotion
 
 A row is `known-good` only after all applicable smoke steps pass on the named build and its first profile plus lifecycle summary are preserved separately from fixture assumptions. Until then, the row remains `not-run` and parent issue #131 remains dependent on runtime qualification.
