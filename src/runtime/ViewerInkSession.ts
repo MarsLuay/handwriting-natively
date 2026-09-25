@@ -16,6 +16,7 @@ import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMuta
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
 import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
+import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
 import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
 import {
   canAnnotatePointer,
@@ -944,6 +945,8 @@ export class ViewerInkSession {
   /** Last applied browser direct-manipulation policy for mounted PDF pages. */
   private touchDrawPolicyEnabled: boolean | null = null;
   private readonly pointerProbeAbort = new AbortController();
+  /** Bounded raw browser contact correlation; observation only, never routing ownership. */
+  private readonly physicalContactTracker = new PhysicalContactTracker();
   /** Dedup document fallback vs page-router handleDown by pointer and router generation. */
   private readonly handledDrawPointers = new Map<number, number>();
   private lastPointerPdf: { x: number; y: number } | undefined;
@@ -1779,12 +1782,150 @@ export class ViewerInkSession {
     });
   }
 
+  private physicalComposedPath(event: Event): string[] {
+    const path = typeof event.composedPath === "function" ? event.composedPath().slice(0, 12) : [];
+    return path.map((entry) => isElement(entry) ? String(getDebugNodeId(entry)) : Object.prototype.toString.call(entry));
+  }
+
+  private rawPointerContactSample(
+    event: PointerEvent,
+    eventType: RawPointerContactSample["eventType"]
+  ): RawPointerContactSample {
+    return {
+      eventType,
+      timeStamp: event.timeStamp,
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      isPrimary: event.isPrimary,
+      pressure: event.pressure,
+      width: event.width,
+      height: event.height,
+      tiltX: event.tiltX,
+      tiltY: event.tiltY,
+      buttons: event.buttons,
+      button: event.button,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      targetId: getDebugNodeId(event.target),
+      composedPath: this.physicalComposedPath(event),
+      eventPhase: event.eventPhase,
+      cancelable: event.cancelable,
+      defaultPrevented: event.defaultPrevented
+    };
+  }
+
+  private rawTouchContactEvent(
+    event: TouchEvent,
+    eventType: RawTouchContactEvent["eventType"]
+  ): RawTouchContactEvent {
+    const changedCount = event.changedTouches.length;
+    const toPoint = (touch: Touch): RawTouchPoint => ({
+      identifier: touch.identifier,
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      screenX: touch.screenX,
+      screenY: touch.screenY,
+      pageX: touch.pageX,
+      pageY: touch.pageY,
+      radiusX: touch.radiusX,
+      radiusY: touch.radiusY,
+      force: touch.force
+    });
+    const activeTouches = [...event.touches].slice(0, 8).map(toPoint);
+    const changedTouches = [...event.changedTouches].slice(0, 8).map(toPoint);
+    const touches = changedTouches.map((touch) => ({
+      eventType,
+      timeStamp: event.timeStamp,
+      identifier: touch.identifier,
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      radiusX: touch.radiusX,
+      radiusY: touch.radiusY,
+      force: touch.force,
+      touchCount: event.touches.length,
+      changedCount,
+      activeTouches: activeTouches.map((active) => ({ ...active })),
+      changedTouches: changedTouches.map((changed) => ({ ...changed })),
+      targetId: getDebugNodeId(event.target),
+      composedPath: this.physicalComposedPath(event)
+    }));
+    return { eventType, touches };
+  }
+
+  private logPhysicalContactRecords(records: readonly PhysicalContactRecord[]): void {
+    for (const record of records) {
+      const contact = record.contact;
+      this.logger.pointerSeen({
+        source: "physical-contact",
+        phase: record.phase,
+        physicalContactId: contact.physicalContactId,
+        representation: contact.representation,
+        pairedStreams: contact.pairedStreams,
+        pointerEventPenSeen: contact.pointerEventPenSeen,
+        pointerEventTouchSeen: contact.pointerEventTouchSeen,
+        touchEventSeen: contact.touchEventSeen,
+        pointerIds: contact.pointerIds,
+        touchIdentifiers: contact.touchIdentifiers,
+        penContactId: contact.penContactId,
+        classification: contact.classification,
+        classificationReason: contact.classificationReason,
+        classificationTransitions: contact.classificationTransitions,
+        startedAt: contact.startedAt,
+        endedAt: contact.endedAt,
+        durationMs: contact.durationMs,
+        terminal: contact.terminal,
+        pointerTerminal: contact.pointerTerminal,
+        touchTerminal: contact.touchTerminal,
+        pointerMoveCount: contact.pointerMoveCount,
+        touchMoveCount: contact.touchMoveCount,
+        maxDisplacementPx: contact.maxDisplacementPx,
+        firstPoint: contact.firstPoint,
+        lastPoint: contact.lastPoint,
+        rawPointer: contact.rawPointer,
+        rawTouch: contact.rawTouch
+      });
+    }
+  }
+
+  private recordPhysicalPointerEvent(
+    event: PointerEvent,
+    eventType: RawPointerContactSample["eventType"]
+  ): void {
+    if (!(this.options.debugEnabled?.() ?? false)) return;
+    const now = Date.now();
+    const sample = this.rawPointerContactSample(event, eventType);
+    const records = this.physicalContactTracker.expire(now);
+    const current = eventType === "pointerdown"
+      ? this.physicalContactTracker.pointerDown(now, sample)
+      : eventType === "pointermove"
+        ? this.physicalContactTracker.pointerMove(now, sample)
+        : this.physicalContactTracker.pointerEnd(now, sample);
+    this.logPhysicalContactRecords([...records, ...current]);
+  }
+
+  private recordPhysicalTouchEvent(
+    event: TouchEvent,
+    eventType: RawTouchContactEvent["eventType"]
+  ): void {
+    if (!(this.options.debugEnabled?.() ?? false)) return;
+    const now = Date.now();
+    const raw = this.rawTouchContactEvent(event, eventType);
+    const records = this.physicalContactTracker.expire(now);
+    const current = eventType === "touchstart"
+      ? this.physicalContactTracker.touchStart(now, raw)
+      : eventType === "touchmove"
+        ? this.physicalContactTracker.touchMove(now, raw)
+        : this.physicalContactTracker.touchEnd(now, raw);
+    this.logPhysicalContactRecords([...records, ...current]);
+  }
+
   private installPointerDownProbes(
     doc: Document,
     options: AddEventListenerOptions,
     within: (target: EventTarget | null) => boolean
   ): void {
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
+      this.recordPhysicalPointerEvent(e, "pointerdown");
       this.noteUiInput(e);
       const hitPage = this.closestPdfPageElement(e.target);
       const hitTest = this.shouldFallbackRoutePointer(e)
@@ -1861,12 +2002,16 @@ export class ViewerInkSession {
     options: AddEventListenerOptions
   ): void {
     const clearHandled = (e: PointerEvent): void => {
+      this.recordPhysicalPointerEvent(e, e.type === "pointercancel" ? "pointercancel" : "pointerup");
       this.finishDocumentHandoff(e, e.type === "pointercancel" ? "pointercancel" : "pointerup", undefined, {
         terminalObservedByDocument: true,
         eventType: e.type
       });
       this.handledDrawPointers.delete(e.pointerId);
     };
+    doc.addEventListener("pointermove", (e: PointerEvent) => {
+      this.recordPhysicalPointerEvent(e, "pointermove");
+    }, { ...options, passive: true });
     doc.addEventListener("pointerup", clearHandled, options);
     doc.addEventListener("pointercancel", clearHandled, options);
   }
@@ -1877,6 +2022,7 @@ export class ViewerInkSession {
     within: (target: EventTarget | null) => boolean
   ): void {
     doc.addEventListener("touchstart", (e: TouchEvent) => {
+      this.recordPhysicalTouchEvent(e, "touchstart");
       const touches = [...e.changedTouches].map((touch) => ({
         identifier: touch.identifier,
         clientX: Math.round(touch.clientX),
@@ -1894,6 +2040,15 @@ export class ViewerInkSession {
         target: describeTarget(e.target),
         touches
       });
+    }, { ...options, passive: true });
+    doc.addEventListener("touchmove", (e: TouchEvent) => {
+      this.recordPhysicalTouchEvent(e, "touchmove");
+    }, { ...options, passive: true });
+    doc.addEventListener("touchend", (e: TouchEvent) => {
+      this.recordPhysicalTouchEvent(e, "touchend");
+    }, { ...options, passive: true });
+    doc.addEventListener("touchcancel", (e: TouchEvent) => {
+      this.recordPhysicalTouchEvent(e, "touchcancel");
     }, { ...options, passive: true });
   }
 
