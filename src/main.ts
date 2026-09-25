@@ -154,6 +154,23 @@ class PageRangePromptModal extends Modal {
   }
 }
 
+export function scheduleSessionRecoveryAfterDestroy(
+  destroyPromise: Promise<boolean>,
+  scheduleScan: () => void,
+  reportBlocked: (reason: "stale-session-destroy-incomplete" | "stale-session-destroy-failed", error?: unknown) => void
+): void {
+  void destroyPromise.then(
+    (destroyed) => {
+      if (!destroyed) reportBlocked("stale-session-destroy-incomplete");
+      scheduleScan();
+    },
+    (error: unknown) => {
+      reportBlocked("stale-session-destroy-failed", error);
+      scheduleScan();
+    }
+  );
+}
+
 export default class NativePdfInkPlugin extends Plugin {
   inkSettings: PluginSettings = mergeSettings(undefined, "config");
   private readonly sessions = new Map<WorkspaceLeaf, ViewerInkSession>();
@@ -1036,14 +1053,24 @@ export default class NativePdfInkPlugin extends Plugin {
             this.replacementAttachLeaves.add(leaf);
             if (!this.removeSessionFromRegistry(leaf, current, "on-detached")) return;
             this.syncPersistSession(current, "on-detached");
-            void this.trackSessionDestroy(leaf, current, "on-detached", { silent: true, alreadyPersisted: true })
-              .then(() => {
+            scheduleSessionRecoveryAfterDestroy(
+              this.trackSessionDestroy(leaf, current, "on-detached", { silent: true, alreadyPersisted: true }),
+              () => {
                 // The replacement viewer may already be present in this same
                 // host mutation. Do not attach until stale listeners and the
                 // old adapter have finished tearing down.
                 this.scheduleDebouncedScan(0);
-              })
-              .catch(() => undefined);
+              },
+              (reason, error) => {
+                void this.vaultDebugLog.writeUrgent("warn", "handwriting-session-recovery", {
+                  phase: "blocked",
+                  reason,
+                  document: file.path,
+                  retryDelayMs: 0,
+                  ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) })
+                }).catch(() => undefined);
+              }
+            );
           }
         });
         attachStage = "session-created";

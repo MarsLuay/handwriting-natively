@@ -1,5 +1,10 @@
 import { PDFDocument } from "pdf-lib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("obsidian", async () => {
+  const actual = await vi.importActual<typeof import("obsidian")>("obsidian");
+  return { ...actual, Plugin: class {}, PluginSettingTab: class {} };
+});
+import { scheduleSessionRecoveryAfterDestroy } from "../src/main";
 import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from "../src/runtime/AnnotationSurface";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation } from "../src/model";
@@ -121,6 +126,26 @@ describe("viewer runtime tracer", () => {
     document.body.replaceChildren();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("always schedules a recovery scan when stale session destruction settles", async () => {
+    const scheduled: string[] = [];
+    const blocked: Array<{ reason: string; error?: unknown }> = [];
+    const reportBlocked = (reason: "stale-session-destroy-incomplete" | "stale-session-destroy-failed", error?: unknown) => {
+      blocked.push({ reason, error });
+    };
+
+    scheduleSessionRecoveryAfterDestroy(Promise.resolve(true), () => scheduled.push("destroyed"), reportBlocked);
+    scheduleSessionRecoveryAfterDestroy(Promise.resolve(false), () => scheduled.push("incomplete"), reportBlocked);
+    scheduleSessionRecoveryAfterDestroy(Promise.reject(new Error("destroy failed")), () => scheduled.push("failed"), reportBlocked);
+    await Promise.resolve();
+
+    expect(scheduled).toEqual(["destroyed", "incomplete", "failed"]);
+    expect(blocked.map(({ reason }) => reason)).toEqual([
+      "stale-session-destroy-incomplete",
+      "stale-session-destroy-failed"
+    ]);
+    expect(blocked[1]?.error).toEqual(new Error("destroy failed"));
   });
 
   it("draws a stylus stroke, saves sidecar, exports copy, and cleans up", async () => {
