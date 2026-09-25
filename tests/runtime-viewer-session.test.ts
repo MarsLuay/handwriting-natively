@@ -9,6 +9,7 @@ import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from 
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation } from "../src/model";
 import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
+import { documentInputOwnershipSnapshot } from "../src/input/DocumentInputOwnership";
 import { HN_DEV_PROBE_ACTIVE_KEY, HN_DEV_PROBE_EVENT, type HnDevProbeDiagnostic } from "../src/runtime/DevProbeDiagnostics";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
@@ -146,6 +147,45 @@ describe("viewer runtime tracer", () => {
       "stale-session-destroy-failed"
     ]);
     expect(blocked[1]?.error).toEqual(new Error("destroy failed"));
+  });
+
+  it("preempts document input probes across overlapping session generations", async () => {
+    const files = new MemoryFiles();
+    const createSession = (adapter: FakeAdapter) => ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/overlap.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readDocument: async () => new Uint8Array(),
+      notice: () => undefined,
+      debugEnabled: () => true
+    });
+
+    const firstAdapter = new FakeAdapter();
+    const secondAdapter = new FakeAdapter();
+    const first = await createSession(firstAdapter);
+    const second = await createSession(secondAdapter);
+    try {
+      expect(first.getUiLifecycleSnapshot("ownership")).toMatchObject({
+        activeInputCollectors: expect.objectContaining({ documentProbeListener: 0, viewerMousePan: 0 })
+      });
+      expect(second.getUiLifecycleSnapshot("ownership")).toMatchObject({
+        activeInputCollectors: expect.objectContaining({ documentProbeListener: 1, viewerMousePan: 1 }),
+        documentInputOwnership: expect.objectContaining({ active: true })
+      });
+      expect(documentInputOwnershipSnapshot(document).active).toBe(true);
+
+      await first.destroy({ silent: true, alreadyPersisted: true });
+      expect(documentInputOwnershipSnapshot(document).active).toBe(true);
+      expect(second.getUiLifecycleSnapshot("ownership-after-old-destroy")).toMatchObject({
+        activeInputCollectors: expect.objectContaining({ documentProbeListener: 1 })
+      });
+    } finally {
+      await second.destroy({ silent: true, alreadyPersisted: true });
+      expect(documentInputOwnershipSnapshot(document).active).toBe(false);
+    }
   });
 
   it("draws a stylus stroke, saves sidecar, exports copy, and cleans up", async () => {

@@ -11,6 +11,9 @@ export interface HandwritingSessionRegistrySnapshot {
   handwritingRailCount: number;
   /** Kept optional because stale collectors are only knowable while a session exists. */
   staleCollectorCount?: number | null;
+  documentInputCollectorCount?: number;
+  documentInputCollectorIds?: string[];
+  documentInputOwners?: Array<Record<string, unknown>>;
 }
 
 export function missingHandwritingSession(

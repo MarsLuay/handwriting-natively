@@ -70,6 +70,14 @@ function touch(
 }
 
 describe("PhysicalContactTracker", () => {
+  it("supports an owner-specific contact id prefix for overlapping session diagnostics", () => {
+    const tracker = new PhysicalContactTracker("physical-contact-session-7");
+
+    const started = tracker.pointerDown(0, pointer("pointerdown"));
+
+    expect(started[0]?.contact.physicalContactId).toBe("physical-contact-session-7-1");
+  });
+
   it("keeps one id while pairing pen PointerEvent and TouchEvent lifecycles", () => {
     const tracker = new PhysicalContactTracker();
     const started = tracker.pointerDown(100, pointer("pointerdown"));

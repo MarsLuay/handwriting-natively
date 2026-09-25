@@ -24,6 +24,7 @@ import { getDebugNodeId } from "./dom/debugNodeId";
 import { EmbedAnnotateChrome, findExistingEmbedChrome } from "./focus-view/EmbedAnnotateChrome";
 import { resolvePdfFileFromEmbed } from "./focus-view/embedFocusHelpers";
 import { ViewerInkSession, type AddPageMutationRestoreState } from "./runtime/ViewerInkSession";
+import { documentInputOwnershipSnapshot } from "./input/DocumentInputOwnership";
 import { AttachRetryPolicy } from "./runtime/AttachRetryPolicy";
 import { ScanDebounce } from "./runtime/ScanDebounce";
 import { VaultDebugLog } from "./logging/VaultDebugLog";
@@ -522,6 +523,9 @@ export default class NativePdfInkPlugin extends Plugin {
       const root = this.containerForLeaf(leaf);
       if (root) roots.add(root);
     }
+    const documentInputOwners = [...new Set([...roots].map((root) => root.ownerDocument))]
+      .map((document) => documentInputOwnershipSnapshot(document))
+      .filter((owner) => owner.active);
     const count = (selector: string): number => [...roots]
       .reduce((total, root) => total + root.querySelectorAll(selector).length, 0);
     return {
@@ -533,7 +537,10 @@ export default class NativePdfInkPlugin extends Plugin {
       activeSessionFound: Boolean(activePdfLeaf && this.sessions.has(activePdfLeaf)),
       viewerShellCount: count(".pdf-viewer, .pdfViewer"),
       handwritingToolbarCount: count(".native-pdf-handwriting-toolbar"),
-      handwritingRailCount: count(".native-pdf-handwriting-rail")
+      handwritingRailCount: count(".native-pdf-handwriting-rail"),
+      documentInputCollectorCount: documentInputOwners.length,
+      documentInputCollectorIds: documentInputOwners.map((owner) => owner.collectorId).filter((id): id is string => id !== null),
+      documentInputOwners: documentInputOwners.map((owner) => ({ ...owner }))
     };
   }
 
