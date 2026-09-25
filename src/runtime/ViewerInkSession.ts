@@ -947,6 +947,8 @@ export class ViewerInkSession {
   private readonly pointerProbeAbort = new AbortController();
   /** Bounded raw browser contact correlation; observation only, never routing ownership. */
   private readonly physicalContactTracker = new PhysicalContactTracker();
+  /** Links a live PointerEvent id to the bounded physical-contact trace. */
+  private readonly physicalContactIdsByPointer = new Map<number, string>();
   /** Dedup document fallback vs page-router handleDown by pointer and router generation. */
   private readonly handledDrawPointers = new Map<number, number>();
   private lastPointerPdf: { x: number; y: number } | undefined;
@@ -1584,16 +1586,20 @@ export class ViewerInkSession {
     const surface = hitTest.geometricPage ? this.surfaces.get(hitTest.geometricPage.pageNumber) : undefined;
     const router = surface?.router ?? null;
     const contact = this.postUiInputProbe.observeDocument(Date.now(), event.pointerId, "pen", {
+      physicalContactId: this.physicalContactIdsByPointer.get(event.pointerId) ?? null,
       page: hitTest.geometricPage?.pageNumber ?? null,
       geometricPageId: getDebugNodeId(page),
       safeRecoveryPageId: getDebugNodeId(hitTest.safeRecoveryPage?.element ?? null),
       ...this.pointerEventPropagationDetails(event, page, surface?.overlay ?? null),
       routerBoundElementId: getDebugNodeId(router?.boundElement() ?? null),
       routerGeneration: router?.generation ?? null,
+      pageMountGeneration: hitTest.geometricPage?.mountGeneration ?? null,
+      viewerGeneration: this.viewerGeneration,
       routerExists: Boolean(router),
       routerAlive: Boolean(router?.isAlive()),
       routerBindsToCurrentPage: Boolean(router && page && router.bindsTo(page)),
       routerListenerAborted: Boolean(router?.isListenerAborted()),
+      documentProbeListenerAborted: this.pointerProbeAbort.signal.aborted,
       pageConnected: Boolean(page?.isConnected),
       overlayId: getDebugNodeId(surface?.overlay ?? null),
       overlayConnected: Boolean(surface?.overlay.isConnected),
@@ -1601,7 +1607,6 @@ export class ViewerInkSession {
       activeInputOwner: Boolean(page && inputOwners(page).get(page) === this),
       handledPointerBefore: this.handledDrawPointers.has(event.pointerId),
       handledPointerGenerationBefore: this.handledDrawPointers.get(event.pointerId) ?? null,
-      viewerGeneration: this.viewerGeneration,
       pageGeneration: router?.generation ?? null,
       msSinceRouterBind: this.lastRouterBindAt === null ? null : Math.max(0, Date.now() - this.lastRouterBindAt),
       msSincePageReplacement: this.lastPageReplacementAt === null ? null : Math.max(0, Date.now() - this.lastPageReplacementAt),
@@ -1676,6 +1681,23 @@ export class ViewerInkSession {
       contact: result.contact,
       details: result.details
     });
+    this.logger.physicalContactTrace({
+      outcome: result.outcome,
+      outcomeClass: result.outcomeClass,
+      correlationId: result.correlationId,
+      penContactId: result.penContactId,
+      physicalContactId: result.contact?.physicalContactId ?? null,
+      lastObservedStage: result.contact?.lastObservedStage ?? null,
+      fallbackRejectedReason: result.contact?.fallbackRejectedReason ?? null,
+      contact: result.contact,
+      trace: result.details.trace ?? null,
+      nativeEvidence: {
+        nativeMovementObserved: result.details.nativeMovementObserved ?? false,
+        maxScrollDeltaPx: result.details.maxScrollDeltaPx ?? result.contact?.nativeScrollDeltaPx ?? 0,
+        scrollBefore: result.details.scrollBefore ?? null,
+        scrollAtTerminal: result.details.scrollAtTerminal ?? null
+      }
+    });
     if (result.outcome !== "post-ui-pen-success") {
       this.logger.penRoutingRegression({
         outcome: result.outcome,
@@ -1689,7 +1711,9 @@ export class ViewerInkSession {
 
   private recordPostUiProbeDocument(event: PointerEvent, hitTest: PointerHitTest): void {
     if (!(this.options.debugEnabled?.() ?? false)) return;
-    const contact = this.postUiInputProbe.pointerDown(Date.now(), event.pointerId, event.pointerType || "(empty)");
+    const contact = this.postUiInputProbe.pointerDown(Date.now(), event.pointerId, event.pointerType || "(empty)", {
+      physicalContactId: this.physicalContactIdsByPointer.get(event.pointerId) ?? null
+    });
     if (!contact) return;
     this.logger.postUiProbe("document", {
       ...contact,
@@ -1884,6 +1908,10 @@ export class ViewerInkSession {
         rawPointer: contact.rawPointer,
         rawTouch: contact.rawTouch
       });
+      for (const pointerId of contact.pointerIds) {
+        if (record.phase === "terminal") this.physicalContactIdsByPointer.delete(pointerId);
+        else this.physicalContactIdsByPointer.set(pointerId, contact.physicalContactId);
+      }
     }
   }
 
@@ -5691,6 +5719,7 @@ export class ViewerInkSession {
     this.thumbnailSidebarActions?.destroy();
     this.findBridge?.destroy();
     this.handledDrawPointers.clear();
+    this.physicalContactIdsByPointer.clear();
     this.clearPostUiProbeTimer();
     this.uiShellSnapshots.clear();
     this.uiShellMutationObserver?.disconnect();
@@ -6062,6 +6091,7 @@ export class ViewerInkSession {
       onRouterReceived: (event, generation) => {
         this.recordPostUiProbeStage(event, "router-received", {
           page: surface.page.pageNumber,
+          pageMountGeneration: surface.page.mountGeneration ?? null,
           routerGeneration: generation,
           routerAlive: Boolean(surface.router?.isAlive()),
           routerBindsToPage: Boolean(surface.router?.bindsTo(surface.page.element)),
@@ -6110,6 +6140,7 @@ export class ViewerInkSession {
       onPointerRejected: (reason, event, generation) => {
         this.recordPostUiProbeStage(event, "router-rejected", {
           page: surface.page.pageNumber,
+          pageMountGeneration: surface.page.mountGeneration ?? null,
           routerGeneration: generation,
           rejection: reason,
           staleRouter: reason === "inactive-owner"

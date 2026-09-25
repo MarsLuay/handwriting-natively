@@ -206,6 +206,55 @@ describe("PostUiInputProbe", () => {
       });
   });
 
+  it("keeps physical identity, fallback reason, generations, and bounded terminal context", () => {
+    const probe = new PostUiInputProbe();
+    probe.observeDocument(5_000, 12, "pen", {
+      physicalContactId: "physical-contact-9",
+      page: 4,
+      pageMountGeneration: 22,
+      viewerGeneration: 8,
+      routerGeneration: 31,
+      routerAlive: false,
+      routerListenerAborted: true
+    });
+    for (let index = 0; index < 10; index += 1) {
+      probe.handoffStage(5_001 + index, 12, "hit-test", { page: 4, composedPath: ["page-4", "viewer"] });
+    }
+    probe.handoffStage(5_020, 12, "fallback", {
+      fallbackConsidered: true,
+      fallbackEligible: false,
+      fallbackRejected: true,
+      fallbackRejectedReason: "same-dispatch-no-router"
+    });
+
+    const result = probe.finishHandoff(5_030, 12, "pointerup");
+
+    expect(result).toMatchObject({
+      outcome: "post-ui-pen-fallback-rejected",
+      outcomeClass: "routing",
+      contact: expect.objectContaining({
+        physicalContactId: "physical-contact-9",
+        fallbackRejectedReason: "same-dispatch-no-router",
+        lastObservedStage: "terminal"
+      }),
+      details: expect.objectContaining({
+        pageMountGeneration: 22,
+        viewerGeneration: 8,
+        trace: expect.objectContaining({
+          physicalContactId: "physical-contact-9",
+          fallbackRejectedReason: "same-dispatch-no-router",
+          rollingContext: expect.any(Array)
+        })
+      })
+    });
+    expect(result?.contact?.rollingContext).toHaveLength(PostUiInputProbe.MAX_TRACE_CONTEXT);
+    expect(result?.contact?.rollingContext.at(-2)).toMatchObject({
+      stage: "fallback",
+      details: expect.objectContaining({ fallbackRejectedReason: "same-dispatch-no-router" })
+    });
+    expect(result?.contact?.rollingContext.at(-1)?.stage).toBe("terminal");
+  });
+
   it("bounds contacts and pointer-down accounting without logging move-like state", () => {
     const probe = new PostUiInputProbe();
     probe.arm(0, context);
