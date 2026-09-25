@@ -467,6 +467,13 @@ interface StrokeRenderLifecycleState {
   lastZoomSettlePaintGeneration: number | null;
 }
 
+interface StrokePersistenceLifecycleState {
+  strokeId: string;
+  lastSerializationRevision: string | null;
+  lastSerializationOmissionRevision: string | null;
+  lastPersistedRevision: string | null;
+}
+
 interface StrokePerformanceState {
   startedAt: number;
   page: number;
@@ -756,6 +763,7 @@ export class ViewerInkSession {
   /** Stroke identity is diagnostic-only and bounded to recent model lifecycles. */
   private readonly strokePenContactIds = new Map<string, string | null>();
   private readonly strokeRenderStates = new Map<string, StrokeRenderLifecycleState>();
+  private readonly strokePersistenceStates = new Map<string, StrokePersistenceLifecycleState>();
   private readonly strokeRenderVerificationTimers = new Map<string, number>();
   private nextPaintGeneration = 0;
   private readonly penScrollEvidence = new Map<number, PenScrollEvidence>();
@@ -3621,11 +3629,15 @@ export class ViewerInkSession {
       sidecarUpdatedAt: sidecar?.updatedAt ?? null,
       recoveryUpdatedAt: recovery?.updatedAt ?? null
     });
+    const storedSource = stored === recovery ? "recovery" : stored === sidecar ? "sidecar" : null;
     for (const page of stored?.pages ?? []) {
       if (page.width > 1 && page.height > 1) {
         session.pageMetrics.set(page.page, { width: page.width, height: page.height });
       }
-      for (const stroke of page.strokes) session.ink.add(stroke);
+      for (const stroke of page.strokes) {
+        session.ink.add(stroke);
+        session.recordStrokeReloadRestoration(stroke, storedSource ?? "unknown", "session-create");
+      }
       for (const text of page.texts ?? []) session.texts.add(text);
     }
     await urgent("session create hydrate ok", {
@@ -6613,6 +6625,103 @@ export class ViewerInkSession {
       modelPresent: event.modelPresent,
       ...(event.reason ? { reason: event.reason } : {})
     });
+  }
+
+  private recordStrokeReloadRestoration(stroke: InkStroke, source: string, reason: string): void {
+    this.strokePersistenceState(stroke.id);
+    this.logger.strokeLifecycle("stroke-reload-restoration", {
+      strokeId: stroke.id,
+      penContactId: this.strokePenContactIds.get(stroke.id) ?? null,
+      page: stroke.page,
+      tool: stroke.tool,
+      modelPresent: this.ink.page(stroke.page).some((candidate) => candidate.id === stroke.id),
+      restored: true,
+      source,
+      reason
+    });
+  }
+
+  private recordStrokeSerialization(snapshot: SidecarSchemaV1, store: "recovery" | "sidecar", reason: string): void {
+    const revision = `${store}:${snapshot.updatedAt}`;
+    const serializedIds = new Set<string>();
+    for (const page of snapshot.pages) {
+      for (const stroke of page.strokes) {
+        serializedIds.add(stroke.id);
+        const state = this.strokePersistenceState(stroke.id);
+        if (state.lastSerializationRevision === revision) continue;
+        state.lastSerializationRevision = revision;
+        this.logger.strokeLifecycle("stroke-serialization-included", {
+          strokeId: stroke.id,
+          penContactId: this.strokePenContactIds.get(stroke.id) ?? null,
+          page: stroke.page,
+          tool: stroke.tool,
+          modelPresent: this.ink.page(stroke.page).some((candidate) => candidate.id === stroke.id),
+          serializationIncluded: true,
+          serializedStrokeCount: page.strokes.length,
+          store,
+          reason,
+          snapshotUpdatedAt: snapshot.updatedAt
+        });
+      }
+    }
+    for (const stroke of this.ink.all()) {
+      if (serializedIds.has(stroke.id)) continue;
+      const state = this.strokePersistenceState(stroke.id);
+      if (state.lastSerializationOmissionRevision === revision) continue;
+      state.lastSerializationOmissionRevision = revision;
+      this.logger.strokeLifecycle("stroke-serialization-omitted", {
+        strokeId: stroke.id,
+        penContactId: this.strokePenContactIds.get(stroke.id) ?? null,
+        page: stroke.page,
+        tool: stroke.tool,
+        modelPresent: true,
+        serializationIncluded: false,
+        store,
+        reason: "missing-from-snapshot",
+        persistenceReason: reason,
+        snapshotUpdatedAt: snapshot.updatedAt
+      });
+    }
+  }
+
+  private recordStrokePersisted(snapshot: SidecarSchemaV1, reason: string): void {
+    for (const page of snapshot.pages) {
+      for (const stroke of page.strokes) {
+        const state = this.strokePersistenceState(stroke.id);
+        if (state.lastPersistedRevision === snapshot.updatedAt) continue;
+        state.lastPersistedRevision = snapshot.updatedAt;
+        this.logger.strokeLifecycle("stroke-persisted", {
+          strokeId: stroke.id,
+          penContactId: this.strokePenContactIds.get(stroke.id) ?? null,
+          page: stroke.page,
+          tool: stroke.tool,
+          modelPresent: this.ink.page(stroke.page).some((candidate) => candidate.id === stroke.id),
+          serializationIncluded: true,
+          persisted: true,
+          persistenceStore: "sidecar-and-recovery",
+          reason,
+          snapshotUpdatedAt: snapshot.updatedAt
+        });
+      }
+    }
+  }
+
+  private strokePersistenceState(strokeId: string): StrokePersistenceLifecycleState {
+    const existing = this.strokePersistenceStates.get(strokeId);
+    if (existing) return existing;
+    while (this.strokePersistenceStates.size >= 256) {
+      const oldest = this.strokePersistenceStates.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.strokePersistenceStates.delete(oldest);
+    }
+    const state: StrokePersistenceLifecycleState = {
+      strokeId,
+      lastSerializationRevision: null,
+      lastSerializationOmissionRevision: null,
+      lastPersistedRevision: null
+    };
+    this.strokePersistenceStates.set(strokeId, state);
+    return state;
   }
 
   private strokeRenderState(stroke: InkStroke): StrokeRenderLifecycleState {
@@ -10198,6 +10307,7 @@ export class ViewerInkSession {
       const recoveryWriteStarted = performance.now();
       await this.options.recovery.save(snapshot);
       recoveryWriteMs = roundMs(performance.now() - recoveryWriteStarted);
+      this.recordStrokeSerialization(snapshot, "recovery", reason);
       if (!this.stillOwnsPersist()) {
         const recoveryClearStarted = performance.now();
         await this.options.recovery.clear(this.identity.id).catch(() => undefined);
@@ -10217,6 +10327,7 @@ export class ViewerInkSession {
       const sidecarWriteStarted = performance.now();
       await this.options.sidecars.save(snapshot);
       sidecarWriteMs = roundMs(performance.now() - sidecarWriteStarted);
+      this.recordStrokeSerialization(snapshot, "sidecar", reason);
       if (!this.stillOwnsPersist()) {
         this.logger.sidecarPersist({
           reason,
@@ -10233,6 +10344,7 @@ export class ViewerInkSession {
       const recoveryClearStarted = performance.now();
       await this.options.recovery.clear(this.identity.id);
       recoveryClearMs = roundMs(performance.now() - recoveryClearStarted);
+      this.recordStrokePersisted(snapshot, reason);
       this.logger.sidecarPersist({
         reason,
         documentId: this.identity.id,

@@ -8,7 +8,7 @@ import { HN_DEV_PROBE_ACTIVE_KEY, HN_DEV_PROBE_EVENT, type HnDevProbeDiagnostic 
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
 import { createDocumentIdentity, hashDocumentContent } from "../src/storage/DocumentIdentity";
-import { serializeSidecar } from "../src/storage/SidecarSchema";
+import { serializeSidecar, type SidecarSchemaV1 } from "../src/storage/SidecarSchema";
 import type { TextStyleChange } from "../src/ui/TextDropdown";
 
 class MemoryFiles implements TextFileAdapter {
@@ -336,6 +336,61 @@ describe("viewer runtime tracer", () => {
       })
     ]));
 
+    await expect(session.destroy()).resolves.toBe(true);
+  });
+
+  it("correlates stroke serialization, persistence, and reload restoration", async () => {
+    const files = new MemoryFiles();
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const createSession = (adapter: FakeAdapter) => ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.png",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readDocument: async () => new Uint8Array([1, 2, 3]),
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: { write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} }) }
+    });
+
+    const adapter = new FakeAdapter();
+    const session = await createSession(adapter);
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 401 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 401 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 401 }));
+    await session.manualSave();
+
+    const savedLifecycle = writes.filter((entry) => entry.event === "stroke lifecycle");
+    expect(savedLifecycle).toEqual(expect.arrayContaining([
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-serialization-included", serializationIncluded: true, store: "recovery" }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-serialization-included", serializationIncluded: true, store: "sidecar" }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-persisted", persisted: true, serializationIncluded: true }) })
+    ]));
+
+    const savedSidecar = JSON.parse([...files.values.entries()].find(([path]) => path.startsWith("annotations/"))![1]) as SidecarSchemaV1;
+    const internal = session as unknown as {
+      recordStrokeSerialization(snapshot: SidecarSchemaV1, store: "recovery" | "sidecar", reason: string): void;
+    };
+    internal.recordStrokeSerialization({
+      ...savedSidecar,
+      updatedAt: new Date(Date.parse(savedSidecar.updatedAt) + 1).toISOString(),
+      pages: savedSidecar.pages.map((page) => ({ ...page, strokes: [] }))
+    }, "sidecar", "test-omission");
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: "stroke lifecycle",
+        payload: expect.objectContaining({ phase: "stroke-serialization-omitted", serializationIncluded: false, reason: "missing-from-snapshot" })
+      })
+    ]));
+
+    const reloaded = await createSession(new FakeAdapter());
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-reload-restoration", restored: true, source: "sidecar", modelPresent: true }) })
+    ]));
+
+    await expect(reloaded.destroy()).resolves.toBe(true);
     await expect(session.destroy()).resolves.toBe(true);
   });
 
