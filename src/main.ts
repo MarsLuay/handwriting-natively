@@ -12,6 +12,7 @@ import {
   type WorkspaceLeaf
 } from "obsidian";
 import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
+import { getPhysicalContactCollectorSnapshot, type PhysicalContactCollectorSnapshot } from "./input/PhysicalContactCollector";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
@@ -524,6 +525,14 @@ export default class NativePdfInkPlugin extends Plugin {
     }
     const count = (selector: string): number => [...roots]
       .reduce((total, root) => total + root.querySelectorAll(selector).length, 0);
+    const physicalContactCollectors = [...new Set([...roots].map((root) => root.ownerDocument))]
+      .map((document) => getPhysicalContactCollectorSnapshot(document))
+      .filter((snapshot): snapshot is PhysicalContactCollectorSnapshot => snapshot !== null);
+    const registeredSessionIds = new Set([...this.sessions.values()].map((session) => session.getDocumentId()));
+    const staleCollectorCount = physicalContactCollectors.reduce(
+      (count, collector) => count + collector.owners.filter(({ sessionId }) => !registeredSessionIds.has(sessionId)).length,
+      0
+    );
     return {
       pdfLeafCount: pdfLeaves.length,
       sessions: this.sessions.size,
@@ -533,7 +542,9 @@ export default class NativePdfInkPlugin extends Plugin {
       activeSessionFound: Boolean(activePdfLeaf && this.sessions.has(activePdfLeaf)),
       viewerShellCount: count(".pdf-viewer, .pdfViewer"),
       handwritingToolbarCount: count(".native-pdf-handwriting-toolbar"),
-      handwritingRailCount: count(".native-pdf-handwriting-rail")
+      handwritingRailCount: count(".native-pdf-handwriting-rail"),
+      physicalContactCollectors,
+      staleCollectorCount
     };
   }
 
