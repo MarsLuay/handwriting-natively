@@ -155,6 +155,19 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         searchable: false
       },
       {
+        name: "Enable on PDFs",
+        desc: "Enable Handwriting Natively annotation and Pencil handling in PDF files.",
+        render: (setting: Setting) => {
+          setting.addToggle((toggle) =>
+            toggle.setValue(this.host.inkSettings.enabledSurfaces.pdf).onChange(async (value) => {
+              await this.persistPatch({
+                enabledSurfaces: { ...this.host.inkSettings.enabledSurfaces, pdf: value }
+              });
+            })
+          );
+        }
+      },
+      {
         name: "Autosave",
         desc: "Save completed edits automatically. Enabled by default.",
         render: (setting: Setting) => {

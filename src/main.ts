@@ -416,11 +416,41 @@ export default class NativePdfInkPlugin extends Plugin {
     session.emergencyPersist(writeSync, { force: true, reason });
   }
 
+  private async detachDisabledPdfSessions(): Promise<void> {
+    for (const [leaf, session] of [...this.sessions]) {
+      const view = leaf.view;
+      const file = view instanceof FileView ? view.file : (view as FileView).file;
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
+      this.sessions.delete(leaf);
+      this.syncPersistSession(session, "pdf-disabled");
+      try {
+        await session.destroy({ silent: true, alreadyPersisted: true });
+      } catch (error) {
+        await this.vaultDebugLog.writeUrgent("warn", "pdf session disable failed", {
+          document: file.path,
+          pdfHandwritingEnabled: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
   async saveSettings(settings: PluginSettings): Promise<void> {
     const previousPlacement = this.inkSettings.toolbarPlacement;
     const previousBoostedZoom = this.inkSettings.boostedPdfZoom;
+    const previousPdfEnabled = this.inkSettings.enabledSurfaces.pdf;
     this.inkSettings = settings;
     await this.saveData(settings);
+    if (previousPdfEnabled !== settings.enabledSurfaces.pdf) {
+      this.vaultDebugLog.write("info", "content-surface-setting-changed", {
+        surface: "pdf",
+        previous: previousPdfEnabled,
+        current: settings.enabledSurfaces.pdf,
+        pdfHandwritingEnabled: settings.enabledSurfaces.pdf
+      });
+      if (!settings.enabledSurfaces.pdf) await this.detachDisabledPdfSessions();
+      this.scheduleDebouncedScan(0);
+    }
     this.vaultDebugLog.write("info", "plugin settings saved", {
       changedKeys: [
         ...(previousPlacement !== settings.toolbarPlacement ? ["toolbarPlacement"] : []),
@@ -511,16 +541,29 @@ export default class NativePdfInkPlugin extends Plugin {
       imageLeafCount: this.app.workspace.getLeavesOfType("image").length,
       sessions: this.sessions.size,
       attachingLeaves: this.attachingLeaves.size,
+      pdfHandwritingEnabled: this.inkSettings.enabledSurfaces.pdf,
       mobile: Platform.isMobile,
       phone: Platform.isPhone
     });
     const live = new Set(leaves);
     const livePaths = new Set<string>();
     for (const [leaf, session] of [...this.sessions]) {
-      if (!live.has(leaf)) {
+      const view = leaf.view;
+      const file = view instanceof FileView ? view.file : (view as FileView).file;
+      const pdfDisabled = file instanceof TFile
+        && file.extension.toLowerCase() === "pdf"
+        && !this.inkSettings.enabledSurfaces.pdf;
+      if (!live.has(leaf) || pdfDisabled) {
         this.sessions.delete(leaf);
-        this.syncPersistSession(session, "leaf-closed");
+        this.syncPersistSession(session, pdfDisabled ? "pdf-disabled" : "leaf-closed");
         void session.destroy({ silent: true, alreadyPersisted: true });
+        if (pdfDisabled) {
+          await this.vaultDebugLog.writeUrgent("info", "pdf session disabled", {
+            document: file.path,
+            pdfHandwritingEnabled: false,
+            reason: "content-surface-setting-changed"
+          });
+        }
         continue;
       }
       if (!session.isAttached()) {
@@ -539,6 +582,14 @@ export default class NativePdfInkPlugin extends Plugin {
       const isImage = isSupportedImageFile(file);
       if (!isPdf && !isImage) continue;
       livePaths.add(file.path);
+      if (isPdf && !this.inkSettings.enabledSurfaces.pdf) {
+        await this.vaultDebugLog.writeUrgent("info", "pdf session disabled", {
+          document: file.path,
+          pdfHandwritingEnabled: false,
+          reason: "content-surface-setting-disabled"
+        });
+        continue;
+      }
       if (!this.attachRetry.canAttempt(file.path)) {
         await this.vaultDebugLog.writeUrgent("info", "session attach cooling", {
           document: file.path,
@@ -676,6 +727,13 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private scanPdfEmbeds(): void {
+    if (!this.inkSettings.enabledSurfaces.pdf) {
+      for (const [host, chrome] of [...this.embedChrome]) {
+        chrome.destroy();
+        this.embedChrome.delete(host);
+      }
+      return;
+    }
     const liveHosts = new Set<HTMLElement>();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;

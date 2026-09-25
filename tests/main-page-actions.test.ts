@@ -12,6 +12,14 @@ describe("main PDF page actions", () => {
     expect(mainSource).toContain("modifyBinary");
   });
 
+  it("gates PDF session attachment on the durable content-surface switch", () => {
+    expect(mainSource).toContain("enabledSurfaces.pdf");
+    expect(mainSource).toContain("pdfHandwritingEnabled");
+    expect(mainSource).toContain("detachDisabledPdfSessions");
+    expect(mainSource).toContain("content-surface-setting-changed");
+    expect(mainSource).toContain("this.embedChrome.delete(host)");
+  });
+
   it("wires thumbnail blank-page and delete actions through in-place callbacks", () => {
     expect(mainSource).toContain("onInsertPage: (pageNumber: number) => this.insertPageInPlace(file, pageNumber)");
     expect(mainSource).toContain("onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber)");
