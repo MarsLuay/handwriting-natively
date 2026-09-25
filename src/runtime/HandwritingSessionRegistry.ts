@@ -19,6 +19,22 @@ export function missingHandwritingSession(
   return snapshot.expectedPdfSession && !snapshot.activeSessionFound;
 }
 
+/**
+ * A visible supported PDF with no registered session is an attach invariant
+ * failure. Keep this stricter than `missingHandwritingSession` so a transient
+ * pre-viewer state is diagnosed without forcing an attach storm.
+ */
+export function needsMissingHandwritingSessionRecovery(
+  snapshot: HandwritingSessionRegistrySnapshot
+): boolean {
+  return snapshot.pdfLeafCount > 0
+    && snapshot.viewerShellCount > 0
+    && snapshot.expectedPdfSession
+    && snapshot.sessions === 0
+    && snapshot.attachingLeaves === 0
+    && !snapshot.activeSessionFound;
+}
+
 export function handwritingSessionMissingPayload(
   snapshot: HandwritingSessionRegistrySnapshot
 ): Record<string, unknown> {
