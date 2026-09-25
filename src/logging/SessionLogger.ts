@@ -360,16 +360,24 @@ export class SessionLogger {
       | "stroke-canvas-rebuild-before"
       | "stroke-canvas-rebuild-after"
       | "stroke-zoom-settle-check"
+      | "stroke-serialization-included"
+      | "stroke-serialization-omitted"
+      | "stroke-persisted"
+      | "stroke-reload-restoration"
       | "stroke-lifecycle-regression",
     details: Record<string, unknown> = {}
   ): void {
-    this.emit(phase === "stroke-lifecycle-regression" ? "warn" : "info", "stroke lifecycle", {
-      document: this.documentPath,
-      pluginVersion: this.pluginVersion,
-      profileSchema: PROFILE_SCHEMA_VERSION,
-      phase,
-      ...details
-    });
+    this.emit(
+      phase === "stroke-lifecycle-regression" || phase === "stroke-serialization-omitted" ? "warn" : "info",
+      "stroke lifecycle",
+      {
+        document: this.documentPath,
+        pluginVersion: this.pluginVersion,
+        profileSchema: PROFILE_SCHEMA_VERSION,
+        phase,
+        ...details
+      }
+    );
   }
 
   /** One bounded summary per completed plugin-participating pan burst. */
