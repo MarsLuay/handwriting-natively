@@ -4494,6 +4494,48 @@ export class ViewerInkSession {
     };
   }
 
+  /** Write a bounded UI snapshot into the vault log when Copy logs is pressed. */
+  writeCopiedLogUiSnapshot(): Record<string, unknown> {
+    const host = this.options.adapter.host;
+    const root = this.options.adapter.root;
+    const toolbar = this.toolbar.element;
+    const toolbarControls = [...toolbar.querySelectorAll<HTMLElement>("[data-control]")]
+      .slice(0, 32)
+      .map((control) => control.dataset.control ?? "unknown");
+    const nativeAddButtons = [...host.querySelectorAll<HTMLElement>("button, [role='button']")]
+      .filter((button) => {
+        const label = [
+          button.getAttribute("aria-label"),
+          button.getAttribute("title"),
+          button.textContent,
+          button.className
+        ].filter(Boolean).join(" ");
+        return /\badd\b|\bplus\b/i.test(label) || button.textContent?.trim() === "+";
+      })
+      .slice(0, 8)
+      .map((button) => ({
+        label: [button.getAttribute("aria-label"), button.getAttribute("title"), button.textContent]
+          .filter(Boolean).join(" ").trim().slice(0, 96),
+        classes: [...button.classList].slice(0, 8),
+        connected: button.isConnected
+      }));
+    const snapshot = {
+      ...this.handwritingUiState("copy-logs"),
+      rootConnected: root.isConnected,
+      hostConnected: host.isConnected,
+      customToolbarCount: host.querySelectorAll(".native-pdf-handwriting-toolbar").length,
+      toolbarControls,
+      eraserControlConnected: Boolean(toolbar.querySelector("[data-control='eraser']")),
+      addPageControlCount: root.querySelectorAll(".native-pdf-handwriting-add-page").length,
+      thumbnailAddPageControlCount: host.querySelectorAll(".native-pdf-handwriting-thumbnail-add-page").length,
+      pdfViewerShellCount: host.querySelectorAll(".pdf-viewer, .pdfViewer").length,
+      nativePdfToolbarCount: host.querySelectorAll(".pdf-toolbar, .pdf-toolbar-container").length,
+      nativeAddButtons
+    };
+    this.logger.handwritingUiSnapshot(snapshot);
+    return snapshot;
+  }
+
   /**
    * Obsidian has no in-place PDF.js document replacement API: modifyBinary
    * destroys its page DOM before the replacement document is ready. Preserve

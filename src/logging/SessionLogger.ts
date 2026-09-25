@@ -711,6 +711,14 @@ export class SessionLogger {
     });
   }
 
+  /** Capture the bounded UI state immediately before the user copies logs. */
+  handwritingUiSnapshot(details: Record<string, unknown> = {}): void {
+    this.emit("info", "handwriting-ui-snapshot", {
+      document: this.documentPath,
+      ...details
+    });
+  }
+
   /** Placement transitions make stale More-menu state and failed remounts diagnosable. */
   toolbarPlacement(phase: "request" | "applied" | "error", details: Record<string, unknown> = {}): void {
     this.emit(phase === "error" ? "warn" : "info", "toolbar placement", {
