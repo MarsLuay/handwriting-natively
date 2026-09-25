@@ -182,6 +182,37 @@ describe("PhysicalContactTracker", () => {
     expect(nonFiniteSnapshot.maxDisplacementPx).toBe(0);
   });
 
+  it("accepts an origin pointercancel when the contact was already at the origin", () => {
+    const tracker = new PhysicalContactTracker();
+    tracker.pointerDown(0, pointer("pointerdown", { clientX: 0, clientY: 0 }));
+
+    const terminal = tracker.pointerEnd(1, pointer("pointercancel", { clientX: 0, clientY: 0 }));
+    const snapshot = terminal[0]!.contact;
+
+    expect(snapshot.pointerTerminal).toBe("pointercancel");
+    expect(snapshot.rawPointer.last?.eventType).toBe("pointercancel");
+    expect(snapshot.firstPoint).toEqual({ x: 0, y: 0 });
+    expect(snapshot.lastPoint).toEqual({ x: 0, y: 0 });
+    expect(snapshot.maxDisplacementPx).toBe(0);
+  });
+
+  it("does not pair non-finite coordinates with an active contact", () => {
+    const tracker = new PhysicalContactTracker();
+    tracker.touchStart(0, touch("touchstart", 7, { clientX: 100, clientY: 200 }));
+
+    const records = tracker.pointerDown(1, pointer("pointerdown", {
+      pointerId: 44,
+      pointerType: "pen",
+      clientX: Number.NaN,
+      clientY: Number.POSITIVE_INFINITY
+    }));
+
+    expect(records).toHaveLength(1);
+    expect(records[0]?.contact.pairedStreams).toBe(false);
+    expect(records[0]?.contact.pointerIds).toEqual([44]);
+    expect(records[0]?.contact.touchIdentifiers).toEqual([]);
+  });
+
   it("uses a valid pointercancel as geometry while retaining its terminal state", () => {
     const tracker = new PhysicalContactTracker();
     tracker.pointerDown(0, pointer("pointerdown", { clientX: 10, clientY: 20 }));
