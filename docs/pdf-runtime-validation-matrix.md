@@ -4,6 +4,20 @@
 
 This versioned matrix is the manual-runtime companion to the deterministic compatibility fixtures. Unit tests are not substituted for a current Obsidian qualification run. A row may be promoted to `known-good` only when the captured per-instance profile and lifecycle trace are attached to the row. `not-run`, `blocked`, and `failed` are honest release states; none may be treated as support evidence.
 
+## Release qualification gate
+
+A release candidate is qualified by running the smallest representative set in this order: Windows desktop mouse/trackpad, Windows or Surface pen, one current iPad with Apple Pencil, one current Android tablet with stylus/touch, and macOS mouse/trackpad when that target is supported. Each run uses the canonical `tests/fixtures/lorem-ipsum.pdf` plus a saved annotated fixture, exercises the high-risk gesture sequence below, and records build/device/DPR/refresh-rate metadata with the bounded profile. The release record links the result rather than copying raw logs.
+
+The matrix intentionally keeps physical-device rows `not-run` until a real device is available. Fixture success, a browser simulation, or another platform's result cannot promote an iPad/Apple Pencil, Android, suspension/resume, pressure/tilt, or 60/120 Hz row. This is an explicit unsupported/untested state, not a support claim.
+
+### High-risk gesture sequence
+
+1. Open the annotated fixture, draw a continuous stroke with pressure variation, and rest the palm while writing.
+2. Alternate stylus writing with one-finger pan, two-finger pinch, rapid zoom, and page-boundary scrolling.
+3. Erase/select ink, open/close the sidebar, insert/delete/import a page, then export and reopen the source.
+4. Background/resume the app, disable/re-enable the plugin, restart Obsidian, and repeat the first-page draw.
+5. Capture one bounded pass/fail observation for each step and the `annotation-safety-blocked` result for any intentionally unsafe page evidence.
+
 ## Deterministic fixture coverage
 
 | Scenario | Fixture/check | Evidence expected |
