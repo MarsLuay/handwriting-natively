@@ -1078,7 +1078,13 @@ export default class NativePdfInkPlugin extends Plugin {
                   reason,
                   document: file.path,
                   retryDelayMs: 0,
-                  ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) })
+                  ...(error === undefined ? {} : {
+                    error: error instanceof Error
+                      ? error.message
+                      : typeof error === "string"
+                        ? error
+                        : JSON.stringify(error) ?? "unknown error"
+                  })
                 }).catch(() => undefined);
               }
             );
