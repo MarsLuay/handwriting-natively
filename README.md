@@ -2,7 +2,7 @@
 
 ## What Handwriting Natively Does
 
-Handwrite on PDFs with a stylus or mouse natively in Obsidian. Annotations live in vault metadata, while explicit page insert/delete/import/scan actions update the open PDF and remap its sidecar atomically. Export either a flattened copy or a separate editable-PDF annotation copy. Text boxes are sidecar-backed and editable in Text mode; physical eraser tips and optional whole-stroke/right-click erasing are supported.
+Handwrite on PDFs and supported static PNG/JPEG images with a stylus or mouse natively in Obsidian. Annotations live in vault metadata, while explicit page insert/delete/import/scan actions update the open PDF and remap its sidecar atomically. Export PDFs as flattened or editable copies, or export an annotated image as a bounded flattened copy in its source PNG/JPEG format. Text boxes are sidecar-backed and editable in Text mode; physical eraser tips and optional whole-stroke/right-click erasing are supported.
 
 I made this plugin after realizing I use Obsidian a lot more than another nameless note taking app.. I hope you find it as useful as I do!
 

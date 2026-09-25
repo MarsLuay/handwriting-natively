@@ -9,6 +9,7 @@ import type { AnnotationPageInfo, AnnotationSurface, AnnotationSurfaceCallbacks,
  */
 export class ImageViewAdapter implements AnnotationSurface {
   readonly kind = "direct" as const;
+  readonly supportsImageExport = true as const;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
 
@@ -107,6 +108,10 @@ export class ImageViewAdapter implements AnnotationSurface {
 
   nativeTextLayer(): HTMLElement | null {
     return null;
+  }
+
+  imageElement(): HTMLImageElement | null {
+    return this.image.isConnected ? this.image : null;
   }
 
   findController(): null {

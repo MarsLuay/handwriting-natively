@@ -383,6 +383,8 @@ describe("PDF adapters", () => {
       rotation: 0,
       coordinateOrigin: "top-left"
     }]);
+    expect(adapter.supportsImageExport).toBe(true);
+    expect(adapter.imageElement()).toBe(image);
     const overlay = adapter.mountOverlay(1);
     const toolbar = document.createElement("div");
     adapter.mountToolbar(toolbar);
