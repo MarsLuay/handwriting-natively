@@ -346,10 +346,24 @@ export class SessionLogger {
 
   /** Bounded stroke identity and in-memory model lifecycle diagnostics. */
   strokeLifecycle(
-    phase: "stroke-route-start" | "stroke-create" | "stroke-model-insert" | "stroke-pointerup" | "stroke-commit" | "stroke-model-remove",
+    phase:
+      | "stroke-route-start"
+      | "stroke-create"
+      | "stroke-model-insert"
+      | "stroke-pointerup"
+      | "stroke-commit"
+      | "stroke-model-remove"
+      | "stroke-first-render"
+      | "stroke-render-ack"
+      | "stroke-vector-repaint-included"
+      | "stroke-vector-repaint-missing"
+      | "stroke-canvas-rebuild-before"
+      | "stroke-canvas-rebuild-after"
+      | "stroke-zoom-settle-check"
+      | "stroke-lifecycle-regression",
     details: Record<string, unknown> = {}
   ): void {
-    this.emit("info", "stroke lifecycle", {
+    this.emit(phase === "stroke-lifecycle-regression" ? "warn" : "info", "stroke lifecycle", {
       document: this.documentPath,
       pluginVersion: this.pluginVersion,
       profileSchema: PROFILE_SCHEMA_VERSION,

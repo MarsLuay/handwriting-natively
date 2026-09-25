@@ -455,6 +455,18 @@ interface RectSnapshot {
   height: number;
 }
 
+interface StrokeRenderLifecycleState {
+  strokeId: string;
+  page: number;
+  firstRendered: boolean;
+  lastPaintGeneration: number | null;
+  lastCanvasGeneration: number | null;
+  lastRenderedAt: number | null;
+  lastAcknowledgedPaintGeneration: number | null;
+  lastOmittedPaintGeneration: number | null;
+  lastZoomSettlePaintGeneration: number | null;
+}
+
 interface StrokePerformanceState {
   startedAt: number;
   page: number;
@@ -579,6 +591,10 @@ interface PageSurface {
   page: AnnotationPageInfo;
   overlay: HTMLElement;
   canvas: HTMLCanvasElement;
+  /** Generation increments whenever canvas dimensions clear the committed pixels. */
+  canvasGeneration: number;
+  /** Most recent paint generation acknowledged for this page. */
+  paintGeneration: number;
   /** Ephemeral active-stroke layer. The committed ink canvas stays untouched while drawing. */
   draftCanvas: HTMLCanvasElement;
   textLayer: HTMLElement;
@@ -739,6 +755,9 @@ export class ViewerInkSession {
   private readonly postUiInputProbe = new PostUiInputProbe();
   /** Stroke identity is diagnostic-only and bounded to recent model lifecycles. */
   private readonly strokePenContactIds = new Map<string, string | null>();
+  private readonly strokeRenderStates = new Map<string, StrokeRenderLifecycleState>();
+  private readonly strokeRenderVerificationTimers = new Map<string, number>();
+  private nextPaintGeneration = 0;
   private readonly penScrollEvidence = new Map<number, PenScrollEvidence>();
   private postUiProbeTimer: number | null = null;
   private lastUiInputPointerType = "programmatic";
@@ -5215,6 +5234,8 @@ export class ViewerInkSession {
       window.clearTimeout(this.zoomSettleTimer);
       this.zoomSettleTimer = null;
     }
+    for (const timer of this.strokeRenderVerificationTimers.values()) window.clearTimeout(timer);
+    this.strokeRenderVerificationTimers.clear();
     this.cancelZoomSettleSlice();
     this.cancelZoomOverlayLayout();
     this.cancelZoomCompositeRelease();
@@ -5429,6 +5450,8 @@ export class ViewerInkSession {
       textLayer,
       context,
       draftContext,
+      canvasGeneration: 0,
+      paintGeneration: 0,
       inkLayer: null,
       inkLayerContext: null,
       inkLayerValid: false,
@@ -6592,6 +6615,196 @@ export class ViewerInkSession {
     });
   }
 
+  private strokeRenderState(stroke: InkStroke): StrokeRenderLifecycleState {
+    const existing = this.strokeRenderStates.get(stroke.id);
+    if (existing) return existing;
+    while (this.strokeRenderStates.size >= 256) {
+      const oldest = this.strokeRenderStates.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.strokeRenderStates.delete(oldest);
+    }
+    const state: StrokeRenderLifecycleState = {
+      strokeId: stroke.id,
+      page: stroke.page,
+      firstRendered: false,
+      lastPaintGeneration: null,
+      lastCanvasGeneration: null,
+      lastRenderedAt: null,
+      lastAcknowledgedPaintGeneration: null,
+      lastOmittedPaintGeneration: null,
+      lastZoomSettlePaintGeneration: null
+    };
+    this.strokeRenderStates.set(stroke.id, state);
+    return state;
+  }
+
+  private strokeRenderDetails(
+    stroke: InkStroke,
+    surface: Pick<PageSurface, "canvasGeneration" | "paintGeneration">
+  ): Record<string, unknown> {
+    const state = this.strokeRenderState(stroke);
+    return {
+      strokeId: stroke.id,
+      penContactId: this.strokePenContactIds.get(stroke.id) ?? null,
+      page: stroke.page,
+      tool: stroke.tool,
+      modelPresent: this.ink.page(stroke.page).some((candidate) => candidate.id === stroke.id),
+      canvasGeneration: surface.canvasGeneration,
+      paintGeneration: surface.paintGeneration,
+      firstRendered: state.firstRendered,
+      lastPaintGeneration: state.lastPaintGeneration,
+      lastCanvasGeneration: state.lastCanvasGeneration
+    };
+  }
+
+  private recordStrokeRendered(surface: PageSurface, stroke: InkStroke): void {
+    const state = this.strokeRenderState(stroke);
+    const details = this.strokeRenderDetails(stroke, surface);
+    const previousCanvasGeneration = state.lastCanvasGeneration;
+    const rebuilt = previousCanvasGeneration !== null && previousCanvasGeneration !== surface.canvasGeneration;
+    if (!state.firstRendered) {
+      this.logger.strokeLifecycle("stroke-first-render", {
+        ...details,
+        renderExecuted: true,
+        expectedVisible: true
+      });
+      state.firstRendered = true;
+    } else if (rebuilt) {
+      this.logger.strokeLifecycle("stroke-vector-repaint-included", {
+        ...details,
+        previousCanvasGeneration,
+        renderExecuted: true,
+        expectedVisible: true
+      });
+    }
+    state.lastPaintGeneration = surface.paintGeneration;
+    state.lastCanvasGeneration = surface.canvasGeneration;
+    state.lastRenderedAt = performance.now();
+    if (state.lastAcknowledgedPaintGeneration !== surface.paintGeneration) {
+      this.logger.strokeLifecycle("stroke-render-ack", {
+        ...this.strokeRenderDetails(stroke, surface),
+        renderExecuted: true,
+        expectedVisible: true,
+        verification: "paint"
+      });
+      state.lastAcknowledgedPaintGeneration = surface.paintGeneration;
+    }
+  }
+
+  private recordStrokeRenderOmissions(
+    surface: PageSurface,
+    storedStrokes: readonly InkStroke[],
+    visibleStrokes: readonly InkStroke[],
+    reason: string,
+    expectedVisible = true
+  ): void {
+    const visibleIds = new Set(visibleStrokes.map((stroke) => stroke.id));
+    for (const stroke of storedStrokes) {
+      if (visibleIds.has(stroke.id)) continue;
+      const state = this.strokeRenderState(stroke);
+      if (state.lastOmittedPaintGeneration === surface.paintGeneration) continue;
+      state.lastOmittedPaintGeneration = surface.paintGeneration;
+      this.logger.strokeLifecycle("stroke-vector-repaint-missing", {
+        ...this.strokeRenderDetails(stroke, surface),
+        renderExecuted: false,
+        expectedVisible,
+        includedInLatestPaint: false,
+        reason
+      });
+    }
+  }
+
+  private recordStrokeCanvasRebuild(surface: PageSurface, reason: string): void {
+    const strokes = this.ink.page(surface.page.pageNumber);
+    for (const stroke of strokes) {
+      this.logger.strokeLifecycle("stroke-canvas-rebuild-before", {
+        ...this.strokeRenderDetails(stroke, surface),
+        reason,
+        expectedVisible: true
+      });
+    }
+    const previousGeneration = surface.canvasGeneration;
+    surface.canvasGeneration += 1;
+    for (const stroke of strokes) {
+      this.logger.strokeLifecycle("stroke-canvas-rebuild-after", {
+        ...this.strokeRenderDetails(stroke, surface),
+        previousCanvasGeneration: previousGeneration,
+        reason,
+        redrawnAfterRebuild: false,
+        expectedVisible: true
+      });
+    }
+  }
+
+  private recordStrokeZoomSettleCheck(
+    surface: PageSurface,
+    strokes: readonly InkStroke[],
+    visibleStrokes: readonly InkStroke[],
+    reason: string
+  ): void {
+    if (!reason.includes("settle")) return;
+    const visibleIds = new Set(visibleStrokes.map((stroke) => stroke.id));
+    for (const stroke of strokes) {
+      const state = this.strokeRenderState(stroke);
+      if (state.lastZoomSettlePaintGeneration === surface.paintGeneration) continue;
+      state.lastZoomSettlePaintGeneration = surface.paintGeneration;
+      this.logger.strokeLifecycle("stroke-zoom-settle-check", {
+        ...this.strokeRenderDetails(stroke, surface),
+        expectedVisible: true,
+        includedInLatestPaint: visibleIds.has(stroke.id),
+        redrawnAfterRebuild: state.lastCanvasGeneration === surface.canvasGeneration,
+        reason
+      });
+    }
+  }
+
+  private scheduleStrokeRenderVerification(strokeId: string, page: number): void {
+    const existing = this.strokeRenderVerificationTimers.get(strokeId);
+    if (existing !== undefined) window.clearTimeout(existing);
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) return;
+    const timer = view.setTimeout(() => {
+      this.strokeRenderVerificationTimers.delete(strokeId);
+      if (this.destroyed) return;
+      const stroke = this.ink.page(page).find((candidate) => candidate.id === strokeId);
+      if (!stroke) return;
+      const surface = this.surfaces.get(page);
+      const state = this.strokeRenderState(stroke);
+      if (!surface || !state.firstRendered) {
+        this.logger.strokeLifecycle("stroke-lifecycle-regression", {
+          ...this.strokeRenderDetails(stroke, surface ?? {
+            canvasGeneration: -1,
+            paintGeneration: -1
+          }),
+          reason: "missing-from-repaint",
+          modelPresent: true,
+          renderExecuted: false,
+          expectedVisible: true,
+          verification: "delayed"
+        });
+        return;
+      }
+      if (state.lastCanvasGeneration !== surface.canvasGeneration) {
+        this.logger.strokeLifecycle("stroke-lifecycle-regression", {
+          ...this.strokeRenderDetails(stroke, surface),
+          reason: "not-redrawn-after-canvas-rebuild",
+          modelPresent: true,
+          renderExecuted: false,
+          expectedVisible: true,
+          verification: "delayed"
+        });
+        return;
+      }
+      this.logger.strokeLifecycle("stroke-render-ack", {
+        ...this.strokeRenderDetails(stroke, surface),
+        renderExecuted: true,
+        expectedVisible: true,
+        verification: "delayed"
+      });
+    }, 180);
+    this.strokeRenderVerificationTimers.set(strokeId, timer);
+  }
+
   private finishStrokePerformance(surface: PageSurface, outcome: string): void {
     const profile = surface.strokePerformance;
     if (!profile) return;
@@ -7245,6 +7458,7 @@ export class ViewerInkSession {
         termination,
         modelPresent: this.ink.page(stroke.page).some((candidate) => candidate.id === stroke.id)
       });
+      this.scheduleStrokeRenderVerification(stroke.id, stroke.page);
       this.lastPointerPdf = stroke.points.at(-1)
         ? { x: stroke.points.at(-1)!.x, y: stroke.points.at(-1)!.y }
         : this.lastPointerPdf;
@@ -8833,6 +9047,7 @@ export class ViewerInkSession {
       for (const stroke of strokes) {
         const drawn = this.movePreview?.find((item) => item.id === stroke.id) ?? stroke;
         this.drawStroke(surface, drawn, this.selected.some((item) => item.id === stroke.id), graphiteQuality);
+        if (graphiteQuality === "full") this.recordStrokeRendered(surface, stroke);
       }
     } finally {
       surface.context = previous;
@@ -8877,6 +9092,8 @@ export class ViewerInkSession {
       height,
       settleNeighbor ? "neighbor" : "full"
     );
+    const paintGeneration = ++this.nextPaintGeneration;
+    surface.paintGeneration = paintGeneration;
     const needsResize = surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight;
     if (needsResize && this.panProfile) this.panProfile.canvasResizes += 1;
     if (needsResize && surface.strokePerformance) surface.strokePerformance.canvasResizes += 1;
@@ -8930,6 +9147,10 @@ export class ViewerInkSession {
       surface.viewportCullPending = false;
       surface.settleUpgradePending = false;
       if (stats && stats.skippedBlitOnly !== undefined) stats.skippedBlitOnly += 1;
+      if (reason.includes("settle")) {
+        const settledStrokes = this.ink.pageIntersecting(pageNumber, this.pageInkBounds(surface));
+        this.recordStrokeZoomSettleCheck(surface, settledStrokes, settledStrokes, reason);
+      }
       const drawingLasso = surface.editTool === "lasso" && surface.editPath.length > 0;
       const drawingSelection = Boolean(this.selectionShape && this.selectionPage === pageNumber) && !drawingLasso;
       surface.canvas.classList.toggle("is-selection-chrome-raised", drawingLasso || drawingSelection);
@@ -8987,6 +9208,7 @@ export class ViewerInkSession {
     }
 
     if (needsResize) {
+      this.recordStrokeCanvasRebuild(surface, reason || "render");
       if (this.zoomProfile) this.zoomProfile.canvasResizes += 1;
       surface.canvas.width = pixelWidth;
       surface.canvas.height = pixelHeight;
@@ -9057,6 +9279,14 @@ export class ViewerInkSession {
     const visibleStrokes = erasingLive
       ? (surface.eraserWholeStrokes ? eraseWholeStrokes : eraseStrokes)(storedStrokes, surface.editPath, surface.eraserSize!).kept
       : storedStrokes;
+    this.recordStrokeRenderOmissions(
+      surface,
+      storedStrokes,
+      visibleStrokes,
+      erasingLive ? "live-eraser-filter" : "page-paint-set",
+      !erasingLive
+    );
+    this.recordStrokeZoomSettleCheck(surface, storedStrokes, visibleStrokes, reason);
 
     const useLayerCache = canBlit && !erasingLive && !movingSelection;
     if (useLayerCache) {
