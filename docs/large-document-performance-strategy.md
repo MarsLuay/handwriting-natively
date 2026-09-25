@@ -8,7 +8,7 @@
 
 ## Workload matrix
 
-A benchmark run varies one dimension at a time, then repeats the combined workload:
+A benchmark run varies one dimension at a time, then repeats the combined workload. The canonical deterministic plan and bounded trace serializer live in `tests/fixtures/largeDocumentWorkloads.ts`; the workload id and schema version must be copied into any browser-emulator or physical-device capture:
 
 - 10, 100, 500, and 1,000 pages;
 - sparse and dense ink, including tens of thousands of strokes;
