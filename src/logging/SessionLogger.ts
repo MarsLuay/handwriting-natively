@@ -693,6 +693,17 @@ export class SessionLogger {
     });
   }
 
+  addPageUiLifecycle(
+    phase: "mounted" | "duplicate" | "destroyed",
+    details: Record<string, unknown> = {}
+  ): void {
+    this.emit(phase === "duplicate" ? "warn" : "info", `add-page-ui-${phase}`, {
+      document: this.documentPath,
+      phase,
+      ...details
+    });
+  }
+
   /** Placement transitions make stale More-menu state and failed remounts diagnosable. */
   toolbarPlacement(phase: "request" | "applied" | "error", details: Record<string, unknown> = {}): void {
     this.emit(phase === "error" ? "warn" : "info", "toolbar placement", {

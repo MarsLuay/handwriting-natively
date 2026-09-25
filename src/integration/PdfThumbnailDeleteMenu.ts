@@ -3,6 +3,8 @@ import { isElement, isHTMLElement } from "../dom/typeGuards";
 
 const THUMBNAIL_VIEW_SELECTOR = ".pdf-thumbnail-view, #thumbnailView, .thumbnailView";
 const THUMBNAIL_RANGE_SELECTED_CLASS = "native-pdf-handwriting-thumbnail-range-selected";
+const thumbnailActionOwners = new WeakMap<HTMLElement, PdfThumbnailSidebarActions>();
+let nextThumbnailUiGeneration = 0;
 type ThumbnailAction = { kind: "delete" | "add"; pageNumber: number };
 export type ThumbnailMenuPhase =
   | "context-seen"
@@ -25,6 +27,7 @@ export interface PdfThumbnailSidebarActionsCallbacks {
   onDeletePages?(pageNumbers: readonly number[]): void | Promise<void>;
   /** Durable diagnostics for augmenting Obsidian's own thumbnail menu. */
   onMenuEvent?(phase: ThumbnailMenuPhase, details: Record<string, unknown>): void;
+  onUiLifecycle?(phase: "mounted" | "duplicate" | "destroyed", details: Record<string, unknown>): void;
 }
 
 interface ObsidianDomWindow {
@@ -81,9 +84,11 @@ function domWindow(ownerDocument: Document): ObsidianDomWindow {
 /** Native thumbnail-sidebar controls and context actions (never document pages). */
 export class PdfThumbnailSidebarActions {
   private readonly abort = new AbortController();
+  private readonly uiGeneration = ++nextThumbnailUiGeneration;
   private addButton: HTMLButtonElement | null = null;
   private observer: MutationObserver | null = null;
   private mountFrame: number | null = null;
+  private reportedThumbnailViews = new WeakSet<HTMLElement>();
   /** Restores the one active Electron facade before another thumbnail menu opens. */
   private restoreTemplateIntercept: (() => void) | null = null;
   /**
@@ -102,6 +107,9 @@ export class PdfThumbnailSidebarActions {
     private readonly host: HTMLElement,
     private readonly callbacks: PdfThumbnailSidebarActionsCallbacks
   ) {
+    const previous = thumbnailActionOwners.get(host);
+    if (previous && previous !== this) previous.destroy("replaced");
+    thumbnailActionOwners.set(host, this);
     // Obsidian's native thumbnail handler may run in document capture. Window
     // capture is the only stable phase before it, including after a reload.
     const contextRoot = host.ownerDocument.defaultView ?? host;
@@ -118,7 +126,9 @@ export class PdfThumbnailSidebarActions {
     this.mountAddButton();
   }
 
-  destroy(): void {
+  destroy(reason = "destroyed"): void {
+    if (this.abort.signal.aborted) return;
+    if (thumbnailActionOwners.get(this.host) === this) thumbnailActionOwners.delete(this.host);
     this.restoreTemplateIntercept?.();
     this.restoreTemplateIntercept = null;
     this.abort.abort();
@@ -131,6 +141,11 @@ export class PdfThumbnailSidebarActions {
     this.keyboardDeletePending = false;
     this.rangeAnchorPage = null;
     this.rangeEndPage = null;
+    this.callbacks.onUiLifecycle?.("destroyed", {
+      surface: "thumbnail",
+      uiGeneration: this.uiGeneration,
+      reason
+    });
   }
 
   /**
@@ -492,11 +507,20 @@ export class PdfThumbnailSidebarActions {
   }
 
   private mountAddButton(): void {
+    if (thumbnailActionOwners.get(this.host) !== this) return;
     const thumbnailView = findThumbnailView(this.host);
     if (!thumbnailView) {
+      const staleControls = [...this.host.querySelectorAll<HTMLButtonElement>(".native-pdf-handwriting-thumbnail-add-page")];
+      for (const control of staleControls) control.remove();
       this.addButton?.remove();
       this.addButton = null;
       return;
+    }
+    const existingControls = [...this.host.querySelectorAll<HTMLButtonElement>(".native-pdf-handwriting-thumbnail-add-page")];
+    const duplicateControlCount = existingControls.length;
+    const duplicateControlIds = existingControls.filter((control) => control.isConnected).slice(0, 8).map(thumbnailControlId);
+    for (const control of existingControls) {
+      if (control !== this.addButton) control.remove();
     }
     if (!this.addButton) {
       this.addButton = domWindow(this.host.ownerDocument).createEl("button") as HTMLButtonElement;
@@ -504,6 +528,7 @@ export class PdfThumbnailSidebarActions {
       this.addButton.className = "native-pdf-handwriting-thumbnail-add-page clickable-icon";
       this.addButton.setAttribute("aria-label", "Add page at end");
       this.addButton.textContent = "+";
+      this.addButton.dataset.nativePdfHandwritingUiGeneration = String(this.uiGeneration);
       this.addButton.addEventListener("click", () => {
         // PDF.js replaces the thumbnail list during reload. Resolve it on
         // click rather than retaining the first (possibly detached) list.
@@ -513,6 +538,31 @@ export class PdfThumbnailSidebarActions {
     }
     if (this.addButton.parentElement !== thumbnailView) thumbnailView.append(this.addButton);
     else if (thumbnailView.lastElementChild !== this.addButton) thumbnailView.append(this.addButton);
+    if (duplicateControlCount > 1) {
+      this.callbacks.onUiLifecycle?.("duplicate", {
+        surface: "thumbnail",
+        uiGeneration: this.uiGeneration,
+        controlCountBefore: duplicateControlCount,
+        controlCountAfter: this.host.querySelectorAll(".native-pdf-handwriting-thumbnail-add-page").length,
+        expectedControlCount: 1,
+        connectedControlIds: duplicateControlIds,
+        hostTag: this.host.tagName.toLowerCase(),
+        hostClasses: [...this.host.classList].slice(0, 6),
+        injectionSource: "thumbnail-reconciliation"
+      });
+    }
+    if (!this.reportedThumbnailViews.has(thumbnailView)) {
+      this.reportedThumbnailViews.add(thumbnailView);
+      this.callbacks.onUiLifecycle?.("mounted", {
+        surface: "thumbnail",
+        uiGeneration: this.uiGeneration,
+        controlCountAfter: this.host.querySelectorAll(".native-pdf-handwriting-thumbnail-add-page").length,
+        expectedControlCount: 1,
+        hostTag: this.host.tagName.toLowerCase(),
+        hostClasses: [...this.host.classList].slice(0, 6),
+        injectionSource: "thumbnail-reconciliation"
+      });
+    }
     this.applyRangeSelection(thumbnailView);
   }
 
@@ -711,6 +761,10 @@ function shouldIgnoreThumbnailPageDeleteTarget(target: EventTarget | null): bool
 function thumbnails(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>("[data-page-number]")]
     .filter((element) => Number.isInteger(Number(element.dataset.pageNumber)) && Number(element.dataset.pageNumber) >= 1);
+}
+
+function thumbnailControlId(control: HTMLButtonElement): string {
+  return control.dataset.nativePdfHandwritingUiGeneration ?? (control.id || "unidentified");
 }
 
 function nextPageNumber(root: HTMLElement): number {
