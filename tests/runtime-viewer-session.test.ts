@@ -3243,11 +3243,15 @@ describe("viewer runtime tracer", () => {
     });
     const toolbar = adapter.toolbarHost.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
     expect(toolbar).not.toBeNull();
+    expect(toolbar?.hidden).toBe(false);
+    expect(toolbar?.style.display).not.toBe("none");
+    expect(toolbar?.querySelector("[data-control='eraser']")).not.toBeNull();
 
     toolbar?.remove();
     (session as unknown as { onPagesChanged(reason: string): void }).onPagesChanged("pages-settled");
 
     expect(toolbar?.isConnected).toBe(true);
+    expect(toolbar?.querySelector("[data-control='eraser']")).not.toBeNull();
     expect(adapter.toolbarHost.querySelectorAll(".native-pdf-handwriting-toolbar")).toHaveLength(1);
     await session.destroy();
   });

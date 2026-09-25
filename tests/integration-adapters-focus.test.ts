@@ -3,6 +3,8 @@ import { EmbeddedPdfAdapter } from "../src/integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "../src/integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "../src/integration/NativePdfViewAdapter";
 import { OBSIDIAN_DEFAULT_MAX_SCALE } from "../src/integration/PdfZoomBoost";
+import { DEFAULT_SETTINGS } from "../src/model";
+import { AnnotationToolbar } from "../src/ui/AnnotationToolbar";
 
 afterEach(() => { document.body.replaceChildren(); });
 
@@ -81,6 +83,45 @@ describe("PDF adapters", () => {
     host.append(pdfViewer());
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(pageChanges).toHaveBeenCalledTimes(callsBeforeDestroy);
+  });
+
+  it("mounts the real tools toolbar into the current viewer when a stale shell is still connected", async () => {
+    const host = document.createElement("div");
+    host.className = "workspace-leaf";
+    const staleToolbarHost = document.createElement("div");
+    staleToolbarHost.className = "pdf-toolbar";
+    const staleViewer = pdfViewer();
+    const currentToolbarHost = document.createElement("div");
+    currentToolbarHost.className = "pdf-toolbar";
+    const currentViewer = pdfViewer();
+    const currentPageTwo = document.createElement("div");
+    currentPageTwo.className = "page";
+    currentPageTwo.dataset.pageNumber = "2";
+    currentPageTwo.append(document.createElement("canvas"));
+    currentViewer.append(currentPageTwo);
+    host.append(staleToolbarHost, staleViewer, currentToolbarHost, currentViewer);
+    document.body.append(host);
+
+    const adapter = await NativePdfViewAdapter.attach(host);
+    expect(adapter.root).toBe(currentViewer);
+
+    const toolbar = new AnnotationToolbar({
+      preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
+      autosave: true,
+      callbacks: { onPreferencesChange: vi.fn() },
+      ownerDocument: document
+    });
+    adapter.mountToolbar(toolbar.element);
+
+    expect(toolbar.element.isConnected).toBe(true);
+    expect(toolbar.element.hidden).toBe(false);
+    expect(toolbar.element.style.display).not.toBe("none");
+    expect(toolbar.element.getAttribute("aria-label")).toBe("PDF annotation tools");
+    expect(toolbar.element.querySelector("[data-control='eraser']")).not.toBeNull();
+    expect(currentToolbarHost.contains(toolbar.element)).toBe(true);
+    expect(staleToolbarHost.contains(toolbar.element)).toBe(false);
+    toolbar.destroy();
+    adapter.destroy();
   });
 
   it("emits semantic zoom and page lifecycle signals, then cleans them up", async () => {
