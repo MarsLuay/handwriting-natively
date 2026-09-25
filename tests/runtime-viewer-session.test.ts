@@ -258,14 +258,82 @@ describe("viewer runtime tracer", () => {
       "stroke-create",
       "stroke-model-insert",
       "stroke-pointerup",
-      "stroke-commit"
+      "stroke-commit",
+      "stroke-first-render",
+      "stroke-render-ack"
     ]));
     const strokeIds = new Set(lifecycle.map((entry) => entry.payload.strokeId));
     expect(strokeIds.size).toBe(1);
     expect(lifecycle).toEqual(expect.arrayContaining([
       expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-create", penContactId: null }) }),
       expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-model-insert", modelPresent: true, penContactId: null }) }),
-      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-commit", modelPresent: true, penContactId: null }) })
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-commit", modelPresent: true, penContactId: null }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-first-render", renderExecuted: true, expectedVisible: true }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-render-ack", renderExecuted: true }) })
+    ]));
+
+    const committedCanvas = adapter.pageElement.querySelector<HTMLCanvasElement>(".native-pdf-handwriting-canvas");
+    expect(committedCanvas).not.toBeNull();
+    committedCanvas!.width = 1;
+    session.refresh("canvas-rebuild");
+    const internal = session as unknown as {
+      renderPage(pageNumber: number, stats?: unknown, reason?: string): boolean;
+      surfaces: Map<number, { canvasGeneration: number; paintGeneration: number }>;
+      ink: { page(pageNumber: number): readonly InkStroke[] };
+      recordStrokeRenderOmissions(
+        surface: { canvasGeneration: number; paintGeneration: number },
+        storedStrokes: readonly InkStroke[],
+        visibleStrokes: readonly InkStroke[],
+        reason: string,
+        expectedVisible?: boolean
+      ): void;
+      strokeRenderStates: Map<string, { firstRendered: boolean; lastCanvasGeneration: number | null }>;
+      scheduleStrokeRenderVerification(strokeId: string, page: number): void;
+    };
+    internal.renderPage(1, undefined, "zoom-settle");
+    const refreshedLifecycle = writes.filter((entry) => entry.event === "stroke lifecycle");
+    expect(refreshedLifecycle.map((entry) => entry.payload.phase)).toEqual(expect.arrayContaining([
+      "stroke-canvas-rebuild-before",
+      "stroke-canvas-rebuild-after",
+      "stroke-vector-repaint-included",
+      "stroke-zoom-settle-check"
+    ]));
+    expect(refreshedLifecycle).toEqual(expect.arrayContaining([
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-vector-repaint-included", renderExecuted: true }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-zoom-settle-check", includedInLatestPaint: true }) })
+    ]));
+
+    const strokeId = String([...strokeIds][0]);
+    const surface = internal.surfaces.get(1)!;
+    const committedStroke = internal.ink.page(1)[0]!;
+    internal.recordStrokeRenderOmissions(surface, [committedStroke], [], "test-omission");
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: "stroke lifecycle",
+        payload: expect.objectContaining({
+          phase: "stroke-vector-repaint-missing",
+          strokeId,
+          expectedVisible: true,
+          includedInLatestPaint: false
+        })
+      })
+    ]));
+
+    internal.strokeRenderStates.get(strokeId)!.lastCanvasGeneration = 0;
+    vi.useFakeTimers();
+    internal.scheduleStrokeRenderVerification(strokeId, 1);
+    vi.advanceTimersByTime(180);
+    vi.useRealTimers();
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: "stroke lifecycle",
+        payload: expect.objectContaining({
+          phase: "stroke-lifecycle-regression",
+          strokeId,
+          reason: "not-redrawn-after-canvas-rebuild",
+          modelPresent: true
+        })
+      })
     ]));
 
     await expect(session.destroy()).resolves.toBe(true);
