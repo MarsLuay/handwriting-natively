@@ -22,7 +22,7 @@ import { PdfViewerCompatibility } from "./integration/PdfViewerCompatibility";
 import { describePdfPageDom } from "./integration/pdfPageSelectors";
 import { EmbedAnnotateChrome, findExistingEmbedChrome } from "./focus-view/EmbedAnnotateChrome";
 import { resolvePdfFileFromEmbed } from "./focus-view/embedFocusHelpers";
-import { ViewerInkSession } from "./runtime/ViewerInkSession";
+import { ViewerInkSession, type AddPageMutationRestoreState } from "./runtime/ViewerInkSession";
 import { AttachRetryPolicy } from "./runtime/AttachRetryPolicy";
 import { ScanDebounce } from "./runtime/ScanDebounce";
 import { VaultDebugLog } from "./logging/VaultDebugLog";
@@ -153,6 +153,8 @@ export default class NativePdfInkPlugin extends Plugin {
   private readonly attachingLeaves = new Set<WorkspaceLeaf>();
   private readonly embedChrome = new Map<HTMLElement, EmbedAnnotateChrome>();
   private readonly persistEpochByDoc = new Map<string, number>();
+  /** Short-lived Add Page state survives the source-PDF viewer reload. */
+  private readonly pendingAddPageRestore = new Map<string, AddPageMutationRestoreState>();
   /** Back off repeated attach failures so layout rescans cannot storm a not-ready PDF. */
   private readonly attachRetry = new AttachRetryPolicy();
   private readonly scanDebounce = new ScanDebounce();
@@ -322,6 +324,7 @@ export default class NativePdfInkPlugin extends Plugin {
     this.scanDebounce.clear();
     this.attachRetry.clearAll();
     this.attachingLeaves.clear();
+    this.pendingAddPageRestore.clear();
     for (const chrome of this.embedChrome.values()) chrome.destroy();
     this.embedChrome.clear();
     this.emergencyPersistAllSessions();
@@ -642,6 +645,7 @@ export default class NativePdfInkPlugin extends Plugin {
 
       this.attachingLeaves.add(leaf);
       let session: ViewerInkSession | undefined;
+      let detached = false;
       try {
         await this.vaultDebugLog.writeUrgent("info", "session attach prepare", {
           document: file.path,
@@ -697,8 +701,34 @@ export default class NativePdfInkPlugin extends Plugin {
           domPageCount: adapter.pages().length,
           currentPage: adapter.getViewState().pageNumber
         });
+        const pendingAddPage = isPdf ? this.pendingAddPageRestore.get(file.path) : undefined;
+        const restoredAddPage = pendingAddPage && Date.now() - pendingAddPage.capturedAt <= 15_000
+          ? pendingAddPage
+          : undefined;
+        if (pendingAddPage && !restoredAddPage) this.pendingAddPageRestore.delete(file.path);
+        if (restoredAddPage) {
+          adapter.restoreViewState(restoredAddPage.viewState);
+          this.pendingAddPageRestore.delete(file.path);
+          await this.vaultDebugLog.writeUrgent("info", "add-page lifecycle", {
+            document: file.path,
+            phase: "restore-before-session",
+            addPageOperationId: restoredAddPage.operationId,
+            beforeScale: restoredAddPage.viewState.scale,
+            beforeScaleMode: restoredAddPage.viewState.scaleMode ?? null,
+            pageCountBefore: restoredAddPage.pageCountBefore,
+            pageCountAfter: adapter.pages().length
+          });
+        }
         session = await this.createInkSession(file, adapter, {
+          ...(restoredAddPage ? { restoredAddPageMutation: restoredAddPage } : {}),
+          onAddPageMutationStart: (state) => this.pendingAddPageRestore.set(file.path, state),
+          onAddPageMutationResolved: (state) => {
+            if (!detached && this.pendingAddPageRestore.get(file.path)?.operationId === state.operationId) {
+              this.pendingAddPageRestore.delete(file.path);
+            }
+          },
           onDetached: () => {
+            detached = true;
             const current = this.sessions.get(leaf);
             if (!current || current !== session) return;
             this.sessions.delete(leaf);
@@ -820,7 +850,12 @@ export default class NativePdfInkPlugin extends Plugin {
   private async createInkSession(
     file: TFile,
     adapter: AnnotationSurface,
-    options: { onDetached?: () => void } = {}
+    options: {
+      onDetached?: () => void;
+      onAddPageMutationStart?: (state: AddPageMutationRestoreState) => void;
+      onAddPageMutationResolved?: (state: AddPageMutationRestoreState) => void;
+      restoredAddPageMutation?: AddPageMutationRestoreState;
+    } = {}
   ): Promise<ViewerInkSession> {
     const textFiles = createVaultFsTextAdapter(this.app.vault);
     return ViewerInkSession.create({
@@ -863,7 +898,10 @@ export default class NativePdfInkPlugin extends Plugin {
       claimPersistEpoch: (documentId) => this.claimPersistEpoch(documentId),
       livePersistEpoch: (documentId) => this.livePersistEpoch(documentId),
       runtimePlatform: () => ({ mobile: Platform.isMobile, phone: Platform.isPhone }),
-      ...(options.onDetached ? { onDetached: options.onDetached } : {})
+      ...(options.onDetached ? { onDetached: options.onDetached } : {}),
+      ...(options.onAddPageMutationStart ? { onAddPageMutationStart: options.onAddPageMutationStart } : {}),
+      ...(options.onAddPageMutationResolved ? { onAddPageMutationResolved: options.onAddPageMutationResolved } : {}),
+      ...(options.restoredAddPageMutation ? { restoredAddPageMutation: options.restoredAddPageMutation } : {})
     });
   }
 
