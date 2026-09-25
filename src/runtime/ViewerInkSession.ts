@@ -5454,6 +5454,40 @@ export class ViewerInkSession {
     };
   }
 
+  /** Bounded ownership state for plugin-level session registry diagnostics. */
+  getUiLifecycleSnapshot(reason = "session-registry"): Record<string, unknown> {
+    const pageRouters = [...this.surfaces.values()].filter((surface) => surface.router).length;
+    const activeInputCollectors = {
+      documentProbeListener: this.pointerProbeAbort.signal.aborted ? 0 : 1,
+      pageRouters,
+      ownedInputPages: this.ownedInputPages.size,
+      physicalContactPointers: this.physicalContactIdsByPointer.size,
+      viewerMousePan: this.destroyed ? 0 : 1
+    };
+    const base = (() => {
+      try {
+        return this.handwritingUiState(reason);
+      } catch (error) {
+        return {
+          reason,
+          uiSnapshotError: error instanceof Error ? error.message : String(error)
+        };
+      }
+    })();
+    return {
+      ...base,
+      destroyed: this.destroyed,
+      detachNotified: this.detachNotified,
+      activeInputCollectors: {
+        ...activeInputCollectors,
+        total: Object.values(activeInputCollectors).reduce((sum, count) => sum + count, 0)
+      },
+      activeRouterGenerations: [...this.surfaces.values()]
+        .map((surface) => surface.router?.generation ?? null)
+        .filter((generation): generation is number => generation !== null)
+    };
+  }
+
   refreshDiagnostics(): void {
     this.updateDebug();
   }
