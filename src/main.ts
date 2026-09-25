@@ -835,8 +835,10 @@ export default class NativePdfInkPlugin extends Plugin {
         await this.saveSettings({ ...this.inkSettings, ...patch });
       },
       readDocument: async () => new Uint8Array(await this.app.vault.readBinary(file)),
+      // Flattened exports are shared by PDF and supported image surfaces; only
+      // source-PDF mutations remain behind the PDF adapter extension.
+      writeExport: async (name: string, bytes: Uint8Array) => this.writeAndOpenExport(file, name, bytes),
       ...(pdfSurfaceExtensions(adapter) ? {
-        // PDF mutation/export callbacks are surface extensions; image surfaces omit them.
         writeSourcePdf: async (bytes: Uint8Array) => {
           await this.app.vault.modifyBinary(file, bytes.slice().buffer);
         },
@@ -844,7 +846,6 @@ export default class NativePdfInkPlugin extends Plugin {
         onImportPages: (afterPage: number) => this.prepareImportedPages(file, afterPage),
         openScanDocument: () => new Promise((resolve) => new ScanDocumentModal(this.app, resolve).open()),
         onInsertScannedPages: (pageNumber: number, pages: readonly ScanDocumentPage[]) => this.insertScannedPagesInPlace(file, pageNumber, pages),
-        writeExport: async (name: string, bytes: Uint8Array) => this.writeAndOpenExport(file, name, bytes),
         onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber),
         onDeletePages: (pageNumbers: readonly number[]) => this.deletePagesInPlace(file, pageNumbers),
         writeSvgExport: async (name: string, svg: string) => this.writeSvgExport(file, name, svg)
@@ -1356,11 +1357,12 @@ export default class NativePdfInkPlugin extends Plugin {
 
   private async writeAndOpenExport(source: TFile, name: string, bytes: Uint8Array): Promise<string> {
     const folder = source.parent?.path ?? "";
-    const stem = name.replace(/\.pdf$/i, "");
+    const extension = name.match(/\.([a-z0-9]+)$/i)?.[1] ?? "bin";
+    const stem = name.replace(/\.[a-z0-9]+$/i, "");
     let path = normalizePath(folder ? `${folder}/${name}` : name);
     let suffix = 2;
     while (await this.app.vault.adapter.exists(path)) {
-      path = normalizePath(folder ? `${folder}/${stem}-${suffix}.pdf` : `${stem}-${suffix}.pdf`);
+      path = normalizePath(folder ? `${folder}/${stem}-${suffix}.${extension}` : `${stem}-${suffix}.${extension}`);
       suffix += 1;
     }
     const created = await this.app.vault.createBinary(path, bytes.slice().buffer);
