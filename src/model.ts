@@ -201,6 +201,10 @@ export interface PluginSettings {
   mouseInputMode?: MouseInputMode;
   /** Legacy mirror of `mouseInputMode === "pan"` for older sidecars / readers. */
   mouseDragScroll: boolean;
+  /** Primary-button mouse drags use the active annotation tool when enabled. */
+  mouseLeftDragDraw: boolean;
+  /** Secondary-button mouse drags erase when enabled; native context menus remain otherwise. */
+  mouseRightDragErase: boolean;
   /** Auto uses stylus pressure when available; Pen/Mouse force that input model. */
   pressureProfile: PressureProfile;
   /** Device-pressure tuning; captured when each stroke starts. */
@@ -306,6 +310,8 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   pdfTemplatePath: "",
   mouseInputMode: "pan",
   mouseDragScroll: true,
+  mouseLeftDragDraw: true,
+  mouseRightDragErase: false,
   pressureProfile: "auto",
   pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
   simplifyStrokes: true,
@@ -357,6 +363,9 @@ export function mergeSettings(
     : defaults.pdfTemplatePath;
   const pressureProfile = cleaned.pressureProfile;
   const pressureCalibration = normalizePressureCalibration(cleaned.pressureCalibration, defaults.pressureCalibration);
+  const mouseRightDragErase = typeof cleaned.mouseRightDragErase === "boolean"
+    ? cleaned.mouseRightDragErase
+    : cleaned.toolPreferences?.eraser?.eraseWithRightMouseButton === true;
   const savedEnabledSurfaces = cleaned.enabledSurfaces as Partial<EnabledSurfaceSettings> | undefined;
   const savedToolPreferences = { ...(cleaned.toolPreferences ?? {}) } as Record<string, unknown>;
   delete savedToolPreferences.pan;
@@ -380,6 +389,8 @@ export function mergeSettings(
       ? toolbarPlacement
       : defaults.toolbarPlacement,
     pdfTemplatePath,
+    mouseLeftDragDraw: cleaned.mouseLeftDragDraw !== false,
+    mouseRightDragErase,
     textEscapeAction: "save" as const,
     boostedPdfZoom: cleaned.boostedPdfZoom === true,
     hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,
@@ -411,7 +422,7 @@ export function mergeSettings(
       eraser: {
         size: cleaned.toolPreferences?.eraser?.size ?? defaults.toolPreferences.eraser.size,
         eraseWholeStrokes: cleaned.toolPreferences?.eraser?.eraseWholeStrokes === true,
-        eraseWithRightMouseButton: cleaned.toolPreferences?.eraser?.eraseWithRightMouseButton === true
+        eraseWithRightMouseButton: mouseRightDragErase
       },
       lasso,
       laser: {

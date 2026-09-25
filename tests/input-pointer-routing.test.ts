@@ -600,6 +600,44 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
+  it("routes only enabled mouse drag bindings and leaves disabled buttons native", () => {
+    const element = document.createElement("div");
+    const starts = vi.fn();
+    let leftEnabled = false;
+    let rightEnabled = false;
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true,
+      mouseAnnotationEnabled: (button = 0) => button === 2 ? rightEnabled : leftEnabled,
+      rightMouseEraserEnabled: () => rightEnabled,
+      onStart: starts
+    });
+
+    const leftNative = pointer("mouse", 40);
+    element.dispatchEvent(leftNative);
+    expect(leftNative.defaultPrevented).toBe(false);
+    expect(starts).not.toHaveBeenCalled();
+
+    const rightNative = pointer("mouse", 41, { button: 2, buttons: 2 });
+    element.dispatchEvent(rightNative);
+    expect(rightNative.defaultPrevented).toBe(false);
+    expect(starts).not.toHaveBeenCalled();
+
+    leftEnabled = true;
+    const leftDraw = pointer("mouse", 42);
+    element.dispatchEvent(leftDraw);
+    expect(leftDraw.defaultPrevented).toBe(true);
+    expect(starts.mock.calls.at(-1)?.[1]).toBe("draw");
+
+    rightEnabled = true;
+    const rightErase = pointer("mouse", 43, { button: 2, buttons: 2 });
+    element.dispatchEvent(rightErase);
+    expect(rightErase.defaultPrevented).toBe(true);
+    expect(starts.mock.calls.at(-1)?.[1]).toBe("edit");
+
+    router.destroy();
+  });
+
   it("blocks a stale bubbling router when handling an explicit annotation gesture", () => {
     const element = document.createElement("div");
     const target = document.createElement("span");

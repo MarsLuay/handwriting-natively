@@ -342,7 +342,7 @@ describe("sidecar storage", () => {
     ["sidecar", "{"],
     ["sidecar", "{}"],
     ["recovery", "{"]
-  ] as const)("quarantines malformed %s JSON before returning an empty store", async (store, contents) => {
+  ] as const)("deletes malformed %s JSON when no validated recovery candidate exists", async (store, contents) => {
     const files = new MemoryFiles();
     const now = () => new Date("2026-02-01T03:04:05.678Z");
     const repository = store === "sidecar"
@@ -359,10 +359,11 @@ describe("sidecar storage", () => {
       store,
       sourcePath: path,
       quarantinePath,
-      error: expect.any(String)
+      error: expect.any(String),
+      artifactDeleted: true
     });
     expect(files.data.has(path)).toBe(false);
-    expect(await files.read(quarantinePath)).toBe(contents);
+    expect(files.data.has(quarantinePath)).toBe(false);
   });
 
   it("never overwrites an earlier corrupt-sidecar quarantine", async () => {
@@ -378,7 +379,7 @@ describe("sidecar storage", () => {
 
     expect(result.quarantined?.quarantinePath).toBe(`${baseQuarantinePath}-2`);
     expect(await files.read(baseQuarantinePath)).toBe("earlier corrupt bytes");
-    expect(await files.read(`${baseQuarantinePath}-2`)).toBe("{");
+    expect(files.data.has(`${baseQuarantinePath}-2`)).toBe(false);
   });
 
   it("does not enter empty mode when malformed data cannot be quarantined", async () => {

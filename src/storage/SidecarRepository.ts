@@ -24,6 +24,8 @@ export interface QuarantinedAnnotationFile {
   sourcePath: string;
   quarantinePath: string;
   error: string;
+  /** True when no validated recovery candidate existed and the corrupt copy was removed. */
+  artifactDeleted?: boolean;
 }
 
 export interface RepairedAnnotationFile {
@@ -76,9 +78,9 @@ export class SidecarConflictError extends Error {
 }
 
 /**
- * Read a canonical annotation file without ever silently replacing malformed
- * user data. Parse failures move the exact original bytes aside first, then
- * let the caller continue with an empty store.
+ * Read a canonical annotation file without silently replacing malformed data.
+ * Parse failures move the exact original bytes aside first, try validated
+ * recovery candidates, and remove the quarantined copy when none is usable.
  */
 export async function loadAnnotationFileWithQuarantine<T>(
   files: TextFileAdapter,
@@ -97,16 +99,30 @@ export async function loadAnnotationFileWithQuarantine<T>(
   } catch (error) {
     const quarantinePath = await nextCorruptPath(files, path, options.now?.() ?? new Date());
     await moveWithoutOverwrite(files, path, quarantinePath, contents);
-    const repaired = options.automaticRecovery === false
+    const recoveryEnabled = options.automaticRecovery !== false;
+    const candidates = recoveryCandidates(path, options);
+    const hasRecoveryCandidate = (await Promise.all(candidates.map((candidate) => files.exists(candidate)))).some(Boolean);
+    const repaired = !recoveryEnabled
       ? null
       : await restoreFromBackup(files, path, parse, options);
+    let artifactDeleted = false;
+    if (!repaired && files.remove && (recoveryEnabled || !hasRecoveryCandidate)) {
+      try {
+        await files.remove(quarantinePath);
+        artifactDeleted = true;
+      } catch {
+        // A cleanup failure must not turn an otherwise recoverable empty-store
+        // startup into an I/O failure. The bounded diagnostic retains the path.
+      }
+    }
     return {
       data: repaired?.data ?? null,
       quarantined: {
         store: options.store,
         sourcePath: path,
         quarantinePath,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        ...(artifactDeleted ? { artifactDeleted: true } : {})
       },
       ...(repaired ? {
         repaired: {
@@ -126,10 +142,7 @@ async function restoreFromBackup<T>(
   parse: (contents: string) => T,
   options: AnnotationLoadOptions
 ): Promise<{ data: T; backupPath: string } | null> {
-  const candidates = [
-    annotationBackupPath(options.backupFolder, path, options.store),
-    `${path}.last-good`
-  ].filter((candidate, index, all): candidate is string => Boolean(candidate) && all.indexOf(candidate) === index);
+  const candidates = recoveryCandidates(path, options);
   for (const backupPath of candidates) {
     if (!await files.exists(backupPath)) continue;
     try {
@@ -149,6 +162,13 @@ async function restoreFromBackup<T>(
     }
   }
   return null;
+}
+
+function recoveryCandidates(path: string, options: AnnotationLoadOptions): string[] {
+  return [
+    annotationBackupPath(options.backupFolder, path, options.store),
+    `${path}.last-good`
+  ].filter((candidate, index, all): candidate is string => Boolean(candidate) && all.indexOf(candidate) === index);
 }
 
 /** Return the stable vault-relative backup path for one annotation store. */

@@ -232,7 +232,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         items: [
           {
             name: "Mouse input on PDF pages",
-            desc: "Pan: drag empty areas to scroll. Annotate: primary mouse uses the active tool. Native: leave scrolling and selection to the PDF viewer. Stylus always annotates; fingers stay native.",
+            desc: "Pan: drag empty areas to scroll. Native: leave scrolling and selection to the PDF viewer. Stylus always annotates; fingers stay native. Mouse drag bindings below control annotation gestures on PDF pages.",
             render: (setting: Setting) => {
               setting.addDropdown((dropdown) =>
                 dropdown
@@ -247,6 +247,30 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
                       mouseDragScroll: value === "pan"
                     });
                   })
+              );
+            }
+          },
+          {
+            name: "Left mouse drag draws",
+            desc: "Use the primary mouse button to draw with the active tool on PDF pages. Enabled by default; when off, the existing pan/native PDF behavior is preserved.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.mouseLeftDragDraw).onChange(async (value) => {
+                  await this.persistPatch({ mouseLeftDragDraw: value });
+                })
+              );
+            }
+          },
+          {
+            name: "Right mouse drag erases",
+            desc: "Use the secondary mouse button as a temporary eraser on PDF pages. Disabled by default; when off, the native context menu remains available.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.mouseRightDragErase).onChange(async (value) => {
+                  const toolPreferences = structuredClone(this.host.inkSettings.toolPreferences);
+                  toolPreferences.eraser.eraseWithRightMouseButton = value;
+                  await this.persistPatch({ mouseRightDragErase: value, toolPreferences });
+                })
               );
             }
           },

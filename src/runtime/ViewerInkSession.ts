@@ -21,7 +21,6 @@ import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
 import {
   canAnnotatePointer,
   describeInputPolicies,
-  mouseAnnotationEnabled,
   mousePanEnabled,
   resolveMouseInputMode,
   type MouseInputMode
@@ -448,6 +447,10 @@ export interface ViewerInkSessionOptions {
   notice(message: string): void;
   decideUnsaved?(): Promise<CloseChoice>;
   mouseDragScrollEnabled?(): boolean;
+  /** Reads the live primary-button drawing binding. */
+  mouseLeftDragDrawEnabled?(): boolean;
+  /** Reads the live secondary-button erasing binding. */
+  mouseRightDragEraseEnabled?(): boolean;
   /** Reads the current pressure profile; it is captured when a new stroke starts. */
   pressureProfile?(): PressureProfile;
   /** Reads the current calibration; it is captured when a new stroke starts. */
@@ -1152,7 +1155,7 @@ export class ViewerInkSession {
         enabled: () => mousePanEnabled(this.mouseInputMode()),
       // Fingers: native PDF viewer only. Custom touch pan fights pinch/scroll remounts on phone.
       touchPanEnabled: () => false,
-      allowMousePan: (event) => !this.isDesktopPdfPageEvent(event),
+      allowMousePan: (event) => !this.isDesktopPdfPageEvent(event) || !this.mouseLeftDragEnabled(),
       scrollRoot: () => adapter.scrollElement(),
       withinTarget: (target) => {
         if (!(target instanceof Element)) return false;
@@ -2848,6 +2851,22 @@ export class ViewerInkSession {
     return topHit instanceof Element && page.element.contains(topHit);
   }
 
+  private mouseLeftDragEnabled(): boolean {
+    return this.options.mouseLeftDragDrawEnabled?.() ?? this.options.settings.mouseLeftDragDraw;
+  }
+
+  private mouseRightDragEnabled(): boolean {
+    return this.options.mouseRightDragEraseEnabled?.()
+      ?? this.options.settings.mouseRightDragErase
+      ?? this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton;
+  }
+
+  private mouseButtonEnabled(button = 0): boolean {
+    if (button === 2) return this.mouseRightDragEnabled();
+    if (button === 0 || button === -1) return this.mouseLeftDragEnabled();
+    return false;
+  }
+
   private canAnnotatePointerEvent(
     event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
   ): boolean {
@@ -3870,7 +3889,15 @@ export class ViewerInkSession {
     if (quarantined.length) {
       const repairedSources = new Set(repaired.map((result) => result.sourcePath));
       const unrepaired = quarantined.filter((result) => !repairedSources.has(result.sourcePath));
-      const messages = [`Malformed annotation data moved to ${quarantined.map((result) => result.quarantinePath).join(", ")}.`];
+      const deleted = quarantined.filter((result) => result.artifactDeleted);
+      const retained = quarantined.filter((result) => !result.artifactDeleted);
+      const messages: string[] = [];
+      if (retained.length) {
+        messages.push(`Malformed annotation data was moved to ${retained.map((result) => result.quarantinePath).join(", ")}.`);
+      }
+      if (deleted.length) {
+        messages.push(`Malformed annotation data with no valid backup was removed; affected stores start empty.`);
+      }
       if (repaired.length) {
         messages.push(`Automatically restored ${repaired.map((result) => result.store).join(" and ")} from validated backup.`);
       }
@@ -3900,7 +3927,8 @@ export class ViewerInkSession {
         store: result.store,
         sourcePath: result.sourcePath,
         quarantinePath: result.quarantinePath,
-        error: result.error
+        error: result.error,
+        artifactDeleted: result.artifactDeleted === true
       }))
     });
     session.logger.sidecarLoad({
@@ -5990,11 +6018,17 @@ export class ViewerInkSession {
     });
   }
 
+  /** Apply live mouse-button setting changes without recreating the viewer. */
+  updateMouseInputBindings(): void {
+    this.syncAnnotationCursorMode();
+    this.refreshSurfaceCursors();
+  }
+
   private syncAnnotationCursorMode(forceOff = false): void {
     const tool = this.activeTool();
-    // Mouse pan/native keeps native cursor; mouse annotate hides native for ink/eraser.
+    // A primary-button drawing binding hides the native cursor for ink/eraser.
     const hideNativeCursor = !forceOff
-      && mouseAnnotationEnabled(this.mouseInputMode())
+      && this.mouseLeftDragEnabled()
       && (isInkDrawTool(tool) || tool === "eraser");
     this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
   }
@@ -6245,10 +6279,8 @@ export class ViewerInkSession {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
       canAnnotatePointer: (event) => this.canAnnotateSurface(surface, event),
-      mouseAnnotationEnabled: () => this.runtimePlatform().mobile
-        ? mouseAnnotationEnabled(this.mouseInputMode())
-        : true,
-      rightMouseEraserEnabled: () => this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton,
+      mouseAnnotationEnabled: (button = 0) => this.mouseButtonEnabled(button),
+      rightMouseEraserEnabled: () => this.mouseRightDragEnabled(),
       onStylusEraserStart: () => {
         this.temporaryStylusEraserPointers += 1;
         this.refreshSurfaceCursors();
@@ -8622,7 +8654,7 @@ export class ViewerInkSession {
 
   private isRightMouseEraser(event: PointerEvent): boolean {
     return event.pointerType === "mouse" && event.button === 2
-      && this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton;
+      && this.mouseRightDragEnabled();
   }
 
   private scheduleHeldShape(surface: PageSurface): void {
