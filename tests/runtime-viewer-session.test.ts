@@ -230,6 +230,47 @@ describe("viewer runtime tracer", () => {
     expect(adapter.destroyed).toBe(true);
   });
 
+  it("correlates stroke creation and model insertion while preserving missing pen identity", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.png",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readDocument: async () => new Uint8Array([1, 2, 3]),
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: { write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} }) }
+    });
+
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 17 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 17 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 17 }));
+
+    const lifecycle = writes.filter((entry) => entry.event === "stroke lifecycle");
+    const phases = lifecycle.map((entry) => entry.payload.phase);
+    expect(phases).toEqual(expect.arrayContaining([
+      "stroke-route-start",
+      "stroke-create",
+      "stroke-model-insert",
+      "stroke-pointerup",
+      "stroke-commit"
+    ]));
+    const strokeIds = new Set(lifecycle.map((entry) => entry.payload.strokeId));
+    expect(strokeIds.size).toBe(1);
+    expect(lifecycle).toEqual(expect.arrayContaining([
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-create", penContactId: null }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-model-insert", modelPresent: true, penContactId: null }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-commit", modelPresent: true, penContactId: null }) })
+    ]));
+
+    await expect(session.destroy()).resolves.toBe(true);
+  });
+
   it("runs the shared session against a non-PDF surface without PDF extensions", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
