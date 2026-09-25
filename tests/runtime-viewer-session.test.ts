@@ -3383,6 +3383,60 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("defers Add Page view restoration until a delayed replacement page set arrives", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    adapter.viewState = {
+      pageNumber: 1,
+      scrollFraction: 0.74,
+      scale: 2.4,
+      scaleMode: 2.4,
+      rotation: 0
+    };
+    const page2 = document.createElement("div");
+    page2.dataset.pageNumber = "2";
+    adapter.root.append(page2);
+    const initialPages = adapter.pages();
+    let livePages = initialPages;
+    vi.spyOn(adapter, "pages").mockImplementation(() => livePages);
+    vi.spyOn(adapter, "page").mockImplementation((pageNumber) => livePages.find((page) => page.pageNumber === pageNumber));
+    const resolved = vi.fn();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      onInsertPage: async () => 2,
+      onAddPageMutationResolved: resolved,
+      notice: () => undefined
+    });
+
+    await session.addPageAt(2);
+
+    expect(adapter.restoredViewStates).toHaveLength(0);
+    expect(resolved).not.toHaveBeenCalled();
+
+    adapter.viewState = { ...adapter.viewState, scale: 1, scaleMode: "page-fit" };
+    livePages = [...initialPages, {
+      pageNumber: 2,
+      width: 600,
+      height: 800,
+      scale: 1,
+      rotation: 0,
+      element: page2
+    }];
+    (session as unknown as { onPagesChanged(reason: string): void }).onPagesChanged("pages-dom");
+
+    expect(adapter.restoredViewStates).toHaveLength(1);
+    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.4, scaleMode: 2.4, scrollFraction: 0.74 });
+    expect(resolved).toHaveBeenCalledTimes(1);
+    await session.destroy();
+  });
+
   it("commits imported-page PDF bytes and shifts the persisted sidecar atomically", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();

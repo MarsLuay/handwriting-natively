@@ -949,6 +949,9 @@ export class ViewerInkSession {
   private readonly addPageControl: AddPageControl | null;
   private readonly thumbnailSidebarActions: PdfThumbnailSidebarActions | null;
   private pageMutationInFlight = false;
+  /** Add Page state remains pending until the rebuilt page set is observable. */
+  private pendingAddPageMutation: AddPageMutationRestoreState | null = null;
+  private addPageMutationViewRestored = false;
   /** PDF find integration is an optional surface extension. */
   private readonly findBridge: AnnotationFindBridge | null;
   /** Last applied browser direct-manipulation policy for mounted PDF pages. */
@@ -4263,6 +4266,34 @@ export class ViewerInkSession {
     this.lastKnownViewScale = state.scale;
   }
 
+  /**
+   * Complete Add Page only after the replacement page set is observable.
+   * Native PDF reloads may finish after the source-PDF write promise resolves;
+   * restoring before that point lets PDF.js overwrite the captured scale.
+   */
+  private completePendingAddPageMutation(reason: string, pages: AnnotationPageInfo[]): boolean {
+    const state = this.pendingAddPageMutation;
+    if (!state || this.destroyed || pages.length < state.pageCountBefore + 1) return false;
+    if (!this.addPageMutationViewRestored) {
+      this.options.adapter.restoreViewState(state.viewState);
+      this.addPageMutationViewRestored = true;
+    }
+    const details = this.addPageLifecycleDetails(state);
+    details.settleReason = reason;
+    this.logger.addPageLifecycle("mutation-complete", details);
+    if (details.beforeScale !== details.afterScale || details.beforeScaleMode !== details.afterScaleMode) {
+      this.logger.addPageLifecycle("scale-changed", details);
+    }
+    if (details.staleSurfaceOverlap === true) {
+      this.logger.addPageLifecycle("stale-surface-overlap", details);
+    }
+    this.pendingAddPageMutation = null;
+    this.addPageMutationViewRestored = false;
+    this.options.onAddPageMutationResolved?.(state);
+    this.releasePageMutationShieldAfterSettled();
+    return true;
+  }
+
   onPagesChanged(reason: string): void {
     const pages = this.options.adapter.pages();
     this.logger.inputLifecycleEvent("page-structure", {
@@ -4275,15 +4306,18 @@ export class ViewerInkSession {
     );
     this.logger.pagesChanged(reason, pages.length, overlayConnected);
 
-    // A source-PDF rewrite temporarily removes every native page. Release the
-    // snapshot only after replacement canvases are present for two paints.
-    if (reason === "pages-settled") this.releasePageMutationShieldAfterSettled();
-
     // PDF++ reload often replaces the viewer tree — root disconnects and MutationObserver dies.
     if (!this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) {
       this.notifyDetached("root-disconnected");
       return;
     }
+
+    // A source-PDF rewrite can publish the rebuilt pages without first
+    // delivering an observable empty-page callback. The Add Page restore must
+    // therefore settle on the expected page count, not only on
+    // `pages-settled`.
+    const addPageSettled = this.completePendingAddPageMutation(reason, pages);
+    if (reason === "pages-settled" && !addPageSettled) this.releasePageMutationShieldAfterSettled();
 
     if (!pages.length) {
       // Transient empty during rebuild — wait, then detach so plugin re-attaches to the new viewer.
@@ -4978,6 +5012,8 @@ export class ViewerInkSession {
       const before = this.snapshot();
       mutation = this.captureAddPageMutationState(this.id(), startedAt);
       this.lastAddPageOperationId = mutation.operationId;
+      this.pendingAddPageMutation = mutation;
+      this.addPageMutationViewRestored = false;
       this.options.onAddPageMutationStart?.(mutation);
       this.logger.addPageLifecycle("before-mutation", this.addPageLifecycleDetails(mutation));
       this.pendingInsertedPageFocus = {
@@ -4987,23 +5023,8 @@ export class ViewerInkSession {
       await this.armPageMutationShield("insert", requestedPageNumber);
       const insertedPage = await this.options.onInsertPage(requestedPageNumber);
       if (this.pendingInsertedPageFocus) this.pendingInsertedPageFocus.pageNumber = insertedPage;
-      if (!this.destroyed) {
-        // Restore scale/mode before focusing the newly appended page. This
-        // prevents a PDF.js reload from turning Add Page into an implicit fit.
-        this.options.adapter.restoreViewState(mutation.viewState);
-      }
       this.applyInsertedPageToSession(before, insertedPage);
-      if (!this.destroyed && mutation) {
-        const details = this.addPageLifecycleDetails(mutation);
-        this.logger.addPageLifecycle("mutation-complete", details);
-        if (details.beforeScale !== details.afterScale || details.beforeScaleMode !== details.afterScaleMode) {
-          this.logger.addPageLifecycle("scale-changed", details);
-        }
-        if (details.staleSurfaceOverlap === true) {
-          this.logger.addPageLifecycle("stale-surface-overlap", details);
-        }
-        this.options.onAddPageMutationResolved?.(mutation);
-      }
+      this.completePendingAddPageMutation("insert-complete", this.options.adapter.pages());
       this.focusInsertedPageIfReady("insert-complete", this.options.adapter.pages());
       this.logger.pdfPageAction("insert-complete", {
         requestedPageNumber,
@@ -5014,6 +5035,8 @@ export class ViewerInkSession {
     } catch (error) {
       this.pendingInsertedPageFocus = null;
       this.releasePageMutationShield("insert-error");
+      this.pendingAddPageMutation = null;
+      this.addPageMutationViewRestored = false;
       if (mutation && !this.destroyed) this.options.onAddPageMutationResolved?.(mutation);
       this.logger.pdfPageAction("insert-error", {
         requestedPageNumber,
