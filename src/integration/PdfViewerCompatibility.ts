@@ -291,13 +291,18 @@ export class PdfViewerCompatibility {
   ): CompatibilityResult {
     const errors: string[] = [];
     const warnings: string[] = [];
-    const viewerRoot = this.first<HTMLElement>(host, viewerSelectors);
+    // A PDF replacement can briefly leave the previous viewer shell connected
+    // beside the new one. `querySelector` would select that stale first shell,
+    // causing attach to fail for missing pages or mounting the shared toolbar
+    // into a viewer that is no longer visible. Prefer the private viewer hint,
+    // then the newest candidate with rendered pages.
+    const viewerRoot = this.findViewerRoot(host, viewerSelectors, resolvedPrivateViewer);
     if (!viewerRoot) errors.push(`PDF viewer root missing; tried ${viewerSelectors.join(", ")}`);
     const page = viewerRoot ? queryPdfPageNodes(viewerRoot)[0] : undefined;
     if (viewerRoot && !page) {
       errors.push("PDF page nodes missing; expected .page[data-page-number] or .pdf-page-view[data-page-number]");
     }
-    const toolbarHost = this.first<HTMLElement>(host, toolbarSelectors);
+    const toolbarHost = this.findToolbarHost(host, toolbarSelectors);
     if (!toolbarHost) warnings.push("Native PDF toolbar host missing; annotation toolbar will mount beside the viewer");
     const privateHost = host as PrivateHost;
     const privateViewer = resolvedPrivateViewer
@@ -385,12 +390,44 @@ export class PdfViewerCompatibility {
     return result;
   }
 
-  private static first<T extends Element>(host: HTMLElement, selectors: string[]): T | undefined {
-    if (selectors.some((selector) => host.matches(selector))) return host as unknown as T;
-    for (const selector of selectors) {
-      const match = host.querySelector<T>(selector);
+  private static findViewerRoot(
+    host: HTMLElement,
+    selectors: string[],
+    privateViewer?: PdfJsViewerLike
+  ): HTMLElement | undefined {
+    const candidates = this.all<HTMLElement>(host, selectors);
+    if (candidates.length <= 1) return candidates[0];
+
+    const hints = [privateViewer?.viewer, privateViewer?.container]
+      .filter((hint): hint is HTMLElement => Boolean(hint));
+    for (const hint of hints) {
+      const match = candidates.find((candidate) => candidate === hint || candidate.contains(hint) || hint.contains(candidate));
       if (match) return match;
     }
-    return undefined;
+
+    const withPages = candidates.filter((candidate) => queryPdfPageNodes(candidate).length > 0);
+    const pool = withPages.length > 0 ? withPages : candidates;
+    return [...pool].sort((left, right) => {
+      const pageDelta = queryPdfPageNodes(left).length - queryPdfPageNodes(right).length;
+      if (pageDelta !== 0) return pageDelta;
+      const canvasDelta = left.querySelectorAll("canvas").length - right.querySelectorAll("canvas").length;
+      if (canvasDelta !== 0) return canvasDelta;
+      return candidates.indexOf(left) - candidates.indexOf(right);
+    }).at(-1);
+  }
+
+  private static all<T extends Element>(host: HTMLElement, selectors: string[]): T[] {
+    const selector = selectors.join(", ");
+    const candidates: T[] = host.matches(selector) ? [host as unknown as T] : [];
+    candidates.push(...host.querySelectorAll<T>(selector));
+    return [...new Set(candidates)];
+  }
+
+  private static findToolbarHost(host: HTMLElement, selectors: string[]): HTMLElement | undefined {
+    const candidates = this.all<HTMLElement>(host, selectors);
+    // Toolbar shells are siblings of the PDF viewer in Obsidian. During a
+    // document replacement the old shell can remain connected, so the newest
+    // host is the one that can actually present the shared tools.
+    return candidates.at(-1);
   }
 }
