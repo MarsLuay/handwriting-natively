@@ -325,7 +325,7 @@ export class PhysicalContactTracker {
     if (sample.eventType === "pointermove") contact.pointerMoveCount += 1;
     if (!contact.rawPointerFirst) contact.rawPointerFirst = { ...sample, composedPath: [...sample.composedPath] };
     contact.rawPointerLast = { ...sample, composedPath: [...sample.composedPath] };
-    this.updatePoint(contact, sample.clientX, sample.clientY);
+    this.updatePoint(contact, sample);
   }
 
   private updateTouch(contact: ContactState, now: number, sample: RawTouchContactSample): void {
@@ -335,7 +335,7 @@ export class PhysicalContactTracker {
     if (sample.eventType === "touchmove") contact.touchMoveCount += 1;
     if (!contact.rawTouchFirst) contact.rawTouchFirst = this.cloneTouchSample(sample);
     contact.rawTouchLast = this.cloneTouchSample(sample);
-    this.updatePoint(contact, sample.clientX, sample.clientY);
+    this.updatePoint(contact, sample);
   }
 
   private refreshClassification(contact: ContactState, now: number): void {
@@ -361,8 +361,14 @@ export class PhysicalContactTracker {
     }
   }
 
-  private updatePoint(contact: ContactState, x: number, y: number): void {
-    const point = { x, y };
+  private updatePoint(
+    contact: ContactState,
+    sample: Pick<RawPointerContactSample, "eventType" | "clientX" | "clientY">
+      | Pick<RawTouchContactSample, "eventType" | "clientX" | "clientY">
+  ): void {
+    if (!Number.isFinite(sample.clientX) || !Number.isFinite(sample.clientY)) return;
+    if (sample.eventType === "pointercancel" && sample.clientX === 0 && sample.clientY === 0) return;
+    const point = { x: sample.clientX, y: sample.clientY };
     if (!contact.firstPoint) contact.firstPoint = point;
     contact.lastPoint = point;
     contact.maxDisplacementPx = Math.max(
