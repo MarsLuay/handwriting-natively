@@ -1184,7 +1184,11 @@ export class ViewerInkSession {
         enabled: () => !this.destroyed && typeof this.options.onInsertPage === "function",
         isBusy: () => this.pageMutationInFlight || Boolean(this.pageMutationShield) || this.pendingInsertedPageFocus !== null,
         host: () => adapter.root,
-        onCommit: () => this.addPageAt(Number.MAX_SAFE_INTEGER)
+        onCommit: () => this.addPageAt(Number.MAX_SAFE_INTEGER),
+        onLifecycle: (phase, details) => this.logger.addPageUiLifecycle(phase, {
+          viewerGeneration: this.addPageViewerGeneration(),
+          ...details
+        })
       }, adapter.host.ownerDocument)
       : null;
     this.thumbnailSidebarActions = options.onDeletePage && options.onInsertPage
@@ -1194,7 +1198,11 @@ export class ViewerInkSession {
         ...(options.onDeletePages
           ? { onDeletePages: (pageNumbers: readonly number[]) => this.deletePages(pageNumbers) }
           : {}),
-        onMenuEvent: (phase, details) => this.logger.thumbnailMenu(phase, details)
+        onMenuEvent: (phase, details) => this.logger.thumbnailMenu(phase, details),
+        onUiLifecycle: (phase, details) => this.logger.addPageUiLifecycle(phase, {
+          viewerGeneration: this.addPageViewerGeneration(),
+          ...details
+        })
       })
       : null;
     this.findBridge = pdfExtensions ? new AnnotationFindBridge({
