@@ -54,6 +54,7 @@ import type { ScanDocumentPage } from "./scanning/ScanDocument";
 import {
   handwritingSessionMissingPayload,
   missingHandwritingSession,
+  needsMissingHandwritingSessionRecovery,
   type HandwritingSessionRegistrySnapshot
 } from "./runtime/HandwritingSessionRegistry";
 
@@ -163,13 +164,21 @@ export default class NativePdfInkPlugin extends Plugin {
   private readonly pendingAddPageRestore = new Map<string, AddPageMutationRestoreState>();
   /** Back off repeated attach failures so layout rescans cannot storm a not-ready PDF. */
   private readonly attachRetry = new AttachRetryPolicy();
+  /** Replacement sessions wait for old listeners/adapters to finish tearing down. */
+  private readonly pendingSessionDestroy = new Map<WorkspaceLeaf, {
+    session: ViewerInkSession;
+    promise: Promise<boolean>;
+  }>();
   /** Leaves whose previous session detached and should be reported as replacement attaches. */
   private readonly replacementAttachLeaves = new Set<WorkspaceLeaf>();
+  /** Leaves currently recovering the exact visible-viewer/session-absent invariant. */
+  private readonly missingSessionRecoveryLeaves = new Set<WorkspaceLeaf>();
   private readonly scanDebounce = new ScanDebounce();
   private readonly flushDebounce = new ScanDebounce();
   private scanAgain = false;
   private unloaded = false;
   private lastMissingSessionKey = "";
+  private lastMissingRecoveryKey = "";
   private readonly vaultDebugLog = new VaultDebugLog(
     () => this.app.vault,
     () => this.inkSettings.vaultDebugLogPath,
@@ -335,6 +344,7 @@ export default class NativePdfInkPlugin extends Plugin {
     this.attachRetry.clearAll();
     this.attachingLeaves.clear();
     this.replacementAttachLeaves.clear();
+    this.missingSessionRecoveryLeaves.clear();
     this.pendingAddPageRestore.clear();
     for (const chrome of this.embedChrome.values()) chrome.destroy();
     this.embedChrome.clear();
@@ -430,6 +440,44 @@ export default class NativePdfInkPlugin extends Plugin {
     }
   }
 
+  private trackSessionDestroy(
+    leaf: WorkspaceLeaf,
+    session: ViewerInkSession,
+    reason: string,
+    options: { silent?: boolean; alreadyPersisted?: boolean }
+  ): Promise<boolean> {
+    const existing = this.pendingSessionDestroy.get(leaf);
+    if (existing?.session === session) return existing.promise;
+
+    const destroy = (existing?.promise ?? Promise.resolve(true)).then((previousDestroyed) => {
+      if (!previousDestroyed) return false;
+      return this.destroySessionWithTelemetry(leaf, session, reason, options);
+    });
+    let tracked!: Promise<boolean>;
+    tracked = destroy.finally(() => {
+      if (this.pendingSessionDestroy.get(leaf)?.promise === tracked) {
+        this.pendingSessionDestroy.delete(leaf);
+      }
+    });
+    this.pendingSessionDestroy.set(leaf, { session, promise: tracked });
+    return tracked;
+  }
+
+  private async waitForSessionDestroy(leaf: WorkspaceLeaf): Promise<boolean> {
+    const pending = this.pendingSessionDestroy.get(leaf);
+    if (!pending) return true;
+    try {
+      return await pending.promise;
+    } catch (error) {
+      await this.vaultDebugLog.writeUrgent("warn", "handwriting-session-recovery", {
+        phase: "blocked",
+        reason: "stale-session-destroy-failed",
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return false;
+    }
+  }
+
   private pdfSessionRegistrySnapshot(): HandwritingSessionRegistrySnapshot {
     const pdfLeaves = this.app.workspace.getLeavesOfType("pdf");
     const mostRecent = this.app.workspace.getMostRecentLeaf();
@@ -480,6 +528,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const snapshot = this.pdfSessionRegistrySnapshot();
     if (!missingHandwritingSession(snapshot)) {
       this.lastMissingSessionKey = "";
+      this.lastMissingRecoveryKey = "";
       return;
     }
     const key = JSON.stringify(snapshot);
@@ -487,6 +536,42 @@ export default class NativePdfInkPlugin extends Plugin {
     this.lastMissingSessionKey = key;
     this.vaultDebugLog.write("warn", "handwriting-session-missing", {
       scope: "settled-scan",
+      ...handwritingSessionMissingPayload(snapshot)
+    });
+  }
+
+  private async prepareMissingPdfSessionRecovery(leaves: readonly WorkspaceLeaf[]): Promise<void> {
+    const snapshot = this.pdfSessionRegistrySnapshot();
+    if (!needsMissingHandwritingSessionRecovery(snapshot) || !snapshot.activePdfPath) {
+      if (snapshot.attachingLeaves === 0) this.lastMissingRecoveryKey = "";
+      return;
+    }
+
+    const activeLeaf = leaves.find((leaf) => this.fileForLeaf(leaf)?.path === snapshot.activePdfPath);
+    if (!activeLeaf) {
+      await this.vaultDebugLog.writeUrgent("warn", "handwriting-session-recovery", {
+        phase: "blocked",
+        reason: "active-pdf-leaf-not-found",
+        ...handwritingSessionMissingPayload(snapshot)
+      });
+      return;
+    }
+
+    const key = JSON.stringify(snapshot);
+    if (key === this.lastMissingRecoveryKey) return;
+    this.lastMissingRecoveryKey = key;
+    this.lastMissingSessionKey = key;
+    this.attachRetry.clear(snapshot.activePdfPath);
+    this.replacementAttachLeaves.add(activeLeaf);
+    this.missingSessionRecoveryLeaves.add(activeLeaf);
+    await this.vaultDebugLog.writeUrgent("warn", "handwriting-session-missing", {
+      scope: "recovery",
+      ...handwritingSessionMissingPayload(snapshot)
+    });
+    await this.vaultDebugLog.writeUrgent("info", "handwriting-session-recovery", {
+      phase: "requested",
+      reason: "visible-pdf-without-registered-session",
+      document: snapshot.activePdfPath,
       ...handwritingSessionMissingPayload(snapshot)
     });
   }
@@ -755,8 +840,9 @@ export default class NativePdfInkPlugin extends Plugin {
         const reason = pdfDisabled ? "pdf-disabled" : imageDisabled ? "image-disabled" : "leaf-closed";
         if (!this.removeSessionFromRegistry(leaf, session, reason)) continue;
         this.replacementAttachLeaves.delete(leaf);
+        this.missingSessionRecoveryLeaves.delete(leaf);
         this.syncPersistSession(session, reason);
-        void this.destroySessionWithTelemetry(leaf, session, reason, { silent: true, alreadyPersisted: true })
+        await this.trackSessionDestroy(leaf, session, reason, { silent: true, alreadyPersisted: true })
           .catch(() => undefined);
         if (pdfDisabled || imageDisabled) {
           await this.vaultDebugLog.writeUrgent("info", `${pdfDisabled ? "pdf" : "image"} session disabled`, {
@@ -771,10 +857,12 @@ export default class NativePdfInkPlugin extends Plugin {
         if (!this.removeSessionFromRegistry(leaf, session, "detach-rescan")) continue;
         this.replacementAttachLeaves.add(leaf);
         this.syncPersistSession(session, "detach-rescan");
-        void this.destroySessionWithTelemetry(leaf, session, "detach-rescan", { silent: true, alreadyPersisted: true })
+        await this.trackSessionDestroy(leaf, session, "detach-rescan", { silent: true, alreadyPersisted: true })
           .catch(() => undefined);
       }
     }
+
+    await this.prepareMissingPdfSessionRecovery(leaves);
 
     for (const leaf of leaves) {
       if (this.sessions.has(leaf) || this.attachingLeaves.has(leaf)) continue;
@@ -799,6 +887,10 @@ export default class NativePdfInkPlugin extends Plugin {
           imageHandwritingEnabled: false,
           reason: "content-surface-setting-disabled"
         });
+        continue;
+      }
+      if (!await this.waitForSessionDestroy(leaf)) {
+        this.attachRetry.recordFailure(file.path);
         continue;
       }
       if (!this.attachRetry.canAttempt(file.path)) {
@@ -909,22 +1001,41 @@ export default class NativePdfInkPlugin extends Plugin {
             this.replacementAttachLeaves.add(leaf);
             if (!this.removeSessionFromRegistry(leaf, current, "on-detached")) return;
             this.syncPersistSession(current, "on-detached");
-            void this.destroySessionWithTelemetry(leaf, current, "on-detached", { silent: true, alreadyPersisted: true })
+            void this.trackSessionDestroy(leaf, current, "on-detached", { silent: true, alreadyPersisted: true })
+              .then(() => {
+                // The replacement viewer may already be present in this same
+                // host mutation. Do not attach until stale listeners and the
+                // old adapter have finished tearing down.
+                this.scheduleDebouncedScan(0);
+              })
               .catch(() => undefined);
-            // The replacement viewer may already be present in this same host
-            // mutation. Attach immediately; NativePdfViewAdapter still waits
-            // for numbered pages, and stale adapter generations remain gated.
-            this.scheduleDebouncedScan(0);
           }
         });
         if (this.unloaded) {
           this.syncPersistSession(session, "unloaded-during-attach");
-          void this.destroySessionWithTelemetry(leaf, session, "unloaded-during-attach", { silent: true, alreadyPersisted: true })
+          await this.trackSessionDestroy(leaf, session, "unloaded-during-attach", { silent: true, alreadyPersisted: true })
             .catch(() => undefined);
           continue;
         }
+        if (detached) {
+          const reason = "detached-during-attach";
+          this.replacementAttachLeaves.add(leaf);
+          this.syncPersistSession(session, reason);
+          await this.trackSessionDestroy(leaf, session, reason, { silent: true, alreadyPersisted: true })
+            .catch(() => undefined);
+          await this.vaultDebugLog.writeUrgent("warn", "handwriting-session-attach", {
+            phase: "aborted",
+            document: file.path,
+            replacement: true,
+            reason
+          });
+          this.scheduleDebouncedScan(0);
+          continue;
+        }
+        const recoveringMissingSession = this.missingSessionRecoveryLeaves.has(leaf);
         this.registerSession(leaf, session, replacementAttach ? "replacement-attach" : "attach");
         this.replacementAttachLeaves.delete(leaf);
+        this.missingSessionRecoveryLeaves.delete(leaf);
         this.attachRetry.clear(file.path);
         await this.vaultDebugLog.writeUrgent("info", "handwriting-session-attach", {
           phase: "completed",
@@ -932,6 +1043,15 @@ export default class NativePdfInkPlugin extends Plugin {
           replacement: replacementAttach,
           ...session.getUiLifecycleSnapshot("attach-completed")
         });
+        if (recoveringMissingSession) {
+          await this.vaultDebugLog.writeUrgent("info", "handwriting-session-recovery", {
+            phase: "attached",
+            reason: "visible-pdf-without-registered-session",
+            document: file.path,
+            registrySize: this.sessions.size,
+            ...session.getUiLifecycleSnapshot("recovery-attached")
+          });
+        }
         await this.vaultDebugLog.writeUrgent("info", "session attach ok", {
           document: file.path,
           mobile: Platform.isMobile
@@ -972,6 +1092,15 @@ export default class NativePdfInkPlugin extends Plugin {
         const delayMs = isPdf && pagesMissing && Platform.isMobile
           ? this.attachRetry.recordHardFailure(file.path)
           : this.attachRetry.recordFailure(file.path);
+        if (this.missingSessionRecoveryLeaves.has(leaf)) {
+          await this.vaultDebugLog.writeUrgent("warn", "handwriting-session-recovery", {
+            phase: "blocked",
+            reason: "session-attach-failed",
+            document: file.path,
+            retryDelayMs: delayMs,
+            error: message
+          });
+        }
         this.scheduleDebouncedScan(delayMs);
       } finally {
         this.attachingLeaves.delete(leaf);
