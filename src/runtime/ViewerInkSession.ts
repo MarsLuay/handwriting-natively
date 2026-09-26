@@ -65,6 +65,7 @@ import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
 import { insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
+import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultFs";
 import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
@@ -782,7 +783,7 @@ interface ShapeResize {
 export class ViewerInkSession {
   private static nextViewerGeneration = 1;
   private readonly viewerGeneration = ViewerInkSession.nextViewerGeneration++;
-  private readonly ink: InkSession;
+  private readonly ink = new InkSession();
   private readonly texts = new TextAnnotationSession();
   private readonly identity;
   private readonly surfaces = new Map<number, PageSurface>();
@@ -1027,6 +1028,7 @@ export class ViewerInkSession {
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
+      drawEnabled: this.drawEnabled,
       supportedMoreActions: [
         ...(pdfExtensions && options.writeExport
           ? ["export", "export-editable"] as const
@@ -1216,6 +1218,8 @@ export class ViewerInkSession {
       ? new AddPageControl({
         enabled: () => !this.destroyed && typeof this.options.onInsertPage === "function",
         isBusy: () => this.pageMutationInFlight || Boolean(this.pageMutationShield) || this.pendingInsertedPageFocus !== null,
+        isDrawing: () => this.hasActiveAnnotationGesture(),
+        scrollRoot: () => adapter.scrollElement(),
         host: () => adapter.root,
         onCommit: () => this.addPageAt(Number.MAX_SAFE_INTEGER),
         onLifecycle: (phase, details) => this.logger.addPageUiLifecycle(phase, {

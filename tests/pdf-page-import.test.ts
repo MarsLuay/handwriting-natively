@@ -29,7 +29,7 @@ describe("PDF page import selection", () => {
     expect(cancelled).not.toHaveBeenCalled();
   });
 
-  it("excludes the open destination and reports picker cancellation", () => {
+  it("lists PDFs including the open destination and reports picker cancellation", () => {
     const first = { path: "source.pdf", extension: "pdf" };
     const destination = { path: "destination.pdf", extension: "pdf" };
     const cancelled = vi.fn();
@@ -39,7 +39,7 @@ describe("PDF page import selection", () => {
       vi.fn(),
       cancelled
     );
-    expect(picker.getItems()).toEqual([first]);
+    expect(picker.getItems()).toEqual([first, destination]);
     picker.open();
     picker.close();
     expect(cancelled).toHaveBeenCalledOnce();
