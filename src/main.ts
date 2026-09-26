@@ -45,9 +45,6 @@ import { PdfImportFilePicker, PdfPageSelectionModal } from "./ui/PdfPageImport";
 import { mergeSettings, NativePdfInkSettingTab, type CopiedLogDiagnostics } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
 import { createDocumentIdentity, hashDocumentContent } from "./storage/DocumentIdentity";
-  insertScannedPages
-import { mergeSettings, NativePdfInkSettingTab } from "./settings";
-import { createDocumentIdentity } from "./storage/DocumentIdentity";
 import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "./storage/SidecarPageRemoval";
 import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
@@ -60,6 +57,7 @@ import type { ScanDocumentPage } from "./scanning/ScanDocument";
 import {
   handwritingSessionMissingPayload,
   missingHandwritingSession,
+  missingHandwritingSessionRecoveryWake,
   needsMissingHandwritingSessionRecovery,
   type HandwritingSessionRegistrySnapshot
 } from "./runtime/HandwritingSessionRegistry";
@@ -203,6 +201,7 @@ export default class NativePdfInkPlugin extends Plugin {
   private unloaded = false;
   private lastMissingSessionKey = "";
   private lastMissingRecoveryKey = "";
+  private lastMissingRecoveryWakeKey = "";
   private readonly vaultDebugLog = new VaultDebugLog(
     () => this.app.vault,
     () => this.inkSettings.vaultDebugLogPath,
@@ -380,6 +379,7 @@ export default class NativePdfInkPlugin extends Plugin {
     this.attachingLeaves.clear();
     this.replacementAttachLeaves.clear();
     this.missingSessionRecoveryLeaves.clear();
+    this.lastMissingRecoveryWakeKey = "";
     this.pendingAddPageRestore.clear();
     for (const chrome of this.embedChrome.values()) chrome.destroy();
     this.embedChrome.clear();
@@ -578,13 +578,30 @@ export default class NativePdfInkPlugin extends Plugin {
     if (!missingHandwritingSession(snapshot)) {
       this.lastMissingSessionKey = "";
       this.lastMissingRecoveryKey = "";
+      this.lastMissingRecoveryWakeKey = "";
       return;
     }
     const key = JSON.stringify(snapshot);
-    if (key === this.lastMissingSessionKey) return;
-    this.lastMissingSessionKey = key;
-    this.vaultDebugLog.write("warn", "handwriting-session-missing", {
-      scope: "settled-scan",
+    if (key !== this.lastMissingSessionKey) {
+      this.lastMissingSessionKey = key;
+      this.vaultDebugLog.write("warn", "handwriting-session-missing", {
+        scope: "settled-scan",
+        ...handwritingSessionMissingPayload(snapshot)
+      });
+    }
+    const retryDelayMs = snapshot.activePdfPath
+      ? this.attachRetry.msUntilNextRetry(new Set([snapshot.activePdfPath]))
+      : null;
+    const wake = missingHandwritingSessionRecoveryWake(snapshot, this.lastMissingRecoveryWakeKey, retryDelayMs);
+    if (!wake) return;
+    this.lastMissingRecoveryWakeKey = wake.key;
+    if (wake.retryDelayMs === null) this.scheduleDebouncedScan(0);
+    else this.scheduleAttachRetryScan(wake.retryDelayMs);
+    void this.vaultDebugLog.writeUrgent("info", "handwriting-session-recovery", {
+      phase: "wake-scheduled",
+      reason: "settled-visible-pdf-without-session",
+      document: snapshot.activePdfPath,
+      retryDelayMs: wake.retryDelayMs ?? 0,
       ...handwritingSessionMissingPayload(snapshot)
     });
   }

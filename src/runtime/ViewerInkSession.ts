@@ -9,8 +9,6 @@ import {
   type AnnotationZoomChange
 } from "./AnnotationSurface";
 import { imageSurfaceExtensions, pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
-import type { AnnotationSurface, AnnotationPageInfo } from "./AnnotationSurface";
-import { pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
 import { describeTarget } from "../dom/describeElement";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
@@ -74,7 +72,6 @@ import { createDocumentIdentity, hashDocumentContent, type DocumentIdentityInput
 import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
-import { insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
 import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultFs";
