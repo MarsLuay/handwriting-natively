@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createVaultFsTextAdapter, createVaultSyncWriter, resolveVaultAbsolutePath } from "../src/storage/VaultFs";
+import { createVaultFsTextAdapter, createVaultSyncWriter, resolveVaultAbsolutePath, type VaultFsOperationRecord } from "../src/storage/VaultFs";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository } from "../src/storage/SidecarRepository";
 import type { Vault } from "obsidian";
@@ -10,6 +10,7 @@ function vaultWith(options: {
   files?: Map<string, string>;
   exists?: (path: string) => Promise<boolean>;
   list?: (path: string) => Promise<{ files: string[]; folders: string[] }>;
+  write?: (path: string, data: string) => Promise<void>;
 }): Vault {
   const files = options.files ?? new Map<string, string>();
   return {
@@ -25,6 +26,7 @@ function vaultWith(options: {
         return value;
       },
       async write(path: string, data: string) {
+        if (options.write) return options.write(path, data);
         files.set(path, data);
       },
       async remove(path: string) {
@@ -144,5 +146,68 @@ describe("vault fs sidecar I/O", () => {
       }
     });
     await expect(createVaultFsTextAdapter(missingProbe).exists("annotations")).rejects.toThrow("EIO");
+  });
+
+  it("records a recovered missing directory and an unexpected I/O failure without payloads", async () => {
+    const records: VaultFsOperationRecord[] = [];
+    const missing = vaultWith({
+      exists: async () => false,
+      list: async () => {
+        throw new Error("The file “annotations” couldn’t be opened because there is no such file.");
+      }
+    });
+    expect(await createVaultFsTextAdapter(missing, (record) => records.push(record)).list!("annotations")).toEqual([]);
+    expect(records).toEqual([expect.objectContaining({
+      operation: "list",
+      logicalPath: "annotations",
+      pathKindExpected: "directory",
+      exists: false,
+      missingAllowed: true,
+      storeKind: "sidecar",
+      outcome: "missing-recovered",
+      recoveryResult: "treated-as-empty"
+    })]);
+
+    records.length = 0;
+    const broken = vaultWith({
+      exists: async () => true,
+      list: async () => {
+        const error = new Error("EIO reading C:\\Users\\private\\annotations");
+        error.name = "IOError";
+        (error as Error & { code?: string }).code = "EIO";
+        throw error;
+      },
+      write: async () => {
+        throw new Error("write failed");
+      }
+    });
+    const adapter = createVaultFsTextAdapter(broken, (record) => records.push(record));
+    await expect(adapter.list!("annotations/recovery")).rejects.toThrow("EIO");
+    await expect(adapter.write!("annotations/pdf-abc.json", "secret-ink")).rejects.toThrow("write failed");
+    expect(records.map((record) => record.operation)).toEqual(["list", "write"]);
+    expect(records[0]).toMatchObject({
+      operation: "list",
+      logicalPath: "annotations/recovery",
+      storeKind: "recovery",
+      outcome: "error",
+      recoveryResult: "propagated",
+      errorName: "IOError",
+      errorCode: "EIO"
+    });
+    expect(records[1]).toMatchObject({
+      operation: "write",
+      logicalPath: "annotations/pdf-abc.json",
+      documentId: "pdf-abc",
+      pathKindExpected: "file",
+      outcome: "error"
+    });
+    expect(JSON.stringify(records)).not.toContain("secret-ink");
+    expect(JSON.stringify(records)).not.toContain("C:\\Users");
+    expect(JSON.stringify(records[0]?.errorMessage)).toContain("[path]");
+
+    records.length = 0;
+    const quiet = vaultWith({ files: new Map() });
+    await createVaultFsTextAdapter(quiet, (record) => records.push(record)).write!("annotations/ok.json", "saved");
+    expect(records).toEqual([]);
   });
 });
