@@ -440,13 +440,31 @@ describe("SessionLogger", () => {
     });
     logger.uiSurface("close", { surfaceKind: "settings", openedByPointerType: "pen" });
     logger.zoomLifecycle("zoom-burst-settle", { routerGenerations: [4] });
-    logger.toolChanged({ toolChangeId: "tool-1", previousTool: "pen", nextTool: "eraser" });
+    logger.toolChanged({
+      toolChangeId: "tool-1",
+      at: 42,
+      previousTool: "pen",
+      nextTool: "eraser",
+      pointerType: "pen",
+      viewerGeneration: 7,
+      pageGenerations: [{ page: 2, mountGeneration: 11, routerGeneration: 4 }],
+      routerGenerations: [4]
+    });
 
     expect(writes).toEqual(expect.arrayContaining([
       expect.objectContaining({ level: "warn", event: "pen input handoff", payload: expect.objectContaining({ correlationId: "pen-routing-1", outcome: "pen-seen-document-not-router" }) }),
       expect.objectContaining({ event: "ui surface", payload: expect.objectContaining({ phase: "close", surfaceKind: "settings" }) }),
       expect.objectContaining({ event: "zoom lifecycle", payload: expect.objectContaining({ phase: "zoom-burst-settle" }) }),
-      expect.objectContaining({ event: "tool changed", payload: expect.objectContaining({ nextTool: "eraser" }) })
+      expect.objectContaining({
+        event: "tool changed",
+        payload: expect.objectContaining({
+          at: 42,
+          nextTool: "eraser",
+          viewerGeneration: 7,
+          pageGenerations: [{ page: 2, mountGeneration: 11, routerGeneration: 4 }],
+          routerGenerations: [4]
+        })
+      })
     ]));
     expect(writes[0]?.payload).not.toHaveProperty("annotation");
   });

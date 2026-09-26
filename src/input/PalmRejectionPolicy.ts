@@ -146,10 +146,18 @@ export class PalmRejectionPolicy {
     return this.clearAll("touch-after-stale-pen");
   }
 
-  shouldIgnore(event: PointerEvent): boolean {
+  /**
+   * Decide whether a touch contact may enter an ink path.
+   *
+   * Geometry is opt-in for an explicitly ambiguous/touch-drawing fallback;
+   * ordinary native navigation must not reject a large finger contact.
+   */
+  shouldIgnore(event: PointerEvent, options: { allowGeometryHeuristic?: boolean } = {}): boolean {
     if (event.pointerType !== "touch") return false;
     if (this.ignoreTouchWhilePenActive && this.activePens.size > 0) return true;
-    return Math.max(event.width || 0, event.height || 0) >= this.palmWidthThreshold && event.pressure > 0.5;
+    return options.allowGeometryHeuristic === true
+      && Math.max(event.width || 0, event.height || 0) >= this.palmWidthThreshold
+      && event.pressure > 0.5;
   }
 
   /** True while at least one stylus tip is down (for scroll-lock / TouchEvent cancel). */

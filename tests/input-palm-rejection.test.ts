@@ -75,4 +75,24 @@ describe("PalmRejectionPolicy", () => {
       pressure: 0.2
     } as PointerEvent)).toBe(true);
   });
+
+  it("keeps large ordinary fingers available for native navigation", () => {
+    const policy = new PalmRejectionPolicy({
+      setTimeout: () => 1,
+      clearTimeout: () => undefined
+    });
+
+    expect(policy.shouldIgnore({
+      pointerType: "touch",
+      width: 64,
+      height: 64,
+      pressure: 0.8
+    } as PointerEvent)).toBe(false);
+    expect(policy.shouldIgnore({
+      pointerType: "touch",
+      width: 64,
+      height: 64,
+      pressure: 0.8
+    } as PointerEvent, { allowGeometryHeuristic: true })).toBe(true);
+  });
 });

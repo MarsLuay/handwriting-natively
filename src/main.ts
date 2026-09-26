@@ -53,6 +53,7 @@ import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
 import type { PluginSettings, ToolPreferences } from "./model";
 import { createVaultFsTextAdapter, createVaultSyncWriter } from "./storage/VaultFs";
+import type { VaultFsOperationRecord } from "./storage/VaultFs";
 import { parsePageRanges } from "./util/parsePageRanges";
 import { ScanDocumentModal } from "./ui/ScanDocumentModal";
 import type { ScanDocumentPage } from "./scanning/ScanDocument";
@@ -861,6 +862,9 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private scheduleDebouncedScan(delayMs = 100): void {
+    // Immediate rescans coalesce into the pass already running. A delayed
+    // attach retry must keep its ScanDebounce deadline instead of becoming schedule(0).
+    if (delayMs <= 0) this.scanAgain = true;
     if (this.unloaded) return;
     if (this.scanInProgress) {
       this.scanAgain = true;
@@ -1303,6 +1307,16 @@ export default class NativePdfInkPlugin extends Plugin {
     };
   }
 
+  private annotationFsProbe(): (record: VaultFsOperationRecord) => void {
+    return (record) => {
+      void this.vaultDebugLog.writeUrgent(record.outcome === "error" ? "error" : "warn", "annotation-fs", {
+        ...record,
+        platform: Platform.isMobile ? "mobile" : "desktop",
+        runtime: Platform.isMobileApp ? "capacitor" : "obsidian"
+      });
+    };
+  }
+
   private async createInkSession(
     file: TFile,
     adapter: AnnotationSurface,
@@ -1313,7 +1327,7 @@ export default class NativePdfInkPlugin extends Plugin {
       restoredAddPageMutation?: AddPageMutationRestoreState;
     } = {}
   ): Promise<ViewerInkSession> {
-    const textFiles = createVaultFsTextAdapter(this.app.vault);
+    const textFiles = createVaultFsTextAdapter(this.app.vault, this.annotationFsProbe());
     return ViewerInkSession.create({
       adapter,
       documentPath: file.path,
@@ -1585,7 +1599,7 @@ export default class NativePdfInkPlugin extends Plugin {
   private async insertPageInPlace(file: TFile, requestedPageNumber: number): Promise<number> {
     const source = new Uint8Array(await this.app.vault.readBinary(file));
     const inserted = await insertMatchingBlankPage(source, requestedPageNumber);
-    const files = createVaultFsTextAdapter(this.app.vault);
+    const files = createVaultFsTextAdapter(this.app.vault, this.annotationFsProbe());
     const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder, {
       automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
       backupFolder: this.inkSettings.annotationBackupPath
@@ -1650,7 +1664,7 @@ export default class NativePdfInkPlugin extends Plugin {
   ): Promise<number> {
     const source = new Uint8Array(await this.app.vault.readBinary(file));
     const inserted = await insertScannedPages(source, requestedPageNumber, pages);
-    const files = createVaultFsTextAdapter(this.app.vault);
+    const files = createVaultFsTextAdapter(this.app.vault, this.annotationFsProbe());
     const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder, {
       automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
       backupFolder: this.inkSettings.annotationBackupPath
@@ -1717,7 +1731,7 @@ export default class NativePdfInkPlugin extends Plugin {
   private async deletePagesInPlace(file: TFile, requestedPageNumbers: readonly number[]): Promise<void> {
     const source = new Uint8Array(await this.app.vault.readBinary(file));
     const deletion = await deletePdfPages(source, requestedPageNumbers);
-    const files = createVaultFsTextAdapter(this.app.vault);
+    const files = createVaultFsTextAdapter(this.app.vault, this.annotationFsProbe());
     const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder, {
       automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
       backupFolder: this.inkSettings.annotationBackupPath
