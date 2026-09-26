@@ -15,6 +15,7 @@ import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMen
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
+import { deferredRenderDisposition } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
 import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import {
@@ -861,6 +862,8 @@ export class ViewerInkSession {
   private refreshDepth = 0;
   private resizeFrame: number | null = null;
   private viewportPaintFrame: number | null = null;
+  /** Bumped when an ink layer cache entry is invalidated. Deferred HQ from an older epoch cancels. */
+  private renderEpoch = 0;
   private pendingScheduledRefresh: { reason: string; repaintOnly: boolean } | null = null;
   /** One display-frame refresh for mobile scroll/pagechanging signals. */
   private mobileScrollRefreshFrame: number | null = null;
@@ -2180,9 +2183,11 @@ export class ViewerInkSession {
     if (this.destroyed || this.viewportPaintFrame !== null || this.isZoomHandoffActive()) return;
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) return;
+    const epoch = this.renderEpoch;
     this.viewportPaintFrame = view.requestAnimationFrame(() => {
       this.viewportPaintFrame = null;
       if (this.destroyed || this.isZoomHandoffActive()) return;
+      if (deferredRenderDisposition("hq", epoch, this.renderEpoch) === "cancel") return;
       const rootRect = this.options.adapter.root.getBoundingClientRect();
       for (const surface of this.surfaces.values()) {
         const needsUpgrade = surface.viewportCullPending || surface.settleUpgradePending;
@@ -9969,6 +9974,7 @@ export class ViewerInkSession {
     surface.inkLayerValid = false;
     surface.inkLayerBackingScale = null;
     surface.inkLayerBurstCapture = false;
+    this.renderEpoch += 1;
   }
 
   private invalidateInkLayers(): void {
