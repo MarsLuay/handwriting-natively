@@ -287,11 +287,9 @@ export class PhysicalContactTracker {
     ];
   }
 
-  constructor(private readonly contactIdPrefix = "physical-contact") {}
-
   private createContact(now: number): ContactState {
     const contact: ContactState = {
-      physicalContactId: `${this.contactIdPrefix}-${++this.sequence}`,
+      physicalContactId: `${this.idPrefix}-${++this.sequence}`,
       startedAt: now,
       lastEventAt: now,
       pointerIds: new Set<number>(),

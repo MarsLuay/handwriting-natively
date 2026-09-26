@@ -48,6 +48,13 @@ describe("main PDF page actions", () => {
     expect(mainSource).toContain("this.scheduleAttachRetryScan(wait);");
   });
 
+  it("wakes a settled visible-PDF recovery when the registry is empty", () => {
+    expect(mainSource).toContain("lastMissingRecoveryWakeKey");
+    expect(mainSource).toContain('phase: "wake-scheduled"');
+    expect(mainSource).toContain('reason: "settled-visible-pdf-without-session"');
+    expect(mainSource).toContain("this.attachRetry.msUntilNextRetry");
+  });
+
   it("wires thumbnail blank-page and delete actions through in-place callbacks", () => {
     expect(mainSource).toContain("onInsertPage: (pageNumber: number) => this.insertPageInPlace(file, pageNumber)");
     expect(mainSource).toContain("onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber)");

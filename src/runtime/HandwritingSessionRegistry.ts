@@ -41,6 +41,27 @@ export function needsMissingHandwritingSessionRecovery(
     && !snapshot.activeSessionFound;
 }
 
+export interface MissingHandwritingSessionRecoveryWake {
+  key: string;
+  retryDelayMs: number | null;
+}
+
+/**
+ * Return one bounded wake for a settled visible-PDF/session-absent state.
+ * The caller supplies the current attach cooldown so a recovery wake never
+ * turns backoff into a zero-delay attach loop.
+ */
+export function missingHandwritingSessionRecoveryWake(
+  snapshot: HandwritingSessionRegistrySnapshot,
+  previousKey: string,
+  retryDelayMs: number | null
+): MissingHandwritingSessionRecoveryWake | null {
+  if (!needsMissingHandwritingSessionRecovery(snapshot) || !snapshot.activePdfPath) return null;
+  const key = JSON.stringify(snapshot);
+  if (key === previousKey) return null;
+  return { key, retryDelayMs };
+}
+
 export function handwritingSessionMissingPayload(
   snapshot: HandwritingSessionRegistrySnapshot
 ): Record<string, unknown> {
