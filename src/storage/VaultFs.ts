@@ -12,6 +12,20 @@ function parentPath(path: string): string {
   return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
 }
 
+function isMissingPathError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no such file|ENOENT|does not exist|doesn't exist|couldn't be opened/i.test(message);
+}
+
+async function pathExists(adapter: MutableAdapter, path: string): Promise<boolean> {
+  try {
+    return await adapter.exists(path);
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+}
+
 async function ensureVaultFolder(vault: Vault, path: string): Promise<void> {
   if (!path) return;
   let current = "";
@@ -74,7 +88,7 @@ export function createVaultSyncWriter(vault: Vault): VaultSyncWriter | null {
 export function createVaultFsTextAdapter(vault: Vault): TextFileAdapter {
   const adapter = vault.adapter as MutableAdapter;
   return {
-    exists: (path) => adapter.exists(normalizeVaultRelativePath(path)),
+    exists: (path) => pathExists(adapter, normalizeVaultRelativePath(path)),
     read: (path) => adapter.read(normalizeVaultRelativePath(path)),
     async write(path, contents) {
       const normalized = normalizeVaultRelativePath(path);
@@ -106,7 +120,14 @@ export function createVaultFsTextAdapter(vault: Vault): TextFileAdapter {
     },
     async list(folder) {
       if (typeof adapter.list !== "function") return [];
-      return (await adapter.list(normalizeVaultRelativePath(folder))).files;
+      const normalized = normalizeVaultRelativePath(folder);
+      if (!await pathExists(adapter, normalized)) return [];
+      try {
+        return (await adapter.list(normalized)).files;
+      } catch (error) {
+        if (isMissingPathError(error) && !await pathExists(adapter, normalized)) return [];
+        throw error;
+      }
     }
   };
 }
