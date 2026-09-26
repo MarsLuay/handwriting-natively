@@ -147,6 +147,7 @@ export class PhysicalContactTracker {
   static readonly PAIR_DISTANCE_PX = 96;
   static readonly CONTACT_TIMEOUT_MS = 30_000;
   static readonly MAX_ACTIVE_CONTACTS = 24;
+  private static readonly SYNTHETIC_CANCEL_ORIGIN_TOLERANCE_PX = 1;
 
   private sequence = 0;
   private readonly contacts = new Set<ContactState>();
@@ -397,6 +398,24 @@ export class PhysicalContactTracker {
       contact.maxDisplacementPx,
       Math.hypot(point.x - contact.firstPoint.x, point.y - contact.firstPoint.y)
     );
+  }
+
+  private isSyntheticPointerCancel(
+    contact: ContactState,
+    sample: Pick<RawPointerContactSample, "eventType" | "clientX" | "clientY">
+      | Pick<RawTouchContactSample, "eventType" | "clientX" | "clientY">
+  ): boolean {
+    if (sample.eventType !== "pointercancel") return false;
+    const nearOrigin = Math.max(Math.abs(sample.clientX), Math.abs(sample.clientY))
+      <= PhysicalContactTracker.SYNTHETIC_CANCEL_ORIGIN_TOLERANCE_PX;
+    if (!nearOrigin) return false;
+    const lastPoint = contact.lastPoint;
+    if (!lastPoint) return true;
+    const trajectoryIsNearOrigin = Math.max(Math.abs(lastPoint.x), Math.abs(lastPoint.y))
+      <= PhysicalContactTracker.SYNTHETIC_CANCEL_ORIGIN_TOLERANCE_PX;
+    // Keep a legitimate origin contact, but reject an origin-adjacent terminal
+    // sentinel once it contradicts the last valid point in the trajectory.
+    return !trajectoryIsNearOrigin;
   }
 
   private findPair(now: number, sample: RawPointerContactSample | RawTouchContactSample): ContactState | null {

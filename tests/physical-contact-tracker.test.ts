@@ -161,7 +161,13 @@ describe("PhysicalContactTracker", () => {
   it("preserves synthetic and non-finite pointercancel data without using it as geometry", () => {
     const syntheticTracker = new PhysicalContactTracker();
     syntheticTracker.pointerDown(0, pointer("pointerdown", { clientX: 100, clientY: 200 }));
-    const syntheticTerminal = syntheticTracker.pointerEnd(1, pointer("pointercancel", { clientX: 0, clientY: 0 }));
+    const syntheticTerminal = syntheticTracker.pointerEnd(1, pointer("pointercancel", {
+      clientX: 0,
+      clientY: 0,
+      width: 1,
+      height: 1,
+      buttons: 0
+    }));
     const syntheticSnapshot = syntheticTerminal[0]!.contact;
 
     expect(syntheticSnapshot.pointerTerminal).toBe("pointercancel");
@@ -169,11 +175,33 @@ describe("PhysicalContactTracker", () => {
     expect(syntheticSnapshot.rawPointer.last).toEqual(expect.objectContaining({
       eventType: "pointercancel",
       clientX: 0,
-      clientY: 0
+      clientY: 0,
+      width: 1,
+      height: 1,
+      buttons: 0
     }));
     expect(syntheticSnapshot.firstPoint).toEqual({ x: 100, y: 200 });
     expect(syntheticSnapshot.lastPoint).toEqual({ x: 100, y: 200 });
     expect(syntheticSnapshot.maxDisplacementPx).toBe(0);
+
+    const finiteSyntheticTracker = new PhysicalContactTracker();
+    finiteSyntheticTracker.pointerDown(0, pointer("pointerdown", { clientX: 960, clientY: 766 }));
+    const finiteSyntheticTerminal = finiteSyntheticTracker.pointerEnd(1, pointer("pointercancel", {
+      clientX: 0,
+      clientY: 1,
+      width: 1,
+      height: 1,
+      buttons: 0
+    }));
+    const finiteSyntheticSnapshot = finiteSyntheticTerminal[0]!.contact;
+
+    expect(finiteSyntheticSnapshot.rawPointer.last).toEqual(expect.objectContaining({
+      eventType: "pointercancel",
+      clientX: 0,
+      clientY: 1
+    }));
+    expect(finiteSyntheticSnapshot.lastPoint).toEqual({ x: 960, y: 766 });
+    expect(finiteSyntheticSnapshot.maxDisplacementPx).toBe(0);
 
     const nonFiniteTracker = new PhysicalContactTracker();
     nonFiniteTracker.pointerDown(0, pointer("pointerdown", { clientX: 30, clientY: 40 }));
@@ -238,11 +266,17 @@ describe("PhysicalContactTracker", () => {
 
   it("keeps valid geometry when pointercancel is followed by touchend", () => {
     const tracker = new PhysicalContactTracker();
-    tracker.pointerDown(0, pointer("pointerdown", { clientX: 100, clientY: 200 }));
-    tracker.touchStart(1, touch("touchstart", 3, { clientX: 101, clientY: 201 }));
-    expect(tracker.pointerEnd(2, pointer("pointercancel", { clientX: 0, clientY: 0 }))).toEqual([]);
+    tracker.pointerDown(0, pointer("pointerdown", { clientX: 960, clientY: 766 }));
+    tracker.touchStart(1, touch("touchstart", 3, { clientX: 960, clientY: 766 }));
+    expect(tracker.pointerEnd(2, pointer("pointercancel", {
+      clientX: 0,
+      clientY: 0,
+      width: 1,
+      height: 1,
+      buttons: 0
+    }))).toEqual([]);
 
-    const terminal = tracker.touchEnd(3, touch("touchend", 3, { clientX: 105, clientY: 207 }));
+    const terminal = tracker.touchEnd(3, touch("touchend", 3, { clientX: 988, clientY: 649 }));
     const snapshot = terminal[0]!.contact;
 
     expect(snapshot.pointerTerminal).toBe("pointercancel");
@@ -250,9 +284,10 @@ describe("PhysicalContactTracker", () => {
     expect(snapshot.terminal).toBe("touchend");
     expect(snapshot.rawPointer.last?.eventType).toBe("pointercancel");
     expect(snapshot.rawTouch.last?.eventType).toBe("touchend");
-    expect(snapshot.firstPoint).toEqual({ x: 100, y: 200 });
-    expect(snapshot.lastPoint).toEqual({ x: 105, y: 207 });
-    expect(snapshot.maxDisplacementPx).toBeCloseTo(Math.hypot(5, 7));
+    expect(snapshot.rawPointer.last).toEqual(expect.objectContaining({ clientX: 0, clientY: 0 }));
+    expect(snapshot.firstPoint).toEqual({ x: 960, y: 766 });
+    expect(snapshot.lastPoint).toEqual({ x: 988, y: 649 });
+    expect(snapshot.maxDisplacementPx).toBeCloseTo(Math.hypot(28, -117));
   });
 
   it("accepts legitimate origin down and move geometry", () => {
@@ -273,6 +308,14 @@ describe("PhysicalContactTracker", () => {
     expect(originMove.firstPoint).toEqual({ x: 10, y: 0 });
     expect(originMove.lastPoint).toEqual({ x: 10, y: 10 });
     expect(originMove.maxDisplacementPx).toBe(10);
+
+    const originCancelTracker = new PhysicalContactTracker();
+    originCancelTracker.pointerDown(0, pointer("pointerdown", { clientX: 0, clientY: 0 }));
+    const originCancel = originCancelTracker.pointerEnd(1, pointer("pointercancel", { clientX: 0, clientY: 1 }))[0]!.contact;
+
+    expect(originCancel.rawPointer.last).toEqual(expect.objectContaining({ clientX: 0, clientY: 1 }));
+    expect(originCancel.lastPoint).toEqual({ x: 0, y: 1 });
+    expect(originCancel.maxDisplacementPx).toBe(1);
   });
 
   it("does not emit records for ordinary moves and expires an abandoned contact", () => {
