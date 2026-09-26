@@ -1264,7 +1264,7 @@ export class ViewerInkSession {
     };
 
     this.physicalContactCollectorLease = acquirePhysicalContactCollector(doc, {
-      ownerId: `viewer-session-${this.viewerGeneration}`,
+      ownerId: `viewer-session-${this.viewerGeneration}-${this.identity.id}`,
       sessionId: this.identity.id,
       viewerGeneration: this.viewerGeneration,
       isEnabled: () => this.options.debugEnabled?.() ?? false,
@@ -3779,6 +3779,7 @@ export class ViewerInkSession {
       ...options,
       ...(contentHash ? { contentHash } : {})
     });
+    try {
     await urgent("session create constructor ok", {
       document: options.documentPath,
       mobile: platform.mobile
@@ -3811,7 +3812,6 @@ export class ViewerInkSession {
     if (conflicts.length) {
       const paths = conflicts.flatMap(({ conflict }) => conflict.paths).join(", ");
       const message = `Conflicting annotation snapshots found for ${options.documentPath}; preserved files require review: ${paths}`;
-      options.adapter.destroy();
       options.notice(message);
       await urgent("session create annotation conflict", {
         document: options.documentPath,
@@ -3968,6 +3968,10 @@ export class ViewerInkSession {
       }
     }
     return session;
+    } catch (error) {
+      await session.destroy({ silent: true, alreadyPersisted: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   refresh(reason = "manual"): void {
