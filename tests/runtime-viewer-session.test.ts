@@ -1384,6 +1384,51 @@ describe("viewer runtime tracer", () => {
     }
   });
 
+  it("claims a pen over a visible page when the top hit is an outside node", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => false
+    });
+    const outside = document.createElement("div");
+    outside.className = "mobile-layout-ghost";
+    document.body.append(outside);
+    const originalElementFromPoint = document.elementFromPoint;
+    const originalElementsFromPoint = document.elementsFromPoint;
+    try {
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => outside
+      });
+      Object.defineProperty(document, "elementsFromPoint", {
+        configurable: true,
+        value: () => [outside]
+      });
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 142 });
+      outside.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      const finger = pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 143 });
+      outside.dispatchEvent(finger);
+      expect(finger.defaultPrevented).toBe(false);
+    } finally {
+      if (originalElementFromPoint) document.elementFromPoint = originalElementFromPoint;
+      else delete (document as Partial<Document>).elementFromPoint;
+      if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
+      else delete (document as Partial<Document>).elementsFromPoint;
+      outside.remove();
+      await session.destroy();
+    }
+  });
+
   it("draws through a closed drawer leftover that still appears in the hit stack", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
