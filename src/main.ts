@@ -852,7 +852,9 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private scheduleDebouncedScan(delayMs = 100): void {
-    this.scanAgain = true;
+    // Immediate rescans coalesce into the pass already running. A delayed
+    // attach retry must keep its ScanDebounce deadline instead of becoming schedule(0).
+    if (delayMs <= 0) this.scanAgain = true;
     if (this.unloaded) return;
     // Soonest wake wins: layout can still scan other leaves quickly, while
     // AttachRetryPolicy.canAttempt blocks the cooling path until its deadline.
