@@ -129,6 +129,7 @@ class PhysicalContactCollector {
     document.addEventListener("pointermove", (event) => this.handlePointer(event, "pointermove"), { ...captureOptions, passive: true });
     document.addEventListener("pointerup", (event) => this.handlePointer(event, "pointerup"), captureOptions);
     document.addEventListener("pointercancel", (event) => this.handlePointer(event, "pointercancel"), captureOptions);
+    document.addEventListener("lostpointercapture", (event) => this.handlePointer(event, "lostpointercapture"), captureOptions);
     document.addEventListener("touchstart", (event) => this.handleTouch(event, "touchstart"), { ...captureOptions, passive: true });
     document.addEventListener("touchmove", (event) => this.handleTouch(event, "touchmove"), { ...captureOptions, passive: true });
     document.addEventListener("touchend", (event) => this.handleTouch(event, "touchend"), { ...captureOptions, passive: true });
@@ -241,7 +242,9 @@ class PhysicalContactCollector {
       ? this.tracker.pointerDown(now, sample)
       : eventType === "pointermove"
         ? this.tracker.pointerMove(now, sample)
-        : this.tracker.pointerEnd(now, sample);
+        : eventType === "lostpointercapture"
+          ? this.tracker.pointerLostCapture(now, sample)
+          : this.tracker.pointerEnd(now, sample);
     void owner;
     return [...expired, ...current];
   }

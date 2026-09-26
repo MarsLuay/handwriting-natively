@@ -136,6 +136,19 @@ describe("PhysicalContactTracker", () => {
     expect(terminal[0]?.contact.rawPointer.last?.eventType).toBe("pointercancel");
   });
 
+  it("retains a lost pointer capture marker until the physical contact ends", () => {
+    const tracker = new PhysicalContactTracker();
+    tracker.pointerDown(0, pointer("pointerdown", { pointerId: 17 }));
+
+    expect(tracker.pointerLostCapture(25, pointer("lostpointercapture", { pointerId: 17 }))).toEqual([]);
+    expect(tracker.pointerContactId(17)).toBe("physical-contact-1");
+
+    const terminal = tracker.pointerEnd(40, pointer("pointerup", { pointerId: 17 }));
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]?.contact.pointerCaptureLost).toBe(true);
+    expect(terminal[0]?.contact.rawPointer.last?.eventType).toBe("pointerup");
+  });
+
   it("uses valid pointerup geometry for the derived terminal summary", () => {
     const tracker = new PhysicalContactTracker();
     tracker.pointerDown(0, pointer("pointerdown", { clientX: 10, clientY: 20 }));
