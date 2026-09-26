@@ -59,6 +59,8 @@ Targets are promoted only from named traces:
 
 Until each metric has representative desktop and constrained-device traces, the target is explicitly `unqualified`; fixture timings are regression signals, not release budgets. `src/runtime/documentBudgetPolicy.ts` is that gate: visible pages stay mounted, preload radius stays `0`, superseded scroll and zoom bursts cancel mount work, and a p95 is cited only from a `manual-device` trace for the same device class. This prevents synthetic tests from being presented as mobile support evidence.
 
+`src/runtime/renderCachePolicy.ts` is the render-cache gate. A cache key is document, page, scale, rotation, content revision, and renderer generation. Any change invalidates that entry. Wet input still runs when the epoch moves. Deferred HQ cancels. Dirty rectangles are the local repaint plan, and a missing or non-finite region stays a full-page fallback. Memory pressure drops least-recently-used offscreen raster entries and keeps the visible page plus the model. The byte cap stays `unqualified`. No system-wide RAM API is consulted.
+
 ## Implementation order
 
 1. Capture the workload records through the existing bounded diagnostics.
