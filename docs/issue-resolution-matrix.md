@@ -43,8 +43,12 @@ No asynchronous callback is allowed to be treated as proof that a newer viewer g
 - Sidecar remains the canonical editable store; source-PDF writes are limited to explicit page actions.
 - Autosave remains debounced and serialized. Existing sidecar replacement now preserves a validated `.last-good` copy before overwriting an existing primary, so crash recovery does not depend only on exception-time rollback.
 - Raw-byte optimistic locking and conflict files remain enabled. Cross-process/device compare-and-swap is not available through the current adapter, so divergent sync branches are preserved rather than auto-merged.
-- Add, delete, import, and scan page actions use one compensating PDF/sidecar/recovery transaction and deterministically shift annotated page numbers.
-- Reorder/duplicate and persistent page UUIDs are not yet shipped. Signed/encrypted/externally mutated PDFs require a live compatibility and data-integrity pass before broad mutation support is claimed.
+- Add, delete, import, and scan page actions use one compensating PDF/sidecar/recovery transaction and deterministically shift annotated page numbers. That page number is the logical ink identity for these actions. Persistent page UUIDs remain #133.
+- pdf-lib 1.17.1 in-place insert and delete keep document metadata, outlines, and the catalog AcroForm. Existing page annotations stay on the original page object, so a blank page inserted before them does not inherit the link or widget. Outline destinations keep pointing at that page object.
+- `copyPages` import keeps the copied page's size, rotation, content streams, and page annotations. It does not copy document title, outlines, or the catalog AcroForm, so a copied widget is not a live imported form.
+- Image pages from `insertScannedPages` use the caller-supplied pixel size. The long edge is 792pt, the other edge preserves aspect, and the image fills that page with no margin. This writer does not read EXIF.
+- A trailer `/Encrypt` entry, an encrypted load error, or a `/Type /Sig` dictionary refuses the rewrite before save. The open file bytes stay unchanged. Copying pages out of a signed source into an unsigned destination is allowed because the signed file is not saved.
+- Reorder and duplicate are not shipped. Open-document view restore stays the existing Add Page path. Multi-leaf and mobile viewer reloads stay release-matrix checks.
 - **Audit outcome:** the current v1 sidecar/recovery protocol is the supported integrity boundary: staged validation, last-good preservation, raw-byte conflict detection, and compensating page mutations are verified locally. Commit-lineage v2, stable page UUIDs, and cross-device compare-and-swap remain explicitly bounded follow-ups and must not be implied by the current schema.
 
 ## Large documents and performance (#128, #129, #134)

@@ -180,7 +180,7 @@ describe("viewer runtime tracer", () => {
           identity: null,
           conflict: { paths: ["recovery/conflict.json"] },
           quarantined: null
-        }) as Awaited<ReturnType<RecoveryRepository["loadForDocumentWithStatus"]>>;
+        }) as unknown as Awaited<ReturnType<RecoveryRepository["loadForDocumentWithStatus"]>>;
       }
       const expected = mode === "conflict" ? /Conflicting annotation snapshots/ : new RegExp(`${mode} boom`);
       await expect(ViewerInkSession.create(createOptions(adapter, sidecars, recovery))).rejects.toThrow(expected);

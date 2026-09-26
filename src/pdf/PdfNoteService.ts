@@ -1,5 +1,43 @@
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, PDFName } from "pdf-lib";
 import type { ScanDocumentPage } from "../scanning/ScanDocument";
+
+export const ENCRYPTED_PDF_MUTATION_ERROR = "Encrypted PDF cannot be rewritten.";
+export const SIGNED_PDF_MUTATION_ERROR = "Signed PDF cannot be rewritten. Saving it would invalidate the digital signature.";
+
+function trailerDeclaresEncryption(bytes: Uint8Array): boolean {
+  const tailLength = Math.min(bytes.length, 8192);
+  const tail = new TextDecoder("latin1").decode(bytes.subarray(bytes.length - tailLength));
+  const trailerAt = tail.lastIndexOf("trailer");
+  return /\/Encrypt\b/.test(trailerAt >= 0 ? tail.slice(trailerAt) : tail);
+}
+
+function hasDigitalSignature(pdf: PDFDocument): boolean {
+  for (const [, object] of pdf.context.enumerateIndirectObjects()) {
+    if (!object || typeof object !== "object" || !("get" in object)) continue;
+    const type = (object as { get(name: ReturnType<typeof PDFName.of>): { toString(): string } | undefined })
+      .get(PDFName.of("Type"));
+    if (type?.toString() === "/Sig") return true;
+  }
+  return false;
+}
+
+async function loadPdfBytes(bytes: Uint8Array): Promise<PDFDocument> {
+  if (trailerDeclaresEncryption(bytes)) throw new Error(ENCRYPTED_PDF_MUTATION_ERROR);
+  try {
+    return await PDFDocument.load(bytes);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/encrypt/i.test(message)) throw new Error(ENCRYPTED_PDF_MUTATION_ERROR);
+    throw error;
+  }
+}
+
+/** Loads a PDF that this plugin is allowed to save. Signed and encrypted files stay untouched. */
+async function loadRewrittenPdf(bytes: Uint8Array): Promise<PDFDocument> {
+  const pdf = await loadPdfBytes(bytes);
+  if (hasDigitalSignature(pdf)) throw new Error(SIGNED_PDF_MUTATION_ERROR);
+  return pdf;
+}
 
 /** PDF points for a blank US Letter page (8.5 × 11 inches). */
 export const US_LETTER_PAGE_SIZE: readonly [number, number] = [612, 792];
@@ -67,7 +105,9 @@ export async function getPdfPageCount(bytes: Uint8Array): Promise<number> {
 /**
  * Copies selected native PDF pages into the destination after `afterPage`.
  * `pdf-lib` copies page dictionaries and content streams rather than rasterizing
- * them, so page dimensions, rotation, and vector content remain native.
+ * them, so page dimensions, rotation, vector content, and page annotations stay
+ * on the copied page. Document title, outlines, and the catalog AcroForm are not
+ * copied. A signed or encrypted destination is refused before any save.
  *
  * Destination and source bytes are loaded independently so self-import (same
  * path or identical bytes) cannot corrupt the destination snapshot.
@@ -78,8 +118,8 @@ export async function importPdfPages(
   afterPage: number,
   requestedPageNumbers: readonly number[]
 ): Promise<ImportedPdfPages> {
-  const destination = await PDFDocument.load(destinationBytes);
-  const source = await PDFDocument.load(sourceBytes);
+  const destination = await loadRewrittenPdf(destinationBytes);
+  const source = await loadPdfBytes(sourceBytes);
   const destinationCount = destination.getPageCount();
   const sourceCount = source.getPageCount();
   if (!destinationCount) throw new Error("Cannot import pages into a PDF with no pages.");
@@ -123,7 +163,7 @@ export async function insertScannedPages(
   scannedPages: readonly ScanDocumentPage[]
 ): Promise<InsertedPdfPages> {
   if (!scannedPages.length) throw new Error("Capture at least one document page.");
-  const source = await PDFDocument.load(sourceBytes);
+  const source = await loadRewrittenPdf(sourceBytes);
   const pageCount = source.getPageCount();
   if (!pageCount) throw new Error("Cannot add a page to a PDF with no pages.");
   const requested = Number.isFinite(requestedPageNumber)
@@ -152,7 +192,7 @@ export async function insertMatchingBlankPage(
   sourceBytes: Uint8Array,
   requestedPageNumber: number
 ): Promise<InsertedPdfPage> {
-  const source = await PDFDocument.load(sourceBytes);
+  const source = await loadRewrittenPdf(sourceBytes);
   const pages = source.getPages();
   if (!pages.length) throw new Error("Cannot add a page to a PDF with no pages.");
   const requested = Number.isFinite(requestedPageNumber)
@@ -183,7 +223,7 @@ export async function deletePdfPages(
   sourceBytes: Uint8Array,
   requestedPageNumbers: readonly number[]
 ): Promise<DeletedPdfPages> {
-  const source = await PDFDocument.load(sourceBytes);
+  const source = await loadRewrittenPdf(sourceBytes);
   const count = source.getPageCount();
   const pageNumbers = [...new Set(requestedPageNumbers)].sort((left, right) => right - left);
   if (!pageNumbers.length) throw new Error("Select at least one PDF page.");
