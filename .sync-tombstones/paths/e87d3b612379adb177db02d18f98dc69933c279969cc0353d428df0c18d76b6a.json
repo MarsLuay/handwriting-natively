@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "e87d3b612379adb177db02d18f98dc69933c279969cc0353d428df0c18d76b6a",
+  "path": ".agent-state/diagnostics/update-docs-70609.json",
+  "status": "deleted",
+  "policy": "untrack",
+  "revision": 1,
+  "createdAt": "2026-09-26T20:33:10.504Z",
+  "updatedAt": "2026-09-26T20:33:10.504Z",
+  "deletedAt": "2026-09-26T20:33:10.504Z"
+}

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "cb547c730ae3b469a200ab7bcb181ca2060e9a6827e1b8fa48acbb6cee38af2d",
+  "path": ".agent-state/baselines/post-position-gated-draw-docs.json",
+  "status": "deleted",
+  "policy": "untrack",
+  "revision": 1,
+  "createdAt": "2026-09-26T20:33:09.964Z",
+  "updatedAt": "2026-09-26T20:33:09.964Z",
+  "deletedAt": "2026-09-26T20:33:09.964Z"
+}
