@@ -57,7 +57,7 @@ Targets are promoted only from named traces:
 | persistence | snapshot/atomic-write duration and size | keep writes off the input-critical path |
 | plugin-owned memory | mounted pages, raster/vector/index bytes, evictions | set a bounded cap below observed pressure/failure |
 
-Until each metric has representative desktop and constrained-device traces, the target is explicitly `unqualified`; fixture timings are regression signals, not release budgets. This prevents synthetic tests from being presented as mobile support evidence.
+Until each metric has representative desktop and constrained-device traces, the target is explicitly `unqualified`; fixture timings are regression signals, not release budgets. `src/runtime/documentBudgetPolicy.ts` is that gate: visible pages stay mounted, preload radius stays `0`, superseded scroll and zoom bursts cancel mount work, and a p95 is cited only from a `manual-device` trace for the same device class. This prevents synthetic tests from being presented as mobile support evidence.
 
 ## Implementation order
 
