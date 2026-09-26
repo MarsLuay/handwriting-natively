@@ -4,10 +4,13 @@ vi.mock("obsidian", async () => {
   const actual = await vi.importActual<typeof import("obsidian")>("obsidian");
   return { ...actual, Plugin: class {}, PluginSettingTab: class {} };
 });
-import { scheduleSessionRecoveryAfterDestroy } from "../src/main";
+import NativePdfInkPlugin, { scheduleSessionRecoveryAfterDestroy } from "../src/main";
 import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from "../src/runtime/AnnotationSurface";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation } from "../src/model";
+import { AttachRetryPolicy } from "../src/runtime/AttachRetryPolicy";
+import { ScanDebounce } from "../src/runtime/ScanDebounce";
+import { needsMissingHandwritingSessionRecovery, type HandwritingSessionRegistrySnapshot } from "../src/runtime/HandwritingSessionRegistry";
 import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
 import { documentInputOwnershipSnapshot } from "../src/input/DocumentInputOwnership";
 import { HN_DEV_PROBE_ACTIVE_KEY, HN_DEV_PROBE_EVENT, type HnDevProbeDiagnostic } from "../src/runtime/DevProbeDiagnostics";
@@ -93,6 +96,31 @@ class FakePdfSurface extends FakeAdapter {
   readonly supportsPdfExport = true as const;
 }
 
+type ScanSchedulerHarness = {
+  unloaded: boolean;
+  scanAgain: boolean;
+  scanInProgress: boolean;
+  scanDebounce: ScanDebounce;
+  scheduleDebouncedScan(delayMs?: number): void;
+  scheduleAttachRetryScan(delayMs: number): void;
+  scanPdfLeaves(): Promise<void>;
+  scanPdfEmbeds(): void;
+  scanPdfViews(): Promise<void>;
+};
+
+function createScanSchedulerHarness(
+  scanPdfLeaves: (harness: ScanSchedulerHarness) => Promise<void>
+): ScanSchedulerHarness {
+  const harness = Object.create(NativePdfInkPlugin.prototype) as ScanSchedulerHarness;
+  harness.unloaded = false;
+  harness.scanAgain = false;
+  harness.scanInProgress = false;
+  harness.scanDebounce = new ScanDebounce();
+  harness.scanPdfLeaves = () => scanPdfLeaves(harness);
+  harness.scanPdfEmbeds = vi.fn();
+  return harness;
+}
+
 function pointer(
   type: string,
   x: number,
@@ -149,43 +177,74 @@ describe("viewer runtime tracer", () => {
     expect(blocked[1]?.error).toEqual(new Error("destroy failed"));
   });
 
-  it("preempts document input probes across overlapping session generations", async () => {
-    const files = new MemoryFiles();
-    const createSession = (adapter: FakeAdapter) => ViewerInkSession.create({
-      adapter,
-      documentPath: "Notes/overlap.pdf",
-      settings: structuredClone(DEFAULT_SETTINGS),
-      sidecars: new SidecarRepository(files, "annotations"),
-      recovery: new RecoveryRepository(files, "recovery"),
-      saveSettings: async () => undefined,
-      readDocument: async () => new Uint8Array(),
-      notice: () => undefined,
-      debugEnabled: () => true
+  it("keeps a failed missing-session attach at the bounded retry deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const snapshot: HandwritingSessionRegistrySnapshot = {
+      pdfLeafCount: 1,
+      sessions: 0,
+      attachingLeaves: 0,
+      activePdfPath: "Notes/example.pdf",
+      expectedPdfSession: true,
+      activeSessionFound: false,
+      viewerShellCount: 1,
+      handwritingToolbarCount: 0,
+      handwritingRailCount: 0
+    };
+    expect(needsMissingHandwritingSessionRecovery(snapshot)).toBe(true);
+
+    const retry = new AttachRetryPolicy();
+    const scanTimes: number[] = [];
+    let attachAttempts = 0;
+    const harness = createScanSchedulerHarness(async (current) => {
+      scanTimes.push(Date.now());
+      attachAttempts += 1;
+      if (attachAttempts === 1) {
+        expect(needsMissingHandwritingSessionRecovery(snapshot)).toBe(true);
+        current.scheduleAttachRetryScan(retry.recordHardFailure(snapshot.activePdfPath!, Date.now()));
+      }
     });
 
-    const firstAdapter = new FakeAdapter();
-    const secondAdapter = new FakeAdapter();
-    const first = await createSession(firstAdapter);
-    const second = await createSession(secondAdapter);
-    try {
-      expect(first.getUiLifecycleSnapshot("ownership")).toMatchObject({
-        activeInputCollectors: expect.objectContaining({ documentProbeListener: 0, viewerMousePan: 0 })
-      });
-      expect(second.getUiLifecycleSnapshot("ownership")).toMatchObject({
-        activeInputCollectors: expect.objectContaining({ documentProbeListener: 1, viewerMousePan: 1 }),
-        documentInputOwnership: expect.objectContaining({ active: true })
-      });
-      expect(documentInputOwnershipSnapshot(document).active).toBe(true);
+    harness.scheduleDebouncedScan(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scanTimes).toEqual([0]);
+    expect(attachAttempts).toBe(1);
 
-      await first.destroy({ silent: true, alreadyPersisted: true });
-      expect(documentInputOwnershipSnapshot(document).active).toBe(true);
-      expect(second.getUiLifecycleSnapshot("ownership-after-old-destroy")).toMatchObject({
-        activeInputCollectors: expect.objectContaining({ documentProbeListener: 1 })
-      });
-    } finally {
-      await second.destroy({ silent: true, alreadyPersisted: true });
-      expect(documentInputOwnershipSnapshot(document).active).toBe(false);
-    }
+    await vi.advanceTimersByTimeAsync(AttachRetryPolicy.MAX_MS - 1);
+    expect(scanTimes).toEqual([0]);
+    expect(attachAttempts).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(scanTimes).toEqual([0, AttachRetryPolicy.MAX_MS]);
+    expect(attachAttempts).toBe(2);
+    await vi.advanceTimersByTimeAsync(AttachRetryPolicy.MAX_MS);
+    expect(scanTimes).toEqual([0, AttachRetryPolicy.MAX_MS]);
+  });
+
+  it("runs one post-scan pass for a request received while scanning", async () => {
+    vi.useFakeTimers();
+    let releaseFirstScan!: () => void;
+    const firstScanReleased = new Promise<void>((resolve) => {
+      releaseFirstScan = resolve;
+    });
+    let scans = 0;
+    const harness = createScanSchedulerHarness(async (current) => {
+      scans += 1;
+      if (scans === 1) {
+        current.scheduleDebouncedScan(0);
+        await firstScanReleased;
+      }
+    });
+
+    harness.scheduleDebouncedScan(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scans).toBe(1);
+
+    releaseFirstScan();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scans).toBe(2);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scans).toBe(2);
   });
 
   it("draws a stylus stroke, saves sidecar, exports copy, and cleans up", async () => {

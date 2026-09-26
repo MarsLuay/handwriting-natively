@@ -18,6 +18,16 @@ describe("handwriting session registry diagnostics", () => {
       viewerShellCount: 1,
       handwritingToolbarCount: 0,
       handwritingRailCount: 0,
+      physicalContactCollectors: [{
+        collectorId: "physical-contact-collector-1",
+        listenerRegistered: true,
+        registrationScope: "document-capture",
+        registrationSource: "ViewerInkSession.installPointerProbe",
+        activeContactCount: 0,
+        activeOwnerCount: 1,
+        ownerIds: ["viewer-session-1"],
+        owners: [{ ownerId: "viewer-session-1", sessionId: "Notes/example.pdf", viewerGeneration: 1 }]
+      }],
       staleCollectorCount: 1
     };
 
@@ -29,6 +39,9 @@ describe("handwriting session registry diagnostics", () => {
       attachingLeaves: 0,
       viewerPresent: true,
       toolbarPresent: false,
+      physicalContactCollectors: expect.arrayContaining([
+        expect.objectContaining({ collectorId: "physical-contact-collector-1", activeOwnerCount: 1 })
+      ]),
       staleCollectorCount: 1
     });
     expect(needsMissingHandwritingSessionRecovery(snapshot)).toBe(true);

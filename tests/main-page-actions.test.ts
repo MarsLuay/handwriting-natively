@@ -40,6 +40,14 @@ describe("main PDF page actions", () => {
     expect(mainSource).toContain("stage: attachStage");
   });
 
+  it("keeps attach retry wakes separate from in-flight scan requests", () => {
+    expect(mainSource).toContain("private scanInProgress = false;");
+    expect(mainSource).toContain("private scheduleAttachRetryScan(delayMs: number): void");
+    expect(mainSource).toContain("this.scanAgain = true;");
+    expect(mainSource).toContain("this.scheduleAttachRetryScan(delayMs);");
+    expect(mainSource).toContain("this.scheduleAttachRetryScan(wait);");
+  });
+
   it("wires thumbnail blank-page and delete actions through in-place callbacks", () => {
     expect(mainSource).toContain("onInsertPage: (pageNumber: number) => this.insertPageInPlace(file, pageNumber)");
     expect(mainSource).toContain("onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber)");

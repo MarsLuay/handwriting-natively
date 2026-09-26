@@ -488,6 +488,16 @@ export class SessionLogger {
     });
   }
 
+  /** One bounded anomaly for duplicate document-level physical-contact observers. */
+  physicalContactDuplicateObserver(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "physical-contact-duplicate-observer", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      ...details
+    });
+  }
+
   /** Foreground UI lifecycle markers stay separate from pointer routing records. */
   uiSurface(phase: "open" | "close", details: Record<string, unknown> = {}): void {
     this.emit("info", "ui surface", {
