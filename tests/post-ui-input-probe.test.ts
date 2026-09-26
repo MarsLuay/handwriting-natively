@@ -284,4 +284,16 @@ describe("PostUiInputProbe", () => {
     second.stage(4, 9, "claim", { captureSucceeded: true });
     expect(second.finish(5, 9, "pointercancel")?.outcome).toBe("post-ui-pen-cancelled-before-ink");
   });
+
+  it("keeps penContactId null for a touch-only contact", () => {
+    const probe = new PostUiInputProbe();
+    probe.arm(3_000, context);
+    const contact = probe.pointerDown(3_010, 11, "touch", { page: 2 });
+    expect(contact?.correlationId).toBeTruthy();
+    expect(contact?.pointerType).toBe("touch");
+    expect(contact?.penContactId).toBeNull();
+    const [expired] = probe.expire(3_000 + PostUiInputProbe.WINDOW_MS + 1);
+    expect(expired?.penContactId).toBeNull();
+    expect(expired?.outcome).toBe("post-ui-probe-expired-no-pen");
+  });
 });
