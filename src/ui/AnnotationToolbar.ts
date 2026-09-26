@@ -81,6 +81,7 @@ export class AnnotationToolbar {
     this.controls = createDetachedDiv(this.ownerDocument);
     this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
+    this.controls.append(this.presetSlots());
     this.controls.append(this.colorButton());
     this.controls.append(this.groupedTool("drawing", () => this.drawingMenu()));
     this.controls.append(this.groupedTool("eraser", () => this.eraserMenuOptions()));
@@ -94,6 +95,34 @@ export class AnnotationToolbar {
     if (!this.autosave && this.callbacks.onSave) this.controls.append(this.actionButton("save", "Save", () => void this.callbacks.onSave?.()));
     this.element.append(this.controls, this.saveStatus.element);
     this.updateButtons();
+  }
+
+  private presetSlots(): HTMLElement {
+    const slots = createDetachedDiv(this.ownerDocument);
+    slots.className = "native-pdf-handwriting-preset-slots";
+    slots.setAttribute("aria-label", "Drawing presets");
+    this.controls.append(slots);
+    return slots;
+  }
+
+  private renderPresetSlots(): void {
+    const slots = this.element.querySelector(".native-pdf-handwriting-preset-slots");
+    if (!(slots instanceof HTMLElement)) return;
+    slots.replaceChildren();
+    const visible = this.preferences.presets.slice(0, 6);
+    slots.hidden = visible.length === 0;
+    for (const preset of visible) {
+      const button = createDetachedEl(this.ownerDocument, "button");
+      button.type = "button";
+      button.className = "native-pdf-handwriting-toolbar-button native-pdf-handwriting-preset-slot";
+      button.dataset.presetId = preset.id;
+      button.textContent = preset.name;
+      button.title = preset.name;
+      const active = this.preferences.activePresetId === preset.id && this.preferences.activeTool === preset.tool;
+      button.setAttribute("aria-pressed", String(active));
+      button.addEventListener("click", () => this.applyDrawingPreset(preset), { signal: this.abort.signal });
+      slots.append(button);
+    }
   }
 
   setAutosave(enabled: boolean): void {
@@ -449,6 +478,7 @@ export class AnnotationToolbar {
   }
 
   private updateButtons(): void {
+    this.renderPresetSlots();
     const active = this.preferences.activeTool;
     this.presentButton(
       this.buttons.get("drawing")!,

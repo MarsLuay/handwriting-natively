@@ -59,7 +59,7 @@ export interface PostUiProbeContactSummary {
   armId: string;
   correlationId: string;
   physicalContactId: string | null;
-  penContactId: string;
+  penContactId: string | null;
   pointerId: number;
   pointerType: string;
   startedAt: number;
@@ -590,7 +590,7 @@ export class PostUiInputProbe {
     return {
       armId: active.armId,
       correlationId: contact.correlationId,
-      penContactId: contact.correlationId,
+      penContactId: this.penContactIdFor(contact),
       outcome,
       outcomeClass: this.outcomeClass(outcome),
       elapsedMs: Math.max(0, now - active.armedAt),
@@ -622,7 +622,7 @@ export class PostUiInputProbe {
     return {
       armId: contact.armId,
       correlationId: contact.correlationId,
-      penContactId: contact.correlationId,
+      penContactId: this.penContactIdFor(contact),
       outcome,
       outcomeClass: this.outcomeClass(outcome),
       elapsedMs: Math.max(0, now - contact.startedAt),
@@ -661,12 +661,16 @@ export class PostUiInputProbe {
     };
   }
 
+  private penContactIdFor(contact: ProbeContact): string | null {
+    return contact.pointerType === "pen" ? contact.correlationId : null;
+  }
+
   private summary(contact: ProbeContact, now: number): PostUiProbeContactSummary {
     return {
       armId: contact.armId,
       correlationId: contact.correlationId,
       physicalContactId: contact.physicalContactId,
-      penContactId: contact.correlationId,
+      penContactId: this.penContactIdFor(contact),
       pointerId: contact.pointerId,
       pointerType: contact.pointerType,
       startedAt: contact.startedAt,

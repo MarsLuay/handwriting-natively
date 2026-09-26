@@ -1,4 +1,4 @@
-import { PDFDocument, degrees, rgb } from "pdf-lib";
+import { PDFDocument, PDFHexString, PDFName, degrees, rgb } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import {
   appendMatchingBlankPage,
@@ -12,6 +12,8 @@ import {
   insertMatchingBlankPage,
   insertScannedPages,
   scanPageSize,
+  ENCRYPTED_PDF_MUTATION_ERROR,
+  SIGNED_PDF_MUTATION_ERROR,
   US_LETTER_PAGE_SIZE
 } from "../src/pdf/PdfNoteService";
 
@@ -168,7 +170,8 @@ describe("PDF note service", () => {
       "/Root",
       "/Encrypt 1 0 R\n/Root"
     );
-    await expect(importPdfPages(destination, new TextEncoder().encode(encryptedMarker), 1, [1])).rejects.toThrow();
+    await expect(importPdfPages(destination, new TextEncoder().encode(encryptedMarker), 1, [1]))
+      .rejects.toThrow(ENCRYPTED_PDF_MUTATION_ERROR);
     expect(await getPdfPageCount(destination)).toBe(1);
   });
 
@@ -211,5 +214,98 @@ describe("PDF note service", () => {
 
   it("rejects an empty scan batch", async () => {
     await expect(insertScannedPages(await createPdf([[400, 600]]), 2, [])).rejects.toThrow("at least one");
+  });
+
+  it("keeps an inserted blank page from stealing the previous page's annotations", async () => {
+    const source = await PDFDocument.create();
+    source.setTitle("Keep me");
+    const page = source.addPage([400, 600]);
+    page.setRotation(degrees(90));
+    const link = source.context.obj({
+      Type: "Annot",
+      Subtype: "Link",
+      Rect: [0, 0, 10, 10],
+      A: { S: "URI", URI: "https://example.test/kept" }
+    });
+    page.node.set(PDFName.of("Annots"), source.context.obj([link]));
+    const outline = source.context.obj({
+      Type: "Outlines",
+      Count: 1,
+      First: source.context.obj({ Title: "Chapter", Dest: [page.ref, "Fit"] })
+    });
+    source.catalog.set(PDFName.of("Outlines"), outline);
+
+    const inserted = await insertMatchingBlankPage(await source.save(), 1);
+    const reloaded = await PDFDocument.load(inserted.bytes);
+    const moved = reloaded.getPage(1);
+    const outlines = reloaded.catalog.lookup(PDFName.of("Outlines")) as {
+      lookup(name: ReturnType<typeof PDFName.of>): {
+        lookup(name: ReturnType<typeof PDFName.of>): { get(index: number): { toString(): string } };
+      };
+    } | undefined;
+    const dest = outlines?.lookup(PDFName.of("First")).lookup(PDFName.of("Dest"));
+
+    expect(inserted.pageNumber).toBe(1);
+    expect(reloaded.getTitle()).toBe("Keep me");
+    expect(reloaded.getPage(0).node.Annots()).toBeUndefined();
+    expect(moved.getRotation().angle).toBe(90);
+    expect(moved.node.Annots()?.get(0)).toBeDefined();
+    expect(dest?.get(0).toString()).toBe(moved.ref.toString());
+  });
+
+  it("copies imported page geometry and annotations without document outlines", async () => {
+    const destination = await createPdf([[200, 300]]);
+    const source = await PDFDocument.create();
+    source.setTitle("Source title");
+    const page = source.addPage([400, 600]);
+    page.setRotation(degrees(90));
+    const link = source.context.obj({
+      Type: "Annot",
+      Subtype: "Link",
+      Rect: [0, 0, 10, 10],
+      A: { S: "URI", URI: "https://example.test/kept" }
+    });
+    page.node.set(PDFName.of("Annots"), source.context.obj([link]));
+    source.catalog.set(PDFName.of("Outlines"), source.context.obj({ Type: "Outlines", Count: 0 }));
+
+    const imported = await importPdfPages(destination, await source.save(), 1, [1]);
+    const reloaded = await PDFDocument.load(imported.bytes);
+    const copied = reloaded.getPage(1);
+
+    expect(copied.getSize()).toEqual({ width: 400, height: 600 });
+    expect(copied.getRotation().angle).toBe(90);
+    expect(copied.node.Annots()?.get(0)).toBeDefined();
+    expect(reloaded.getTitle()).toBeUndefined();
+    expect(reloaded.catalog.get(PDFName.of("Outlines"))).toBeUndefined();
+  });
+
+  it("refuses to rewrite a signed PDF and still copies pages from a signed source", async () => {
+    const signed = await PDFDocument.create();
+    signed.addPage([400, 600]);
+    const signature = signed.context.register(signed.context.obj({
+      Type: "Sig",
+      Filter: "Adobe.PPKLite",
+      SubFilter: "adbe.pkcs7.detached",
+      ByteRange: [0, 10, 20, 30],
+      Contents: PDFHexString.of("00")
+    }));
+    signed.catalog.set(PDFName.of("Perms"), signed.context.obj({ DocMDP: signature }));
+    const signedBytes = await signed.save();
+    const plain = await createPdf([[200, 300]]);
+
+    await expect(insertMatchingBlankPage(signedBytes, 2)).rejects.toThrow(SIGNED_PDF_MUTATION_ERROR);
+    await expect(deletePdfPage(signedBytes, 1)).rejects.toThrow(SIGNED_PDF_MUTATION_ERROR);
+    await expect(insertScannedPages(signedBytes, 2, [{
+      bytes: ONE_PIXEL_PNG,
+      mimeType: "image/png",
+      width: 100,
+      height: 100
+    }])).rejects.toThrow(SIGNED_PDF_MUTATION_ERROR);
+    await expect(importPdfPages(signedBytes, plain, 1, [1])).rejects.toThrow(SIGNED_PDF_MUTATION_ERROR);
+    expect(await getPdfPageCount(signedBytes)).toBe(1);
+
+    const copied = await importPdfPages(plain, signedBytes, 1, [1]);
+    expect((await PDFDocument.load(copied.bytes)).getPageCount()).toBe(2);
+    expect(await getPdfPageCount(signedBytes)).toBe(1);
   });
 });

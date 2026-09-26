@@ -16,6 +16,8 @@ import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integrat
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
+import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
+import { deferredRenderDisposition } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
 import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type DocumentInputOwnershipHandle } from "../input/DocumentInputOwnership";
@@ -664,6 +666,12 @@ interface ToolChangeMarker {
   nextTool: ToolId;
   source: string;
   pointerType: string;
+  viewerGeneration: number;
+  pageGenerations: Array<{
+    page: number;
+    mountGeneration: number | null;
+    routerGeneration: number | null;
+  }>;
 }
 
 interface PageSurface {
@@ -873,11 +881,14 @@ export class ViewerInkSession {
   private refreshDepth = 0;
   private resizeFrame: number | null = null;
   private viewportPaintFrame: number | null = null;
+  /** Bumped when an ink layer cache entry is invalidated. Deferred HQ from an older epoch cancels. */
+  private renderEpoch = 0;
   private pendingScheduledRefresh: { reason: string; repaintOnly: boolean } | null = null;
   /** One display-frame refresh for mobile scroll/pagechanging signals. */
   private mobileScrollRefreshFrame: number | null = null;
   /** Remount after zoom/handoff if scroll/pagechanging arrived while compositing. */
   private pendingMobileScrollRemount = false;
+  private mountBurst = 0;
   private zoomSettleTimer: number | null = null;
   /** Coalesces repeated native scale signals to one overlay/layout pass per frame. */
   private zoomLayoutFrame: number | null = null;
@@ -1057,20 +1068,31 @@ export class ViewerInkSession {
           const previousTool = this.lastObservedTool;
           if (preferences.activeTool !== previousTool) {
             const at = Date.now();
+            const pageGenerations = [...this.surfaces.values()].map((surface) => ({
+              page: surface.page.pageNumber,
+              mountGeneration: surface.page.mountGeneration ?? null,
+              routerGeneration: surface.router?.generation ?? null
+            }));
             this.lastToolChange = {
               id: `tool-${at}-${preferences.activeTool}`,
               at,
               previousTool,
               nextTool: preferences.activeTool,
               source: reason,
-              pointerType: this.lastUiInputPointerType
+              pointerType: this.lastUiInputPointerType,
+              viewerGeneration: this.viewerGeneration,
+              pageGenerations
             };
             this.logger.toolChanged({
               toolChangeId: this.lastToolChange.id,
+              at: this.lastToolChange.at,
               previousTool,
               nextTool: preferences.activeTool,
               source: reason,
               pointerType: this.lastUiInputPointerType,
+              viewerGeneration: this.viewerGeneration,
+              pageGenerations,
+              routerGenerations: pageGenerations.map(({ routerGeneration }) => routerGeneration),
               activeStroke: this.hasAnyLiveInkInput()
             });
           }
@@ -1290,7 +1312,7 @@ export class ViewerInkSession {
     };
 
     this.physicalContactCollectorLease = acquirePhysicalContactCollector(doc, {
-      ownerId: `viewer-session-${this.viewerGeneration}`,
+      ownerId: `viewer-session-${this.viewerGeneration}-${this.identity.id}`,
       sessionId: this.identity.id,
       viewerGeneration: this.viewerGeneration,
       isEnabled: () => this.options.debugEnabled?.() ?? false,
@@ -2064,6 +2086,7 @@ export class ViewerInkSession {
         durationMs: contact.durationMs,
         terminal: contact.terminal,
         pointerTerminal: contact.pointerTerminal,
+        pointerCaptureLost: contact.pointerCaptureLost,
         touchTerminal: contact.touchTerminal,
         pointerMoveCount: contact.pointerMoveCount,
         touchMoveCount: contact.touchMoveCount,
@@ -2305,9 +2328,11 @@ export class ViewerInkSession {
     if (this.destroyed || this.viewportPaintFrame !== null || this.isZoomHandoffActive()) return;
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) return;
+    const epoch = this.renderEpoch;
     this.viewportPaintFrame = view.requestAnimationFrame(() => {
       this.viewportPaintFrame = null;
       if (this.destroyed || this.isZoomHandoffActive()) return;
+      if (deferredRenderDisposition("hq", epoch, this.renderEpoch) === "cancel") return;
       const rootRect = this.options.adapter.root.getBoundingClientRect();
       for (const surface of this.surfaces.values()) {
         const needsUpgrade = surface.viewportCullPending || surface.settleUpgradePending;
@@ -2366,16 +2391,20 @@ export class ViewerInkSession {
       this.scheduleZoomRepaint("view-scroll-mobile", this.options.adapter.getViewState().scale);
       return;
     }
-    if (this.mobileScrollRefreshFrame !== null) return;
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
       this.refresh("view-scroll-mobile");
       return;
     }
+    if (this.mobileScrollRefreshFrame !== null) {
+      view.cancelAnimationFrame(this.mobileScrollRefreshFrame);
+      this.mobileScrollRefreshFrame = null;
+    }
+    const burst = ++this.mountBurst;
     if (this.zoomProfile) this.zoomProfile.mobileRefreshFramesScheduled += 1;
     this.mobileScrollRefreshFrame = view.requestAnimationFrame(() => {
       this.mobileScrollRefreshFrame = null;
-      if (this.destroyed) return;
+      if (this.destroyed || mountWorkSuperseded(burst, this.mountBurst)) return;
       if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
         this.pendingMobileScrollRemount = true;
         if (this.zoomProfile) this.zoomProfile.mobileRefreshDeferred += 1;
@@ -2805,6 +2834,7 @@ export class ViewerInkSession {
 
   private scheduleZoomRepaint(reason: string, scale?: number): void {
     if (this.destroyed) return;
+    this.mountBurst += 1;
     const now = performance.now();
     this.lastZoomSignalAt = now;
     // Keep one burst for the full gesture. A long, healthy pinch can last well
@@ -3899,6 +3929,7 @@ export class ViewerInkSession {
       ...options,
       ...(contentHash ? { contentHash } : {})
     });
+    try {
     await urgent("session create constructor ok", {
       document: options.documentPath,
       mobile: platform.mobile
@@ -3931,7 +3962,6 @@ export class ViewerInkSession {
     if (conflicts.length) {
       const paths = conflicts.flatMap(({ conflict }) => conflict.paths).join(", ");
       const message = `Conflicting annotation snapshots found for ${options.documentPath}; preserved files require review: ${paths}`;
-      options.adapter.destroy();
       options.notice(message);
       await urgent("session create annotation conflict", {
         document: options.documentPath,
@@ -4088,6 +4118,10 @@ export class ViewerInkSession {
       }
     }
     return session;
+    } catch (error) {
+      await session.destroy({ silent: true, alreadyPersisted: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   refresh(reason = "manual"): void {
@@ -4216,18 +4250,19 @@ export class ViewerInkSession {
   }
 
   /**
-   * Desktop: every DOM page. Mobile: currentPage ± 1 via O(1) `adapter.page`
-   * (never scan all 900+ page rects on scroll).
+   * Desktop: PDF.js already exposes the mounted page shells. Mobile: the
+   * measured working set is the current page plus the policy preload radius,
+   * which stays zero until a device trace promotes one.
    */
   private pagesForInkMount(): AnnotationPageInfo[] {
     const candidates: AnnotationPageInfo[] = [];
-    if (!this.runtimePlatform().mobile) {
+    const mobile = this.runtimePlatform().mobile;
+    const policy = documentMountPolicy([], mobile ? "constrained" : "desktop");
+    if (!mobile) {
       candidates.push(...this.options.adapter.pages());
     } else {
-      const pad = 1;
       const currentPage = this.options.adapter.getViewState().pageNumber;
-      for (let pageNumber = currentPage - pad; pageNumber <= currentPage + pad; pageNumber += 1) {
-        if (pageNumber < 1) continue;
+      for (const pageNumber of workingSetPageNumbers([currentPage], policy.preloadRadiusPages)) {
         const page = this.options.adapter.page(pageNumber);
         if (page) candidates.push(page);
       }
@@ -7033,16 +7068,21 @@ export class ViewerInkSession {
     if (isInputChromeTarget(event.target)) return;
     if (this.skipOccludedPointer(event, hitTest)) return;
     let hitPage = this.closestPdfPageElement(event.target);
+    const penPage = event.pointerType === "pen" && !hitTest.pageOccludedByUi
+      ? hitTest.geometricPage?.element ?? null
+      : null;
     if ((!targetWithin || !hitPage) && hitTest.safeRecoveryPage) {
       hitPage = hitTest.safeRecoveryPage.element;
+    } else if ((!targetWithin || !hitPage) && penPage) {
+      hitPage = penPage;
     }
-    if (hitPage && hitTest.geometricPage && hitTest.details.topHit && !hitTest.safeRecoveryPage) {
+    if (hitPage && hitTest.geometricPage && hitTest.details.topHit && !hitTest.safeRecoveryPage && hitPage !== penPage) {
       if (event.pointerType === "pen" && hitTest.geometricPage) {
         this.logInkInputAnomaly(event, hitTest, "visible-page-covered-by-nonviewer-hit");
       }
       return;
     }
-    if (!targetWithin && !hitTest.safeRecoveryPage) {
+    if (!targetWithin && !hitTest.safeRecoveryPage && hitPage !== penPage) {
       if (event.pointerType === "pen" && hitTest.geometricPage) {
         this.logInkInputAnomaly(event, hitTest, "pen-over-visible-page-not-routed");
       }
@@ -7146,16 +7186,21 @@ export class ViewerInkSession {
     if (isInputChromeTarget(event.target)) return;
     if (this.skipOccludedPointer(event, hitTest)) return;
     let hitPage = this.closestPdfPageElement(event.target);
+    const penPage = event.pointerType === "pen" && !hitTest.pageOccludedByUi
+      ? hitTest.geometricPage?.element ?? null
+      : null;
     if ((!targetWithin || !hitPage) && hitTest.safeRecoveryPage) {
       hitPage = hitTest.safeRecoveryPage.element;
+    } else if ((!targetWithin || !hitPage) && penPage) {
+      hitPage = penPage;
     }
-    if (hitPage && hitTest.geometricPage && hitTest.details.topHit && !hitTest.safeRecoveryPage) {
+    if (hitPage && hitTest.geometricPage && hitTest.details.topHit && !hitTest.safeRecoveryPage && hitPage !== penPage) {
       if (event.pointerType === "pen" && hitTest.geometricPage) {
         this.logInkInputAnomaly(event, hitTest, "visible-page-covered-by-nonviewer-hit");
       }
       return;
     }
-    if (!targetWithin && !hitTest.safeRecoveryPage) {
+    if (!targetWithin && !hitTest.safeRecoveryPage && hitPage !== penPage) {
       if (event.pointerType === "pen" && hitTest.geometricPage) {
         this.logInkInputAnomaly(event, hitTest, "pen-over-visible-page-not-routed", undefined);
       }
@@ -10086,6 +10131,7 @@ export class ViewerInkSession {
     surface.inkLayerValid = false;
     surface.inkLayerBackingScale = null;
     surface.inkLayerBurstCapture = false;
+    this.renderEpoch += 1;
   }
 
   private invalidateInkLayers(): void {

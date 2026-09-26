@@ -50,7 +50,7 @@ function defineEventProperties(event: Event, properties: Record<string, unknown>
 }
 
 function pointerEvent(
-  type: "pointerdown" | "pointerup" | "pointermove" | "pointercancel",
+  type: "pointerdown" | "pointerup" | "pointermove" | "pointercancel" | "lostpointercapture",
   pointerId: number,
   timeStamp: number,
   clientX = 100,
@@ -160,8 +160,13 @@ describe("PhysicalContactCollector", () => {
     expect(second.events.filter((event) => event.alreadySeen)).toHaveLength(2);
     expect(second.events.filter((event) => event.alreadySeen && event.shouldLog)).toHaveLength(0);
 
+    dispatch(target, pointerEvent("lostpointercapture", 309615810, 22851));
+    expect(second.events.filter((event) => event.eventType === "lostpointercapture")).toHaveLength(1);
+
     dispatch(target, pointerEvent("pointerup", 309615810, 22852));
-    expect(second.events.filter((event) => event.eventType === "pointerup" && event.records.length > 0)).toHaveLength(1);
+    const terminal = second.events.find((event) => event.eventType === "pointerup" && event.records.length > 0);
+    expect(terminal).toBeDefined();
+    expect(terminal?.records[0]?.contact.pointerCaptureLost).toBe(true);
 
     dispatch(target, pointerEvent("pointerdown", 309615811, 22853));
     dispatch(target, pointerEvent("pointerup", 309615811, 22854));

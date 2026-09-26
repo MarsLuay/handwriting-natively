@@ -166,6 +166,25 @@
   touch-action: pan-x;
 }
 
+.native-pdf-handwriting-preset-slots {
+  display: flex;
+  flex: 0 1 auto;
+  gap: 2px;
+  max-width: 46%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.native-pdf-handwriting-preset-slot {
+  font-size: 12px;
+  max-width: 7.5rem;
+  overflow: hidden;
+  padding-inline: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: auto;
+}
+
 .native-pdf-handwriting-dropdown-option {
   align-items: center;
   background: transparent;

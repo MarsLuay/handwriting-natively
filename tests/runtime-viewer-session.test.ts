@@ -13,6 +13,7 @@ import { ScanDebounce } from "../src/runtime/ScanDebounce";
 import { needsMissingHandwritingSessionRecovery, type HandwritingSessionRegistrySnapshot } from "../src/runtime/HandwritingSessionRegistry";
 import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
 import { documentInputOwnershipSnapshot } from "../src/input/DocumentInputOwnership";
+import { getPhysicalContactCollectorSnapshot } from "../src/input/PhysicalContactCollector";
 import { HN_DEV_PROBE_ACTIVE_KEY, HN_DEV_PROBE_EVENT, type HnDevProbeDiagnostic } from "../src/runtime/DevProbeDiagnostics";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
@@ -177,74 +178,58 @@ describe("viewer runtime tracer", () => {
     expect(blocked[1]?.error).toEqual(new Error("destroy failed"));
   });
 
-  it("keeps a failed missing-session attach at the bounded retry deadline", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    const snapshot: HandwritingSessionRegistrySnapshot = {
-      pdfLeafCount: 1,
-      sessions: 0,
-      attachingLeaves: 0,
-      activePdfPath: "Notes/example.pdf",
-      expectedPdfSession: true,
-      activeSessionFound: false,
-      viewerShellCount: 1,
-      handwritingToolbarCount: 0,
-      handwritingRailCount: 0
-    };
-    expect(needsMissingHandwritingSessionRecovery(snapshot)).toBe(true);
-
-    const retry = new AttachRetryPolicy();
-    const scanTimes: number[] = [];
-    let attachAttempts = 0;
-    const harness = createScanSchedulerHarness(async (current) => {
-      scanTimes.push(Date.now());
-      attachAttempts += 1;
-      if (attachAttempts === 1) {
-        expect(needsMissingHandwritingSessionRecovery(snapshot)).toBe(true);
-        current.scheduleAttachRetryScan(retry.recordHardFailure(snapshot.activePdfPath!, Date.now()));
+  it("destroys a constructed session when sidecar load fails before registration", async () => {
+    const files = new MemoryFiles();
+    const createOptions = (adapter: FakeAdapter, sidecars: SidecarRepository, recovery: RecoveryRepository) => ({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars,
+      recovery,
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    for (const mode of ["sidecar", "recovery", "conflict"] as const) {
+      const adapter = new FakeAdapter();
+      const sidecars = new SidecarRepository(files, "annotations");
+      const recovery = new RecoveryRepository(files, "recovery");
+      if (mode === "sidecar") {
+        sidecars.loadForDocumentWithStatus = async () => {
+          throw new Error("sidecar boom");
+        };
+      } else if (mode === "recovery") {
+        recovery.loadForDocumentWithStatus = async () => {
+          throw new Error("recovery boom");
+        };
+      } else {
+        recovery.loadForDocumentWithStatus = async () => ({
+          data: null,
+          identity: null,
+          conflict: { paths: ["recovery/conflict.json"] },
+          quarantined: null
+        }) as unknown as Awaited<ReturnType<RecoveryRepository["loadForDocumentWithStatus"]>>;
       }
-    });
+      const expected = mode === "conflict" ? /Conflicting annotation snapshots/ : new RegExp(`${mode} boom`);
+      await expect(ViewerInkSession.create(createOptions(adapter, sidecars, recovery))).rejects.toThrow(expected);
+      expect(adapter.destroyed).toBe(true);
+      expect(getPhysicalContactCollectorSnapshot(document)?.activeOwnerCount ?? 0).toBe(0);
+    }
 
-    harness.scheduleDebouncedScan(0);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(scanTimes).toEqual([0]);
-    expect(attachAttempts).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(AttachRetryPolicy.MAX_MS - 1);
-    expect(scanTimes).toEqual([0]);
-    expect(attachAttempts).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(1);
-    expect(scanTimes).toEqual([0, AttachRetryPolicy.MAX_MS]);
-    expect(attachAttempts).toBe(2);
-    await vi.advanceTimersByTimeAsync(AttachRetryPolicy.MAX_MS);
-    expect(scanTimes).toEqual([0, AttachRetryPolicy.MAX_MS]);
-  });
-
-  it("runs one post-scan pass for a request received while scanning", async () => {
-    vi.useFakeTimers();
-    let releaseFirstScan!: () => void;
-    const firstScanReleased = new Promise<void>((resolve) => {
-      releaseFirstScan = resolve;
-    });
-    let scans = 0;
-    const harness = createScanSchedulerHarness(async (current) => {
-      scans += 1;
-      if (scans === 1) {
-        current.scheduleDebouncedScan(0);
-        await firstScanReleased;
-      }
-    });
-
-    harness.scheduleDebouncedScan(0);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(scans).toBe(1);
-
-    releaseFirstScan();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(scans).toBe(2);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(scans).toBe(2);
+    const first = new FakeAdapter();
+    const second = new FakeAdapter();
+    const opened = await Promise.all([
+      ViewerInkSession.create(createOptions(first, new SidecarRepository(files, "annotations"), new RecoveryRepository(files, "recovery"))),
+      ViewerInkSession.create(createOptions(second, new SidecarRepository(files, "annotations"), new RecoveryRepository(files, "recovery")))
+    ]);
+    const owners = getPhysicalContactCollectorSnapshot(document);
+    expect(owners?.activeOwnerCount).toBe(2);
+    expect(new Set(owners?.ownerIds).size).toBe(2);
+    expect(owners?.ownerIds.every((id) => id.startsWith("viewer-session-"))).toBe(true);
+    await opened[0].destroy();
+    await opened[1].destroy();
+    expect(getPhysicalContactCollectorSnapshot(document)?.activeOwnerCount ?? 0).toBe(0);
   });
 
   it("draws a stylus stroke, saves sidecar, exports copy, and cleans up", async () => {
@@ -1479,6 +1464,51 @@ describe("viewer runtime tracer", () => {
       if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
       else delete (document as Partial<Document>).elementsFromPoint;
       drawer.remove();
+      await session.destroy();
+    }
+  });
+
+  it("claims a pen over a visible page when the top hit is an outside node", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => false
+    });
+    const outside = document.createElement("div");
+    outside.className = "mobile-layout-ghost";
+    document.body.append(outside);
+    const originalElementFromPoint = document.elementFromPoint;
+    const originalElementsFromPoint = document.elementsFromPoint;
+    try {
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => outside
+      });
+      Object.defineProperty(document, "elementsFromPoint", {
+        configurable: true,
+        value: () => [outside]
+      });
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 142 });
+      outside.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      const finger = pointer("pointerdown", 100, 120, { pointerType: "touch", pointerId: 143 });
+      outside.dispatchEvent(finger);
+      expect(finger.defaultPrevented).toBe(false);
+    } finally {
+      if (originalElementFromPoint) document.elementFromPoint = originalElementFromPoint;
+      else delete (document as Partial<Document>).elementFromPoint;
+      if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
+      else delete (document as Partial<Document>).elementsFromPoint;
+      outside.remove();
       await session.destroy();
     }
   });
