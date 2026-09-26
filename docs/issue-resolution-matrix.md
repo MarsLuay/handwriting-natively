@@ -28,7 +28,7 @@ Pointer Events are authoritative when available:
 - Touch Events are only lifecycle/compatibility observation and never a second drawing engine;
 - no global `touch-action: none` is used.
 
-`PointerRouter` generation cleanup, pointer capture loss, cancel, blur, and session destruction clear stale ownership. Real iPadOS/WKWebView traces are still required before removing any compatibility fallback or claiming Pencil/Scribble behavior.
+`PointerRouter` generation cleanup, pointer capture loss, cancel, blur, and session destruction clear stale ownership. The detailed ownership contract, fallback boundary, bounded diagnostics, deterministic test boundary, and physical validation matrix are recorded in [`docs/input-gesture-architecture.md`](input-gesture-architecture.md). Real iPadOS/WKWebView traces are still required before removing any compatibility fallback or claiming Pencil/Scribble behavior.
 
 ## Lifecycle (#136)
 
