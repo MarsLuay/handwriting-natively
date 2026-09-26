@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   handwritingSessionMissingPayload,
   missingHandwritingSession,
+  missingHandwritingSessionRecoveryWake,
   needsMissingHandwritingSessionRecovery,
   type HandwritingSessionRegistrySnapshot
 } from "../src/runtime/HandwritingSessionRegistry";
@@ -63,6 +64,26 @@ describe("handwriting session registry diagnostics", () => {
     expect(needsMissingHandwritingSessionRecovery({ ...base, attachingLeaves: 1 })).toBe(false);
     expect(needsMissingHandwritingSessionRecovery({ ...base, viewerShellCount: 0 })).toBe(false);
     expect(needsMissingHandwritingSessionRecovery({ ...base, sessions: 1 })).toBe(false);
+  });
+
+  it("schedules one bounded recovery wake and preserves attach backoff", () => {
+    const snapshot: HandwritingSessionRegistrySnapshot = {
+      pdfLeafCount: 1,
+      sessions: 0,
+      attachingLeaves: 0,
+      activePdfPath: "Notes/example.pdf",
+      expectedPdfSession: true,
+      activeSessionFound: false,
+      viewerShellCount: 1,
+      handwritingToolbarCount: 0,
+      handwritingRailCount: 0
+    };
+
+    const wake = missingHandwritingSessionRecoveryWake(snapshot, "", null);
+    expect(wake).toEqual({ key: JSON.stringify(snapshot), retryDelayMs: null });
+    expect(missingHandwritingSessionRecoveryWake(snapshot, wake!.key, null)).toBeNull();
+    expect(missingHandwritingSessionRecoveryWake(snapshot, "", 800)).toMatchObject({ retryDelayMs: 800 });
+    expect(missingHandwritingSessionRecoveryWake({ ...snapshot, attachingLeaves: 1 }, "", null)).toBeNull();
   });
 
   it("does not report a missing session when the active PDF is registered", () => {
