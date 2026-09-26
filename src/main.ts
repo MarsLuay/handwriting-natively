@@ -1010,6 +1010,7 @@ export default class NativePdfInkPlugin extends Plugin {
           phone: Platform.isPhone,
           hostChildCount: view.containerEl?.childElementCount ?? null
         });
+        let adapter: AnnotationSurface;
         if (isPdf) {
           await this.vaultDebugLog.writeUrgent("info", "session attach resolve-viewer", {
             document: file.path
@@ -1342,6 +1343,7 @@ export default class NativePdfInkPlugin extends Plugin {
         onImportPages: (afterPage: number) => this.prepareImportedPages(file, afterPage),
         openScanDocument: () => new Promise((resolve) => new ScanDocumentModal(this.app, resolve).open()),
         onInsertScannedPages: (pageNumber: number, pages: readonly ScanDocumentPage[]) => this.insertScannedPagesInPlace(file, pageNumber, pages),
+        writeExport: async (name: string, bytes: Uint8Array) => this.writeAndOpenExport(file, name, bytes),
         onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber),
         onDeletePages: (pageNumbers: readonly number[]) => this.deletePagesInPlace(file, pageNumbers),
         writeSvgExport: async (name: string, svg: string) => this.writeSvgExport(file, name, svg)
