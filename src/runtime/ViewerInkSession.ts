@@ -9,6 +9,8 @@ import {
   type AnnotationZoomChange
 } from "./AnnotationSurface";
 import { imageSurfaceExtensions, pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
+import type { AnnotationSurface, AnnotationPageInfo } from "./AnnotationSurface";
+import { pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
 import { describeTarget } from "../dom/describeElement";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
@@ -4234,11 +4236,17 @@ export class ViewerInkSession {
         if (fallback) candidates.push(fallback);
       }
     }
-    return candidates.filter((page) => {
-      const reason = this.pageEvidenceReason(page);
-      this.recordPageEvidence(page, reason);
-      return reason === null;
-    });
+    const pad = 1;
+    const currentPage = this.options.adapter.getViewState().pageNumber;
+    const resolved: AnnotationPageInfo[] = [];
+    for (let pageNumber = currentPage - pad; pageNumber <= currentPage + pad; pageNumber += 1) {
+      if (pageNumber < 1) continue;
+      const page = this.options.adapter.page(pageNumber);
+      if (page) resolved.push(page);
+    }
+    if (resolved.length > 0) return resolved;
+    const fallback = this.options.adapter.page(1) ?? this.options.adapter.pages()[0];
+    return fallback ? [fallback] : [];
   }
 
   /** Tool/draw-mode swaps update hit-testing/cursors/text chrome without rebuilding ink pixels. */
