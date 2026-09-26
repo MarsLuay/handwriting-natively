@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "6a72e88bd70ebe74b4a88784311728197ecddb82e8930fb4f1db0e557974c275",
+  "path": ".agent-state/diagnostics/20260923T091114Z-pre-position-gated-draw-docs.log",
+  "status": "deleted",
+  "policy": "untrack",
+  "revision": 1,
+  "createdAt": "2026-09-26T20:33:10.265Z",
+  "updatedAt": "2026-09-26T20:33:10.265Z",
+  "deletedAt": "2026-09-26T20:33:10.265Z"
+}

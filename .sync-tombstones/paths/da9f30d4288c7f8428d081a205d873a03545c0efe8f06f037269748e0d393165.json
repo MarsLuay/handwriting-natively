@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "da9f30d4288c7f8428d081a205d873a03545c0efe8f06f037269748e0d393165",
+  "path": ".agent-state/execute/issue-141-end-to-end-telemetry-20260924-run-r4/execution-ledger.json",
+  "status": "deleted",
+  "policy": "untrack",
+  "revision": 1,
+  "createdAt": "2026-09-26T20:33:11.014Z",
+  "updatedAt": "2026-09-26T20:33:11.014Z",
+  "deletedAt": "2026-09-26T20:33:11.014Z"
+}
