@@ -14,6 +14,7 @@ import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integrat
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
+import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
 import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import {
@@ -865,6 +866,7 @@ export class ViewerInkSession {
   private mobileScrollRefreshFrame: number | null = null;
   /** Remount after zoom/handoff if scroll/pagechanging arrived while compositing. */
   private pendingMobileScrollRemount = false;
+  private mountBurst = 0;
   private zoomSettleTimer: number | null = null;
   /** Coalesces repeated native scale signals to one overlay/layout pass per frame. */
   private zoomLayoutFrame: number | null = null;
@@ -2239,16 +2241,20 @@ export class ViewerInkSession {
       this.scheduleZoomRepaint("view-scroll-mobile", this.options.adapter.getViewState().scale);
       return;
     }
-    if (this.mobileScrollRefreshFrame !== null) return;
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
       this.refresh("view-scroll-mobile");
       return;
     }
+    if (this.mobileScrollRefreshFrame !== null) {
+      view.cancelAnimationFrame(this.mobileScrollRefreshFrame);
+      this.mobileScrollRefreshFrame = null;
+    }
+    const burst = ++this.mountBurst;
     if (this.zoomProfile) this.zoomProfile.mobileRefreshFramesScheduled += 1;
     this.mobileScrollRefreshFrame = view.requestAnimationFrame(() => {
       this.mobileScrollRefreshFrame = null;
-      if (this.destroyed) return;
+      if (this.destroyed || mountWorkSuperseded(burst, this.mountBurst)) return;
       if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
         this.pendingMobileScrollRemount = true;
         if (this.zoomProfile) this.zoomProfile.mobileRefreshDeferred += 1;
@@ -2678,6 +2684,7 @@ export class ViewerInkSession {
 
   private scheduleZoomRepaint(reason: string, scale?: number): void {
     if (this.destroyed) return;
+    this.mountBurst += 1;
     const now = performance.now();
     this.lastZoomSignalAt = now;
     // Keep one burst for the full gesture. A long, healthy pinch can last well
@@ -4089,18 +4096,19 @@ export class ViewerInkSession {
   }
 
   /**
-   * Desktop: every DOM page. Mobile: currentPage ± 1 via O(1) `adapter.page`
-   * (never scan all 900+ page rects on scroll).
+   * Desktop: PDF.js already exposes the mounted page shells. Mobile: the
+   * measured working set is the current page plus the policy preload radius,
+   * which stays zero until a device trace promotes one.
    */
   private pagesForInkMount(): AnnotationPageInfo[] {
     const candidates: AnnotationPageInfo[] = [];
-    if (!this.runtimePlatform().mobile) {
+    const mobile = this.runtimePlatform().mobile;
+    const policy = documentMountPolicy([], mobile ? "constrained" : "desktop");
+    if (!mobile) {
       candidates.push(...this.options.adapter.pages());
     } else {
-      const pad = 1;
       const currentPage = this.options.adapter.getViewState().pageNumber;
-      for (let pageNumber = currentPage - pad; pageNumber <= currentPage + pad; pageNumber += 1) {
-        if (pageNumber < 1) continue;
+      for (const pageNumber of workingSetPageNumbers([currentPage], policy.preloadRadiusPages)) {
         const page = this.options.adapter.page(pageNumber);
         if (page) candidates.push(page);
       }

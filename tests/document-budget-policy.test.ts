@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { documentMountPolicy, mountWorkSuperseded } from "../src/runtime/documentBudgetPolicy";
+import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "../src/runtime/documentBudgetPolicy";
 
 function trace(platform: string, evidenceClass: "synthetic" | "manual-device") {
   return {
@@ -35,6 +35,8 @@ describe("document mount budgets", () => {
     const constrained = documentMountPolicy([trace("iPadOS", "synthetic")], "constrained");
     expect(desktop.preloadRadiusPages).toBe(0);
     expect(constrained.preloadRadiusPages).toBe(0);
+    expect(workingSetPageNumbers([4], desktop.preloadRadiusPages, 100)).toEqual([4]);
+    expect(workingSetPageNumbers([1], 1, 3)).toEqual([1, 2]);
     expect(desktop.pointerToRender.status).toBe("unqualified");
     expect(constrained.remount.status).toBe("unqualified");
     expect(desktop.cancelSupersededScrollZoom).toBe(true);

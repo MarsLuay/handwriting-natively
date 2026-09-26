@@ -119,3 +119,20 @@ export function documentMountPolicy(
 export function mountWorkSuperseded(workBurstId: number, currentBurstId: number): boolean {
   return workBurstId !== currentBurstId;
 }
+
+/** Visible pages, plus a preload radius only when the measured policy supplies one. */
+export function workingSetPageNumbers(
+  visiblePages: readonly number[],
+  preloadRadiusPages: number,
+  lastPage = Number.POSITIVE_INFINITY
+): number[] {
+  const radius = Number.isFinite(preloadRadiusPages) ? Math.max(0, Math.floor(preloadRadiusPages)) : 0;
+  const pages = new Set<number>();
+  for (const visible of visiblePages) {
+    if (!Number.isInteger(visible) || visible < 1) continue;
+    const start = Math.max(1, visible - radius);
+    const end = Math.min(lastPage, visible + radius);
+    for (let page = start; page <= end; page += 1) pages.add(page);
+  }
+  return [...pages].sort((left, right) => left - right);
+}
