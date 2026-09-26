@@ -18,6 +18,12 @@ import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } fr
 import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type DocumentInputOwnershipHandle } from "../input/DocumentInputOwnership";
 import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
+import {
+  acquirePhysicalContactCollector,
+  type PhysicalContactCollectorEvent,
+  type PhysicalContactCollectorLease,
+  type PhysicalContactDuplicateObserver
+} from "../input/PhysicalContactCollector";
 import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
 import {
   canAnnotatePointer,
@@ -1281,10 +1287,19 @@ export class ViewerInkSession {
       return adapter.host.contains(target) || adapter.root.contains(target);
     };
 
+    this.physicalContactCollectorLease = acquirePhysicalContactCollector(doc, {
+      ownerId: `viewer-session-${this.viewerGeneration}`,
+      sessionId: this.identity.id,
+      viewerGeneration: this.viewerGeneration,
+      isEnabled: () => this.options.debugEnabled?.() ?? false,
+      withinTarget: within,
+      onPhysicalContactEvent: (event) => this.handlePhysicalContactEvent(event),
+      onPhysicalContactDuplicate: (details) => this.handlePhysicalContactDuplicate(details)
+    });
+
     this.installPointerDownProbes(doc, options, within);
     this.installPointerUpCancelProbes(doc, options);
     adapter.scrollElement().addEventListener("scroll", () => this.updatePenScrollEvidence(), options);
-    this.installTouchProbes(doc, options, within);
     this.installWheelProbes(doc, options, within, adapter);
     this.installGestureProbes(doc, options, within);
     this.installUiShellMutationWatch(doc);
@@ -1916,77 +1931,110 @@ export class ViewerInkSession {
     });
   }
 
-  private physicalComposedPath(event: Event): string[] {
-    const path = typeof event.composedPath === "function" ? event.composedPath().slice(0, 12) : [];
-    return path.map((entry) => isElement(entry) ? String(getDebugNodeId(entry)) : Object.prototype.toString.call(entry));
+  private handlePhysicalContactEvent(event: PhysicalContactCollectorEvent): void {
+    this.updatePhysicalContactMappings(event);
+    if (!event.shouldLog) return;
+    this.logPhysicalContactRecords(event.records, event);
+    const diagnostic = this.physicalContactDiagnostics(event);
+    if (event.kind === "pointer" && event.eventType === "pointerdown") {
+      const pointer = event.event as PointerEvent;
+      const hitPage = this.closestPdfPageElement(pointer.target);
+      const targetWithin = isElement(pointer.target)
+        && (this.options.adapter.host.contains(pointer.target) || this.options.adapter.root.contains(pointer.target));
+      const hitTest = this.shouldFallbackRoutePointer(pointer)
+        ? this.inspectPointerHit(pointer, hitPage, targetWithin)
+        : emptyPointerHitTest(hitPage);
+      this.logger.pointerSeen({
+        source: "pointerdown",
+        pointerType: pointer.pointerType || "(empty)",
+        pointerId: pointer.pointerId,
+        isPrimary: pointer.isPrimary,
+        button: pointer.button,
+        buttons: pointer.buttons,
+        width: pointer.width,
+        height: pointer.height,
+        pressure: pointer.pressure,
+        tiltX: pointer.tiltX,
+        tiltY: pointer.tiltY,
+        clientX: Math.round(pointer.clientX),
+        clientY: Math.round(pointer.clientY),
+        within: targetWithin,
+        target: describeTarget(pointer.target),
+        targetId: getDebugNodeId(pointer.target),
+        hitPageId: getDebugNodeId(hitPage),
+        hasDataPageNumber: Boolean(hitPage?.hasAttribute("data-page-number")),
+        dataPageNumber: hitPage?.dataset.pageNumber ?? null,
+        ...this.inputPolicyLogFields(),
+        ...(hitTest.geometricPage ? { geometricPageNumber: hitTest.geometricPage.pageNumber } : {}),
+        ...diagnostic
+      });
+    }
+    if (event.kind === "touch" && event.eventType === "touchstart") {
+      const touch = event.event as TouchEvent;
+      const targetWithin = isElement(touch.target)
+        && (this.options.adapter.host.contains(touch.target) || this.options.adapter.root.contains(touch.target));
+      this.logger.pointerSeen({
+        source: "touchstart",
+        pointerType: "touch",
+        touchCount: touch.touches.length,
+        changedCount: touch.changedTouches.length,
+        within: targetWithin,
+        target: describeTarget(touch.target),
+        touches: [...touch.changedTouches].slice(0, 8).map((point) => ({
+          identifier: point.identifier,
+          clientX: Math.round(point.clientX),
+          clientY: Math.round(point.clientY),
+          radiusX: point.radiusX,
+          radiusY: point.radiusY,
+          force: point.force
+        })),
+        ...diagnostic
+      });
+    }
   }
 
-  private rawPointerContactSample(
-    event: PointerEvent,
-    eventType: RawPointerContactSample["eventType"]
-  ): RawPointerContactSample {
+  private handlePhysicalContactDuplicate(details: PhysicalContactDuplicateObserver): void {
+    this.logger.physicalContactDuplicateObserver({ ...details });
+  }
+
+  private updatePhysicalContactMappings(event: PhysicalContactCollectorEvent): void {
+    for (const record of event.records) {
+      const contact = record.contact;
+      for (const pointerId of contact.pointerIds) {
+        if (record.phase === "terminal") this.physicalContactIdsByPointer.delete(pointerId);
+        else this.physicalContactIdsByPointer.set(pointerId, contact.physicalContactId);
+      }
+    }
+    if (event.pointerId === null) return;
+    if (event.pointerContactId !== null) {
+      this.physicalContactIdsByPointer.set(event.pointerId, event.pointerContactId);
+    } else if (event.eventType === "pointerup" || event.eventType === "pointercancel") {
+      this.physicalContactIdsByPointer.delete(event.pointerId);
+    }
+  }
+
+  private physicalContactDiagnostics(event: PhysicalContactCollectorEvent): Record<string, unknown> {
     return {
-      eventType,
-      timeStamp: event.timeStamp,
+      collectorId: event.collectorId,
+      sessionId: event.sessionId,
+      ownerCollectorId: event.ownerId,
+      viewerGeneration: event.viewerGeneration,
+      sessionGeneration: event.sessionGeneration,
+      observerOwnerIds: event.observerOwnerIds,
+      listenerRegistrationScope: event.registrationScope,
+      registrationSource: event.registrationSource,
       pointerId: event.pointerId,
-      pointerType: event.pointerType,
-      isPrimary: event.isPrimary,
-      pressure: event.pressure,
-      width: event.width,
-      height: event.height,
-      tiltX: event.tiltX,
-      tiltY: event.tiltY,
-      buttons: event.buttons,
-      button: event.button,
-      clientX: event.clientX,
-      clientY: event.clientY,
-      targetId: getDebugNodeId(event.target),
-      composedPath: this.physicalComposedPath(event),
-      eventPhase: event.eventPhase,
-      cancelable: event.cancelable,
-      defaultPrevented: event.defaultPrevented
+      touchIdentifiers: event.touchIdentifiers,
+      eventTimeStamp: event.event instanceof Event ? event.event.timeStamp : null,
+      alreadySeen: event.alreadySeen,
+      chosenPhysicalContactId: event.chosenPhysicalContactId
     };
   }
 
-  private rawTouchContactEvent(
-    event: TouchEvent,
-    eventType: RawTouchContactEvent["eventType"]
-  ): RawTouchContactEvent {
-    const changedCount = event.changedTouches.length;
-    const toPoint = (touch: Touch): RawTouchPoint => ({
-      identifier: touch.identifier,
-      clientX: touch.clientX,
-      clientY: touch.clientY,
-      screenX: touch.screenX,
-      screenY: touch.screenY,
-      pageX: touch.pageX,
-      pageY: touch.pageY,
-      radiusX: touch.radiusX,
-      radiusY: touch.radiusY,
-      force: touch.force
-    });
-    const activeTouches = [...event.touches].slice(0, 8).map(toPoint);
-    const changedTouches = [...event.changedTouches].slice(0, 8).map(toPoint);
-    const touches = changedTouches.map((touch) => ({
-      eventType,
-      timeStamp: event.timeStamp,
-      identifier: touch.identifier,
-      clientX: touch.clientX,
-      clientY: touch.clientY,
-      radiusX: touch.radiusX,
-      radiusY: touch.radiusY,
-      force: touch.force,
-      touchCount: event.touches.length,
-      changedCount,
-      activeTouches: activeTouches.map((active) => ({ ...active })),
-      changedTouches: changedTouches.map((changed) => ({ ...changed })),
-      targetId: getDebugNodeId(event.target),
-      composedPath: this.physicalComposedPath(event)
-    }));
-    return { eventType, touches };
-  }
-
-  private logPhysicalContactRecords(records: readonly PhysicalContactRecord[]): void {
+  private logPhysicalContactRecords(
+    records: PhysicalContactCollectorEvent["records"],
+    event: PhysicalContactCollectorEvent
+  ): void {
     for (const record of records) {
       const contact = record.contact;
       this.logger.pointerSeen({
@@ -2023,10 +2071,6 @@ export class ViewerInkSession {
         rawPointer: contact.rawPointer,
         rawTouch: contact.rawTouch
       });
-      for (const pointerId of contact.pointerIds) {
-        if (record.phase === "terminal") this.physicalContactIdsByPointer.delete(pointerId);
-        else this.physicalContactIdsByPointer.set(pointerId, contact.physicalContactId);
-      }
     }
   }
 
@@ -2072,7 +2116,6 @@ export class ViewerInkSession {
     within: (target: EventTarget | null) => boolean
   ): void {
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
-      this.recordPhysicalPointerEvent(e, "pointerdown");
       this.noteUiInput(e);
       const hitPage = this.closestPdfPageElement(e.target);
       const hitTest = this.shouldFallbackRoutePointer(e)
@@ -2085,30 +2128,6 @@ export class ViewerInkSession {
         pointerId: e.pointerId,
         targetId: getDebugNodeId(e.target),
         page: hitTest.geometricPage?.pageNumber ?? null
-      });
-      this.logger.pointerSeen({
-        source: "pointerdown",
-        pointerType: e.pointerType || "(empty)",
-        pointerId: e.pointerId,
-        isPrimary: e.isPrimary,
-        button: e.button,
-        buttons: e.buttons,
-        width: e.width,
-        height: e.height,
-        pressure: e.pressure,
-        tiltX: e.tiltX,
-        tiltY: e.tiltY,
-        clientX: Math.round(e.clientX),
-        clientY: Math.round(e.clientY),
-        within: within(e.target),
-        target: describeTarget(e.target),
-        targetId: getDebugNodeId(e.target),
-        hitPageId: getDebugNodeId(hitPage),
-        hasDataPageNumber: Boolean(hitPage?.hasAttribute("data-page-number")),
-        dataPageNumber: hitPage?.dataset.pageNumber ?? null,
-        ...this.inputPolicyLogFields(),
-        activeTool: this.activeTool(),
-        ...(hitTest.geometricPage ? { geometricPageNumber: hitTest.geometricPage.pageNumber } : {})
       });
       // Capture: own pen/mouse draw sync here. Page capture can stay deaf after
       // zoom while binds/alive still look healthy; bubble never runs if something
@@ -2149,54 +2168,14 @@ export class ViewerInkSession {
     options: AddEventListenerOptions
   ): void {
     const clearHandled = (e: PointerEvent): void => {
-      this.recordPhysicalPointerEvent(e, e.type === "pointercancel" ? "pointercancel" : "pointerup");
       this.finishDocumentHandoff(e, e.type === "pointercancel" ? "pointercancel" : "pointerup", undefined, {
         terminalObservedByDocument: true,
         eventType: e.type
       });
       this.handledDrawPointers.delete(e.pointerId);
     };
-    doc.addEventListener("pointermove", (e: PointerEvent) => {
-      this.recordPhysicalPointerEvent(e, "pointermove");
-    }, { ...options, passive: true });
     doc.addEventListener("pointerup", clearHandled, options);
     doc.addEventListener("pointercancel", clearHandled, options);
-  }
-
-  private installTouchProbes(
-    doc: Document,
-    options: AddEventListenerOptions,
-    within: (target: EventTarget | null) => boolean
-  ): void {
-    doc.addEventListener("touchstart", (e: TouchEvent) => {
-      this.recordPhysicalTouchEvent(e, "touchstart");
-      const touches = [...e.changedTouches].map((touch) => ({
-        identifier: touch.identifier,
-        clientX: Math.round(touch.clientX),
-        clientY: Math.round(touch.clientY),
-        radiusX: touch.radiusX,
-        radiusY: touch.radiusY,
-        force: touch.force
-      }));
-      this.logger.pointerSeen({
-        source: "touchstart",
-        pointerType: "touch",
-        touchCount: e.touches.length,
-        changedCount: e.changedTouches.length,
-        within: within(e.target),
-        target: describeTarget(e.target),
-        touches
-      });
-    }, { ...options, passive: true });
-    doc.addEventListener("touchmove", (e: TouchEvent) => {
-      this.recordPhysicalTouchEvent(e, "touchmove");
-    }, { ...options, passive: true });
-    doc.addEventListener("touchend", (e: TouchEvent) => {
-      this.recordPhysicalTouchEvent(e, "touchend");
-    }, { ...options, passive: true });
-    doc.addEventListener("touchcancel", (e: TouchEvent) => {
-      this.recordPhysicalTouchEvent(e, "touchcancel");
-    }, { ...options, passive: true });
   }
 
   private installWheelProbes(
@@ -5605,7 +5584,8 @@ export class ViewerInkSession {
       pageRouters,
       ownedInputPages: this.ownedInputPages.size,
       physicalContactPointers: this.physicalContactIdsByPointer.size,
-      viewerMousePan: ownsDocumentInput && !this.destroyed ? 1 : 0
+      physicalContactCollector: physicalContactCollector?.listenerRegistered ? 1 : 0,
+      viewerMousePan: this.inputTeardownStarted || this.destroyed ? 0 : 1
     };
     const base = (() => {
       try {
@@ -5625,6 +5605,7 @@ export class ViewerInkSession {
         ...activeInputCollectors,
         total: Object.values(activeInputCollectors).reduce((sum, count) => sum + count, 0)
       },
+      physicalContactCollector,
       activeRouterGenerations: [...this.surfaces.values()]
         .map((surface) => surface.router?.generation ?? null)
         .filter((generation): generation is number => generation !== null)
@@ -5633,6 +5614,21 @@ export class ViewerInkSession {
 
   refreshDiagnostics(): void {
     this.updateDebug();
+  }
+
+  private beginInputTeardown(): void {
+    if (this.inputTeardownStarted) return;
+    this.inputTeardownStarted = true;
+    this.physicalContactCollectorLease?.release();
+    this.physicalContactCollectorLease = null;
+    this.pointerProbeAbort.abort();
+    this.viewerMousePan.destroy();
+    for (const surface of this.surfaces.values()) surface.router?.destroy();
+    this.handledDrawPointers.clear();
+    this.physicalContactIdsByPointer.clear();
+    this.clearPostUiProbeTimer();
+    this.uiShellMutationObserver?.disconnect();
+    this.uiShellMutationObserver = null;
   }
 
   handleKeyDown(event: KeyboardEvent): boolean {
@@ -6000,6 +5996,10 @@ export class ViewerInkSession {
     for (const surface of this.surfaces.values()) {
       this.commitActiveDrawBeforeSurfaceLoss(surface, "session-destroy");
     }
+    // Session removal can race replacement attachment. Silent teardown must
+    // stop every document-level collector and page router before any awaited
+    // persistence work, so a stale session cannot observe the next contact.
+    if (options.silent) this.beginInputTeardown();
     if (this.detachCheckTimer !== null) {
       window.clearTimeout(this.detachCheckTimer);
       this.detachCheckTimer = null;
@@ -6039,6 +6039,7 @@ export class ViewerInkSession {
         await this.options.recovery.save(this.snapshot()).catch(() => undefined);
       }
     }
+    this.beginInputTeardown();
     this.destroyed = true;
     if (this.laserFadeFrame !== null) {
       window.cancelAnimationFrame(this.laserFadeFrame);

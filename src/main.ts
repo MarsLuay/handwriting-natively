@@ -12,6 +12,7 @@ import {
   type WorkspaceLeaf
 } from "obsidian";
 import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
+import { getPhysicalContactCollectorSnapshot, type PhysicalContactCollectorSnapshot } from "./input/PhysicalContactCollector";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
@@ -197,6 +198,7 @@ export default class NativePdfInkPlugin extends Plugin {
   private readonly scanDebounce = new ScanDebounce();
   private readonly flushDebounce = new ScanDebounce();
   private scanAgain = false;
+  private scanInProgress = false;
   private unloaded = false;
   private lastMissingSessionKey = "";
   private lastMissingRecoveryKey = "";
@@ -531,6 +533,14 @@ export default class NativePdfInkPlugin extends Plugin {
       .filter((owner) => owner.active);
     const count = (selector: string): number => [...roots]
       .reduce((total, root) => total + root.querySelectorAll(selector).length, 0);
+    const physicalContactCollectors = [...new Set([...roots].map((root) => root.ownerDocument))]
+      .map((document) => getPhysicalContactCollectorSnapshot(document))
+      .filter((snapshot): snapshot is PhysicalContactCollectorSnapshot => snapshot !== null);
+    const registeredSessionIds = new Set([...this.sessions.values()].map((session) => session.getDocumentId()));
+    const staleCollectorCount = physicalContactCollectors.reduce(
+      (count, collector) => count + collector.owners.filter(({ sessionId }) => !registeredSessionIds.has(sessionId)).length,
+      0
+    );
     return {
       pdfLeafCount: pdfLeaves.length,
       sessions: this.sessions.size,
@@ -851,10 +861,19 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private scheduleDebouncedScan(delayMs = 100): void {
-    this.scanAgain = true;
     if (this.unloaded) return;
-    // Soonest wake wins: layout can still scan other leaves quickly, while
-    // AttachRetryPolicy.canAttempt blocks the cooling path until its deadline.
+    if (this.scanInProgress) {
+      this.scanAgain = true;
+      return;
+    }
+    this.scanDebounce.schedule(delayMs, () => {
+      void this.scanPdfViews();
+    });
+  }
+
+  /** Keep an attach-retry wake independent from the in-flight scan flag. */
+  private scheduleAttachRetryScan(delayMs: number): void {
+    if (this.unloaded) return;
     this.scanDebounce.schedule(delayMs, () => {
       void this.scanPdfViews();
     });
@@ -862,10 +881,21 @@ export default class NativePdfInkPlugin extends Plugin {
 
   private async scanPdfViews(): Promise<void> {
     if (this.unloaded) return;
+    if (this.scanInProgress) {
+      this.scanAgain = true;
+      return;
+    }
+    this.scanInProgress = true;
     this.scanAgain = false;
-    await this.scanPdfLeaves();
-    this.scanPdfEmbeds();
-    if (this.scanAgain && !this.unloaded) this.scheduleDebouncedScan(0);
+    try {
+      await this.scanPdfLeaves();
+      this.scanPdfEmbeds();
+    } finally {
+      this.scanInProgress = false;
+      const scanAgain = this.scanAgain;
+      this.scanAgain = false;
+      if (scanAgain && !this.unloaded) this.scheduleDebouncedScan(0);
+    }
   }
 
   private async scanPdfLeaves(): Promise<void> {
@@ -1078,7 +1108,11 @@ export default class NativePdfInkPlugin extends Plugin {
                   document: file.path,
                   retryDelayMs: 0,
                   ...(error === undefined ? {} : {
-                    error: error instanceof Error ? error.message : typeof error === "string" ? error : "unknown error"
+                    error: error instanceof Error
+                      ? error.message
+                      : typeof error === "string"
+                        ? error
+                        : JSON.stringify(error) ?? "unknown error"
                   })
                 }).catch(() => undefined);
               }
@@ -1198,7 +1232,7 @@ export default class NativePdfInkPlugin extends Plugin {
             error: message
           });
         }
-        this.scheduleDebouncedScan(delayMs);
+        this.scheduleAttachRetryScan(delayMs);
       } finally {
         this.attachingLeaves.delete(leaf);
       }
@@ -1215,7 +1249,7 @@ export default class NativePdfInkPlugin extends Plugin {
     }
     this.attachRetry.retainOnly(livePaths);
     const wait = this.attachRetry.msUntilNextRetry(livePaths);
-    if (wait != null) this.scheduleDebouncedScan(wait);
+    if (wait != null) this.scheduleAttachRetryScan(wait);
     this.reportMissingPdfSessionAfterSettle();
   }
 

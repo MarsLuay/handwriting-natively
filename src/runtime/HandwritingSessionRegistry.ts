@@ -1,3 +1,5 @@
+import type { PhysicalContactCollectorSnapshot } from "../input/PhysicalContactCollector";
+
 /** Bounded plugin-level state used when the active PDF has no session object. */
 export interface HandwritingSessionRegistrySnapshot {
   pdfLeafCount: number;
@@ -9,6 +11,7 @@ export interface HandwritingSessionRegistrySnapshot {
   viewerShellCount: number;
   handwritingToolbarCount: number;
   handwritingRailCount: number;
+  physicalContactCollectors?: readonly PhysicalContactCollectorSnapshot[];
   /** Kept optional because stale collectors are only knowable while a session exists. */
   staleCollectorCount?: number | null;
   documentInputCollectorCount?: number;
@@ -45,6 +48,7 @@ export function handwritingSessionMissingPayload(
     ...snapshot,
     viewerPresent: snapshot.viewerShellCount > 0,
     toolbarPresent: snapshot.handwritingToolbarCount > 0,
+    ...(snapshot.physicalContactCollectors ? { physicalContactCollectors: snapshot.physicalContactCollectors } : {}),
     ...(snapshot.staleCollectorCount !== undefined ? { staleCollectorCount: snapshot.staleCollectorCount } : {})
   };
 }
