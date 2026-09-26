@@ -15,7 +15,7 @@ export interface PhysicalClassificationTransition {
 }
 
 export interface RawPointerContactSample {
-  eventType: "pointerdown" | "pointermove" | "pointerup" | "pointercancel";
+  eventType: "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | "lostpointercapture";
   timeStamp: number;
   pointerId: number;
   pointerType: string;
@@ -93,6 +93,7 @@ export interface PhysicalContactSnapshot {
   firstPoint: { x: number; y: number } | null;
   lastPoint: { x: number; y: number } | null;
   pointerTerminal: "pointerup" | "pointercancel" | null;
+  pointerCaptureLost: boolean;
   touchTerminal: "touchend" | "touchcancel" | null;
   terminal: string | null;
   rawPointer: {
@@ -130,6 +131,7 @@ interface ContactState {
   firstPoint: { x: number; y: number } | null;
   lastPoint: { x: number; y: number } | null;
   pointerTerminal: "pointerup" | "pointercancel" | null;
+  pointerCaptureLost: boolean;
   touchTerminal: "touchend" | "touchcancel" | null;
   terminal: string | null;
   rawPointerFirst: RawPointerContactSample | null;
@@ -175,6 +177,14 @@ export class PhysicalContactTracker {
     const contact = this.pointerContacts.get(sample.pointerId);
     if (!contact) return this.startPointer(now, sample);
     this.updatePointer(contact, now, sample);
+    return [];
+  }
+
+  pointerLostCapture(now: number, sample: RawPointerContactSample): PhysicalContactRecord[] {
+    const contact = this.pointerContacts.get(sample.pointerId);
+    if (!contact) return [];
+    this.updatePointer(contact, now, sample);
+    contact.pointerCaptureLost = true;
     return [];
   }
 
@@ -297,6 +307,7 @@ export class PhysicalContactTracker {
       firstPoint: null,
       lastPoint: null,
       pointerTerminal: null,
+      pointerCaptureLost: false,
       touchTerminal: null,
       terminal: null,
       rawPointerFirst: null,
@@ -466,6 +477,7 @@ export class PhysicalContactTracker {
       firstPoint: contact.firstPoint ? { ...contact.firstPoint } : null,
       lastPoint: contact.lastPoint ? { ...contact.lastPoint } : null,
       pointerTerminal: contact.pointerTerminal,
+      pointerCaptureLost: contact.pointerCaptureLost,
       touchTerminal: contact.touchTerminal,
       terminal: contact.terminal,
       rawPointer: {

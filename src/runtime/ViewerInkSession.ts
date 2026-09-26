@@ -657,6 +657,12 @@ interface ToolChangeMarker {
   nextTool: ToolId;
   source: string;
   pointerType: string;
+  viewerGeneration: number;
+  pageGenerations: Array<{
+    page: number;
+    mountGeneration: number | null;
+    routerGeneration: number | null;
+  }>;
 }
 
 interface PageSurface {
@@ -1042,20 +1048,31 @@ export class ViewerInkSession {
           const previousTool = this.lastObservedTool;
           if (preferences.activeTool !== previousTool) {
             const at = Date.now();
+            const pageGenerations = [...this.surfaces.values()].map((surface) => ({
+              page: surface.page.pageNumber,
+              mountGeneration: surface.page.mountGeneration ?? null,
+              routerGeneration: surface.router?.generation ?? null
+            }));
             this.lastToolChange = {
               id: `tool-${at}-${preferences.activeTool}`,
               at,
               previousTool,
               nextTool: preferences.activeTool,
               source: reason,
-              pointerType: this.lastUiInputPointerType
+              pointerType: this.lastUiInputPointerType,
+              viewerGeneration: this.viewerGeneration,
+              pageGenerations
             };
             this.logger.toolChanged({
               toolChangeId: this.lastToolChange.id,
+              at: this.lastToolChange.at,
               previousTool,
               nextTool: preferences.activeTool,
               source: reason,
               pointerType: this.lastUiInputPointerType,
+              viewerGeneration: this.viewerGeneration,
+              pageGenerations,
+              routerGenerations: pageGenerations.map(({ routerGeneration }) => routerGeneration),
               activeStroke: this.hasAnyLiveInkInput()
             });
           }
@@ -1978,6 +1995,7 @@ export class ViewerInkSession {
         durationMs: contact.durationMs,
         terminal: contact.terminal,
         pointerTerminal: contact.pointerTerminal,
+        pointerCaptureLost: contact.pointerCaptureLost,
         touchTerminal: contact.touchTerminal,
         pointerMoveCount: contact.pointerMoveCount,
         touchMoveCount: contact.touchMoveCount,
