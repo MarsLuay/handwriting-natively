@@ -9,6 +9,7 @@ import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from 
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation } from "../src/model";
 import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
+import { getPhysicalContactCollectorSnapshot } from "../src/input/PhysicalContactCollector";
 import { HN_DEV_PROBE_ACTIVE_KEY, HN_DEV_PROBE_EVENT, type HnDevProbeDiagnostic } from "../src/runtime/DevProbeDiagnostics";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
@@ -146,6 +147,60 @@ describe("viewer runtime tracer", () => {
       "stale-session-destroy-failed"
     ]);
     expect(blocked[1]?.error).toEqual(new Error("destroy failed"));
+  });
+
+  it("destroys a constructed session when sidecar load fails before registration", async () => {
+    const files = new MemoryFiles();
+    const createOptions = (adapter: FakeAdapter, sidecars: SidecarRepository, recovery: RecoveryRepository) => ({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars,
+      recovery,
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    for (const mode of ["sidecar", "recovery", "conflict"] as const) {
+      const adapter = new FakeAdapter();
+      const sidecars = new SidecarRepository(files, "annotations");
+      const recovery = new RecoveryRepository(files, "recovery");
+      if (mode === "sidecar") {
+        sidecars.loadForDocumentWithStatus = async () => {
+          throw new Error("sidecar boom");
+        };
+      } else if (mode === "recovery") {
+        recovery.loadForDocumentWithStatus = async () => {
+          throw new Error("recovery boom");
+        };
+      } else {
+        recovery.loadForDocumentWithStatus = async () => ({
+          data: null,
+          identity: null,
+          conflict: { paths: ["recovery/conflict.json"] },
+          quarantined: null
+        }) as Awaited<ReturnType<RecoveryRepository["loadForDocumentWithStatus"]>>;
+      }
+      const expected = mode === "conflict" ? /Conflicting annotation snapshots/ : new RegExp(`${mode} boom`);
+      await expect(ViewerInkSession.create(createOptions(adapter, sidecars, recovery))).rejects.toThrow(expected);
+      expect(adapter.destroyed).toBe(true);
+      expect(getPhysicalContactCollectorSnapshot(document)?.activeOwnerCount ?? 0).toBe(0);
+    }
+
+    const first = new FakeAdapter();
+    const second = new FakeAdapter();
+    const opened = await Promise.all([
+      ViewerInkSession.create(createOptions(first, new SidecarRepository(files, "annotations"), new RecoveryRepository(files, "recovery"))),
+      ViewerInkSession.create(createOptions(second, new SidecarRepository(files, "annotations"), new RecoveryRepository(files, "recovery")))
+    ]);
+    const owners = getPhysicalContactCollectorSnapshot(document);
+    expect(owners?.activeOwnerCount).toBe(2);
+    expect(new Set(owners?.ownerIds).size).toBe(2);
+    expect(owners?.ownerIds.every((id) => id.startsWith("viewer-session-"))).toBe(true);
+    await opened[0].destroy();
+    await opened[1].destroy();
+    expect(getPhysicalContactCollectorSnapshot(document)?.activeOwnerCount ?? 0).toBe(0);
   });
 
   it("draws a stylus stroke, saves sidecar, exports copy, and cleans up", async () => {
