@@ -6894,16 +6894,21 @@ export class ViewerInkSession {
     if (isInputChromeTarget(event.target)) return;
     if (this.skipOccludedPointer(event, hitTest)) return;
     let hitPage = this.closestPdfPageElement(event.target);
+    const penPage = event.pointerType === "pen" && !hitTest.pageOccludedByUi
+      ? hitTest.geometricPage?.element ?? null
+      : null;
     if ((!targetWithin || !hitPage) && hitTest.safeRecoveryPage) {
       hitPage = hitTest.safeRecoveryPage.element;
+    } else if ((!targetWithin || !hitPage) && penPage) {
+      hitPage = penPage;
     }
-    if (hitPage && hitTest.geometricPage && hitTest.details.topHit && !hitTest.safeRecoveryPage) {
+    if (hitPage && hitTest.geometricPage && hitTest.details.topHit && !hitTest.safeRecoveryPage && hitPage !== penPage) {
       if (event.pointerType === "pen" && hitTest.geometricPage) {
         this.logInkInputAnomaly(event, hitTest, "visible-page-covered-by-nonviewer-hit");
       }
       return;
     }
-    if (!targetWithin && !hitTest.safeRecoveryPage) {
+    if (!targetWithin && !hitTest.safeRecoveryPage && hitPage !== penPage) {
       if (event.pointerType === "pen" && hitTest.geometricPage) {
         this.logInkInputAnomaly(event, hitTest, "pen-over-visible-page-not-routed");
       }
@@ -7007,16 +7012,21 @@ export class ViewerInkSession {
     if (isInputChromeTarget(event.target)) return;
     if (this.skipOccludedPointer(event, hitTest)) return;
     let hitPage = this.closestPdfPageElement(event.target);
+    const penPage = event.pointerType === "pen" && !hitTest.pageOccludedByUi
+      ? hitTest.geometricPage?.element ?? null
+      : null;
     if ((!targetWithin || !hitPage) && hitTest.safeRecoveryPage) {
       hitPage = hitTest.safeRecoveryPage.element;
+    } else if ((!targetWithin || !hitPage) && penPage) {
+      hitPage = penPage;
     }
-    if (hitPage && hitTest.geometricPage && hitTest.details.topHit && !hitTest.safeRecoveryPage) {
+    if (hitPage && hitTest.geometricPage && hitTest.details.topHit && !hitTest.safeRecoveryPage && hitPage !== penPage) {
       if (event.pointerType === "pen" && hitTest.geometricPage) {
         this.logInkInputAnomaly(event, hitTest, "visible-page-covered-by-nonviewer-hit");
       }
       return;
     }
-    if (!targetWithin && !hitTest.safeRecoveryPage) {
+    if (!targetWithin && !hitTest.safeRecoveryPage && hitPage !== penPage) {
       if (event.pointerType === "pen" && hitTest.geometricPage) {
         this.logInkInputAnomaly(event, hitTest, "pen-over-visible-page-not-routed", undefined);
       }
