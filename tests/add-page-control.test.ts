@@ -139,4 +139,46 @@ describe("AddPageControl", () => {
     expect(button?.disabled).toBe(true);
     control.destroy();
   });
+
+  it("stays visible and busy while the page tree is empty, then remounts immediately", async () => {
+    const host = document.createElement("div");
+    const last = page(document, 1);
+    host.append(last);
+    document.body.append(host);
+    let resolveCommit: (() => void) | undefined;
+    const commit = vi.fn(() => new Promise<void>((resolve) => { resolveCommit = resolve; }));
+    const control = new AddPageControl({
+      enabled: () => true,
+      isBusy: () => false,
+      host: () => host,
+      onCommit: commit
+    }, document);
+    const button = host.querySelector<HTMLButtonElement>("button")!;
+
+    button.click();
+    button.click();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(button.textContent).toBe("Adding…");
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(button.disabled).toBe(true);
+    expect(button.parentElement).toBe(host);
+
+    last.remove();
+    control.holdDuringReplacement();
+    expect(button.isConnected).toBe(true);
+    expect(host.querySelectorAll(".native-pdf-handwriting-add-page")).toHaveLength(1);
+
+    const replacement = page(document, 2);
+    host.append(replacement);
+    control.refresh();
+    expect(replacement.nextElementSibling).toBe(button);
+    expect(button.textContent).toBe("Adding…");
+
+    resolveCommit!();
+    await Promise.resolve();
+    expect(button.textContent).toBe("+ add page");
+    expect(button.disabled).toBe(false);
+    expect(host.querySelectorAll(".native-pdf-handwriting-add-page")).toHaveLength(1);
+    control.destroy();
+  });
 });

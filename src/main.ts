@@ -1370,7 +1370,7 @@ export default class NativePdfInkPlugin extends Plugin {
         writeSourcePdf: async (bytes: Uint8Array) => {
           await this.app.vault.modifyBinary(file, bytes.slice().buffer);
         },
-        onInsertPage: (pageNumber: number) => this.insertPageInPlace(file, pageNumber),
+        onInsertPage: (pageNumber: number, report) => this.insertPageInPlace(file, pageNumber, report),
         onImportPages: (afterPage: number) => this.prepareImportedPages(file, afterPage),
         openScanDocument: () => new Promise((resolve) => new ScanDocumentModal(this.app, resolve).open()),
         onInsertScannedPages: (pageNumber: number, pages: readonly ScanDocumentPage[]) => this.insertScannedPagesInPlace(file, pageNumber, pages),
@@ -1613,9 +1613,14 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   /** Insert a blank page in place and remap persisted page-numbered stores. */
-  private async insertPageInPlace(file: TFile, requestedPageNumber: number): Promise<number> {
+  private async insertPageInPlace(
+    file: TFile,
+    requestedPageNumber: number,
+    report?: (stage: string) => void
+  ): Promise<number> {
     const source = new Uint8Array(await this.app.vault.readBinary(file));
-    const inserted = await insertMatchingBlankPage(source, requestedPageNumber);
+    report?.("pdf-read-complete");
+    const inserted = await insertMatchingBlankPage(source, requestedPageNumber, report);
     const files = createVaultFsTextAdapter(this.app.vault, this.annotationFsProbe());
     const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder, {
       automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
@@ -1627,7 +1632,9 @@ export default class NativePdfInkPlugin extends Plugin {
     });
     const identityInput = { vaultPath: file.path, contentHash: hashDocumentContent(source) };
     const sidecarBefore = await sidecars.loadForDocument(identityInput);
+    report?.("sidecar-load-complete");
     const recoveryBefore = await recovery.loadForDocument(identityInput);
+    report?.("recovery-load-complete");
     const sidecarAfter = sidecarBefore ? insertPageIntoSidecar(sidecarBefore, inserted.pageNumber) : null;
     const recoveryAfter = recoveryBefore ? insertPageIntoSidecar(recoveryBefore, inserted.pageNumber) : null;
     let writeStage = "prepared";
@@ -1651,6 +1658,7 @@ export default class NativePdfInkPlugin extends Plugin {
         saveRecovery: (value) => recovery.save(value),
         onStage: (stage) => { writeStage = stage; }
       });
+      report?.("pdf-write-complete");
       await this.vaultDebugLog.writeUrgent("info", "pdf-page-insert-complete", {
         document: file.path,
         page: inserted.pageNumber,

@@ -24,7 +24,9 @@ export interface AddPageControlCallbacks {
   isBusy(): boolean;
   host(): HTMLElement;
   onCommit(): void | Promise<void>;
-  onLifecycle?(phase: "mounted" | "duplicate" | "destroyed", details: Record<string, unknown>): void;
+  isDrawing?(): boolean;
+  scrollRoot?(): HTMLElement;
+  onLifecycle?(phase: "mounted" | "duplicate" | "destroyed" | "busy", details: Record<string, unknown>): void;
 }
 
 /**
@@ -85,6 +87,11 @@ export class AddPageControl {
     const lastPage = resolveLastPdfPage(host);
     const parent = lastPage?.parentElement;
     if (!lastPage || !parent) {
+      if (this.isBusy()) {
+        this.parkOnStableHost();
+        this.updateState();
+        return;
+      }
       this.button.remove();
       return;
     }
@@ -134,10 +141,33 @@ export class AddPageControl {
     });
   }
 
+  /** Keep the same button visible while PDF.js replaces the page subtree. */
+  holdDuringReplacement(): void {
+    if (!this.isBusy()) return;
+    this.parkOnStableHost();
+    this.updateState();
+  }
+
+  isConnected(): boolean {
+    return this.button.isConnected;
+  }
+
+  private isBusy(): boolean {
+    return this.committing || this.callbacks.isBusy();
+  }
+
+  private parkOnStableHost(): void {
+    const host = this.callbacks.host();
+    if (!host.isConnected) return;
+    if (this.button.parentElement !== host) host.append(this.button);
+  }
+
   private updateState(): void {
-    const busy = this.committing || this.callbacks.isBusy();
+    const busy = this.isBusy();
     this.button.disabled = busy;
     this.button.setAttribute("aria-busy", busy ? "true" : "false");
+    const label = busy ? "Adding…" : "+ add page";
+    if (this.button.textContent !== label) this.button.textContent = label;
   }
 
   private async commit(): Promise<void> {
@@ -146,7 +176,13 @@ export class AddPageControl {
       return;
     }
     this.committing = true;
+    this.parkOnStableHost();
     this.updateState();
+    this.callbacks.onLifecycle?.("busy", {
+      surface: "bottom",
+      uiGeneration: this.uiGeneration,
+      connected: this.button.isConnected
+    });
     try {
       await this.callbacks.onCommit();
     } finally {

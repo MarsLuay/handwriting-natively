@@ -41,6 +41,7 @@ import {
   type MouseInputMode
 } from "../input/annotationInputPolicy";
 import { AddPageControl } from "../ui/AddPageControl";
+import { AddPageTiming } from "../ui/AddPageTiming";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
@@ -446,7 +447,7 @@ export interface ViewerInkSessionOptions {
   /** Writes a separate selected-ink SVG beside the source PDF. */
   writeSvgExport?(this: void, name: string, svg: string): Promise<string | void>;
   /** Inserts a blank page at the requested one-indexed PDF position. */
-  onInsertPage?(requestedPageNumber: number): Promise<number>;
+  onInsertPage?(requestedPageNumber: number, report?: (stage: string) => void): Promise<number>;
   /** Persists the pre-mutation view state across a native PDF reload. */
   onAddPageMutationStart?(state: AddPageMutationRestoreState): void;
   /** Clears a pending restore when the current viewer survived the mutation. */
@@ -993,6 +994,7 @@ export class ViewerInkSession {
   private pageMutationInFlight = false;
   /** Add Page state remains pending until the rebuilt page set is observable. */
   private pendingAddPageMutation: AddPageMutationRestoreState | null = null;
+  private activeAddPageTiming: AddPageTiming | null = null;
   private addPageMutationViewRestored = false;
   /** PDF find integration is an optional surface extension. */
   private readonly findBridge: AnnotationFindBridge | null;
@@ -4580,6 +4582,11 @@ export class ViewerInkSession {
     }
     const details = this.addPageLifecycleDetails(state);
     details.settleReason = reason;
+    this.noteAddPageStage("first-replacement-page-observed");
+    this.addPageControl?.refresh();
+    if (this.addPageControl?.isConnected()) this.noteAddPageStage("add-page-control-remounted");
+    this.noteAddPageStage("mutation-complete");
+    this.activeAddPageTiming = null;
     this.logger.addPageLifecycle("mutation-complete", details);
     if (details.beforeScale !== details.afterScale || details.beforeScaleMode !== details.afterScaleMode) {
       this.logger.addPageLifecycle("scale-changed", details);
@@ -4620,7 +4627,9 @@ export class ViewerInkSession {
     if (reason === "pages-settled" && !addPageSettled) this.releasePageMutationShieldAfterSettled();
 
     if (!pages.length) {
-      // Transient empty during rebuild — wait, then detach so plugin re-attaches to the new viewer.
+      // Transient empty during rebuild. Keep Add Page visible now; the timer is only a detach fallback.
+      this.noteAddPageStage("page-dom-became-empty");
+      this.addPageControl?.holdDuringReplacement();
       this.scheduleDetachCheck();
       return;
     }
@@ -4635,6 +4644,7 @@ export class ViewerInkSession {
     }
 
     this.focusInsertedPageIfReady(reason, pages);
+    this.reconcileAddPageControl(pages);
     this.reconcileToolbarMount(reason);
     this.scheduleUiIntegrityCheck(reason);
 
@@ -4658,6 +4668,23 @@ export class ViewerInkSession {
     }
 
     this.scheduleRefresh(`pages-${reason}`);
+  }
+
+  private noteAddPageStage(stage: string, at = Date.now()): void {
+    const timing = this.activeAddPageTiming;
+    if (!timing?.mark(stage, at)) return;
+    this.logger.addPageTiming(stage, timing.report(at));
+  }
+
+  /** Move Add Page as soon as a last page exists. Do not wait for ink refresh. */
+  private reconcileAddPageControl(pages: AnnotationPageInfo[]): void {
+    const pending = this.pendingAddPageMutation;
+    const replacementReady = Boolean(pending && pages.length >= pending.pageCountBefore + 1);
+    if (replacementReady) this.noteAddPageStage("first-replacement-page-observed");
+    this.addPageControl?.refresh();
+    if (replacementReady && this.addPageControl?.isConnected()) {
+      this.noteAddPageStage("add-page-control-remounted");
+    }
   }
 
   private scheduleDetachCheck(): void {
@@ -5347,6 +5374,10 @@ export class ViewerInkSession {
     this.pageMutationInFlight = true;
     const startedAt = Date.now();
     let mutation: AddPageMutationRestoreState | null = null;
+    this.activeAddPageTiming = new AddPageTiming(this.id(), startedAt);
+    this.noteAddPageStage("add-page-ui-click", startedAt);
+    this.noteAddPageStage("add-page-ui-busy", startedAt);
+    this.addPageControl?.holdDuringReplacement();
     this.logger.pdfPageAction("insert-start", { requestedPageNumber, dirty: this.isDirty() });
     try {
       // The source PDF is replaced in place. Flush first so its sidecar has
@@ -5358,13 +5389,16 @@ export class ViewerInkSession {
       this.pendingAddPageMutation = mutation;
       this.addPageMutationViewRestored = false;
       this.options.onAddPageMutationStart?.(mutation);
+      this.activeAddPageTiming?.setOperationId(mutation.operationId);
+      this.noteAddPageStage("mutation-start");
       this.logger.addPageLifecycle("before-mutation", this.addPageLifecycleDetails(mutation));
       this.pendingInsertedPageFocus = {
         pageNumber: requestedPageNumber,
         expectedPageCount: mutation.pageCountBefore + 1
       };
       await this.armPageMutationShield("insert", requestedPageNumber);
-      const insertedPage = await this.options.onInsertPage(requestedPageNumber);
+      const report = (stage: string): void => this.noteAddPageStage(stage);
+      const insertedPage = await this.options.onInsertPage(requestedPageNumber, report);
       if (this.pendingInsertedPageFocus) this.pendingInsertedPageFocus.pageNumber = insertedPage;
       this.applyInsertedPageToSession(before, insertedPage);
       this.completePendingAddPageMutation("insert-complete", this.options.adapter.pages());
@@ -5380,6 +5414,7 @@ export class ViewerInkSession {
       this.releasePageMutationShield("insert-error");
       this.pendingAddPageMutation = null;
       this.addPageMutationViewRestored = false;
+      this.activeAddPageTiming = null;
       if (mutation && !this.destroyed) this.options.onAddPageMutationResolved?.(mutation);
       this.logger.pdfPageAction("insert-error", {
         requestedPageNumber,
