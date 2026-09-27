@@ -86,6 +86,14 @@ interface InputStrokeHeartbeat {
   lastPage: number | null;
   lastRouterGeneration: number | null;
   lastCorrelationId: string | null;
+  pointerType: string | null;
+  physicalContactId: string | null;
+  pointerEventPenSeen: boolean | null;
+  classification: string | null;
+  pressure: number | null;
+  width: number | null;
+  height: number | null;
+  touchEvidenceSeen: boolean | null;
 }
 
 interface InputLifecycleRecord {
@@ -113,7 +121,15 @@ export class SessionLogger {
     lastEndAt: null,
     lastPage: null,
     lastRouterGeneration: null,
-    lastCorrelationId: null
+    lastCorrelationId: null,
+    pointerType: null,
+    physicalContactId: null,
+    pointerEventPenSeen: null,
+    classification: null,
+    pressure: null,
+    width: null,
+    height: null,
+    touchEvidenceSeen: null
   };
   private firstFailedPenDown: Record<string, unknown> | null = null;
   private regressionReportedForStrokeAt: string | null = null;
@@ -576,10 +592,30 @@ export class SessionLogger {
   }
 
   /** Last successful pen stroke heartbeat, used to correlate the first failed down. */
-  inputStroke(phase: "start" | "end", details: { page: number; routerGeneration?: number | null; correlationId?: string | null }): void {
+  inputStroke(phase: "start" | "end", details: {
+    page: number;
+    routerGeneration?: number | null;
+    correlationId?: string | null;
+    pointerType?: string | null;
+    physicalContactId?: string | null;
+    pointerEventPenSeen?: boolean | null;
+    classification?: string | null;
+    pressure?: number | null;
+    width?: number | null;
+    height?: number | null;
+    touchEvidenceSeen?: boolean | null;
+  }): void {
     const at = new Date().toISOString();
     if (phase === "start") {
       this.inputHeartbeat.lastStartAt = at;
+      this.inputHeartbeat.pointerType = details.pointerType ?? null;
+      this.inputHeartbeat.physicalContactId = details.physicalContactId ?? null;
+      this.inputHeartbeat.pointerEventPenSeen = details.pointerEventPenSeen ?? null;
+      this.inputHeartbeat.classification = details.classification ?? null;
+      this.inputHeartbeat.pressure = details.pressure ?? null;
+      this.inputHeartbeat.width = details.width ?? null;
+      this.inputHeartbeat.height = details.height ?? null;
+      this.inputHeartbeat.touchEvidenceSeen = details.touchEvidenceSeen ?? null;
     } else {
       this.inputHeartbeat.lastEndAt = at;
       this.inputHeartbeat.lastCorrelationId = details.correlationId ?? this.inputHeartbeat.lastCorrelationId;
