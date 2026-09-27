@@ -959,6 +959,8 @@ export class ViewerInkSession {
   private lastKnownViewScale: number | null = null;
   private zoomBurstReason = "view-scalechanging";
   private zoomCorrelationId: string | null = null;
+  /** Last few finished pinches, for Copy Logs. One record per zoom, not per frame. */
+  private readonly recentZoomGesturePerformance: Array<Record<string, unknown>> = [];
   private zoomSequence = 0;
   private readonly postZoomTrace = new PostZoomInputTrace();
   private readonly postZoomDurability = new PostZoomDurabilityTrace();
@@ -3419,6 +3421,7 @@ export class ViewerInkSession {
       nativeContentMutations: this.zoomNativeContentMutations
     };
     this.logger.zoomProfile(metrics);
+    this.rememberZoomGesturePerformance(metrics);
     this.reportDevProbe("zoom-profile", {
       durationMs: metrics.durationMs,
       scaleChangingEvents: metrics.scaleChangingEvents,
@@ -3430,6 +3433,63 @@ export class ViewerInkSession {
       pluginWorkMs: metrics.pluginWorkMs
     });
     this.zoomProfile = null;
+  }
+
+  /**
+   * Smooth at 60Hz is a frame gap near 16ms with no late frames. Copy Logs keeps
+   * the last three finished gestures. A slow span is only the gap past 25ms.
+   */
+  private rememberZoomGesturePerformance(metrics: {
+    durationMs: number;
+    scaleStart: number | null;
+    scaleEnd: number | null;
+    scaleChangingEvents: number;
+    scaleIntervalP50Ms: number;
+    scaleIntervalP95Ms: number;
+    scaleIntervalMaxMs: number;
+    scaleIntervalHistogram: Record<string, number>;
+    frameCount: number;
+    p95FrameDeltaMs: number;
+    maxFrameIntervalMs: number;
+    lateFrameCount: number;
+    droppedFrameEstimate: number;
+    longestLongTaskMs: number;
+    maxPdfInkMismatchPx: number;
+    frameIntervalHistogram: Record<string, number>;
+  }): void {
+    const summary = {
+      zoomBurstId: this.zoomCorrelationId,
+      durationMs: metrics.durationMs,
+      scaleStart: metrics.scaleStart,
+      scaleEnd: metrics.scaleEnd,
+      scaleChangingEvents: metrics.scaleChangingEvents,
+      scaleIntervalP50Ms: metrics.scaleIntervalP50Ms,
+      scaleIntervalP95Ms: metrics.scaleIntervalP95Ms,
+      scaleIntervalMaxMs: metrics.scaleIntervalMaxMs,
+      scaleIntervalHistogram: metrics.scaleIntervalHistogram,
+      frameCount: metrics.frameCount,
+      p95FrameDeltaMs: metrics.p95FrameDeltaMs,
+      maxFrameIntervalMs: metrics.maxFrameIntervalMs,
+      lateFrameCount: metrics.lateFrameCount,
+      droppedFrameEstimate: metrics.droppedFrameEstimate,
+      longestLongTaskMs: metrics.longestLongTaskMs,
+      maxPdfInkMismatchPx: metrics.maxPdfInkMismatchPx,
+      frameIntervalHistogram: metrics.frameIntervalHistogram
+    };
+    this.recentZoomGesturePerformance.push(summary);
+    if (this.recentZoomGesturePerformance.length > 3) this.recentZoomGesturePerformance.shift();
+    if (metrics.p95FrameDeltaMs < 25 && metrics.longestLongTaskMs < 8) return;
+    const span = this.slowSpans.record({
+      kind: metrics.longestLongTaskMs >= 8 ? "sync" : "async",
+      category: "zoom",
+      stage: "zoom-gesture-frame",
+      durationMs: Math.max(metrics.p95FrameDeltaMs, metrics.longestLongTaskMs),
+      activeWorkMs: metrics.longestLongTaskMs,
+      waitMs: 0,
+      reason: metrics.longestLongTaskMs >= 8 ? "long-task" : "frame-gap",
+      zoomBurstId: this.zoomCorrelationId
+    });
+    if (span) this.logger.perfSlowSpan({ ...span });
   }
 
   private scheduleZoomRepaint(reason: string, scale?: number): void {
@@ -5823,6 +5883,7 @@ export class ViewerInkSession {
       lastPointerTypeOrigins: this.pointerTypeOrigins.snapshot(),
       physicalContactHotPath: physicalContactHotPathStats(),
       performanceSlowSpanSummary: this.slowSpans.summary(),
+      lastZoomGesturePerformance: this.recentZoomGesturePerformance.map((entry) => ({ ...entry })),
       lastInkStrokeGeometry: this.recentInkStrokeGeometry.slice(),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
     });
