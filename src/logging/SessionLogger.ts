@@ -545,6 +545,14 @@ export class SessionLogger {
   }
 
   /** One self-contained failure for the first Pencil contact after a zoom settle. */
+  pinchTouchExcludedAsStylus(details: Record<string, unknown> = {}): void {
+    this.emit("info", "pinch-touch-excluded-as-stylus", {
+      document: this.documentPath,
+      event: "pinch-touch-excluded-as-stylus",
+      ...details
+    }, true);
+  }
+
   stalePinchContact(details: Record<string, unknown> = {}): void {
     this.emit("info", "stale-pinch-contact-pruned", {
       document: this.documentPath,

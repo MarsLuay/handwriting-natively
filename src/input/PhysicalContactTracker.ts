@@ -169,6 +169,22 @@ export class PhysicalContactTracker {
     return this.contacts.size;
   }
 
+  stylusTouchAssociations(): Array<{ touchIdentifier: number; physicalContactId: string; pointerId: number | null }> {
+    const associations: Array<{ touchIdentifier: number; physicalContactId: string; pointerId: number | null }> = [];
+    for (const contact of this.contacts) {
+      if (!contact.pointerEventPenSeen) continue;
+      const pointerId = [...contact.activePointerIds][0] ?? [...contact.pointerIds][0] ?? null;
+      for (const touchIdentifier of contact.activeTouchIdentifiers) {
+        associations.push({
+          touchIdentifier,
+          physicalContactId: contact.physicalContactId,
+          pointerId
+        });
+      }
+    }
+    return associations;
+  }
+
   pointerContactId(pointerId: number): string | null {
     return this.pointerContacts.get(pointerId)?.physicalContactId ?? null;
   }
