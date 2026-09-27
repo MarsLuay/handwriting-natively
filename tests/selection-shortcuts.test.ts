@@ -6,29 +6,31 @@ function keyEvent(init: KeyboardEventInit): KeyboardEvent {
 }
 
 describe("selection shortcuts", () => {
-  it("parses copy, cut, paste, select all, and delete", () => {
-    expect(parseSelectionShortcut(keyEvent({ key: "c", ctrlKey: true }))).toBe("copy");
-    expect(parseSelectionShortcut(keyEvent({ key: "C", metaKey: true }))).toBe("copy");
-    expect(parseSelectionShortcut(keyEvent({ key: "x", ctrlKey: true }))).toBe("cut");
-    expect(parseSelectionShortcut(keyEvent({ key: "v", metaKey: true }))).toBe("paste");
-    expect(parseSelectionShortcut(keyEvent({ key: "a", metaKey: true }))).toBe("selectAll");
-    expect(parseSelectionShortcut(keyEvent({ key: "A", ctrlKey: true }))).toBe("selectAll");
+  it("keeps plain Ctrl/Cmd editing native and maps ink to Alt/Option", () => {
+    expect(parseSelectionShortcut(keyEvent({ key: "c", ctrlKey: true }))).toBeNull();
+    expect(parseSelectionShortcut(keyEvent({ key: "a", metaKey: true }))).toBeNull();
+    expect(parseSelectionShortcut(keyEvent({ key: "c", ctrlKey: true, altKey: true }))).toBe("copy");
+    expect(parseSelectionShortcut(keyEvent({ key: "C", metaKey: true, altKey: true }))).toBe("copy");
+    expect(parseSelectionShortcut(keyEvent({ key: "x", ctrlKey: true, altKey: true }))).toBe("cut");
+    expect(parseSelectionShortcut(keyEvent({ key: "v", metaKey: true, altKey: true }))).toBe("paste");
+    expect(parseSelectionShortcut(keyEvent({ key: "a", metaKey: true, altKey: true }))).toBe("selectAll");
+    expect(parseSelectionShortcut(keyEvent({ key: "A", ctrlKey: true, altKey: true }))).toBe("selectAll");
     expect(parseSelectionShortcut(keyEvent({ key: "Delete" }))).toBe("delete");
     expect(parseSelectionShortcut(keyEvent({ key: "Backspace" }))).toBe("delete");
   });
 
-  it("parses undo and redo", () => {
-    expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true }))).toBe("undo");
-    expect(parseHistoryShortcut(keyEvent({ key: "Z", ctrlKey: true }))).toBe("undo");
-    expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true, shiftKey: true }))).toBe("redo");
-    expect(parseHistoryShortcut(keyEvent({ key: "y", ctrlKey: true }))).toBe("redo");
-    expect(parseHistoryShortcut(keyEvent({ key: "z", altKey: true, metaKey: true }))).toBeNull();
+  it("parses ink undo and redo only with Alt/Option", () => {
+    expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true }))).toBeNull();
+    expect(parseHistoryShortcut(keyEvent({ key: "z", ctrlKey: true, shiftKey: true }))).toBeNull();
+    expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true, altKey: true }))).toBe("undo");
+    expect(parseHistoryShortcut(keyEvent({ key: "Z", ctrlKey: true, altKey: true }))).toBe("undo");
+    expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true, altKey: true, shiftKey: true }))).toBe("redo");
+    expect(parseHistoryShortcut(keyEvent({ key: "y", ctrlKey: true, altKey: true }))).toBe("redo");
   });
 
-  it("ignores modified delete and alt combos", () => {
+  it("ignores modified delete and shifted paste", () => {
     expect(parseSelectionShortcut(keyEvent({ key: "Delete", ctrlKey: true }))).toBeNull();
-    expect(parseSelectionShortcut(keyEvent({ key: "c", ctrlKey: true, altKey: true }))).toBeNull();
-    expect(parseSelectionShortcut(keyEvent({ key: "v", metaKey: true, shiftKey: true }))).toBeNull();
+    expect(parseSelectionShortcut(keyEvent({ key: "v", metaKey: true, altKey: true, shiftKey: true }))).toBeNull();
   });
 
   it("ignores form fields outside plugin chrome", () => {
