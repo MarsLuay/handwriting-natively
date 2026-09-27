@@ -175,6 +175,12 @@
   overflow: hidden;
 }
 
+/* Sidebar is icon-only. Name text clips in the narrow rail; keep the name on the button. */
+.native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-preset-slots,
+.native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-preset-slots {
+  display: none;
+}
+
 .native-pdf-handwriting-preset-slot {
   font-size: 12px;
   max-width: 7.5rem;
