@@ -899,6 +899,14 @@ export class SessionLogger {
     }, true);
   }
 
+  perfUnattributedFrameGap(details: Record<string, unknown> = {}): void {
+    this.emit("info", "perf-unattributed-frame-gap", {
+      document: this.documentPath,
+      event: "perf-unattributed-frame-gap",
+      ...details
+    }, true);
+  }
+
   /** Capture the bounded UI state immediately before the user copies logs. */
   handwritingUiSnapshot(details: Record<string, unknown> = {}): void {
     this.emit("info", "handwriting-ui-snapshot", {

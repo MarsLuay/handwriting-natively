@@ -111,6 +111,7 @@ import type { DebugState } from "../ui/DebugPanel";
 import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
 import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../logging/SessionLogger";
 import { BoundedTiming, FRAME_MS_120, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
+import { ZoomFrameDiagnostics, type FrameAttributionSummary } from "./ZoomFrameDiagnostics";
 import type { VaultLogSink } from "../logging/VaultLogSink";
 import type { AnnotationViewState } from "./AnnotationSurface";
 import { describeScrollElement, scrollPdfByDetailed } from "../integration/PdfScrollRoot";
@@ -965,6 +966,8 @@ export class ViewerInkSession {
   private readonly postZoomTrace = new PostZoomInputTrace();
   private readonly postZoomDurability = new PostZoomDurabilityTrace();
   private readonly slowSpans = new SlowSpanTrace();
+  private readonly zoomFrameDiagnostics = new ZoomFrameDiagnostics();
+  private lastZoomFrameAttributionSummary: FrameAttributionSummary | null = null;
   private readonly openInkStrokeGeometry = new Map<number, OpenInkStrokeGeometry>();
   private readonly recentInkStrokeGeometry: InkStrokeGeometryRecord[] = [];
   private settleWaitStartedAt = 0;
@@ -1288,7 +1291,10 @@ export class ViewerInkSession {
     });
     this.resizeObserver = typeof ResizeObserver === "undefined"
       ? null
-      : new ResizeObserver(() => this.handleRootResize());
+      : new ResizeObserver(() => {
+        this.zoomFrameDiagnostics.noteObserverSignal("resizeObserver");
+        this.handleRootResize();
+      });
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
     this.viewerMousePan = new ViewerMousePan(adapter.host.ownerDocument, {
@@ -3180,6 +3186,7 @@ export class ViewerInkSession {
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) return;
     if (this.zoomProfile) this.zoomProfile.layoutFramesScheduled += 1;
+    const rafRequestedAt = performance.now();
     this.zoomLayoutFrame = view.requestAnimationFrame(() => {
       this.zoomLayoutFrame = null;
       if (this.destroyed || !this.zoomCompositing) return;
@@ -3238,6 +3245,19 @@ export class ViewerInkSession {
       }
       this.recordZoomProfileTask(started);
       const pluginWorkMs = performance.now() - started;
+      this.zoomFrameDiagnostics.notePluginOperation("overlay-layout", layoutMs);
+      this.zoomFrameDiagnostics.notePluginOperation("page-geometry-read", geometryMs);
+      const frameGap = this.zoomFrameDiagnostics.recordFrame({
+        requestedAt: rafRequestedAt,
+        callbackAt: now,
+        pluginWorkMs,
+        context: {
+          documentHidden: this.options.adapter.host.ownerDocument.hidden,
+          visualViewportScale: view.visualViewport?.scale ?? null,
+          devicePixelRatio: view.devicePixelRatio ?? null
+        }
+      });
+      if (frameGap) this.logger.perfUnattributedFrameGap({ ...frameGap });
       if (pluginWorkMs >= FRAME_MS_120) {
         this.logger.zoomLongFrame({
           zoomBurstId: this.postZoomTrace.currentBurstId(),
@@ -3285,16 +3305,22 @@ export class ViewerInkSession {
   }
 
   private startZoomLongTaskObserver(): void {
-    if (!this.logger.isEnabled() || this.zoomLongTaskObserver || typeof PerformanceObserver === "undefined") return;
+    if (!this.logger.isEnabled() || this.zoomLongTaskObserver || typeof PerformanceObserver === "undefined") {
+      this.zoomFrameDiagnostics.setLongTaskObserverState(false, typeof PerformanceObserver === "undefined" ? "unsupported" : null);
+      return;
+    }
     try {
       const observer = new PerformanceObserver((entries) => {
         const longest = entries.getEntries().reduce((max, entry) => Math.max(max, entry.duration), 0);
         if (this.zoomProfile) this.zoomProfile.longTaskMaxMs = Math.max(this.zoomProfile.longTaskMaxMs, longest);
+        this.zoomFrameDiagnostics.noteLongTask(longest);
       });
       observer.observe({ entryTypes: ["longtask"] });
       this.zoomLongTaskObserver = observer;
-    } catch {
+      this.zoomFrameDiagnostics.setLongTaskObserverState(true);
+    } catch (error) {
       this.zoomLongTaskObserver = null;
+      this.zoomFrameDiagnostics.setLongTaskObserverState(false, error instanceof Error ? error.name : "observe-error");
     }
   }
 
@@ -3322,6 +3348,8 @@ export class ViewerInkSession {
       profile.sidebarFollowSuppressedTriggers = sidebar.sidebarFollowSuppressedTriggers;
     }
     this.stopZoomLongTaskObserver();
+    const frameAttributionSummary = this.zoomFrameDiagnostics.summary();
+    this.lastZoomFrameAttributionSummary = frameAttributionSummary;
     const scaleIntervals = profile.scaleIntervals.summary();
     const scaleDeltas = profile.scaleDeltas.summary();
     const frameIntervals = profile.frameIntervals.summary();
@@ -3418,7 +3446,8 @@ export class ViewerInkSession {
       sidebarFollowFramesDuringBurst: profile.sidebarFollowFramesDuringBurst,
       maxSidebarOffsetJump: profile.maxSidebarOffsetJump,
       sidebarFollowSuppressedTriggers: profile.sidebarFollowSuppressedTriggers,
-      nativeContentMutations: this.zoomNativeContentMutations
+      nativeContentMutations: this.zoomNativeContentMutations,
+      frameAttributionSummary
     };
     this.logger.zoomProfile(metrics);
     this.rememberZoomGesturePerformance(metrics);
@@ -3509,6 +3538,7 @@ export class ViewerInkSession {
     // the settle timer is the actual quiet-window boundary.
     if (!this.zoomProfile) {
       this.zoomCorrelationId = this.postZoomTrace.begin();
+      if (this.logger.isEnabled()) this.zoomFrameDiagnostics.begin(this.zoomCorrelationId);
       this.postZoomDurability.onZoomBegin(this.zoomCorrelationId);
       const seed = this.pinchCleanup.beginBurst();
       for (const prune of seed.pruned) this.logger.stalePinchContact({ ...prune });
@@ -4103,13 +4133,18 @@ export class ViewerInkSession {
     if (this.destroyed) return;
     this.runZoomSettlePaintCallCount += 1;
     this.lastRunZoomSettlePaintAt = performance.now();
-    if (this.awaitPinchGestureCleanup()) return;
+    if (this.awaitPinchGestureCleanup()) {
+      this.zoomFrameDiagnostics.setPhase("post-pinch-live-ink");
+      return;
+    }
     // Keep CSS compositing + draft canvas intact until the tip lifts. Mid-drag
     // settle was clearing the live draft and force-rebinding routers (log proof).
     if (this.hasAnyLiveInkInput()) {
+      this.zoomFrameDiagnostics.setPhase("post-pinch-live-ink");
       this.pauseZoomSettleForLiveInk("live-ink");
       return;
     }
+    this.zoomFrameDiagnostics.setPhase("handoff");
     const settleWorkStarted = performance.now();
     const burstTicks = this.zoomTickCount;
     const burstDurationMs = roundMs(performance.now() - this.zoomBurstStartedAt);
@@ -4583,6 +4618,8 @@ export class ViewerInkSession {
   /** Adapter breadcrumb for the native PDF.js canvas/text layer replacement. */
   onPdfPageContentMutation(recordCount: number): void {
     if (this.destroyed) return;
+    this.zoomFrameDiagnostics.noteObserverSignal("mutationObserver");
+    this.zoomFrameDiagnostics.notePdfSignal("canvasReplacement");
     for (const surface of this.surfaces.values()) {
       if (surface.strokePerformance) surface.strokePerformance.mutationRefreshes += 1;
     }
@@ -4778,6 +4815,7 @@ export class ViewerInkSession {
     });
     this.zoomCompositeSettledAt = 0;
     this.zoomHandoffNeedsFinalRebase = false;
+    this.lastZoomFrameAttributionSummary = this.zoomFrameDiagnostics.finish();
     // Scroll/pagechanging during pinch deferred remount until CSS handoff ends.
     this.flushPendingMobileScrollRemount();
     // Strict settle may have deferred off-screen pages; idle-margin prefetch once handoff ends.
@@ -5536,6 +5574,7 @@ export class ViewerInkSession {
       ? this.options.adapter.viewerGeneration
       : change.viewerGeneration;
     if (change.viewerGeneration !== adapterGeneration) return;
+    this.zoomFrameDiagnostics.notePdfSignal(change.kind === "render" ? "pagerendered" : "pagesMutation");
     if (change.kind === "viewer-replaced") {
       this.onPagesChanged("viewer-replaced");
       return;
@@ -5553,6 +5592,7 @@ export class ViewerInkSession {
   }
 
   onViewStateChange(state: AnnotationViewState, source: ViewStateSource): void {
+    if (source === "scalechanging") this.zoomFrameDiagnostics.notePdfSignal("scalechanging");
     this.logger.viewState(state, source);
     if (this.zoomProfile) {
       if (source === "scroll") this.zoomProfile.scrollEvents += 1;
@@ -5893,6 +5933,7 @@ export class ViewerInkSession {
       lastPointerTypeOrigins: this.pointerTypeOrigins.snapshot(),
       physicalContactHotPath: physicalContactHotPathStats(),
       performanceSlowSpanSummary: this.slowSpans.summary(),
+      frameAttributionSummary: this.lastZoomFrameAttributionSummary ?? this.zoomFrameDiagnostics.summary(),
       lastZoomGesturePerformance: this.recentZoomGesturePerformance.map((entry) => ({ ...entry })),
       lastInkStrokeGeometry: this.recentInkStrokeGeometry.slice(),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
