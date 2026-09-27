@@ -66,6 +66,7 @@ import { AddPageControl } from "../ui/AddPageControl";
 import { AddPageTiming } from "../ui/AddPageTiming";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, inkHotkeyCommand, type InkHotkeyCommand, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
+import { OpenInkStrokeGeometry, type InkStrokeGeometryRecord } from "../input/InkStrokeGeometry";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
 import { InkSession, type InkLifecycleEvent } from "../ink/InkSession";
 import { DamageLedger } from "../ink/DamageLedger";
@@ -954,6 +955,8 @@ export class ViewerInkSession {
   private readonly postZoomTrace = new PostZoomInputTrace();
   private readonly postZoomDurability = new PostZoomDurabilityTrace();
   private readonly slowSpans = new SlowSpanTrace();
+  private readonly openInkStrokeGeometry = new Map<number, OpenInkStrokeGeometry>();
+  private readonly recentInkStrokeGeometry: InkStrokeGeometryRecord[] = [];
   private settleDeferralMs = 0;
   private settleResetReasons: Record<string, number> = {};
   private readonly pointerTypeOrigins = new PointerTypeOriginLog();
@@ -1392,6 +1395,9 @@ export class ViewerInkSession {
 
     this.installPointerDownProbes(doc, options, within);
     this.installPointerUpCancelProbes(doc, options);
+    doc.addEventListener("pointermove", (event: PointerEvent) => {
+      this.continueOpenPenStroke(event);
+    }, { capture: true, passive: false, signal: this.pointerProbeAbort.signal });
     adapter.scrollElement().addEventListener("scroll", () => this.updatePenScrollEvidence(), options);
     this.installWheelProbes(doc, options, within, adapter);
     this.installGestureProbes(doc, options, within);
@@ -2665,6 +2671,35 @@ export class ViewerInkSession {
     };
     doc.addEventListener("pointerup", clearHandled, options);
     doc.addEventListener("pointercancel", clearHandled, options);
+  }
+
+  private beginInkStrokeGeometry(event: PointerEvent, samples: PointerSample[]): void {
+    const geometry = new OpenInkStrokeGeometry();
+    geometry.noteSamples(samples, false);
+    this.openInkStrokeGeometry.set(event.pointerId, geometry);
+  }
+
+  private noteInkStrokeMove(event: PointerEvent, samples: PointerSample[]): void {
+    this.openInkStrokeGeometry.get(event.pointerId)?.noteSamples(samples, true);
+  }
+
+  private finishInkStrokeGeometry(event: PointerEvent, samples: PointerSample[], terminalEvent: string): void {
+    const geometry = this.openInkStrokeGeometry.get(event.pointerId);
+    if (!geometry) return;
+    this.openInkStrokeGeometry.delete(event.pointerId);
+    if (samples.length > 0) geometry.noteSamples(samples, false);
+    const record = geometry.finish(event.pointerId, terminalEvent, event);
+    this.recentInkStrokeGeometry.push(record);
+    if (this.recentInkStrokeGeometry.length > 3) this.recentInkStrokeGeometry.shift();
+    this.logger.inkStrokeGeometry({ ...record });
+  }
+
+  /** Page capture loses Pencil moves after capture leaves the page. Document still sees them. */
+  private continueOpenPenStroke(event: PointerEvent): void {
+    if (event.pointerType !== "pen") return;
+    for (const surface of this.surfaces.values()) {
+      if (surface.router?.acceptDocumentPenStroke(event)) return;
+    }
   }
 
   private installWheelProbes(
@@ -5607,6 +5642,7 @@ export class ViewerInkSession {
       lastPointerTypeOrigins: this.pointerTypeOrigins.snapshot(),
       physicalContactHotPath: physicalContactHotPathStats(),
       performanceSlowSpanSummary: this.slowSpans.summary(),
+      lastInkStrokeGeometry: this.recentInkStrokeGeometry.slice(),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
     });
     this.logger.handwritingUiSnapshot(snapshot);
@@ -9482,6 +9518,7 @@ export class ViewerInkSession {
         if (isDrawingTool(activeTool)) this.scheduleHeldShape(surface);
         if (event.pointerType === "pen") this.slowSpans.noteStrokeStart(performance.now());
       }
+      if (event.pointerType === "pen" && surface.builder) this.beginInkStrokeGeometry(event, samples);
     } else {
       if (activeTool === "lasso" && (this.selected.length > 0 || this.selectedTexts.length > 0)) {
         const point = this.toPagePoint(surface, samples[0]!, true);
@@ -9528,6 +9565,7 @@ export class ViewerInkSession {
       if (lastPoint) this.resizeLockedShape(surface, lastPoint);
       const last = samples.at(-1);
       if (last) this.logPositionAlign(surface, last, "move");
+      if (event.pointerType === "pen") this.noteInkStrokeMove(event, samples);
       if (surface.laserDraft) {
         this.trimLaserDraft(surface, performance.now());
         this.ensureLaserFadeLoop();
@@ -9582,6 +9620,7 @@ export class ViewerInkSession {
       return;
     }
     if (route === "draw" && surface.builder) {
+      if (event.pointerType === "pen") this.finishInkStrokeGeometry(event, samples, "pointerup");
       this.commitActiveDraw(surface, samples, "pointerup");
     } else if (route === "edit") {
       surface.editPath.push(...this.toPagePoints(surface, samples, true));
@@ -9726,6 +9765,7 @@ export class ViewerInkSession {
     this.movePreview = null;
     this.moveTextPreview = null;
     this.moveShapePreview = null;
+    if (route === "draw" && event.pointerType === "pen") this.finishInkStrokeGeometry(event, [], "pointercancel");
     if (route === "draw") this.finishStrokePerformance(surface, "pointercancel");
     surface.builder = undefined;
     surface.pressureConditioner = undefined;

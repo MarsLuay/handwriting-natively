@@ -884,6 +884,13 @@ export class SessionLogger {
     }, true);
   }
 
+  inkStrokeGeometry(details: Record<string, unknown> = {}): void {
+    this.emit("info", "ink-stroke-geometry", {
+      document: this.documentPath,
+      ...details
+    }, true);
+  }
+
   zoomDiagnosis(details: Record<string, unknown> = {}): void {
     this.emit("info", "last-zoom-trace", {
       document: this.documentPath,

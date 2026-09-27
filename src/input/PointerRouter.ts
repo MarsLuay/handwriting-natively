@@ -134,6 +134,8 @@ export class PointerRouter {
   readonly generation: number;
   private readonly routed = new Map<number, "draw" | "edit" | "text">();
   private readonly routedPointerTypes = new Map<number, "pen" | "mouse">();
+  /** Same PointerEvent must not append ink twice when document and page both see it. */
+  private readonly consumedStrokeEvents = new WeakSet<Event>();
   private readonly stylusErasers = new Set<number>();
   private readonly touches = new Set<number>();
   private readonly manipulationTouches = new Set<number>();
@@ -209,6 +211,18 @@ export class PointerRouter {
     view?.addEventListener("blur", this.handleLifecycleCancellation, { ...options, passive: true });
     view?.addEventListener("pagehide", this.handleLifecycleCancellation, { ...options, passive: true });
     this.syncTouchActionMode();
+  }
+
+  /**
+   * Document pointermove owner for an open pen stroke. Page capture misses
+   * samples after iOS moves pointer capture off the page; lostpointercapture
+   * is not the end of that stroke.
+   */
+  acceptDocumentPenStroke(event: PointerEvent): boolean {
+    if (event.pointerType !== "pen" || event.type !== "pointermove") return false;
+    if (!this.routed.has(event.pointerId)) return false;
+    this.handleMove(event);
+    return true;
   }
 
   classify(event: PointerEvent): PointerRoute {
@@ -707,11 +721,13 @@ export class PointerRouter {
     if (route) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (this.consumedStrokeEvents.has(event)) return;
       // Ink: skip Pencil hover / near-zero pressure on move (keep down/up for floor + tip).
       const samples = this.inkSamples(event, {
         skipPenHover: route === "draw" || route === "edit"
       });
       if (samples.length === 0) return;
+      this.consumedStrokeEvents.add(event);
       this.callbacks.onMove?.(samples, route, event);
       return;
     }
@@ -765,9 +781,11 @@ export class PointerRouter {
 
   private readonly handleLostPointerCapture = (event: PointerEvent): void => {
     if (event.pointerType === "mouse" || event.pointerType === "pen") this.hideCustomCursors();
-    // Capture can move to another node; pointerup may never hit this page listener.
+    // iOS drops page pointermove after capture leaves the page and reports
+    // lostpointercapture at (0, 0). That is capture moving, not the pen lift.
+    // The document listener keeps appending until pointerup or pointercancel.
+    if (event.pointerType === "pen" && this.routed.has(event.pointerId)) return;
     if (event.pointerType === "pen" && this.palmPolicy.hasActivePen()) {
-      this.finishRoutedPointer(event, "pointerup");
       this.releasePenContact(event, "lostpointercapture");
       this.syncTouchActionMode();
       return;
@@ -783,6 +801,7 @@ export class PointerRouter {
   private readonly clearEndedTouch = (event: PointerEvent): void => {
     // Document capture: Pencil terminal events often miss the page listener after
     // acceptPointerDown + setPointerCapture (same failure Ink documents).
+    if (event.pointerType === "pen" && event.type === "lostpointercapture") return;
     if (event.pointerType === "pen") {
       const hadRoute = this.routed.has(event.pointerId);
       const hadPen = this.palmPolicy.hasActivePen();
