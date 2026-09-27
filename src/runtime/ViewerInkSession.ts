@@ -2101,7 +2101,7 @@ export class ViewerInkSession {
       ? this.postZoomTrace.retainedContact(record.contact.physicalContactId)
       : null;
     if (record.phase === "start") {
-      const noted = this.postZoomTrace.notePageContact(Date.now(), overPage);
+      const noted = this.postZoomTrace.notePageContact(Date.now(), overPage, record.contact.physicalContactId);
       if (noted && page) {
         const scroll = this.options.adapter.scrollElement();
         this.postZoomTrace.remember("post-zoom-contact", {
@@ -2150,7 +2150,8 @@ export class ViewerInkSession {
         || record.contact.pointerCaptureLost
         || record.contact.terminalPointRejectReason?.startsWith("lostpointercapture") === true
     };
-    const anomaly = overPage ? this.postZoomTrace.anomaly(observation) : null;
+    const anomaly = overPage ? this.postZoomTrace.anomaly(observation, Date.now()) : null;
+    this.postZoomTrace.completeAdmittedContact(record.contact.physicalContactId, Date.now());
     const disposition = postZoomFinalDisposition({
       penToolActive: isDrawingTool(this.activeTool()),
       stylusIdentity,
