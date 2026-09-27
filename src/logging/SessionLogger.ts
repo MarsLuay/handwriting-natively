@@ -473,6 +473,14 @@ export class SessionLogger {
   }
 
   /** Raw pointer/touch probe — every type (mouse/pen/touch/…) for diagnosis. */
+  inputHotPathLongTask(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "input-hot-path-long-task", {
+      document: this.documentPath,
+      event: "input-hot-path-long-task",
+      ...details
+    }, true);
+  }
+
   pointerTypeOrigin(details: Record<string, unknown> = {}): void {
     this.emit("info", "pointer-type-origin", {
       document: this.documentPath,
