@@ -259,6 +259,58 @@ describe("PhysicalContactTracker", () => {
     expect(snapshot.maxDisplacementPx).toBe(0);
   });
 
+  it("rejects lostpointercapture origin sentinels that previously inflated displacement", () => {
+    const cases = [
+      { start: { x: 627, y: 768 }, end: { x: 627, y: 768 }, falseDisplacement: 991.439862018872 },
+      { start: { x: 748, y: 722 }, end: { x: 772, y: 622 }, falseDisplacement: 1039.6095420877975 },
+      { start: { x: 1050, y: 843 }, end: { x: 1050, y: 843 }, falseDisplacement: 1346.532212759873 }
+    ] as const;
+
+    for (const sample of cases) {
+      const tracker = new PhysicalContactTracker();
+      tracker.pointerDown(0, pointer("pointerdown", { clientX: sample.start.x, clientY: sample.start.y }));
+      tracker.touchStart(1, touch("touchstart", 3, { clientX: sample.start.x, clientY: sample.start.y }));
+      tracker.pointerLostCapture(2, pointer("lostpointercapture", {
+        clientX: 0,
+        clientY: 0,
+        width: 1,
+        height: 1,
+        buttons: 0,
+        cancelable: false
+      }));
+      const terminal = tracker.touchEnd(3, touch("touchend", 3, { clientX: sample.end.x, clientY: sample.end.y }));
+      const snapshot = terminal[0]!.contact;
+      const actual = Math.hypot(sample.end.x - sample.start.x, sample.end.y - sample.start.y);
+
+      expect(snapshot.pointerCaptureLost).toBe(true);
+      expect(snapshot.rawPointer.last).toEqual(expect.objectContaining({
+        eventType: "lostpointercapture",
+        clientX: 0,
+        clientY: 0
+      }));
+      expect(snapshot.rawPointerTerminalPoint).toEqual({ x: 0, y: 0 });
+      expect(snapshot.lastValidPoint).toEqual(sample.end);
+      expect(snapshot.lastPoint).toEqual(sample.end);
+      expect(snapshot.terminalPointAcceptedForGeometry).toBe(false);
+      expect(snapshot.terminalPointRejectReason).toBe("lostpointercapture-sentinel");
+      expect(snapshot.maxDisplacementPx).toBeCloseTo(actual);
+      expect(snapshot.maxDisplacementPx).not.toBeCloseTo(sample.falseDisplacement);
+    }
+  });
+
+  it("keeps a valid nonzero lostpointercapture sample as geometry", () => {
+    const tracker = new PhysicalContactTracker();
+    tracker.pointerDown(0, pointer("pointerdown", { clientX: 40, clientY: 50 }));
+    tracker.pointerLostCapture(1, pointer("lostpointercapture", { clientX: 48, clientY: 60 }));
+    const terminal = tracker.pointerEnd(2, pointer("pointerup", { clientX: 48, clientY: 60 }));
+    const snapshot = terminal[0]!.contact;
+
+    expect(snapshot.pointerCaptureLost).toBe(true);
+    expect(snapshot.lastValidPoint).toEqual({ x: 48, y: 60 });
+    expect(snapshot.maxDisplacementPx).toBeCloseTo(Math.hypot(8, 10));
+    expect(snapshot.terminalPointRejectReason).toBeNull();
+  });
+
   it("does not pair non-finite coordinates with an active contact", () => {
     const tracker = new PhysicalContactTracker();
     tracker.touchStart(0, touch("touchstart", 7, { clientX: 100, clientY: 200 }));
