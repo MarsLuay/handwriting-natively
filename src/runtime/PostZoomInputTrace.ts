@@ -36,6 +36,68 @@ export interface PostZoomContactObservation {
   pointerCaptureStale: boolean;
 }
 
+/** One settle-time recovery, so a later device log can attribute the next pointer type. */
+export const POST_ZOOM_CAPTURE_RECOVERY = "release-annotation-pointer-captures";
+
+export interface StylusIdentityRegression {
+  event: "post-zoom-stylus-identity-regression";
+  zoomBurstId: string;
+  preZoomPointerType: "pen";
+  preZoomPointerEventPenSeen: true;
+  postZoomPointerType: string;
+  postZoomPointerEventPenSeen: false;
+  postZoomStylusIdentity: StylusIdentity;
+  sameSession: true;
+  samePageMountGeneration: boolean | null;
+  sameRouterGeneration: boolean | null;
+  /** Browser properties only. This does not claim the physical tool was Pencil. */
+  physicalToolClaimed: false;
+  recoveryExperiment: string | null;
+}
+
+/**
+ * Compare the last successful pen PointerEvent with a later page contact that
+ * has no stylus evidence. Returns null unless that browser-property change is real.
+ */
+export function stylusIdentityRegression(input: {
+  zoomBurstId: string | null;
+  preZoomPointerType: unknown;
+  preZoomPointerEventPenSeen: unknown;
+  postZoomPointerType: string | null;
+  postZoomPointerEventPenSeen: boolean;
+  postZoomStylusIdentity: StylusIdentity;
+  strokeStarted: boolean;
+  preZoomPageMountGeneration: number | null;
+  postZoomPageMountGeneration: number | null;
+  preZoomRouterGeneration: number | null;
+  postZoomRouterGeneration: number | null;
+  recoveryExperiment: string | null;
+}): StylusIdentityRegression | null {
+  if (!input.zoomBurstId || input.strokeStarted) return null;
+  if (input.preZoomPointerType !== "pen" || input.preZoomPointerEventPenSeen !== true) return null;
+  if (input.postZoomPointerEventPenSeen || input.postZoomStylusIdentity === "established") return null;
+  const postZoomPointerType = input.postZoomPointerType ?? "unknown";
+  if (postZoomPointerType === "pen") return null;
+  return {
+    event: "post-zoom-stylus-identity-regression",
+    zoomBurstId: input.zoomBurstId,
+    preZoomPointerType: "pen",
+    preZoomPointerEventPenSeen: true,
+    postZoomPointerType,
+    postZoomPointerEventPenSeen: false,
+    postZoomStylusIdentity: input.postZoomStylusIdentity,
+    sameSession: true,
+    samePageMountGeneration: input.preZoomPageMountGeneration !== null && input.postZoomPageMountGeneration !== null
+      ? input.preZoomPageMountGeneration === input.postZoomPageMountGeneration
+      : null,
+    sameRouterGeneration: input.preZoomRouterGeneration !== null && input.postZoomRouterGeneration !== null
+      ? input.preZoomRouterGeneration === input.postZoomRouterGeneration
+      : null,
+    physicalToolClaimed: false,
+    recoveryExperiment: input.recoveryExperiment
+  };
+}
+
 export interface LastZoomDiagnosis {
   zoomBurstId: string | null;
   beganAt: string | null;
@@ -47,6 +109,9 @@ export interface LastZoomDiagnosis {
   firstPostZoomContacts: Array<Record<string, unknown>>;
   lastPostZoomAnomaly: Omit<PostZoomAnomaly, "lifecycle"> | null;
   anomalyLifecycle: PostZoomLifecycleEvent[];
+  stylusIdentityRegression: StylusIdentityRegression | null;
+  recoveryExperiment: string | null;
+  capturesReleased: number;
 }
 
 export function validPhysicalDisplacementPx(contact: {
@@ -142,7 +207,10 @@ export class PostZoomInputTrace {
     pendingMobileScrollRemount: null,
     firstPostZoomContacts: [],
     lastPostZoomAnomaly: null,
-    anomalyLifecycle: []
+    anomalyLifecycle: [],
+    stylusIdentityRegression: null,
+    recoveryExperiment: null,
+    capturesReleased: 0
   };
 
   currentBurstId(): string | null {
@@ -166,6 +234,9 @@ export class PostZoomInputTrace {
     this.diagnosisState.firstPostZoomContacts = [];
     this.diagnosisState.lastPostZoomAnomaly = null;
     this.diagnosisState.anomalyLifecycle = [];
+    this.diagnosisState.stylusIdentityRegression = null;
+    this.diagnosisState.recoveryExperiment = null;
+    this.diagnosisState.capturesReleased = 0;
     this.remember("zoom-begin", { zoomBurstId: this.activeId }, at);
     return this.activeId;
   }
@@ -184,8 +255,23 @@ export class PostZoomInputTrace {
       settleSnapshot: this.diagnosisState.settleSnapshot ? { ...this.diagnosisState.settleSnapshot } : null,
       firstPostZoomContacts: this.diagnosisState.firstPostZoomContacts.map((contact) => ({ ...contact })),
       lastPostZoomAnomaly: this.diagnosisState.lastPostZoomAnomaly ? { ...this.diagnosisState.lastPostZoomAnomaly } : null,
-      anomalyLifecycle: this.diagnosisState.anomalyLifecycle.map((event) => ({ ...event, details: { ...event.details } }))
+      anomalyLifecycle: this.diagnosisState.anomalyLifecycle.map((event) => ({ ...event, details: { ...event.details } })),
+      stylusIdentityRegression: this.diagnosisState.stylusIdentityRegression
+        ? { ...this.diagnosisState.stylusIdentityRegression }
+        : null
     };
+  }
+
+  noteCaptureRecovery(experiment: string, capturesReleased: number): void {
+    this.diagnosisState.recoveryExperiment = experiment;
+    this.diagnosisState.capturesReleased = capturesReleased;
+  }
+
+  /** First browser-identity regression for this burst. Later contacts stay on the diagnosis only. */
+  noteStylusIdentityRegression(regression: StylusIdentityRegression | null): StylusIdentityRegression | null {
+    if (!regression || this.diagnosisState.stylusIdentityRegression) return null;
+    this.diagnosisState.stylusIdentityRegression = { ...regression };
+    return this.diagnosisState.stylusIdentityRegression;
   }
 
   remember(event: string, details: Record<string, unknown> = {}, at = new Date().toISOString()): void {

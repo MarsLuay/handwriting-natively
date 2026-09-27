@@ -5,6 +5,7 @@ import {
   pointerHandledForGeneration,
   postZoomFinalDisposition,
   stylusIdentityFromClassification,
+  stylusIdentityRegression,
   validPhysicalDisplacementPx
 } from "../src/runtime/PostZoomInputTrace";
 
@@ -163,6 +164,66 @@ describe("PostZoomInputTrace", () => {
     });
     expect(trace.diagnosis().scaleBefore).toBe(1.2);
     expect(trace.diagnosis().lastPostZoomAnomaly).toBeNull();
+  });
+
+  it("emits one browser identity regression after a pen stroke without calling touch a Pencil", () => {
+    const trace = new PostZoomInputTrace();
+    trace.begin();
+    trace.noteCaptureRecovery("release-annotation-pointer-captures", 0);
+    trace.settle(1_000, { scaleBefore: 4.68, scaleAfter: 2.96, pageMountGeneration: 1, routerGeneration: 1 });
+    const regression = stylusIdentityRegression({
+      zoomBurstId: trace.currentBurstId(),
+      preZoomPointerType: "pen",
+      preZoomPointerEventPenSeen: true,
+      postZoomPointerType: "touch",
+      postZoomPointerEventPenSeen: false,
+      postZoomStylusIdentity: "absent",
+      strokeStarted: false,
+      preZoomPageMountGeneration: 1,
+      postZoomPageMountGeneration: 1,
+      preZoomRouterGeneration: 1,
+      postZoomRouterGeneration: 1,
+      recoveryExperiment: "release-annotation-pointer-captures"
+    });
+    expect(trace.noteStylusIdentityRegression(regression)?.event).toBe("post-zoom-stylus-identity-regression");
+    expect(trace.noteStylusIdentityRegression(regression)).toBeNull();
+    expect(trace.diagnosis().stylusIdentityRegression).toMatchObject({
+      preZoomPointerType: "pen",
+      postZoomPointerType: "touch",
+      postZoomStylusIdentity: "absent",
+      samePageMountGeneration: true,
+      sameRouterGeneration: true,
+      physicalToolClaimed: false,
+      recoveryExperiment: "release-annotation-pointer-captures"
+    });
+    expect(stylusIdentityRegression({
+      zoomBurstId: "zoom-1",
+      preZoomPointerType: "pen",
+      preZoomPointerEventPenSeen: true,
+      postZoomPointerType: "pen",
+      postZoomPointerEventPenSeen: true,
+      postZoomStylusIdentity: "established",
+      strokeStarted: false,
+      preZoomPageMountGeneration: 1,
+      postZoomPageMountGeneration: 1,
+      preZoomRouterGeneration: 1,
+      postZoomRouterGeneration: 1,
+      recoveryExperiment: null
+    })).toBeNull();
+    expect(stylusIdentityRegression({
+      zoomBurstId: "zoom-1",
+      preZoomPointerType: "touch",
+      preZoomPointerEventPenSeen: false,
+      postZoomPointerType: "touch",
+      postZoomPointerEventPenSeen: false,
+      postZoomStylusIdentity: "absent",
+      strokeStarted: false,
+      preZoomPageMountGeneration: 1,
+      postZoomPageMountGeneration: 1,
+      preZoomRouterGeneration: 1,
+      postZoomRouterGeneration: 1,
+      recoveryExperiment: null
+    })).toBeNull();
   });
 
   it("does not treat a rejected origin terminal as native page movement", () => {

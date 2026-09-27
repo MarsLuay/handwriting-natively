@@ -533,6 +533,17 @@ export class SessionLogger {
     });
   }
 
+  /** Browser lost pen evidence after a confirmed pen stroke. Does not claim the later contact was Pencil. */
+  postZoomStylusIdentityRegression(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "post-zoom-stylus-identity-regression", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      event: "post-zoom-stylus-identity-regression",
+      physicalToolClaimed: false,
+      ...details
+    }, true);
+  }
+
   /** One self-contained failure for the first Pencil contact after a zoom settle. */
   postZoomAnomaly(details: Record<string, unknown> = {}): void {
     this.emit("warn", "post-zoom-input-anomaly", {
