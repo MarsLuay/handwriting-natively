@@ -11,7 +11,7 @@ function penEvent(pressure: number, extra: Record<string, unknown> = {}): Pointe
     cancelable: true
   }) as PointerEvent;
   Object.defineProperties(event, {
-    pointerType: { value: "pen" },
+    pointerType: { value: extra.pointerType ?? "pen" },
     pointerId: { value: extra.pointerId ?? 1 },
     pressure: { value: pressure },
     tiltX: { value: 0 },
@@ -48,13 +48,15 @@ describe("PointerCapabilities pen hover filter", () => {
     expect(PointerCapabilities.samples(penEvent(0.4), { skipPenHover: true }).map((s) => s.pressure)).toEqual([0.4]);
   });
 
-  it("ignores coalesced intermediates by default", () => {
+  it("keeps a Pencil curve from coalesced samples and still ignores them for other pointers", () => {
     expect(USE_COALESCED_POINTER_SAMPLES).toBe(false);
     const a = penEvent(0.2, { clientX: 1, timeStamp: 1 });
     const b = penEvent(0.9, { clientX: 2, timeStamp: 2 });
     const move = penEvent(0.9, { clientX: 3, getCoalescedEvents: () => [a, b] });
-    expect(PointerCapabilities.samples(move).map((s) => s.clientX)).toEqual([3]);
-    expect(PointerCapabilities.samples(move, { useCoalesced: true }).map((s) => s.clientX)).toEqual([1, 2, 3]);
+    expect(PointerCapabilities.samples(move).map((s) => s.clientX)).toEqual([1, 2, 3]);
+    const mouse = penEvent(0.9, { pointerType: "mouse", clientX: 3, getCoalescedEvents: () => [a, b] });
+    expect(PointerCapabilities.samples(mouse).map((s) => s.clientX)).toEqual([3]);
+    expect(PointerCapabilities.samples(mouse, { useCoalesced: true }).map((s) => s.clientX)).toEqual([1, 2, 3]);
   });
 
   it("can drop an entire coalesced hover batch when coalesced is forced on", () => {
