@@ -1836,6 +1836,44 @@ export class ViewerInkSession {
     }
   }
 
+  private pointerTargetOwnership(event: PointerEvent, hitTest: PointerHitTest): string {
+    if (hitTest.pageOccludedByUi) return "obsidian-ui";
+    const page = hitTest.geometricPage?.element ?? this.closestPdfPageElement(event.target);
+    if (page && isElement(event.target) && page.contains(event.target)) return "pdf-page";
+    if (hitTest.safeRecoveryPage) return "pdf-page-recovered";
+    return "outside-page";
+  }
+
+  private pageGenerationFor(page: HTMLElement | null): number | null {
+    if (!page) return null;
+    for (const surface of this.surfaces.values()) {
+      if (surface.page.element === page) return surface.page.mountGeneration ?? null;
+    }
+    return null;
+  }
+
+  private msSinceZoomSettle(): number | null {
+    return this.lastZoomSettleAt === null ? null : Math.max(0, Date.now() - this.lastZoomSettleAt);
+  }
+
+  private beginNativePenContact(_event: PointerEvent): void {
+    // Pen identity is recorded by the physical-contact collector. This hook stays
+    // for post-UI probes that run before routing.
+  }
+
+  private safeComposedPath(event: PointerEvent): EventTarget[] | null {
+    if (typeof event.composedPath !== "function") return null;
+    try {
+      return event.composedPath();
+    } catch {
+      return null;
+    }
+  }
+
+  private boundedComposedPath(path: EventTarget[] | null): string[] {
+    return (path ?? []).slice(0, 12).map((node) => describeTarget(node));
+  }
+
   private recordPostUiProbeDocument(event: PointerEvent, hitTest: PointerHitTest): void {
     if (!(this.options.debugEnabled?.() ?? false)) return;
     const contact = this.postUiInputProbe.pointerDown(Date.now(), event.pointerId, event.pointerType || "(empty)", {
@@ -1915,6 +1953,9 @@ export class ViewerInkSession {
       currentTargetId: getDebugNodeId(event.currentTarget),
       ...details
     });
+    const handoff = event.pointerType === "pen"
+      ? this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, stage, details)
+      : null;
     if (handoff) {
       this.logger.inputHandoff(stage, {
         ...handoff,
