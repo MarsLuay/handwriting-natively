@@ -403,6 +403,30 @@ describe("zoom ink compositing", () => {
     await session.destroy();
   });
 
+  it("coalesces many scale events in one frame into one visual update", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    vi.useFakeTimers();
+    for (let index = 0; index < 8; index += 1) {
+      adapter.zoomTo(1.2 + index * 0.05, { left: index, top: 0, width: 700 + index, height: 900 });
+      session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    }
+    await vi.advanceTimersByTimeAsync(16);
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+    const profile = debugCalls("ink zoom profile").at(-1)?.[2] as {
+      layoutFramesScheduled: number;
+      layoutFramesExecuted: number;
+      coalescedVisualUpdates: number;
+      vectorRepaints: number;
+    };
+    expect(profile.layoutFramesScheduled).toBe(1);
+    expect(profile.layoutFramesExecuted).toBe(1);
+    expect(profile.coalescedVisualUpdates).toBe(7);
+    expect(profile.vectorRepaints).toBeGreaterThan(0);
+    await session.destroy();
+  });
+
   it("coalesces stepped zoom notches into one settle paint", async () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
