@@ -118,6 +118,7 @@ export class AnnotationToolbar {
       button.dataset.presetId = preset.id;
       button.textContent = preset.name;
       button.title = preset.name;
+      button.setAttribute("aria-label", preset.name);
       const active = this.preferences.activePresetId === preset.id && this.preferences.activeTool === preset.tool;
       button.setAttribute("aria-pressed", String(active));
       button.addEventListener("click", () => this.applyDrawingPreset(preset), { signal: this.abort.signal });
