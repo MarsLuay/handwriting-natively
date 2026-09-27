@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { FRAME_MS_120 } from "../src/logging/PerformanceMetrics";
 import { SessionLogger } from "../src/logging/SessionLogger";
 
 describe("SessionLogger", () => {
@@ -16,6 +17,19 @@ describe("SessionLogger", () => {
     expect(debug.mock.calls[1]?.[2]).toMatchObject({ action: "zoom-in", previousScale: 1, scale: 1.25 });
     expect(debug.mock.calls[2]?.[2]).toMatchObject({ action: "zoom-out", previousScale: 1.25, scale: 1, source: "data-scale" });
     debug.mockRestore();
+  });
+
+  it("uses one 120Hz frame as the slow input-paint threshold", () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const logger = new SessionLogger("Notes/example.pdf");
+
+    logger.inputPaint(1, FRAME_MS_120 - 0.1, "draw", 4);
+    logger.inputPaint(1, FRAME_MS_120 + 0.1, "draw", 4);
+
+    expect(warn.mock.calls.filter((call) => call[1] === "ink input paint")).toHaveLength(1);
+    debug.mockRestore();
+    warn.mockRestore();
   });
 
   it("logs draw positions with bounds", () => {
@@ -394,7 +408,7 @@ describe("SessionLogger", () => {
     }, () => true, "0.1.60");
 
     logger.drawStateChanged({ from: true, to: false, reason: "tool-selected", source: "toolbar" });
-    logger.zoomProfile({ durationMs: 524, lateFrameCount: 4, frameIntervalHistogram: { "0-16": 1 } });
+    logger.zoomProfile({ durationMs: 524, lateFrameCount: 4, frameIntervalHistogram: { "0-8.3": 1 } });
     logger.inkStrokeProfile({ p95InputToRenderMs: 24.8, droppedFrameEstimate: 3 });
     logger.panProfile({ pointerMoves: 20, maxFrameMs: 48 });
     logger.renderProfile({ operationCount: 4, totalMs: 12 });
