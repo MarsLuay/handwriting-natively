@@ -151,6 +151,38 @@ describe("safe defaults", () => {
     expect(merged.toolPreferences.activePresetId).toBe("custom");
   });
 
+  it("keeps pinned sidebar presets in order and repairs an empty preset list", () => {
+    expect(DEFAULT_SETTINGS.toolPreferences.sidebarPresetIds).toEqual([]);
+    expect(mergeSettings({}).toolPreferences.presets.map((preset) => preset.id)).toEqual([
+      "black-pen",
+      "blue-pen",
+      "yellow-highlighter"
+    ]);
+    const empty = mergeSettings({ toolPreferences: { presets: [] } as never });
+    expect(empty.toolPreferences.presets).toHaveLength(1);
+    expect(empty.toolPreferences.presets[0]?.id).toBe("black-pen");
+    const pinned = mergeSettings({
+      toolPreferences: {
+        presets: [
+          { id: "black-pen", name: "Black pen", tool: "pen", settings: { color: "#111827" } },
+          { id: "blue-pen", name: "Blue pen", tool: "pen", settings: { color: "#2563eb" } }
+        ],
+        sidebarPresetIds: ["blue-pen", "blue-pen", "gone", "black-pen"]
+      } as never
+    });
+    expect(pinned.toolPreferences.sidebarPresetIds).toEqual(["blue-pen", "black-pen"]);
+    const deleted = mergeSettings({
+      toolPreferences: {
+        presets: [{ id: "blue-pen", name: "Blue pen", tool: "pen", settings: { color: "#2563eb" } }],
+        sidebarPresetIds: ["black-pen", "blue-pen"],
+        activePresetId: "black-pen"
+      } as never
+    });
+    expect(deleted.toolPreferences.presets.map((preset) => preset.id)).toEqual(["blue-pen"]);
+    expect(deleted.toolPreferences.sidebarPresetIds).toEqual(["blue-pen"]);
+    expect(deleted.toolPreferences.activePresetId).toBe("blue-pen");
+  });
+
   it("merges laser preferences from saved settings", () => {
     const merged = mergeSettings({
       toolPreferences: {

@@ -181,6 +181,30 @@
   display: none;
 }
 
+.native-pdf-handwriting-sidebar-presets {
+  display: none;
+}
+
+.native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-sidebar-presets,
+.native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-sidebar-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.native-pdf-handwriting-sidebar-preset {
+  position: relative;
+}
+
+.native-pdf-handwriting-sidebar-preset .native-pdf-handwriting-color-icon {
+  border-radius: 99px;
+  bottom: 4px;
+  height: 8px;
+  position: absolute;
+  right: 4px;
+  width: 8px;
+}
+
 .native-pdf-handwriting-preset-slot {
   font-size: 12px;
   max-width: 7.5rem;
