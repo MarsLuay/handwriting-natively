@@ -16,10 +16,12 @@ import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMuta
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
 import {
+  POST_ZOOM_CAPTURE_RECOVERY,
   pointerHandledForGeneration,
   PostZoomInputTrace,
   postZoomFinalDisposition,
   stylusIdentityFromClassification,
+  stylusIdentityRegression,
   validPhysicalDisplacementPx,
   type PostZoomContactObservation
 } from "./PostZoomInputTrace";
@@ -2039,7 +2041,13 @@ export class ViewerInkSession {
       touchEventSeen: contact.touchEventSeen,
       representation: contact.representation,
       rawPointerTypeAtDown: pointer?.pointerType ?? null,
+      isPrimaryAtDown: pointer?.isPrimary ?? null,
       pressureAtDown: pointer?.pressure ?? null,
+      tiltXAtDown: pointer?.tiltX ?? null,
+      tiltYAtDown: pointer?.tiltY ?? null,
+      buttonAtDown: pointer?.button ?? null,
+      buttonsAtDown: pointer?.buttons ?? null,
+      composedPathAtDown: pointer?.composedPath.slice(0, 6) ?? null,
       widthAtDown: pointer?.width ?? null,
       heightAtDown: pointer?.height ?? null,
       touchRadiusX: touch?.radiusX ?? null,
@@ -2145,8 +2153,30 @@ export class ViewerInkSession {
         nativeScrollDeltaPx,
         panObserved: nativeScrollDeltaPx !== null && nativeScrollDeltaPx > 1,
         panAccepted: null,
+        touchActionClasses: page
+          ? [...page.element.classList].filter((name) => name.startsWith("native-pdf-handwriting-touch-"))
+          : null,
+        activeElement: describeTarget(page?.element.ownerDocument.activeElement ?? null),
+        recoveryExperiment: this.postZoomTrace.diagnosis().recoveryExperiment,
         ...disposition
       });
+      const previousStroke = this.logger.lastSuccessfulStroke();
+      const settleSnapshot = this.postZoomTrace.diagnosis().settleSnapshot;
+      const regression = this.postZoomTrace.noteStylusIdentityRegression(stylusIdentityRegression({
+        zoomBurstId: this.postZoomTrace.currentBurstId(),
+        preZoomPointerType: previousStroke.pointerType,
+        preZoomPointerEventPenSeen: previousStroke.pointerEventPenSeen,
+        postZoomPointerType: record.contact.rawPointer.first?.pointerType ?? null,
+        postZoomPointerEventPenSeen: record.contact.pointerEventPenSeen,
+        postZoomStylusIdentity: stylusIdentity,
+        strokeStarted,
+        preZoomPageMountGeneration: typeof settleSnapshot?.pageMountGeneration === "number" ? settleSnapshot.pageMountGeneration : null,
+        postZoomPageMountGeneration: typeof surface?.page.mountGeneration === "number" ? surface.page.mountGeneration : null,
+        preZoomRouterGeneration: typeof previousStroke.lastRouterGeneration === "number" ? previousStroke.lastRouterGeneration : null,
+        postZoomRouterGeneration: typeof surface?.router?.generation === "number" ? surface.router.generation : null,
+        recoveryExperiment: this.postZoomTrace.diagnosis().recoveryExperiment
+      }));
+      if (regression) this.logger.postZoomStylusIdentityRegression({ ...regression });
     }
     if (!anomaly) return;
     this.logger.postZoomAnomaly({
@@ -3364,6 +3394,15 @@ export class ViewerInkSession {
     return false;
   }
 
+  /** Experiment 1 only: release captures still held by annotation routers. */
+  private releaseAnnotationPointerCaptures(): number[] {
+    const released: number[] = [];
+    for (const surface of this.surfaces.values()) {
+      released.push(...(surface.router?.releaseOwnedPointerCaptures() ?? []));
+    }
+    return released;
+  }
+
   private runZoomSettlePaint(): void {
     if (this.destroyed) return;
     // Keep CSS compositing + draft canvas intact until the tip lifts. Mid-drag
@@ -3401,6 +3440,13 @@ export class ViewerInkSession {
     this.zoomCompositeSettledAt = performance.now();
     this.lastZoomSettleAt = Date.now();
     this.zoomSettleSliceStartedAt = this.zoomCompositeSettledAt;
+    const releasedCaptures = this.releaseAnnotationPointerCaptures();
+    this.postZoomTrace.noteCaptureRecovery(POST_ZOOM_CAPTURE_RECOVERY, releasedCaptures.length);
+    this.postZoomTrace.remember("zoom-capture-recovery", {
+      recoveryExperiment: POST_ZOOM_CAPTURE_RECOVERY,
+      capturesReleased: releasedCaptures.length,
+      pointerIds: releasedCaptures.slice(0, 8)
+    });
     this.rebindStaleZoomRouters("zoom-settle");
     this.handledDrawPointers.clear();
     this.postZoomTrace.remember("zoom-cleared-handled-pointers", { zoomBurstId: this.zoomCorrelationId });
