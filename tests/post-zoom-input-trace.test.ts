@@ -3,7 +3,8 @@ import {
   PostZoomInputTrace,
   classifyPostZoomFailure,
   pointerHandledForGeneration,
-  stylusIdentityFromClassification
+  stylusIdentityFromClassification,
+  validPhysicalDisplacementPx
 } from "../src/runtime/PostZoomInputTrace";
 
 const pageContact = {
@@ -88,6 +89,51 @@ describe("PostZoomInputTrace", () => {
     expect(pointerHandledForGeneration(handled, 7, 4)).toBe(true);
     expect(pointerHandledForGeneration(handled, 7, 8)).toBe(false);
     expect(pointerHandledForGeneration(handled, 9, 8)).toBe(false);
+  });
+
+  it("keeps the last zoom diagnosis after the log ring scrolls away", () => {
+    const trace = new PostZoomInputTrace();
+    trace.begin("2026-09-26T00:00:00.000Z");
+    trace.remember("pending-mobile-remount", { pendingMobileScrollRemount: true });
+    trace.settle(5_000, { scaleBefore: 1, scaleAfter: 1.4, routerGeneration: 8 });
+    trace.notePageContact(5_100, true);
+    trace.remember("post-zoom-contact", { physicalContactId: "physical-contact-62", postZoomContactIndex: 1 });
+    const anomaly = trace.anomaly({
+      ...pageContact,
+      physicalContactId: "physical-contact-62",
+      stylusIdentity: "established",
+      routerReceived: true,
+      pointerCaptureStale: true,
+      nativePanWon: true
+    });
+    for (let index = 0; index < 40; index += 1) trace.remember("settings-ui", { index });
+
+    const diagnosis = trace.diagnosis();
+    expect(anomaly?.classification).toBe("post-zoom-pointer-capture-stale");
+    expect(diagnosis.zoomBurstId).toBe("zoom-1");
+    expect(diagnosis.beganAt).toBe("2026-09-26T00:00:00.000Z");
+    expect(diagnosis.scaleAfter).toBe(1.4);
+    expect(diagnosis.pendingMobileScrollRemount).toBe(true);
+    expect(diagnosis.firstPostZoomContacts).toEqual([
+      expect.objectContaining({ physicalContactId: "physical-contact-62" })
+    ]);
+    expect(diagnosis.lastPostZoomAnomaly?.classification).toBe("post-zoom-pointer-capture-stale");
+    expect(diagnosis.anomalyLifecycle.map((entry) => entry.event)).toContain("zoom-settle");
+  });
+
+  it("does not treat a rejected origin terminal as native page movement", () => {
+    expect(validPhysicalDisplacementPx({
+      maxDisplacementPx: 991.439862018872,
+      firstPoint: { x: 627, y: 768 },
+      lastValidPoint: { x: 627, y: 768 },
+      terminalPointRejectReason: "lostpointercapture-sentinel"
+    })).toBe(0);
+    expect(validPhysicalDisplacementPx({
+      maxDisplacementPx: 200,
+      firstPoint: { x: 10, y: 10 },
+      lastValidPoint: { x: 30, y: 40 },
+      terminalPointRejectReason: null
+    })).toBe(200);
   });
 
   it("classifies stale binding and unknown stylus identity before routing", () => {

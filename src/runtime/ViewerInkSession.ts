@@ -19,6 +19,7 @@ import {
   pointerHandledForGeneration,
   PostZoomInputTrace,
   stylusIdentityFromClassification,
+  validPhysicalDisplacementPx,
   type PostZoomContactObservation
 } from "./PostZoomInputTrace";
 import { deferredRenderDisposition } from "./renderCachePolicy";
@@ -2030,7 +2031,10 @@ export class ViewerInkSession {
           ...noted,
           physicalContactId: record.contact.physicalContactId,
           classification: record.contact.classification,
-          pointerEventPenSeen: record.contact.pointerEventPenSeen
+          pointerEventPenSeen: record.contact.pointerEventPenSeen,
+          validPhysicalDisplacementPx: validPhysicalDisplacementPx(record.contact),
+          terminalPointRejectReason: record.contact.terminalPointRejectReason,
+          pointerCaptureLost: record.contact.pointerCaptureLost
         });
       }
       return;
@@ -2041,6 +2045,7 @@ export class ViewerInkSession {
     const route = record.contact.pointerIds
       .map((pointerId) => this.postZoomRouterByPointer.get(pointerId))
       .find((entry) => entry);
+    const validPhysicalDisplacement = validPhysicalDisplacementPx(record.contact);
     const observation: PostZoomContactObservation = {
       overAnnotatablePage: true,
       stylusIdentity: stylusIdentityFromClassification(record.contact),
@@ -2051,8 +2056,15 @@ export class ViewerInkSession {
       stalePageBinding: Boolean(surface && (surface.page.element !== page.element || !surface.router?.bindsTo(page.element))),
       inputOwnerMismatch: Boolean(page.element.isConnected && inputOwners(page.element).get(page.element) !== this),
       fallbackRejected: false,
-      nativePanWon: !strokeStarted && record.contact.pointerEventPenSeen && record.contact.maxDisplacementPx > 8 && route?.received !== true,
-      pointerCaptureStale: route?.captureStale === true || record.contact.pointerCaptureLost
+      nativePanWon: !strokeStarted
+        && record.contact.pointerEventPenSeen
+        && record.contact.terminalPointRejectReason == null
+        && !record.contact.pointerCaptureLost
+        && validPhysicalDisplacement > 8
+        && route?.received !== true,
+      pointerCaptureStale: route?.captureStale === true
+        || record.contact.pointerCaptureLost
+        || record.contact.terminalPointRejectReason?.startsWith("lostpointercapture") === true
     };
     const anomaly = this.postZoomTrace.anomaly(observation);
     if (!anomaly) return;
@@ -4910,6 +4922,10 @@ export class ViewerInkSession {
       nativePdfToolbarCount: host.querySelectorAll(".pdf-toolbar, .pdf-toolbar-container").length,
       nativeAddButtons
     };
+    this.logger.zoomDiagnosis({
+      lastZoomTrace: this.postZoomTrace.diagnosis(),
+      lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
+    });
     this.logger.handwritingUiSnapshot(snapshot);
     return snapshot;
   }

@@ -746,6 +746,14 @@ export class SessionLogger {
     });
   }
 
+  /** Last zoom diagnosis, written at Copy Logs so it is not lost from the log tail. */
+  zoomDiagnosis(details: Record<string, unknown> = {}): void {
+    this.emit("info", "last-zoom-trace", {
+      document: this.documentPath,
+      ...details
+    }, true);
+  }
+
   /** Capture the bounded UI state immediately before the user copies logs. */
   handwritingUiSnapshot(details: Record<string, unknown> = {}): void {
     this.emit("info", "handwriting-ui-snapshot", {
