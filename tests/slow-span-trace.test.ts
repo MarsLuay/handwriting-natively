@@ -62,6 +62,14 @@ describe("SlowSpanTrace", () => {
     expect(wait?.thresholdMs).toBe(SLOW_SPAN_ASYNC_MS);
   });
 
+  it("interpolates p95 so two samples do not report the smaller one", () => {
+    const trace = new SlowSpanTrace();
+    trace.record({ kind: "async", category: "zoom", stage: "zoom-settle", durationMs: 563, zoomBurstId: "zoom-1" });
+    trace.record({ kind: "async", category: "zoom", stage: "zoom-settle", durationMs: 1677, zoomBurstId: "zoom-2" });
+    expect(trace.summary().p95ByStage["zoom-settle"]).toBe(1621.3);
+    expect(trace.summary().maxByStage["zoom-settle"]).toBe(1677);
+  });
+
   it("decomposes the first post-zoom pen without calling the think time plugin work", () => {
     const trace = new SlowSpanTrace();
     trace.beginPostZoom("zoom-7", 1_000);

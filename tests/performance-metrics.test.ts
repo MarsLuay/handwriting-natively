@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BoundedTiming, buildScaleDeltaHistogram, buildTimingHistogram, roundMetric } from "../src/logging/PerformanceMetrics";
+import { BoundedTiming, buildScaleDeltaHistogram, buildTimingHistogram, percentile, roundMetric } from "../src/logging/PerformanceMetrics";
 
 describe("bounded performance metrics", () => {
   it("distinguishes a smooth 60Hz trace from a stalled trace", () => {
@@ -38,6 +38,11 @@ describe("bounded performance metrics", () => {
       "0.01-0.05": 2,
       "0.05+": 2
     });
+  });
+
+  it("interpolates p95 instead of picking the lower rank for a tiny sample", () => {
+    expect(percentile([563, 1677], 0.95)).toBeCloseTo(1621.3, 5);
+    expect(percentile([16.7], 0.95)).toBe(16.7);
   });
 
   it("rounds diagnostic values without producing noisy precision", () => {
