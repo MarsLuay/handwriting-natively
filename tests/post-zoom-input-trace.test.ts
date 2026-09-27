@@ -24,6 +24,31 @@ const pageContact = {
 } as const;
 
 describe("PostZoomInputTrace", () => {
+  it("does not spend a post-zoom slot or an identity regression on a rejected UI contact", () => {
+    const trace = new PostZoomInputTrace();
+    trace.begin();
+    trace.settle(1_000);
+    trace.noteRejectedPageContact({
+      physicalContactId: "drawer",
+      geometricPageHit: true,
+      targetInsidePage: false,
+      blockedByOverlay: false,
+      pageContactAdmission: "rejected",
+      pageContactRejectReason: "target-outside-page-dom",
+      geometricPageNumber: 2
+    });
+    expect(trace.notePageContact(1_100, false, "drawer")).toBeNull();
+    expect(trace.notePageContact(1_200, true, "canvas")?.postZoomContactIndex).toBe(1);
+    const diagnosis = trace.diagnosis();
+    expect(diagnosis.rejectedPostZoomContacts).toEqual([expect.objectContaining({
+      physicalContactId: "drawer",
+      pageContactRejectReason: "target-outside-page-dom"
+    })]);
+    expect(diagnosis.firstPostZoomContacts).toEqual([]);
+    expect(diagnosis.stylusIdentityRegression).toBeNull();
+    expect(diagnosis.rejectedPostZoomContacts[0]).not.toHaveProperty("pageNumber");
+  });
+
   it("admits only the first three contacts inside eight seconds and keeps the diagnosis", () => {
     const trace = new PostZoomInputTrace();
     trace.begin();
