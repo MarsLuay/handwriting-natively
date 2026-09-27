@@ -4,13 +4,15 @@ export type PointerKind = "pen" | "touch" | "mouse" | "unknown";
 export const PEN_HOVER_PRESSURE_EPSILON = 0.01;
 
 /**
- * When false (current default), only the dispatched event is used — one sample per pointermove.
- *
- * Ink QA: coalesced intermediates expose digitizer positional jitter that low-stabilization
- * outlines trace into self-intersecting ("xor-fill") notches. Re-enable only with stronger
- * positional smoothing.
+ * Mouse stays on the dispatched event. Pen defaults to coalesced samples: iPad packs a
+ * Pencil curve into one pointermove, and keeping only that event draws a straight line.
  */
 export const USE_COALESCED_POINTER_SAMPLES = false;
+
+/** iOS pointercancel / lostpointercapture often report (0, 0) instead of the pen. */
+export function isSyntheticPointerOrigin(sample: { clientX: number; clientY: number }): boolean {
+  return Math.max(Math.abs(sample.clientX), Math.abs(sample.clientY)) <= 1;
+}
 
 export interface PointerSample {
   pointerId: number;
@@ -74,7 +76,7 @@ export class PointerCapabilities {
   }
 
   static samples(event: PointerEvent, options: PointerSampleOptions = {}): PointerSample[] {
-    const useCoalesced = options.useCoalesced ?? USE_COALESCED_POINTER_SAMPLES;
+    const useCoalesced = options.useCoalesced ?? (event.pointerType === "pen" || USE_COALESCED_POINTER_SAMPLES);
     let rawEvents: PointerEvent[] = [event];
     if (useCoalesced && typeof event.getCoalescedEvents === "function") {
       const coalesced = event.getCoalescedEvents();
@@ -89,8 +91,11 @@ export class PointerCapabilities {
       }
     }
     const raw = rawEvents.map((sample) => this.sample(sample));
-    if (!options.skipPenHover) return raw;
-    return raw.filter((sample) => !this.isPenHoverSample(sample));
+    const kept = event.type === "lostpointercapture" || event.type === "pointercancel"
+      ? raw.filter((sample) => !isSyntheticPointerOrigin(sample))
+      : raw;
+    if (!options.skipPenHover) return kept;
+    return kept.filter((sample) => !this.isPenHoverSample(sample));
   }
 
   static hasTilt(event: PointerEvent): boolean {
