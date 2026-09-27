@@ -870,6 +870,20 @@ export class SessionLogger {
     }, true);
   }
 
+  perfSlowSpan(details: Record<string, unknown> = {}): void {
+    this.emit("info", "perf-slow-span", {
+      document: this.documentPath,
+      ...details
+    }, true);
+  }
+
+  perfSlowInteraction(details: Record<string, unknown> = {}): void {
+    this.emit("info", "perf-slow-interaction", {
+      document: this.documentPath,
+      ...details
+    }, true);
+  }
+
   zoomDiagnosis(details: Record<string, unknown> = {}): void {
     this.emit("info", "last-zoom-trace", {
       document: this.documentPath,

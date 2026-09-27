@@ -31,6 +31,7 @@ import {
   type StylusIdentity
 } from "./PostZoomInputTrace";
 import { PostZoomDurabilityTrace } from "./PostZoomDurabilityTrace";
+import { SlowSpanTrace } from "./SlowSpanTrace";
 import {
   inkVisibilityCause,
   inkVisibilityFlash,
@@ -388,6 +389,16 @@ function isIgnorableStaleOutsideHit(
   if (isNonInteractiveHit(element)) return true;
   if (ref) return true;
   return Boolean(element.closest(STALE_LAYOUT_HIT_SELECTOR));
+}
+
+function settleResetBucket(reason: string | null): string {
+  if (!reason) return "other";
+  if (reason.includes("page-render")) return "pages-page-render";
+  if (reason.includes("scale")) return "scale-change";
+  if (reason.includes("pinch")) return "pinch-cleanup";
+  if (reason.includes("remount")) return "viewer-remount";
+  if (reason.includes("mutation")) return "mutation";
+  return "other";
 }
 
 function isInputChromeTarget(target: EventTarget | null): boolean {
@@ -942,6 +953,9 @@ export class ViewerInkSession {
   private zoomSequence = 0;
   private readonly postZoomTrace = new PostZoomInputTrace();
   private readonly postZoomDurability = new PostZoomDurabilityTrace();
+  private readonly slowSpans = new SlowSpanTrace();
+  private settleDeferralMs = 0;
+  private settleResetReasons: Record<string, number> = {};
   private readonly pointerTypeOrigins = new PointerTypeOriginLog();
   private readonly pinchCleanup = new PinchGestureCleanup();
   private pinchCleanupFrame: number | null = null;
@@ -2176,6 +2190,9 @@ export class ViewerInkSession {
       geometricPageHit: Boolean(geometricPage?.element.isConnected)
     });
     const overPage = decision.recordPageContact;
+    if (record.phase === "start" && overPage && record.contact.pointerEventPenSeen) {
+      this.slowSpans.notePenDown(performance.now());
+    }
     if (record.phase === "start" && decision.rejection) {
       this.postZoomTrace.noteRejectedPageContact({
         ...decision.rejection,
@@ -3685,6 +3702,17 @@ export class ViewerInkSession {
       ...report,
       pluginTouchPointerIds
     });
+    const cleanupSpan = this.slowSpans.record({
+      kind: "async",
+      category: "zoom",
+      stage: "gesture-cleanup-wait",
+      durationMs: report.gestureCleanupWaitMs,
+      activeWorkMs: 0,
+      waitMs: report.gestureCleanupWaitMs,
+      reason: this.lastSettleDeferralReason,
+      zoomBurstId: this.zoomCorrelationId
+    });
+    if (cleanupSpan) this.logger.perfSlowSpan({ ...cleanupSpan });
     return false;
   }
 
@@ -3692,7 +3720,10 @@ export class ViewerInkSession {
     if (this.zoomSettleTimer !== null) {
       window.clearTimeout(this.zoomSettleTimer);
       this.settleTimerResetCount += 1;
+      const bucket = settleResetBucket(this.lastSettleDeferralReason);
+      this.settleResetReasons[bucket] = (this.settleResetReasons[bucket] ?? 0) + 1;
     }
+    this.settleDeferralMs += delayMs;
     this.zoomSettleTimerGeneration += 1;
     const generation = this.zoomSettleTimerGeneration;
     this.zoomSettleTimerDueAt = performance.now() + delayMs;
@@ -3820,6 +3851,7 @@ export class ViewerInkSession {
       this.armZoomSettleTimer(ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS);
       return;
     }
+    const settleWorkStarted = performance.now();
     const burstTicks = this.zoomTickCount;
     const burstDurationMs = roundMs(performance.now() - this.zoomBurstStartedAt);
     const scaleStart = this.zoomBurstScaleStart;
@@ -3854,6 +3886,27 @@ export class ViewerInkSession {
     const settledAt = Date.now();
     const settledBurstId = this.postZoomTrace.settle(settledAt, settleSnapshot);
     if (settledBurstId) this.postZoomDurability.onZoomSettle(settledBurstId, settledAt);
+    this.slowSpans.beginPostZoom(settledBurstId, performance.now());
+    const settleSpan = this.slowSpans.record({
+      kind: "sync",
+      category: "zoom",
+      stage: "zoom-settle",
+      durationMs: performance.now() - settleWorkStarted,
+      activeWorkMs: performance.now() - settleWorkStarted,
+      waitMs: 0,
+      zoomBurstId: settledBurstId
+    });
+    if (settleSpan) this.logger.perfSlowSpan({ ...settleSpan });
+    const churn = this.slowSpans.recordSettleChurn({
+      settleDelayMs: this.settleDeferralMs,
+      settleTimerResetCount: this.settleTimerResetCount,
+      resetReasons: this.settleResetReasons,
+      lastDeferralReason: this.lastSettleDeferralReason,
+      zoomBurstId: settledBurstId
+    });
+    if (churn) this.logger.perfSlowSpan({ ...churn });
+    this.settleDeferralMs = 0;
+    this.settleResetReasons = {};
     this.logger.zoomLifecycle("zoom-burst-settle", {
       zoomBurstId: this.zoomCorrelationId,
       burstTicks,
@@ -5553,6 +5606,7 @@ export class ViewerInkSession {
       lastPostZoomDurabilityTrace: this.postZoomDurability.snapshot(Date.now()),
       lastPointerTypeOrigins: this.pointerTypeOrigins.snapshot(),
       physicalContactHotPath: physicalContactHotPathStats(),
+      performanceSlowSpanSummary: this.slowSpans.summary(),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
     });
     this.logger.handwritingUiSnapshot(snapshot);
@@ -9052,6 +9106,10 @@ export class ViewerInkSession {
   private paintScheduledLiveWork(surface: PageSurface): void {
     const pending = surface.pendingLivePaint;
     const pendingAt = surface.pendingLivePaintAt;
+    if (pending?.kind === "draw") {
+      const interaction = this.slowSpans.finishFirstPen(performance.now());
+      if (interaction) this.logger.perfSlowInteraction({ ...interaction });
+    }
     surface.pendingLivePaint = null;
     surface.pendingLivePaintAt = null;
     if (!pending || this.destroyed) return;
@@ -9422,6 +9480,7 @@ export class ViewerInkSession {
         }
         this.logPositionAlign(surface, samples[0]!, "start");
         if (isDrawingTool(activeTool)) this.scheduleHeldShape(surface);
+        if (event.pointerType === "pen") this.slowSpans.noteStrokeStart(performance.now());
       }
     } else {
       if (activeTool === "lasso" && (this.selected.length > 0 || this.selectedTexts.length > 0)) {
