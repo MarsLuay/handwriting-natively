@@ -21,7 +21,9 @@ describe("AnnotationToolbar presets", () => {
     expect(preferences.activePresetId).toBe("blue-pen");
     expect(preferences.pen.color).toBe("#2563eb");
     expect(toolbar.element.querySelector("[data-preset-id='blue-pen']")?.getAttribute("aria-pressed")).toBe("true");
-    toolbar.element.remove();
+    const editor = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-preset-editor input");
+    expect(editor?.value).toBe("Blue pen");
+    toolbar.destroy();
   });
 
   it("hides preset names in the sidebar and keeps them on the main toolbar", () => {
@@ -120,6 +122,12 @@ describe("AnnotationToolbar presets", () => {
     expect(getComputedStyle(host!).display).toBe("flex");
 
     pins[0]?.click();
+    expect(preferences.activePresetId).toBe("black-pen");
+    expect(document.querySelector<HTMLInputElement>(".native-pdf-handwriting-preset-editor input")?.value).toBe("Black pen");
+    toolbar.element.querySelector<HTMLButtonElement>("[data-sidebar-preset-id='yellow-highlighter']")?.click();
+    expect(preferences.activePresetId).toBe("yellow-highlighter");
+    expect(document.querySelector<HTMLInputElement>(".native-pdf-handwriting-preset-editor input")?.value).toBe("Yellow highlighter");
+    toolbar.element.querySelector<HTMLButtonElement>("[data-sidebar-preset-id='black-pen']")?.click();
     expect(preferences.activePresetId).toBe("black-pen");
     expect(toolbar.element.querySelector("[data-sidebar-preset-id='black-pen']")?.getAttribute("aria-pressed")).toBe("true");
 
