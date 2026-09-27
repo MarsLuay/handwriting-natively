@@ -2221,6 +2221,13 @@ export class ViewerInkSession {
     if (event.kind === "pointer" && event.pointerId !== null) {
       const pointer = event.event as PointerEvent;
       this.pinchCleanup.observePointer(event.pointerId, event.eventType, pointer.pointerType || "");
+    } else if (event.event instanceof TouchEvent || "touches" in event.event) {
+      const touch = event.event as TouchEvent;
+      const changed = [...touch.changedTouches].map((point) => point.identifier);
+      const active = [...touch.touches].map((point) => point.identifier);
+      for (const prune of this.pinchCleanup.reconcileTouches(event.eventType, changed, active)) {
+        this.logger.stalePinchContact({ ...prune });
+      }
     } else {
       for (const identifier of event.touchIdentifiers) {
         this.pinchCleanup.observeTouch(identifier, event.eventType);
@@ -3164,7 +3171,14 @@ export class ViewerInkSession {
     // the settle timer is the actual quiet-window boundary.
     if (!this.zoomProfile) {
       this.zoomCorrelationId = this.postZoomTrace.begin();
-      this.pinchCleanup.beginBurst();
+      const seed = this.pinchCleanup.beginBurst();
+      for (const prune of seed.pruned) this.logger.stalePinchContact({ ...prune });
+      this.postZoomTrace.noteBurstActivity({
+        seededPinchPointerIds: seed.seededPinchPointerIds,
+        seededPinchTouchIdentifiers: seed.seededPinchTouchIdentifiers,
+        prunedBeforeBurstPointerIds: seed.prunedBeforeBurstPointerIds,
+        prunedBeforeBurstTouchIdentifiers: seed.prunedBeforeBurstTouchIdentifiers
+      });
       this.settleTimerResetCount = 0;
       this.runZoomSettlePaintCallCount = 0;
       this.lastSettleDeferralReason = null;
@@ -7385,6 +7399,12 @@ export class ViewerInkSession {
         });
       },
       onTouchLifecycle: (phase, event, details) => {
+        const reason = typeof details.reason === "string" ? details.reason : "";
+        if (reason === "touchend-all-clear" || reason === "touchcancel-all-clear") {
+          for (const prune of this.pinchCleanup.clearActiveTouches("touch-list-all-clear")) {
+            this.logger.stalePinchContact({ ...prune });
+          }
+        }
         this.logger.inputLifecycleEvent(`touch-${phase}`, {
           page: surface.page.pageNumber,
           ...(event instanceof PointerEvent ? { pointerId: event.pointerId, isPrimary: event.isPrimary } : {}),

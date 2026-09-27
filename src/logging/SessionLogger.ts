@@ -545,6 +545,14 @@ export class SessionLogger {
   }
 
   /** One self-contained failure for the first Pencil contact after a zoom settle. */
+  stalePinchContact(details: Record<string, unknown> = {}): void {
+    this.emit("info", "stale-pinch-contact-pruned", {
+      document: this.documentPath,
+      event: "stale-pinch-contact-pruned",
+      ...details
+    }, true);
+  }
+
   postZoomAnomaly(details: Record<string, unknown> = {}): void {
     this.emit("warn", "post-zoom-input-anomaly", {
       document: this.documentPath,

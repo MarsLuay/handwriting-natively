@@ -433,6 +433,23 @@ export interface PinchCleanupReport {
 }
 
 /** Touch contacts in the zoom burst. Pen and mouse are not pinch participants. */
+export interface StalePinchPrune {
+  event: "stale-pinch-contact-pruned";
+  id: number;
+  stream: "pointer" | "touch";
+  lastSeenAt: number | null;
+  ageMs: number | null;
+  reason: "touch-list-all-clear" | "not-in-current-active-set" | "stale-before-burst";
+}
+
+export interface PinchBurstSeed {
+  seededPinchPointerIds: number[];
+  seededPinchTouchIdentifiers: number[];
+  prunedBeforeBurstPointerIds: number[];
+  prunedBeforeBurstTouchIdentifiers: number[];
+  pruned: StalePinchPrune[];
+}
+
 export class PinchGestureCleanup {
   private tracking = false;
   private deferredAt: number | null = null;
@@ -444,51 +461,160 @@ export class PinchGestureCleanup {
   private readonly touches = new Map<number, { terminal: boolean }>();
   private readonly pinchPointers = new Set<number>();
   private readonly pinchTouches = new Set<number>();
+  private readonly activePointerIds = new Set<number>();
+  private readonly activeTouchIdentifiers = new Set<number>();
+  private readonly pointerSeenAt = new Map<number, number>();
+  private readonly touchSeenAt = new Map<number, number>();
+  private lastSeed: PinchBurstSeed = {
+    seededPinchPointerIds: [],
+    seededPinchTouchIdentifiers: [],
+    prunedBeforeBurstPointerIds: [],
+    prunedBeforeBurstTouchIdentifiers: [],
+    pruned: []
+  };
 
-  beginBurst(): void {
+  beginBurst(now = Date.now()): PinchBurstSeed {
     this.tracking = true;
     this.deferredAt = null;
     this.animationFrames = 0;
     this.evaluateCount = 0;
     this.timedOut = false;
+    const pruned = [
+      ...this.pruneInactive("pointer", this.pointers, this.activePointerIds, now),
+      ...this.pruneInactive("touch", this.touches, this.activeTouchIdentifiers, now)
+    ];
     this.pinchPointers.clear();
     this.pinchTouches.clear();
-    for (const [id, state] of this.pointers) {
-      if (!state.terminal) this.pinchPointers.add(id);
-    }
-    for (const [id, state] of this.touches) {
-      if (!state.terminal) this.pinchTouches.add(id);
-    }
+    for (const id of this.activePointerIds) this.pinchPointers.add(id);
+    for (const id of this.activeTouchIdentifiers) this.pinchTouches.add(id);
+    this.lastSeed = {
+      seededPinchPointerIds: [...this.pinchPointers],
+      seededPinchTouchIdentifiers: [...this.pinchTouches],
+      prunedBeforeBurstPointerIds: pruned.filter((entry) => entry.stream === "pointer").map((entry) => entry.id),
+      prunedBeforeBurstTouchIdentifiers: pruned.filter((entry) => entry.stream === "touch").map((entry) => entry.id),
+      pruned
+    };
+    return this.lastSeed;
+  }
+
+  seedSummary(): PinchBurstSeed {
+    return {
+      ...this.lastSeed,
+      pruned: this.lastSeed.pruned.map((entry) => ({ ...entry }))
+    };
   }
 
   endBurst(): void {
     this.tracking = false;
   }
 
+  /** Drop touches the browser no longer lists, and clear everything when no touches remain. */
+  reconcileTouches(eventType: string, changedIds: readonly number[], activeIds: readonly number[], now = Date.now()): StalePinchPrune[] {
+    for (const id of changedIds) this.touchSeenAt.set(id, now);
+    if (eventType === "touchend" || eventType === "touchcancel") {
+      for (const id of changedIds) this.finishTouch(id);
+    }
+    if (activeIds.length === 0) return this.clearActiveTouches("touch-list-all-clear", now);
+    const live = new Set(activeIds);
+    for (const id of activeIds) {
+      this.activeTouchIdentifiers.add(id);
+      this.touches.set(id, { terminal: false });
+      this.touchSeenAt.set(id, now);
+      if (this.tracking) this.pinchTouches.add(id);
+    }
+    const pruned: StalePinchPrune[] = [];
+    for (const id of [...this.activeTouchIdentifiers]) {
+      if (live.has(id)) continue;
+      pruned.push(this.pruneTouch(id, "not-in-current-active-set", now));
+    }
+    return pruned;
+  }
+
+  clearActiveTouches(reason: StalePinchPrune["reason"] = "touch-list-all-clear", now = Date.now()): StalePinchPrune[] {
+    const pruned = [...this.activeTouchIdentifiers].map((id) => this.pruneTouch(id, reason, now));
+    this.activeTouchIdentifiers.clear();
+    if (!this.tracking) this.pinchTouches.clear();
+    return pruned;
+  }
+
   observePointer(pointerId: number, eventType: string, pointerType: string): void {
     if (pointerType === "pen" || pointerType === "mouse") return;
     const current = this.pointers.get(pointerId) ?? { terminal: false, lostCapture: false };
+    this.pointerSeenAt.set(pointerId, Date.now());
     if (eventType === "pointerdown") {
+      this.activePointerIds.add(pointerId);
       this.pointers.set(pointerId, { terminal: false, lostCapture: false });
     } else {
-      if (eventType === "pointerup" || eventType === "pointercancel") current.terminal = true;
+      if (eventType === "pointerup" || eventType === "pointercancel") {
+        current.terminal = true;
+        this.activePointerIds.delete(pointerId);
+      }
       if (eventType === "lostpointercapture") current.lostCapture = true;
       this.pointers.set(pointerId, current);
     }
-    if (this.tracking) this.pinchPointers.add(pointerId);
+    if (this.tracking && this.activePointerIds.has(pointerId)) this.pinchPointers.add(pointerId);
     if (this.tracking || this.pinchPointers.has(pointerId)) this.lastPinchEventAt = Date.now();
   }
 
   observeTouch(identifier: number, eventType: string): void {
+    this.touchSeenAt.set(identifier, Date.now());
     const current = this.touches.get(identifier) ?? { terminal: false };
     if (eventType === "touchstart") {
+      this.activeTouchIdentifiers.add(identifier);
       this.touches.set(identifier, { terminal: false });
     } else {
-      if (eventType === "touchend" || eventType === "touchcancel") current.terminal = true;
+      if (eventType === "touchend" || eventType === "touchcancel") {
+        current.terminal = true;
+        this.activeTouchIdentifiers.delete(identifier);
+      }
       this.touches.set(identifier, current);
     }
-    if (this.tracking) this.pinchTouches.add(identifier);
+    if (this.tracking && this.activeTouchIdentifiers.has(identifier)) this.pinchTouches.add(identifier);
     if (this.tracking || this.pinchTouches.has(identifier)) this.lastPinchEventAt = Date.now();
+  }
+
+  private finishTouch(id: number): void {
+    const state = this.touches.get(id) ?? { terminal: true };
+    state.terminal = true;
+    this.touches.set(id, state);
+    this.activeTouchIdentifiers.delete(id);
+  }
+
+  private pruneTouch(id: number, reason: StalePinchPrune["reason"], now: number): StalePinchPrune {
+    const lastSeenAt = this.touchSeenAt.get(id) ?? null;
+    this.finishTouch(id);
+    return {
+      event: "stale-pinch-contact-pruned",
+      id,
+      stream: "touch",
+      lastSeenAt,
+      ageMs: lastSeenAt == null ? null : Math.max(0, now - lastSeenAt),
+      reason
+    };
+  }
+
+  private pruneInactive(
+    stream: "pointer" | "touch",
+    records: Map<number, { terminal: boolean }>,
+    active: ReadonlySet<number>,
+    now: number
+  ): StalePinchPrune[] {
+    const pruned: StalePinchPrune[] = [];
+    const seen = stream === "pointer" ? this.pointerSeenAt : this.touchSeenAt;
+    for (const [id, state] of records) {
+      if (state.terminal || active.has(id)) continue;
+      const lastSeenAt = seen.get(id) ?? null;
+      state.terminal = true;
+      pruned.push({
+        event: "stale-pinch-contact-pruned",
+        id,
+        stream,
+        lastSeenAt,
+        ageMs: lastSeenAt == null ? null : Math.max(0, now - lastSeenAt),
+        reason: "stale-before-burst"
+      });
+    }
+    return pruned;
   }
 
   noteAnimationFrame(): void {
