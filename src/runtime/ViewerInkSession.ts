@@ -4133,6 +4133,9 @@ export class ViewerInkSession {
     this.zoomSettleSliceStartedAt = this.zoomCompositeSettledAt;
     this.pinchCleanup.endBurst();
     this.rebindStaleZoomRouters("zoom-settle");
+    // Refresh the retained diagnosis after any live-ink pause has ended. The
+    // first deferred attempt may have recorded a pen that lifted before settle.
+    this.refreshZoomBurstActivity();
     this.handledDrawPointers.clear();
     this.postZoomTrace.remember("zoom-cleared-handled-pointers", { zoomBurstId: this.zoomCorrelationId });
     const settleSnapshot = {

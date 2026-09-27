@@ -815,6 +815,14 @@ describe("zoom ink compositing", () => {
     await flushZoomSettleSlices();
     expect(debugCalls("ink zoom repaint").length).toBeGreaterThanOrEqual(1);
 
+    const diagnosis = (session as unknown as {
+      postZoomTrace: { diagnosis(): { burstActivity: Record<string, unknown> | null } };
+    }).postZoomTrace.diagnosis();
+    expect(diagnosis.burstActivity).toEqual(expect.objectContaining({
+      liveInkAtLastSettleAttempt: false,
+      activePenIds: []
+    }));
+
     await session.destroy();
   });
 
