@@ -32,4 +32,4 @@ pressure/tilt features later — do not route pointer-move floods through
 ## Git
 
 - Always commit and merge to main for changes. Use `/sync` if push is not clean.
-- Preserve existing `.github/workflows` that build, test, package, or publish plugin artifacts; do not remove build automation merely because a stable release can also run locally or because a workflow is not BRAT. Keep `.github/workflows/brat-prerelease.yml`: it tests, builds, and publishes the current `main` artifact for BRAT. Stable release publication remains a separate policy choice.
+- Preserve existing `.github/workflows` that build, package, or publish plugin artifacts; do not remove build automation merely because a stable release can also run locally or because a workflow is not BRAT. Keep `.github/workflows/brat-prerelease.yml`: it tests, builds, and publishes the current `main` artifact for BRAT. Stable release publication remains a separate policy choice.
