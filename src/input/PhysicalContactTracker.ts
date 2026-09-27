@@ -92,6 +92,10 @@ export interface PhysicalContactSnapshot {
   maxDisplacementPx: number;
   firstPoint: { x: number; y: number } | null;
   lastPoint: { x: number; y: number } | null;
+  lastValidPoint: { x: number; y: number } | null;
+  rawPointerTerminalPoint: { x: number; y: number } | null;
+  terminalPointAcceptedForGeometry: boolean | null;
+  terminalPointRejectReason: string | null;
   pointerTerminal: "pointerup" | "pointercancel" | null;
   pointerCaptureLost: boolean;
   touchTerminal: "touchend" | "touchcancel" | null;
@@ -130,6 +134,9 @@ interface ContactState {
   maxDisplacementPx: number;
   firstPoint: { x: number; y: number } | null;
   lastPoint: { x: number; y: number } | null;
+  rawPointerTerminalPoint: { x: number; y: number } | null;
+  terminalPointAcceptedForGeometry: boolean | null;
+  terminalPointRejectReason: string | null;
   pointerTerminal: "pointerup" | "pointercancel" | null;
   pointerCaptureLost: boolean;
   touchTerminal: "touchend" | "touchcancel" | null;
@@ -307,6 +314,9 @@ export class PhysicalContactTracker {
       maxDisplacementPx: 0,
       firstPoint: null,
       lastPoint: null,
+      rawPointerTerminalPoint: null,
+      terminalPointAcceptedForGeometry: null,
+      terminalPointRejectReason: null,
       pointerTerminal: null,
       pointerCaptureLost: false,
       touchTerminal: null,
@@ -393,7 +403,13 @@ export class PhysicalContactTracker {
       | Pick<RawTouchContactSample, "eventType" | "clientX" | "clientY">
   ): void {
     if (!Number.isFinite(sample.clientX) || !Number.isFinite(sample.clientY)) return;
-    if (this.isSyntheticPointerCancel(contact, sample)) return;
+    const terminal = this.syntheticTerminalGeometry(contact, sample);
+    if (terminal) {
+      contact.rawPointerTerminalPoint = { x: sample.clientX, y: sample.clientY };
+      contact.terminalPointAcceptedForGeometry = !terminal.reject;
+      contact.terminalPointRejectReason = terminal.reject ? terminal.reason : null;
+      if (terminal.reject) return;
+    }
     const point = { x: sample.clientX, y: sample.clientY };
     if (!contact.firstPoint) contact.firstPoint = point;
     contact.lastPoint = point;
@@ -403,22 +419,30 @@ export class PhysicalContactTracker {
     );
   }
 
-  private isSyntheticPointerCancel(
+  /**
+   * Browser terminal samples at the origin are untrusted when the contact
+   * was elsewhere. pointercancel and lostpointercapture both do this on iOS.
+   * Returns null for samples that are not pointer terminal geometry.
+   */
+  private syntheticTerminalGeometry(
     contact: ContactState,
     sample: Pick<RawPointerContactSample, "eventType" | "clientX" | "clientY">
       | Pick<RawTouchContactSample, "eventType" | "clientX" | "clientY">
-  ): boolean {
-    if (sample.eventType !== "pointercancel") return false;
+  ): { reject: boolean; reason: string } | null {
+    if (
+      sample.eventType !== "pointercancel"
+      && sample.eventType !== "lostpointercapture"
+      && sample.eventType !== "pointerup"
+    ) return null;
     const nearOrigin = Math.max(Math.abs(sample.clientX), Math.abs(sample.clientY))
       <= PhysicalContactTracker.SYNTHETIC_CANCEL_ORIGIN_TOLERANCE_PX;
-    if (!nearOrigin) return false;
+    if (!nearOrigin) return { reject: false, reason: "" };
     const lastPoint = contact.lastPoint;
-    if (!lastPoint) return true;
+    if (!lastPoint) return { reject: true, reason: `${sample.eventType}-sentinel` };
     const trajectoryIsNearOrigin = Math.max(Math.abs(lastPoint.x), Math.abs(lastPoint.y))
       <= PhysicalContactTracker.SYNTHETIC_CANCEL_ORIGIN_TOLERANCE_PX;
-    // Keep a legitimate origin contact, but reject an origin-adjacent terminal
-    // sentinel once it contradicts the last valid point in the trajectory.
-    return !trajectoryIsNearOrigin;
+    if (trajectoryIsNearOrigin) return { reject: false, reason: "" };
+    return { reject: true, reason: `${sample.eventType}-sentinel` };
   }
 
   private findPair(now: number, sample: RawPointerContactSample | RawTouchContactSample): ContactState | null {
@@ -496,6 +520,10 @@ export class PhysicalContactTracker {
       maxDisplacementPx: contact.maxDisplacementPx,
       firstPoint: contact.firstPoint ? { ...contact.firstPoint } : null,
       lastPoint: contact.lastPoint ? { ...contact.lastPoint } : null,
+      lastValidPoint: contact.lastPoint ? { ...contact.lastPoint } : null,
+      rawPointerTerminalPoint: contact.rawPointerTerminalPoint ? { ...contact.rawPointerTerminalPoint } : null,
+      terminalPointAcceptedForGeometry: contact.terminalPointAcceptedForGeometry,
+      terminalPointRejectReason: contact.terminalPointRejectReason,
       pointerTerminal: contact.pointerTerminal,
       pointerCaptureLost: contact.pointerCaptureLost,
       touchTerminal: contact.touchTerminal,
