@@ -227,6 +227,13 @@ export class PostZoomInputTrace {
   private settledId: string | null = null;
   private settledAt = 0;
   private contactsLogged = 0;
+  private correlationOpen = false;
+  private readonly admitted = new Map<string, {
+    zoomBurstId: string;
+    postZoomContactIndex: number;
+    admittedAt: number;
+    terminal: boolean;
+  }>();
   private readonly anomalyContacts = new Set<string>();
   private readonly ring: PostZoomLifecycleEvent[] = [];
   private readonly diagnosisState: LastZoomDiagnosis = {
@@ -248,7 +255,7 @@ export class PostZoomInputTrace {
   };
 
   currentBurstId(): string | null {
-    return this.activeId ?? this.settledId;
+    return this.activeId ?? (this.correlationOpen ? this.settledId : null);
   }
 
   begin(at = new Date().toISOString()): string {
@@ -257,6 +264,8 @@ export class PostZoomInputTrace {
     this.settledId = null;
     this.settledAt = 0;
     this.contactsLogged = 0;
+    this.correlationOpen = false;
+    this.admitted.clear();
     this.anomalyContacts.clear();
     this.diagnosisState.zoomBurstId = this.activeId;
     this.diagnosisState.beganAt = at;
@@ -354,6 +363,9 @@ export class PostZoomInputTrace {
     this.settledId = this.activeId;
     this.settledAt = atMs;
     this.contactsLogged = 0;
+    this.correlationOpen = true;
+    this.admitted.clear();
+    this.anomalyContacts.clear();
     this.diagnosisState.zoomBurstId = this.settledId;
     this.diagnosisState.settledAt = new Date(atMs).toISOString();
     this.diagnosisState.scaleBefore = typeof snapshot.scaleBefore === "number" ? snapshot.scaleBefore : null;
@@ -368,21 +380,67 @@ export class PostZoomInputTrace {
   }
 
   /** Index of a page-overlapping contact inside the post-settle window, or null. */
-  notePageContact(atMs: number, overAnnotatablePage: boolean): { zoomBurstId: string; postZoomContactIndex: number } | null {
-    if (!this.settledId || !overAnnotatablePage) return null;
-    if (atMs - this.settledAt > POST_ZOOM_WINDOW_MS) return null;
+  notePageContact(
+    atMs: number,
+    overAnnotatablePage: boolean,
+    physicalContactId = `admitted-${this.contactsLogged + 1}`
+  ): { zoomBurstId: string; postZoomContactIndex: number; admittedAt: number; postZoomWindowAgeMs: number } | null {
+    this.expireCorrelation(atMs);
+    if (!this.correlationOpen || !this.settledId || !overAnnotatablePage) return null;
+    const existing = this.admitted.get(physicalContactId);
+    if (existing) {
+      return {
+        zoomBurstId: existing.zoomBurstId,
+        postZoomContactIndex: existing.postZoomContactIndex,
+        admittedAt: existing.admittedAt,
+        postZoomWindowAgeMs: atMs - this.settledAt
+      };
+    }
     if (this.contactsLogged >= POST_ZOOM_CONTACT_LIMIT) return null;
     this.contactsLogged += 1;
-    return { zoomBurstId: this.settledId, postZoomContactIndex: this.contactsLogged };
+    this.admitted.set(physicalContactId, {
+      zoomBurstId: this.settledId,
+      postZoomContactIndex: this.contactsLogged,
+      admittedAt: atMs,
+      terminal: false
+    });
+    return {
+      zoomBurstId: this.settledId,
+      postZoomContactIndex: this.contactsLogged,
+      admittedAt: atMs,
+      postZoomWindowAgeMs: atMs - this.settledAt
+    };
   }
 
-  anomaly(contact: PostZoomContactObservation): PostZoomAnomaly | null {
-    const zoomBurstId = this.settledId;
-    if (!zoomBurstId || this.anomalyContacts.has(contact.physicalContactId)) return null;
+  /** An admitted contact has finished. Correlation ends once all three have finished. */
+  completeAdmittedContact(physicalContactId: string, atMs: number): void {
+    this.expireCorrelation(atMs);
+    const admitted = this.admitted.get(physicalContactId);
+    if (!admitted || !this.correlationOpen) return;
+    admitted.terminal = true;
+    if (
+      this.admitted.size >= POST_ZOOM_CONTACT_LIMIT
+      && [...this.admitted.values()].every((entry) => entry.terminal)
+    ) {
+      this.endCorrelation();
+    }
+  }
+
+  anomaly(contact: PostZoomContactObservation, atMs?: number): PostZoomAnomaly | null {
+    const admitted = this.admitted.get(contact.physicalContactId);
+    if (!admitted || !this.correlationOpen || !this.settledId) return null;
+    const time = atMs ?? admitted.admittedAt;
+    this.expireCorrelation(time);
+    if (!this.correlationOpen || this.anomalyContacts.has(contact.physicalContactId)) return null;
     const classification = classifyPostZoomFailure(contact);
-    if (!classification) return null;
+    if (!classification) {
+      this.completeAdmittedContact(contact.physicalContactId, time);
+      return null;
+    }
     this.anomalyContacts.add(contact.physicalContactId);
-    const postZoomContactIndex = Math.max(1, this.contactsLogged);
+    admitted.terminal = true;
+    const zoomBurstId = admitted.zoomBurstId;
+    const postZoomContactIndex = admitted.postZoomContactIndex;
     const payload: PostZoomAnomaly = {
       event: "post-zoom-input-anomaly",
       reason: "post-zoom-contact-not-routed",
@@ -408,7 +466,19 @@ export class PostZoomInputTrace {
       classification,
       physicalContactId: contact.physicalContactId
     });
+    this.completeAdmittedContact(contact.physicalContactId, time);
     return payload;
+  }
+
+  private expireCorrelation(atMs: number): void {
+    if (!this.correlationOpen || !this.settledId) return;
+    if (atMs - this.settledAt <= POST_ZOOM_WINDOW_MS) return;
+    this.endCorrelation();
+  }
+
+  /** Stop accepting new post-zoom contacts. The completed diagnosis stays for Copy Logs. */
+  private endCorrelation(): void {
+    this.correlationOpen = false;
   }
 }
 

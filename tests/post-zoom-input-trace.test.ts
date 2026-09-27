@@ -24,6 +24,37 @@ const pageContact = {
 } as const;
 
 describe("PostZoomInputTrace", () => {
+  it("admits only the first three contacts inside eight seconds and keeps the diagnosis", () => {
+    const trace = new PostZoomInputTrace();
+    trace.begin();
+    trace.settle(1_000, { scaleAfter: 1.4 });
+    expect(trace.notePageContact(1_000 + 7_999, true, "in-window")?.postZoomContactIndex).toBe(1);
+    expect(trace.notePageContact(1_000 + 8_001, true, "late")).toBeNull();
+
+    const bounded = new PostZoomInputTrace();
+    bounded.begin();
+    bounded.settle(1_000, { scaleAfter: 1.4 });
+    for (const id of ["a", "b", "c"]) bounded.notePageContact(1_100, true, id);
+    expect(bounded.notePageContact(1_200, true, "fourth")).toBeNull();
+    const admitted = bounded.anomaly({
+      ...pageContact,
+      physicalContactId: "c",
+      stylusIdentity: "established"
+    });
+    const late = bounded.anomaly({
+      ...pageContact,
+      physicalContactId: "fourth",
+      stylusIdentity: "established"
+    });
+    expect(admitted?.postZoomContactIndex).toBe(3);
+    expect(late).toBeNull();
+    bounded.completeAdmittedContact("a", 1_100);
+    bounded.completeAdmittedContact("b", 1_100);
+    expect(bounded.diagnosis().lastPostZoomAnomaly?.physicalContactId).toBe("c");
+    expect(bounded.diagnosis().zoomBurstId).toBe("zoom-1");
+    expect(bounded.currentBurstId()).toBeNull();
+  });
+
   it("correlates zoom begin, scale ticks, settle, and the next three page contacts", () => {
     const trace = new PostZoomInputTrace();
     expect(trace.begin("2026-09-26T00:00:00.000Z")).toBe("zoom-1");
@@ -32,7 +63,7 @@ describe("PostZoomInputTrace", () => {
     trace.remember("pending-mobile-remount", { pendingMobileScrollRemount: true });
     expect(trace.settle(1_000, { scaleAfter: 1.4, routerGeneration: 8 })).toBe("zoom-1");
 
-    expect(trace.notePageContact(1_100, true)).toEqual({ zoomBurstId: "zoom-1", postZoomContactIndex: 1 });
+    expect(trace.notePageContact(1_100, true)).toMatchObject({ zoomBurstId: "zoom-1", postZoomContactIndex: 1 });
     expect(trace.notePageContact(1_200, true)?.postZoomContactIndex).toBe(2);
     expect(trace.notePageContact(1_300, true)?.postZoomContactIndex).toBe(3);
     expect(trace.notePageContact(1_400, true)).toBeNull();
@@ -45,7 +76,7 @@ describe("PostZoomInputTrace", () => {
     trace.remember("stroke-end", { page: 1, routerGeneration: 4 });
     trace.remember("router-destroy", { listenerGeneration: 7 });
     trace.settle(5_000, { routerGeneration: 8 });
-    trace.notePageContact(5_100, true);
+    trace.notePageContact(5_100, true, "physical-contact-32");
 
     const first = trace.anomaly({
       ...pageContact,
@@ -100,7 +131,7 @@ describe("PostZoomInputTrace", () => {
     trace.begin("2026-09-26T00:00:00.000Z");
     trace.remember("pending-mobile-remount", { pendingMobileScrollRemount: true });
     trace.settle(5_000, { scaleBefore: 1, scaleAfter: 1.4, routerGeneration: 8 });
-    trace.notePageContact(5_100, true);
+    trace.notePageContact(5_100, true, "physical-contact-62");
     trace.remember("post-zoom-contact", { physicalContactId: "physical-contact-62", postZoomContactIndex: 1 });
     const anomaly = trace.anomaly({
       ...pageContact,
