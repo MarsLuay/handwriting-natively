@@ -2178,7 +2178,8 @@ export class ViewerInkSession {
           startClassification: record.contact.classification,
           finalClassification: null,
           scrollLeftAtStart: scroll.scrollLeft,
-          scrollTopAtStart: scroll.scrollTop
+          scrollTopAtStart: scroll.scrollTop,
+          ...this.gesturePolicyForPage(page.pageNumber)
         });
       }
       return;
@@ -2274,6 +2275,7 @@ export class ViewerInkSession {
           : null,
         activeElement: describeTarget(page?.element.ownerDocument.activeElement ?? null),
         recoveryExperiment: this.postZoomTrace.diagnosis().recoveryExperiment,
+        ...this.gesturePolicyForPage(pageNumber),
         ...disposition
       });
       const previousStroke = this.logger.lastSuccessfulStroke();
@@ -2866,8 +2868,14 @@ export class ViewerInkSession {
       zoomGestureActive: this.isZoomGestureActive(),
       zoomHandoffActive: this.isZoomHandoffActive(),
       activeTool: this.activeTool(),
-      ...this.inputPolicyLogFields()
+      ...this.inputPolicyLogFields(),
+      ...this.gesturePolicyForPage(view.pageNumber)
     };
+  }
+
+  private gesturePolicyForPage(pageNumber: number | null): Record<string, unknown> {
+    if (pageNumber === null) return {};
+    return this.surfaces.get(pageNumber)?.router?.gesturePolicy() ?? {};
   }
 
   /** Close a post-zoom window where the live page no longer matches its router. */

@@ -8,7 +8,8 @@ import {
   DEFAULT_MANIPULATION_PLATFORM_CAPABILITIES,
   MANIPULATION_REARM_MS,
   ManipulationStateMachine,
-  type ManipulationPlatformCapabilities
+  type ManipulationPlatformCapabilities,
+  type ManipulationState
 } from "./ManipulationStateMachine";
 import {
   type TouchAxisLock
@@ -297,6 +298,13 @@ export class PointerRouter {
     this.applyManipulationTransition(transition);
   }
 
+  /** Native finger contact. Pencil-first: this never creates an ink route. */
+  private beginManipulationTouch(event: PointerEvent): void {
+    if (this.manipulationTouches.has(event.pointerId)) return;
+    this.manipulationTouches.add(event.pointerId);
+    this.applyManipulationTransition(this.manipulation.touchStart());
+  }
+
   private readonly handleDown = (event: PointerEvent): PointerRoute => {
     this.callbacks.onRouterReceived?.(event, this.generation);
     if (this.callbacks.isInputOwnerActive?.() === false) {
@@ -336,7 +344,7 @@ export class PointerRouter {
     this.callbacks.onRouteDecision?.(route, routeDecision.reason, event);
     if (event.pointerType === "touch" && route !== "ignored") {
       this.touches.add(event.pointerId);
-      // Touch stays native PDF nav — no custom axis lock from annotation availability.
+      this.beginManipulationTouch(event);
     }
     this.callbacks.onRoute?.(route, event);
     if (route === "touch-zoom-pan") {
@@ -496,20 +504,34 @@ export class PointerRouter {
     );
   };
 
-  /** WebKit / iPad: transient touch-action only while pen/palm requires it. */
+  /** Pen or a vertical axis lock wins. Otherwise the manipulation machine owns touch-action. */
   private syncTouchActionMode(): void {
-    // Pencil-first: never lock touch from annotation availability alone.
     const mode = this.palmPolicy.hasActivePen() || this.touchAxis?.lock === "vertical"
       ? "none"
-      : "default";
-    if (mode === "default") {
-      this.clearManipulationRearm();
-      if (this.manipulation.state !== "armed" || this.manipulation.activeTouches > 0) this.manipulation.reset();
-    }
+      : this.manipulation.touchAction();
     this.element.classList.toggle("native-pdf-handwriting-touch-none", mode === "none");
-    this.element.classList.toggle("native-pdf-handwriting-touch-pan-xy", false);
+    this.element.classList.toggle("native-pdf-handwriting-touch-pan-xy", mode === "pan-xy");
     // Legacy alias from 0.1.42–0.1.45 — keep cleared so only one mode class wins.
     this.element.classList.remove("native-pdf-handwriting-pen-capturing");
+  }
+
+  gesturePolicy(): {
+    manipulationState: ManipulationState;
+    manipulationActiveTouches: number;
+    manipulationTouchAction: "none" | "pan-xy";
+    touchNoneClassPresent: boolean;
+    touchPanXyClassPresent: boolean;
+    computedTouchAction: string;
+  } {
+    const view = this.element.ownerDocument.defaultView;
+    return {
+      manipulationState: this.manipulation.state,
+      manipulationActiveTouches: this.manipulation.activeTouches,
+      manipulationTouchAction: this.manipulation.touchAction(),
+      touchNoneClassPresent: this.element.classList.contains("native-pdf-handwriting-touch-none"),
+      touchPanXyClassPresent: this.element.classList.contains("native-pdf-handwriting-touch-pan-xy"),
+      computedTouchAction: view?.getComputedStyle(this.element).touchAction ?? ""
+    };
   }
 
   private beginTouchAxisGesture(event: PointerEvent, assist: boolean): void {
