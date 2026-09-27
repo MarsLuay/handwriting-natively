@@ -567,15 +567,6 @@ export class SessionLogger {
     });
   }
 
-  /** Lifecycle-only zoom markers let a probe be placed on the same timeline as a view burst. */
-  zoomLifecycle(phase: "burst-start" | "settle" | "release", details: Record<string, unknown> = {}): void {
-    this.emit("info", "ink zoom lifecycle", {
-      document: this.documentPath,
-      phase,
-      ...details
-    });
-  }
-
   /** Keep bounded input history in memory; dump it only for a routed-input anomaly. */
   inputLifecycleEvent(event: string, details: Record<string, unknown> = {}): void {
     this.inputLifecycle.push({ at: new Date().toISOString(), event, details: { ...details } });

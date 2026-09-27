@@ -86,6 +86,7 @@ export interface PostUiProbeContactSummary {
   panAccepted: boolean;
   nativeScrollBefore: { left: number; top: number } | null;
   nativeMaxScrollDeltaPx: number;
+  nativeScrollDeltaPx: number;
   nativeScrollAfter: { left: number; top: number } | null;
   strokeStarted: boolean;
   terminal: string | null;
@@ -141,6 +142,7 @@ interface ProbeContact {
   panAccepted: boolean;
   nativeScrollBefore: ScrollSnapshot | null;
   nativeMaxScrollDeltaPx: number;
+  nativeScrollDeltaPx: number;
   nativeScrollAfter: ScrollSnapshot | null;
   strokeStarted: boolean;
   terminal: string | null;
@@ -226,38 +228,19 @@ export class PostUiInputProbe {
     const existing = active.contacts.get(pointerId);
     if (existing) return this.summary(existing, now);
     const contactNumber = pointerType === "pen" ? ++active.penContactCount : 0;
-    const contact: ProbeContact = {
-      armId: active.armId,
-      correlationId: `${active.armId}-contact-${active.contacts.size + 1}`,
-      contactNumber,
+    const contact = this.createContact(
+      active.armId,
+      `${active.armId}-contact-${active.contacts.size + 1}`,
+      now,
       pointerId,
-      pointerType: pointerType || "(empty)",
-      startedAt: now,
-      stages: ["document"],
-      route: null,
-      routeReason: null,
-      page: null,
-      routerGeneration: null,
-      eventPhase: null,
-      composedPathLength: null,
-      targetOwnership: null,
-      fallbackConsidered: false,
-      fallbackDecision: null,
-      panObserved: false,
-      panAccepted: false,
-      nativeScrollBefore: null,
-      nativeMaxScrollDeltaPx: 0,
-      nativeScrollAfter: null,
-      strokeStarted: false,
-      terminal: null,
-      terminalState: null,
-      finalized: false,
-      details: {
+      normalizedType,
+      pointerType === "pen" ? contactNumber : null,
+      {
         documentSeen: true,
         contactNumber,
-        ...(pointerType === "pen" ? { eligiblePenContact: true } : { eligiblePenContact: false })
+        eligiblePenContact: pointerType === "pen"
       }
-    };
+    );
     active.contacts.set(pointerId, contact);
     return this.summary(contact, now);
   }
@@ -400,6 +383,11 @@ export class PostUiInputProbe {
     const active = this.active;
     const contact = active?.contacts.get(pointerId);
     if (!active || !contact || contact.finalized) return null;
+    if (contact.pointerType !== "pen") {
+      this.stage(now, pointerId, "terminal", { ...details, terminal });
+      contact.finalized = true;
+      return null;
+    }
     this.stage(now, pointerId, "terminal", { ...details, terminal });
     contact.finalized = true;
     return {
@@ -507,7 +495,14 @@ export class PostUiInputProbe {
       routerGeneration: null,
       panObserved: false,
       panAccepted: false,
+      nativeScrollBefore: null,
+      nativeScrollAfter: null,
+      nativeMaxScrollDeltaPx: 0,
       nativeScrollDeltaPx: 0,
+      eventPhase: null,
+      composedPathLength: null,
+      targetOwnership: null,
+      fallbackDecision: null,
       strokeStarted: false,
       terminal: null,
       finalized: false,
@@ -534,7 +529,10 @@ export class PostUiInputProbe {
     if (typeof details.routerGeneration === "number") contact.routerGeneration = details.routerGeneration;
     if (typeof details.route === "string") contact.route = details.route;
     if (typeof details.routeReason === "string") contact.routeReason = details.routeReason;
-    if (typeof details.maxScrollDeltaPx === "number") contact.nativeScrollDeltaPx = Math.max(contact.nativeScrollDeltaPx, details.maxScrollDeltaPx);
+    if (typeof details.maxScrollDeltaPx === "number") {
+      contact.nativeScrollDeltaPx = Math.max(contact.nativeScrollDeltaPx, details.maxScrollDeltaPx);
+      contact.nativeMaxScrollDeltaPx = contact.nativeScrollDeltaPx;
+    }
     if (stage === "pan") {
       contact.panObserved = true;
       if (details.accepted === true) contact.panAccepted = true;
@@ -555,9 +553,7 @@ export class PostUiInputProbe {
     }
     if (contact.details.fallbackRejected === true) return "post-ui-pen-fallback-rejected";
     if (!contact.stages.includes("router-received")) {
-      return contact.details.legacyMissedPageRouter === true
-        ? "post-ui-pen-missed-page-router"
-        : "post-ui-pen-seen-document-not-router";
+      return "post-ui-pen-missed-page-router";
     }
     if (contact.panAccepted) return "post-ui-pen-entered-pan";
     if (contact.route === "native" || contact.route === "touch-pan" || contact.route === "touch-zoom-pan") {
@@ -700,6 +696,7 @@ export class PostUiInputProbe {
       panAccepted: contact.panAccepted,
       nativeScrollBefore: contact.nativeScrollBefore,
       nativeMaxScrollDeltaPx: contact.nativeMaxScrollDeltaPx,
+      nativeScrollDeltaPx: contact.nativeScrollDeltaPx,
       nativeScrollAfter: contact.nativeScrollAfter,
       strokeStarted: contact.strokeStarted,
       terminal: contact.terminal,
