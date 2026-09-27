@@ -91,6 +91,8 @@ export interface PointerRouterCallbacks {
   }): void;
   /** Fired as soon as this router's pointerdown listener runs (before classify). */
   onRouterReceived?(event: PointerEvent, generation: number): void;
+  /** Page touchstart, before pen scroll-blocking. Raw TouchEvent, not a pointer type. */
+  onTouchStart?(event: TouchEvent): void;
   /** True when document fallback / another router already owns this pointerId. */
   isPointerHandled?(pointerId: number, generation: number): boolean;
   /** Mark pointerId so document fallback does not start a duplicate stroke. */
@@ -434,6 +436,7 @@ export class PointerRouter {
 
   /** Cancel companion TouchEvents while stylus is down (iPad WebKit scroll path). */
   private readonly blockTouchScrollWhilePen = (event: TouchEvent): void => {
+    if (event.type === "touchstart") this.callbacks.onTouchStart?.(event);
     // Companion touchstart arrives ~0–4ms after pen down — reconcile only when stale.
     this.palmPolicy.reconcileStalePenOnTouch();
     if (!this.palmPolicy.hasActivePen()) return;
