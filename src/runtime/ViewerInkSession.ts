@@ -1044,8 +1044,8 @@ export class ViewerInkSession {
   /** Tiny pinch/nudge only — still above the old mid-gesture thrash floor. */
   private static readonly ZOOM_SETTLE_TINY_MS = 120;
   /**
-   * After the fingers are up, or for a resize that did not change scale.
-   * The 560ms window only covers scale ticks that can still arrive mid-gesture.
+   * Same-scale resize and finger-up settle. One short task, not the 560ms
+   * trackpad window. It is the expected wait, so it is not a slow span.
    */
   private static readonly ZOOM_SETTLE_LAYOUT_MS = 32;
   /** Absolute PDF.js scale delta treated as a micro-nudge (below ~one wheel notch). */
@@ -3516,7 +3516,12 @@ export class ViewerInkSession {
       this.zoomBurstScaleEnd = scale;
       this.lastKnownViewScale = scale;
     }
-    const settleMs = this.zoomSettleDelayMs(reason, scale);
+    const continuingScale = this.zoomSettleTimer !== null
+      && (this.zoomBurstReason.includes("scale") || this.zoomBurstReason.includes("rotation"));
+    this.zoomBurstReason = reason;
+    const settleMs = continuingScale && !reason.includes("scale") && !reason.includes("rotation")
+      ? this.zoomSettleCoalesceMs(scale)
+      : this.zoomSettleDelayMs(reason, scale);
     if (reason.includes("scale") || reason.includes("rotation")) this.lastScaleChangeAt = now;
     this.postZoomTrace.remember("zoom-scale", {
       reason,
@@ -3555,8 +3560,8 @@ export class ViewerInkSession {
    * alone (that would make every single-tick jump look like delta 0).
    */
   private zoomSettleDelayMs(reason: string, scale?: number): number {
-    if (!reason.includes("scale") && !reason.includes("rotation")) return ViewerInkSession.ZOOM_SETTLE_LAYOUT_MS;
-    return this.zoomSettleCoalesceMs(scale);
+    if (reason.includes("scale") || reason.includes("rotation")) return this.zoomSettleCoalesceMs(scale);
+    return ViewerInkSession.ZOOM_SETTLE_LAYOUT_MS;
   }
 
   private zoomSettleCoalesceMs(scale?: number): number {
@@ -3776,15 +3781,21 @@ export class ViewerInkSession {
       return true;
     }
     if (this.pinchCleanup.needsAnimationFrame()) {
-      this.lastSettleDeferralReason = "pinch-cleanup-frame";
-      this.cancelPinchCleanupFrame();
-      this.pinchCleanupFrame = window.requestAnimationFrame(() => {
-        this.pinchCleanupFrame = null;
+      // Finger release already ran on this turn. That is the one post-terminal
+      // frame; waiting for another rAF was the 50ms flag.
+      if (report.quiescent && this.pinchTerminalAt !== 0) {
         this.pinchCleanup.noteAnimationFrame();
-        this.runZoomSettlePaint();
-      });
-      this.refreshZoomBurstActivity();
-      return true;
+      } else {
+        this.lastSettleDeferralReason = "pinch-cleanup-frame";
+        this.cancelPinchCleanupFrame();
+        this.pinchCleanupFrame = window.requestAnimationFrame(() => {
+          this.pinchCleanupFrame = null;
+          this.pinchCleanup.noteAnimationFrame();
+          this.runZoomSettlePaint();
+        });
+        this.refreshZoomBurstActivity();
+        return true;
+      }
     }
     this.postZoomTrace.noteGestureCleanup({
       ...report,
@@ -4088,6 +4099,13 @@ export class ViewerInkSession {
     const postGestureMs = pinchTerminalToSettleMs
       ?? (this.zoomGestureStartedAt !== 0 ? nowPerf - this.zoomGestureStartedAt : 0);
     const perceivedPostGestureMs = Math.max(0, postGestureMs - (liveInkWaitAfterPinchTerminalMs ?? 0));
+    const layoutWait = this.lastSettleDeferralReason === "resize"
+      || this.lastSettleDeferralReason === "pages-page-render"
+      || this.lastSettleDeferralReason === "pinch-cleanup-frame"
+      || this.lastSettleDeferralReason === "pinch-terminal";
+    const unexpectedWaitMs = layoutWait
+      ? Math.max(0, perceivedPostGestureMs - ViewerInkSession.ZOOM_SETTLE_LAYOUT_MS)
+      : perceivedPostGestureMs;
     this.postZoomTrace.noteBurstActivity({
       zoomGestureDurationMs: zoomGestureDurationMs === null ? null : Math.round(zoomGestureDurationMs * 10) / 10,
       pinchTerminalToSettleMs: pinchTerminalToSettleMs === null ? null : Math.round(pinchTerminalToSettleMs * 10) / 10,
@@ -4097,7 +4115,7 @@ export class ViewerInkSession {
       postGestureResetCount: this.settleTimerResetCount
     });
     const churn = this.slowSpans.recordSettleChurn({
-      settleDelayMs: perceivedPostGestureMs,
+      settleDelayMs: unexpectedWaitMs,
       settleTimerResetCount: this.settleTimerResetCount,
       inGestureResetCount: this.inGestureResetCount,
       resetReasons: this.settleResetReasons,
