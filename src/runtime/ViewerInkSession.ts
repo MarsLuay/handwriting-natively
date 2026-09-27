@@ -46,6 +46,7 @@ import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type Doc
 import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
 import {
   acquirePhysicalContactCollector,
+  physicalContactHotPathStats,
   rawPointerContactSample,
   rawTouchContactEvent,
   type PhysicalContactCollectorEvent,
@@ -1371,6 +1372,7 @@ export class ViewerInkSession {
       isEnabled: () => this.options.debugEnabled?.() ?? false,
       withinTarget: within,
       onPhysicalContactEvent: (event) => this.handlePhysicalContactEvent(event),
+      onInputHotPathLongTask: (details) => this.logger.inputHotPathLongTask(details),
       onPhysicalContactDuplicate: (details) => this.handlePhysicalContactDuplicate(details)
     });
 
@@ -5550,6 +5552,7 @@ export class ViewerInkSession {
       lastZoomTrace,
       lastPostZoomDurabilityTrace: this.postZoomDurability.snapshot(Date.now()),
       lastPointerTypeOrigins: this.pointerTypeOrigins.snapshot(),
+      physicalContactHotPath: physicalContactHotPathStats(),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
     });
     this.logger.handwritingUiSnapshot(snapshot);

@@ -1,3 +1,13 @@
+let rawSampleClones = 0;
+
+export function rawSampleCloneCount(): number {
+  return rawSampleClones;
+}
+
+export function resetRawSampleCloneCount(): void {
+  rawSampleClones = 0;
+}
+
 export type PhysicalContactRepresentation =
   | "pointer-pen"
   | "pointer-touch"
@@ -144,6 +154,8 @@ interface ContactState {
   touchTerminal: "touchend" | "touchcancel" | null;
   terminal: string | null;
   rawPointerFirst: RawPointerContactSample | null;
+  rawPointerMotion: RawPointerContactSample | null;
+  rawTouchMotion: RawTouchContactSample | null;
   rawPointerLast: RawPointerContactSample | null;
   rawTouchFirst: RawTouchContactSample | null;
   rawTouchLast: RawTouchContactSample | null;
@@ -340,6 +352,8 @@ export class PhysicalContactTracker {
       touchTerminal: null,
       terminal: null,
       rawPointerFirst: null,
+      rawPointerMotion: null,
+      rawTouchMotion: null,
       rawPointerLast: null,
       rawTouchFirst: null,
       rawTouchLast: null
@@ -363,6 +377,7 @@ export class PhysicalContactTracker {
   }
 
   private clonePointerSample(sample: RawPointerContactSample): RawPointerContactSample {
+    rawSampleClones += 1;
     return {
       ...sample,
       composedPath: [...sample.composedPath],
@@ -371,6 +386,7 @@ export class PhysicalContactTracker {
   }
 
   private cloneTouchSample(sample: RawTouchContactSample): RawTouchContactSample {
+    rawSampleClones += 1;
     return {
       ...sample,
       activeTouches: sample.activeTouches.map((touch) => ({ ...touch })),
@@ -387,7 +403,8 @@ export class PhysicalContactTracker {
     this.refreshClassification(contact, now);
     if (sample.eventType === "pointermove") contact.pointerMoveCount += 1;
     if (!contact.rawPointerFirst) contact.rawPointerFirst = this.clonePointerSample(sample);
-    contact.rawPointerLast = this.clonePointerSample(sample);
+    if (sample.eventType === "pointermove") contact.rawPointerLast = this.reusePointerMotion(contact, sample);
+    else contact.rawPointerLast = this.clonePointerSample(sample);
     this.updatePoint(contact, sample);
   }
 
@@ -397,8 +414,49 @@ export class PhysicalContactTracker {
     this.refreshClassification(contact, now);
     if (sample.eventType === "touchmove") contact.touchMoveCount += 1;
     if (!contact.rawTouchFirst) contact.rawTouchFirst = this.cloneTouchSample(sample);
-    contact.rawTouchLast = this.cloneTouchSample(sample);
+    if (sample.eventType === "touchmove") contact.rawTouchLast = this.reuseTouchMotion(contact, sample);
+    else contact.rawTouchLast = this.cloneTouchSample(sample);
     this.updatePoint(contact, sample);
+  }
+
+  private reusePointerMotion(contact: ContactState, sample: RawPointerContactSample): RawPointerContactSample {
+    const motion = contact.rawPointerMotion ?? {
+      ...sample,
+      composedPath: [],
+      composedPathLabels: []
+    };
+    motion.eventType = "pointermove";
+    motion.timeStamp = sample.timeStamp;
+    motion.clientX = sample.clientX;
+    motion.clientY = sample.clientY;
+    motion.pressure = sample.pressure;
+    motion.tiltX = sample.tiltX;
+    motion.tiltY = sample.tiltY;
+    motion.buttons = sample.buttons;
+    motion.button = sample.button;
+    motion.width = sample.width;
+    motion.height = sample.height;
+    contact.rawPointerMotion = motion;
+    return motion;
+  }
+
+  private reuseTouchMotion(contact: ContactState, sample: RawTouchContactSample): RawTouchContactSample {
+    const motion = contact.rawTouchMotion ?? {
+      ...sample,
+      composedPath: [],
+      composedPathLabels: [],
+      activeTouches: sample.activeTouches,
+      changedTouches: sample.changedTouches
+    };
+    motion.eventType = "touchmove";
+    motion.timeStamp = sample.timeStamp;
+    motion.clientX = sample.clientX;
+    motion.clientY = sample.clientY;
+    motion.force = sample.force;
+    motion.radiusX = sample.radiusX;
+    motion.radiusY = sample.radiusY;
+    contact.rawTouchMotion = motion;
+    return motion;
   }
 
   private refreshClassification(contact: ContactState, now: number): void {
