@@ -77,7 +77,7 @@ import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type P
 import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { getDebugNodeId } from "../dom/debugNodeId";
 import { isElement, isElementInDocument, isHTMLElement, setElementCssProps } from "../dom/typeGuards";
-import { contactBlockedByOverlay, decidePostZoomPageContact, ensurePdfPageNumbers, isHandwritingPageChrome, isPostZoomPageTarget } from "../integration/pdfPageSelectors";
+import { contactBlockedByOverlay, decidePostZoomPageContact, ensurePdfPageNumbers, isHandwritingPageChrome, isPluginInputChromeTarget, isPostZoomPageTarget } from "../integration/pdfPageSelectors";
 import { PdfExportService, annotatedFilename, editableAnnotatedFilename } from "../pdf/PdfExportService";
 import type { ImportedPdfPages } from "../pdf/PdfNoteService";
 import { exportInkStrokesToSvg } from "../pdf/SvgInkExportService";
@@ -390,9 +390,7 @@ function isIgnorableStaleOutsideHit(
 }
 
 function isInputChromeTarget(target: EventTarget | null): boolean {
-  return isElement(target) && Boolean(target.closest(
-    ".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown, .native-pdf-handwriting-selection-toolbar, .native-pdf-handwriting-text-input, .native-pdf-handwriting-rail, .native-pdf-handwriting-chrome"
-  ));
+  return isPluginInputChromeTarget(target);
 }
 
 function inputOwners(pageElement: HTMLElement): WeakMap<HTMLElement, ViewerInkSession> {
