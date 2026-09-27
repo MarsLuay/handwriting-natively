@@ -1,0 +1,107 @@
+import { describe, expect, it } from "vitest";
+import {
+  PostZoomInputTrace,
+  classifyPostZoomFailure,
+  pointerHandledForGeneration,
+  stylusIdentityFromClassification
+} from "../src/runtime/PostZoomInputTrace";
+
+const pageContact = {
+  overAnnotatablePage: true,
+  strokeStarted: false,
+  routerReceived: false,
+  routerRejected: false,
+  stalePageBinding: false,
+  inputOwnerMismatch: false,
+  fallbackRejected: false,
+  nativePanWon: false,
+  pointerCaptureStale: false
+} as const;
+
+describe("PostZoomInputTrace", () => {
+  it("correlates zoom begin, scale ticks, settle, and the next three page contacts", () => {
+    const trace = new PostZoomInputTrace();
+    expect(trace.begin("2026-09-26T00:00:00.000Z")).toBe("zoom-1");
+    trace.remember("scale", { scale: 1.2 });
+    trace.remember("scale", { scale: 1.4 });
+    trace.remember("pending-mobile-remount", { pendingMobileScrollRemount: true });
+    expect(trace.settle(1_000, { scaleAfter: 1.4, routerGeneration: 8 })).toBe("zoom-1");
+
+    expect(trace.notePageContact(1_100, true)).toEqual({ zoomBurstId: "zoom-1", postZoomContactIndex: 1 });
+    expect(trace.notePageContact(1_200, true)?.postZoomContactIndex).toBe(2);
+    expect(trace.notePageContact(1_300, true)?.postZoomContactIndex).toBe(3);
+    expect(trace.notePageContact(1_400, true)).toBeNull();
+    expect(trace.notePageContact(1_100, false)).toBeNull();
+  });
+
+  it("emits one self-contained anomaly when an established Pencil contact misses the router", () => {
+    const trace = new PostZoomInputTrace();
+    trace.begin();
+    trace.remember("stroke-end", { page: 1, routerGeneration: 4 });
+    trace.remember("router-destroy", { listenerGeneration: 7 });
+    trace.settle(5_000, { routerGeneration: 8 });
+    trace.notePageContact(5_100, true);
+
+    const first = trace.anomaly({
+      ...pageContact,
+      physicalContactId: "physical-contact-32",
+      stylusIdentity: "established"
+    });
+    const second = trace.anomaly({
+      ...pageContact,
+      physicalContactId: "physical-contact-32",
+      stylusIdentity: "established"
+    });
+
+    expect(first?.event).toBe("post-zoom-input-anomaly");
+    expect(first?.reason).toBe("post-zoom-contact-not-routed");
+    expect(first?.classification).toBe("post-zoom-router-not-received");
+    expect(first?.zoomBurstId).toBe("zoom-1");
+    expect(first?.lifecycle.map((entry) => entry.event)).toEqual([
+      "zoom-begin",
+      "stroke-end",
+      "router-destroy",
+      "zoom-settle"
+    ]);
+    expect(second).toBeNull();
+  });
+
+  it("does not treat a genuine finger as a failed Pencil stroke", () => {
+    expect(classifyPostZoomFailure({
+      ...pageContact,
+      physicalContactId: "finger",
+      stylusIdentity: "absent",
+      nativePanWon: true
+    })).toBeNull();
+    expect(stylusIdentityFromClassification({
+      pointerEventPenSeen: false,
+      classification: "touch-only"
+    })).toBe("absent");
+    expect(stylusIdentityFromClassification({
+      pointerEventPenSeen: true,
+      classification: "paired"
+    })).toBe("established");
+  });
+
+  it("keeps a stale zoom pointer from blocking the next router generation", () => {
+    const handled = new Map<number, number>([[7, 4]]);
+    expect(pointerHandledForGeneration(handled, 7, 4)).toBe(true);
+    expect(pointerHandledForGeneration(handled, 7, 8)).toBe(false);
+    expect(pointerHandledForGeneration(handled, 9, 8)).toBe(false);
+  });
+
+  it("classifies stale binding and unknown stylus identity before routing", () => {
+    expect(classifyPostZoomFailure({
+      ...pageContact,
+      physicalContactId: "unknown",
+      stylusIdentity: "unknown"
+    })).toBe("post-zoom-stylus-identity-not-established");
+    expect(classifyPostZoomFailure({
+      ...pageContact,
+      physicalContactId: "stale",
+      stylusIdentity: "established",
+      stalePageBinding: true,
+      routerReceived: true
+    })).toBe("post-zoom-stale-page-binding");
+  });
+});
