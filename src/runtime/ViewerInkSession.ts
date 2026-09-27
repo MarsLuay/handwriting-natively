@@ -110,7 +110,7 @@ import { inkBackingBudget, inkBackingSize } from "./inkBackingSize";
 import type { DebugState } from "../ui/DebugPanel";
 import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
 import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../logging/SessionLogger";
-import { BoundedTiming, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
+import { BoundedTiming, FRAME_MS_120, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
 import type { VaultLogSink } from "../logging/VaultLogSink";
 import type { AnnotationViewState } from "./AnnotationSurface";
 import { describeScrollElement, scrollPdfByDetailed } from "../integration/PdfScrollRoot";
@@ -1046,10 +1046,10 @@ export class ViewerInkSession {
   /** Tiny pinch/nudge only — still above the old mid-gesture thrash floor. */
   private static readonly ZOOM_SETTLE_TINY_MS = 120;
   /**
-   * Same-scale resize and finger-up settle. One short task, not the 560ms
-   * trackpad window. It is the expected wait, so it is not a slow span.
+   * Same-scale resize and finger-up settle. One 120Hz frame, not the 560ms
+   * trackpad window. Time inside this budget is not a slow span.
    */
-  private static readonly ZOOM_SETTLE_LAYOUT_MS = 32;
+  private static readonly ZOOM_SETTLE_LAYOUT_MS = FRAME_MS_120;
   /** Absolute PDF.js scale delta treated as a micro-nudge (below ~one wheel notch). */
   private static readonly ZOOM_SETTLE_TINY_SCALE_DELTA = 0.02;
   /** Relative scale delta gate paired with {@link ZOOM_SETTLE_TINY_SCALE_DELTA}. */
@@ -3051,11 +3051,11 @@ export class ViewerInkSession {
       minScale: scaleStart,
       maxScale: scaleStart,
       scaleChangingEvents: 0,
-      scaleIntervals: new BoundedTiming(24),
+      scaleIntervals: new BoundedTiming(),
       scaleDeltas: new BoundedTiming(0),
       lastScaleAt: null,
       lastScale: scaleStart,
-      frameIntervals: new BoundedTiming(24),
+      frameIntervals: new BoundedTiming(),
       frameCount: 0,
       lastFrameAt: null,
       worstFrameOffsetMs: null,
@@ -3238,7 +3238,7 @@ export class ViewerInkSession {
       }
       this.recordZoomProfileTask(started);
       const pluginWorkMs = performance.now() - started;
-      if (pluginWorkMs >= 16.7) {
+      if (pluginWorkMs >= FRAME_MS_120) {
         this.logger.zoomLongFrame({
           zoomBurstId: this.postZoomTrace.currentBurstId(),
           frameDeltaMs: this.zoomProfile?.lastFrameAt == null ? null : roundMs(pluginWorkMs),
@@ -3436,8 +3436,8 @@ export class ViewerInkSession {
   }
 
   /**
-   * Smooth at 60Hz is a frame gap near 16ms with no late frames. Copy Logs keeps
-   * the last three finished gestures. A slow span is only the gap past 25ms.
+   * A 120Hz frame is 8.3ms. Copy Logs keeps the last three finished gestures.
+   * A slow span is recorded when frame p95 misses that frame.
    */
   private rememberZoomGesturePerformance(metrics: {
     durationMs: number;
@@ -3478,15 +3478,15 @@ export class ViewerInkSession {
     };
     this.recentZoomGesturePerformance.push(summary);
     if (this.recentZoomGesturePerformance.length > 3) this.recentZoomGesturePerformance.shift();
-    if (metrics.p95FrameDeltaMs < 25 && metrics.longestLongTaskMs < 8) return;
+    if (metrics.p95FrameDeltaMs < FRAME_MS_120 && metrics.longestLongTaskMs < 8) return;
     const span = this.slowSpans.record({
-      kind: metrics.longestLongTaskMs >= 8 ? "sync" : "async",
+      kind: "sync",
       category: "zoom",
       stage: "zoom-gesture-frame",
       durationMs: Math.max(metrics.p95FrameDeltaMs, metrics.longestLongTaskMs),
       activeWorkMs: metrics.longestLongTaskMs,
       waitMs: 0,
-      reason: metrics.longestLongTaskMs >= 8 ? "long-task" : "frame-gap",
+      reason: metrics.p95FrameDeltaMs >= FRAME_MS_120 ? "frame-gap" : "long-task",
       zoomBurstId: this.zoomCorrelationId
     });
     if (span) this.logger.perfSlowSpan({ ...span });
@@ -3610,7 +3610,14 @@ export class ViewerInkSession {
     if (!this.zoomProfile || this.zoomSettleTimer === null) return false;
     if (reason.includes("scale") || reason.includes("rotation")) return false;
     if (scale === undefined || this.zoomBurstScaleEnd === null) return false;
-    return Math.abs(scale - this.zoomBurstScaleEnd) < 1e-4;
+    const sameScale = Math.abs(scale - this.zoomBurstScaleEnd) < 1e-4;
+    // Some mobile PDF hosts report a stale scale on the scroll notification
+    // that follows a scale tick. Do not let that one-frame notification end a
+    // live 120Hz scale burst and arm the short layout settle timer.
+    const recentScaleGesture = this.zoomProfile.scaleChangingEvents > 0
+      && this.zoomBurstReason.includes("scale")
+      && performance.now() - this.lastScaleChangeAt < ViewerInkSession.ZOOM_ACTIVE_MS;
+    return sameScale || recentScaleGesture;
   }
 
   /**
@@ -4418,7 +4425,7 @@ export class ViewerInkSession {
     this.ensureSelectionToolbar();
     this.refreshSurfaceCursors();
     const view = this.options.adapter.getViewState();
-    if (durationMs >= 16 && this.isZoomHandoffActive()) {
+    if (durationMs >= FRAME_MS_120 && this.isZoomHandoffActive()) {
       this.logger.zoomFlashProxy("paint-duration-spike", {
         reason: burst?.reason ?? this.zoomBurstReason,
         durationMs,
@@ -4987,7 +4994,7 @@ export class ViewerInkSession {
     this.refreshSurfaceCursors();
     const view = this.options.adapter.getViewState();
     const durationMs = roundMs(performance.now() - started);
-    if (durationMs >= 16 && this.isZoomHandoffActive()) {
+    if (durationMs >= FRAME_MS_120 && this.isZoomHandoffActive()) {
       this.logger.zoomFlashProxy("paint-duration-spike", {
         reason,
         durationMs,
@@ -8710,8 +8717,8 @@ export class ViewerInkSession {
       pointerType: event.pointerType || "unknown",
       pointerEvents: sampleCount,
       renderUpdates: 0,
-      inputToRender: new BoundedTiming(24),
-      frameIntervals: new BoundedTiming(24),
+      inputToRender: new BoundedTiming(),
+      frameIntervals: new BoundedTiming(),
       renderTotalMs: 0,
       maxPluginCallbackMs: 0,
       lastRenderAt: null,
@@ -8762,7 +8769,7 @@ export class ViewerInkSession {
         pointerType: event.pointerType || "unknown",
         pointerMoves: 0,
         refreshes: 0,
-        frameIntervals: new BoundedTiming(24),
+        frameIntervals: new BoundedTiming(),
         lastMoveAt: null,
         maxPluginCallbackMs: 0,
         maxScrollDeltaPx: 0,
@@ -12042,7 +12049,7 @@ export class ViewerInkSession {
     }
     this.paintLaserTrails(surface, pageNumber);
     const durationMs = performance.now() - startedAt;
-    if (durationMs >= 16) {
+    if (durationMs >= FRAME_MS_120) {
       this.logger.laserRepaintSlow(pageNumber, durationMs, laserDraftPoints.length, this.laserTrails.length);
     }
   }
