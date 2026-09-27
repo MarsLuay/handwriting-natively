@@ -808,6 +808,14 @@ export class SessionLogger {
     });
   }
 
+  addPageTiming(stage: string, details: Record<string, unknown> = {}): void {
+    this.emit("info", "add-page timing", {
+      document: this.documentPath,
+      stage,
+      ...details
+    });
+  }
+
   addPageLifecycle(
     phase: "before-mutation" | "mutation-complete" | "restored" | "scale-changed" | "stale-surface-overlap",
     details: Record<string, unknown> = {}
