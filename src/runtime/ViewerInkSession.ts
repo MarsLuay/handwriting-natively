@@ -10,6 +10,7 @@ import {
 } from "./AnnotationSurface";
 import { imageSurfaceExtensions, pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
 import { describeTarget } from "../dom/describeElement";
+import { PointerTypeOriginLog, pointerTypeOrigin, type PointerTypeListenerPhase } from "../input/PointerTypeOrigin";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
 import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
@@ -942,6 +943,7 @@ export class ViewerInkSession {
   private zoomSequence = 0;
   private readonly postZoomTrace = new PostZoomInputTrace();
   private readonly postZoomDurability = new PostZoomDurabilityTrace();
+  private readonly pointerTypeOrigins = new PointerTypeOriginLog();
   private readonly pinchCleanup = new PinchGestureCleanup();
   private pinchCleanupFrame: number | null = null;
   private readonly postZoomStrokePointers = new Set<number>();
@@ -2179,7 +2181,8 @@ export class ViewerInkSession {
           finalClassification: null,
           scrollLeftAtStart: scroll.scrollLeft,
           scrollTopAtStart: scroll.scrollTop,
-          ...this.gesturePolicyForPage(page.pageNumber)
+          ...this.gesturePolicyForPage(page.pageNumber),
+          pointerTypeOrigins: this.pointerTypeOrigins.forContact(record.contact.pointerIds, record.contact.touchIdentifiers)
         });
       }
       return;
@@ -2351,6 +2354,12 @@ export class ViewerInkSession {
     if (!event.shouldLog) return;
     this.logPhysicalContactRecords(event.records, event);
     const diagnostic = this.physicalContactDiagnostics(event);
+    if (event.kind === "pointer" && event.eventType === "pointerdown") {
+      this.notePointerTypeOrigin(event.event, "document-physical-contact-collector", "capture");
+    }
+    if (event.kind === "touch" && event.eventType === "touchstart") {
+      this.notePointerTypeOrigin(event.event, "document-physical-contact-collector", "capture");
+    }
     if (event.kind === "pointer" && event.eventType === "pointerdown") {
       const pointer = event.event as PointerEvent;
       const hitPage = this.closestPdfPageElement(pointer.target);
@@ -2548,12 +2557,18 @@ export class ViewerInkSession {
     this.logPhysicalContactRecords([...records, ...current]);
   }
 
+  private notePointerTypeOrigin(event: Event, listener: string, listenerPhase: PointerTypeListenerPhase): void {
+    const origin = this.pointerTypeOrigins.note(pointerTypeOrigin(event, listener, listenerPhase));
+    this.logger.pointerTypeOrigin({ ...origin });
+  }
+
   private installPointerDownProbes(
     doc: Document,
     options: AddEventListenerOptions,
     within: (target: EventTarget | null) => boolean
   ): void {
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
+      this.notePointerTypeOrigin(e, "document-pointer-probe", "capture");
       this.noteUiInput(e);
       const hitPage = this.closestPdfPageElement(e.target);
       const hitTest = this.shouldFallbackRoutePointer(e)
@@ -2593,6 +2608,7 @@ export class ViewerInkSession {
 
     // Bubble: if the page router never marked the pointer, own the stroke here.
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
+      this.notePointerTypeOrigin(e, "document-pointer-fallback", "bubble");
       const hitPage = this.closestPdfPageElement(e.target);
       const hitTest = this.shouldFallbackRoutePointer(e)
         ? this.inspectPointerHit(e, hitPage, within(e.target))
@@ -2644,6 +2660,7 @@ export class ViewerInkSession {
     };
 
     const logWheelPan = (
+      event: WheelEvent,
       phase: "in-view" | "sidebar" | "outside-viewer" | "no-scroll-root",
       details: Record<string, unknown>
     ): void => {
@@ -2651,6 +2668,7 @@ export class ViewerInkSession {
       wheelPanCount += 1;
       if (wheelPanCount > 1 && now - lastWheelPanLogAt < 80) return;
       lastWheelPanLogAt = now;
+      this.notePointerTypeOrigin(event, "document-wheel", "capture");
       this.logger.pointerSeen({
         source: "wheel-pan",
         pointerType: "wheel",
@@ -2671,6 +2689,7 @@ export class ViewerInkSession {
         wheelPinchCount += 1;
         if (wheelPinchCount > 1 && now - lastWheelLogAt < 80) return;
         lastWheelLogAt = now;
+        this.notePointerTypeOrigin(e, "document-wheel", "capture");
         this.logger.pointerSeen({
           source: "wheel-pinch",
           pointerType: "wheel",
@@ -2696,21 +2715,21 @@ export class ViewerInkSession {
       const target = describeTarget(e.target);
 
       if (withinNativePdfSidebar(e.target)) {
-        logWheelPan("sidebar", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
+        logWheelPan(e, "sidebar", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
         return;
       }
       if (!inViewer) {
-        logWheelPan("outside-viewer", { deltaX: e.deltaX, deltaY: e.deltaY, within: false, target });
+        logWheelPan(e, "outside-viewer", { deltaX: e.deltaX, deltaY: e.deltaY, within: false, target });
         return;
       }
       if (!root) {
-        logWheelPan("no-scroll-root", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
+        logWheelPan(e, "no-scroll-root", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
         return;
       }
 
       e.preventDefault();
       const changed = applyWheelPan(root, e.deltaX, e.deltaY, e.clientX, e.clientY);
-      logWheelPan("in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
+      logWheelPan(e, "in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
     }, { ...options, passive: false });
   }
 
@@ -2723,6 +2742,7 @@ export class ViewerInkSession {
     for (const name of ["gesturestart", "gesturechange", "gestureend"] as const) {
       doc.addEventListener(name, (event) => {
         const e = event as Event & { scale?: number; rotation?: number };
+        if (name === "gesturestart") this.notePointerTypeOrigin(e, "document-gesture", "capture");
         this.logger.pointerSeen({
           source: name,
           pointerType: "gesture",
@@ -5513,6 +5533,7 @@ export class ViewerInkSession {
     this.logger.zoomDiagnosis({
       lastZoomTrace,
       lastPostZoomDurabilityTrace: this.postZoomDurability.snapshot(Date.now()),
+      lastPointerTypeOrigins: this.pointerTypeOrigins.snapshot(),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
     });
     this.logger.handwritingUiSnapshot(snapshot);
@@ -7427,7 +7448,11 @@ export class ViewerInkSession {
         });
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-cancel");
       },
+      onTouchStart: (event) => {
+        this.notePointerTypeOrigin(event, "page-touch-router", "capture");
+      },
       onRouterReceived: (event, generation) => {
+        this.notePointerTypeOrigin(event, "page-pointer-router", "capture");
         this.recordPostUiProbeStage(event, "router-received", {
           page: surface.page.pageNumber,
           pageMountGeneration: surface.page.mountGeneration ?? null,
