@@ -5,6 +5,7 @@ export const SLOW_SPAN_ASYNC_MS = 25;
 /** User-visible chains such as first ink after a pen down. */
 export const SLOW_SPAN_INTERACTION_MS = 50;
 export const SLOW_SPAN_WORST_LIMIT = 10;
+import { percentile } from "../logging/PerformanceMetrics";
 const STAGE_SAMPLE_LIMIT = 32;
 
 export type SlowSpanKind = "sync" | "async" | "interaction";
@@ -33,8 +34,13 @@ export interface SettleChurnSummary {
   zoomBurstId: string | null;
   settleDelayMs: number;
   settleTimerResetCount: number;
+  inGestureResetCount: number;
   resetReasons: Record<string, number>;
   lastDeferralReason: string | null;
+  zoomGestureDurationMs: number | null;
+  pinchTerminalToSettleMs: number | null;
+  lastScaleChangeToSettleMs: number | null;
+  liveInkWaitAfterPinchTerminalMs: number | null;
 }
 
 export interface FirstPenInteraction {
@@ -152,9 +158,14 @@ export class SlowSpanTrace {
   recordSettleChurn(input: {
     settleDelayMs: number;
     settleTimerResetCount: number;
+    inGestureResetCount?: number;
     resetReasons: Record<string, number>;
     lastDeferralReason: string | null;
     zoomBurstId?: string | null;
+    zoomGestureDurationMs?: number | null;
+    pinchTerminalToSettleMs?: number | null;
+    lastScaleChangeToSettleMs?: number | null;
+    liveInkWaitAfterPinchTerminalMs?: number | null;
   }): SettleChurnSummary | null {
     if (input.settleDelayMs < SLOW_SPAN_ASYNC_MS) return null;
     const zoomBurstId = input.zoomBurstId ?? this.zoomBurstId;
@@ -173,8 +184,13 @@ export class SlowSpanTrace {
       zoomBurstId,
       settleDelayMs: roundMs(input.settleDelayMs),
       settleTimerResetCount: input.settleTimerResetCount,
+      inGestureResetCount: input.inGestureResetCount ?? 0,
       resetReasons: { ...input.resetReasons },
-      lastDeferralReason: input.lastDeferralReason
+      lastDeferralReason: input.lastDeferralReason,
+      zoomGestureDurationMs: roundNullable(input.zoomGestureDurationMs),
+      pinchTerminalToSettleMs: roundNullable(input.pinchTerminalToSettleMs),
+      lastScaleChangeToSettleMs: roundNullable(input.lastScaleChangeToSettleMs),
+      liveInkWaitAfterPinchTerminalMs: roundNullable(input.liveInkWaitAfterPinchTerminalMs)
     };
     this.remember(record);
     return record;
@@ -188,7 +204,7 @@ export class SlowSpanTrace {
     for (const [stage, samples] of this.samples) {
       const sorted = [...samples].sort((a, b) => a - b);
       maxByStage[stage] = sorted[sorted.length - 1] ?? 0;
-      p95ByStage[stage] = sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * 0.95))] ?? 0;
+      p95ByStage[stage] = roundMs(percentile(sorted, 0.95));
     }
     return {
       totalSlowSpans: this.totalSlowSpans,
@@ -214,4 +230,8 @@ export class SlowSpanTrace {
 
 function roundMs(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function roundNullable(value: number | null | undefined): number | null {
+  return value == null ? null : roundMs(value);
 }

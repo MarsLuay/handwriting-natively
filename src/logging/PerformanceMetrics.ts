@@ -47,14 +47,12 @@ export class BoundedTiming {
 
   summary(): TimingSummary {
     const sorted = [...this.samples].sort((a, b) => a - b);
-    const percentile = (fraction: number): number => sorted.length
-      ? sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))]!
-      : 0;
+    const percentileAt = (fraction: number): number => percentile(sorted, fraction);
     return {
       count: this.countValue,
       averageMs: this.countValue ? this.totalValue / this.countValue : 0,
-      p50Ms: percentile(0.5),
-      p95Ms: percentile(0.95),
+      p50Ms: percentileAt(0.5),
+      p95Ms: percentileAt(0.95),
       maxMs: this.maxValue,
       lateFrameCount: this.lateValue,
       droppedFrameEstimate: this.droppedValue,
@@ -82,6 +80,18 @@ export function buildTimingHistogram(values: readonly number[]): Record<string, 
     else histogram["50+"] += 1;
   }
   return histogram;
+}
+
+export function percentile(sortedAscending: readonly number[], fraction: number): number {
+  const count = sortedAscending.length;
+  if (count === 0) return 0;
+  if (count === 1) return sortedAscending[0]!;
+  const position = (count - 1) * fraction;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sortedAscending[lower]!;
+  const weight = position - lower;
+  return sortedAscending[lower]! * (1 - weight) + sortedAscending[upper]! * weight;
 }
 
 export function roundMetric(value: number): number {

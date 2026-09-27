@@ -966,6 +966,14 @@ export class ViewerInkSession {
   private readonly openInkStrokeGeometry = new Map<number, OpenInkStrokeGeometry>();
   private readonly recentInkStrokeGeometry: InkStrokeGeometryRecord[] = [];
   private settleWaitStartedAt = 0;
+  private zoomGestureStartedAt = 0;
+  private pinchTerminalAt = 0;
+  private pinchSawContact = false;
+  private lastScaleChangeAt = 0;
+  private liveInkOverlapStartedAt = 0;
+  private liveInkWaitAfterPinchTerminalMs = 0;
+  private penLiftedForSettleAt = 0;
+  private inGestureResetCount = 0;
   private settleResetReasons: Record<string, number> = {};
   private readonly pointerTypeOrigins = new PointerTypeOriginLog();
   private readonly pinchCleanup = new PinchGestureCleanup();
@@ -1035,6 +1043,11 @@ export class ViewerInkSession {
   private static readonly ZOOM_SETTLE_MS = 560;
   /** Tiny pinch/nudge only — still above the old mid-gesture thrash floor. */
   private static readonly ZOOM_SETTLE_TINY_MS = 120;
+  /**
+   * After the fingers are up, or for a resize that did not change scale.
+   * The 560ms window only covers scale ticks that can still arrive mid-gesture.
+   */
+  private static readonly ZOOM_SETTLE_LAYOUT_MS = 32;
   /** Absolute PDF.js scale delta treated as a micro-nudge (below ~one wheel notch). */
   private static readonly ZOOM_SETTLE_TINY_SCALE_DELTA = 0.02;
   /** Relative scale delta gate paired with {@link ZOOM_SETTLE_TINY_SCALE_DELTA}. */
@@ -2392,6 +2405,7 @@ export class ViewerInkSession {
         this.pinchCleanup.observeTouch(identifier, event.eventType);
       }
     }
+    this.notePinchTerminalIfQuiet();
     for (const reconciled of this.pinchCleanup.consumePointerReconciliations()) {
       this.logger.stalePinchPointerReconciled({ ...reconciled });
     }
@@ -3445,7 +3459,15 @@ export class ViewerInkSession {
         prunedBeforeBurstTouchIdentifiers: seed.prunedBeforeBurstTouchIdentifiers
       });
       this.settleTimerResetCount = 0;
+      this.inGestureResetCount = 0;
       this.settleWaitStartedAt = 0;
+      this.zoomGestureStartedAt = now;
+      this.pinchTerminalAt = 0;
+      this.pinchSawContact = false;
+      this.lastScaleChangeAt = 0;
+      this.liveInkOverlapStartedAt = 0;
+      this.liveInkWaitAfterPinchTerminalMs = 0;
+      this.penLiftedForSettleAt = 0;
       this.settleResetReasons = {};
       this.runZoomSettlePaintCallCount = 0;
       this.lastSettleDeferralReason = null;
@@ -3494,7 +3516,8 @@ export class ViewerInkSession {
       this.zoomBurstScaleEnd = scale;
       this.lastKnownViewScale = scale;
     }
-    const settleMs = this.zoomSettleCoalesceMs(scale);
+    const settleMs = this.zoomSettleDelayMs(reason, scale);
+    if (reason.includes("scale") || reason.includes("rotation")) this.lastScaleChangeAt = now;
     this.postZoomTrace.remember("zoom-scale", {
       reason,
       tick: this.zoomTickCount,
@@ -3531,6 +3554,11 @@ export class ViewerInkSession {
    * Baseline is the pre-burst scale (`zoomBurstScaleStart`), never the first tick
    * alone (that would make every single-tick jump look like delta 0).
    */
+  private zoomSettleDelayMs(reason: string, scale?: number): number {
+    if (!reason.includes("scale") && !reason.includes("rotation")) return ViewerInkSession.ZOOM_SETTLE_LAYOUT_MS;
+    return this.zoomSettleCoalesceMs(scale);
+  }
+
   private zoomSettleCoalesceMs(scale?: number): number {
     if (scale === undefined || this.zoomBurstScaleStart === null) {
       return ViewerInkSession.ZOOM_SETTLE_MS;
@@ -3777,11 +3805,17 @@ export class ViewerInkSession {
   }
 
   private armZoomSettleTimer(delayMs: number, reason = this.lastSettleDeferralReason ?? "timer-reset"): void {
+    const pinch = this.pinchCleanup.activePinchCount();
+    const pinchStillActive = pinch.pointers > 0 || pinch.touches > 0;
     if (this.zoomSettleTimer !== null) {
       window.clearTimeout(this.zoomSettleTimer);
-      this.settleTimerResetCount += 1;
-      const bucket = settleResetBucket(reason);
-      this.settleResetReasons[bucket] = (this.settleResetReasons[bucket] ?? 0) + 1;
+      if (pinchStillActive && (reason.includes("scale") || reason.includes("rotation"))) {
+        this.inGestureResetCount += 1;
+      } else if (reason !== "pinch-terminal") {
+        this.settleTimerResetCount += 1;
+        const bucket = settleResetBucket(reason);
+        this.settleResetReasons[bucket] = (this.settleResetReasons[bucket] ?? 0) + 1;
+      }
     }
     this.lastSettleDeferralReason = reason;
     if (this.settleWaitStartedAt === 0) this.settleWaitStartedAt = performance.now();
@@ -3803,6 +3837,7 @@ export class ViewerInkSession {
    */
   private pauseZoomSettleForLiveInk(reason: "live-ink" | "live-ink-slice"): void {
     this.lastSettleDeferralReason = reason;
+    if (this.liveInkOverlapStartedAt === 0) this.liveInkOverlapStartedAt = performance.now();
     if (this.zoomSettlePausedForLiveInk) return;
     this.zoomSettlePausedForLiveInk = true;
     this.zoomSettlePausedAt = performance.now();
@@ -3821,10 +3856,41 @@ export class ViewerInkSession {
 
   private scheduleZoomSettleResume(): void {
     if (!this.zoomSettlePausedForLiveInk || this.zoomSettleResumeTimer !== null) return;
+    this.closeLiveInkOverlap(performance.now());
+    this.penLiftedForSettleAt = performance.now();
     this.zoomSettleResumeTimer = window.setTimeout(() => {
       this.zoomSettleResumeTimer = null;
       this.resumeZoomSettleAfterLiveInk();
     }, 0);
+  }
+
+  /** Pencil overlap after the fingers are already up. The stroke itself is not a settle stall. */
+  private closeLiveInkOverlap(at: number): void {
+    if (this.liveInkOverlapStartedAt === 0 || this.pinchTerminalAt === 0) return;
+    const start = Math.max(this.liveInkOverlapStartedAt, this.pinchTerminalAt);
+    this.liveInkWaitAfterPinchTerminalMs += Math.max(0, at - start);
+    this.liveInkOverlapStartedAt = 0;
+  }
+
+  /**
+   * Fingers-up ends the gesture. The 560ms window is only for scale ticks that
+   * can still arrive while the pinch is held. A resize that does not change
+   * scale uses the same short delay.
+   */
+  private notePinchTerminalIfQuiet(): void {
+    if (!this.zoomProfile) return;
+    const pinch = this.pinchCleanup.activePinchCount();
+    if (pinch.pointers > 0 || pinch.touches > 0) {
+      this.pinchSawContact = true;
+      return;
+    }
+    if (!this.pinchSawContact || this.pinchTerminalAt !== 0) return;
+    this.pinchTerminalAt = performance.now();
+    if (this.hasAnyLiveInkInput()) {
+      this.pauseZoomSettleForLiveInk("live-ink");
+      return;
+    }
+    this.armZoomSettleTimer(ViewerInkSession.ZOOM_SETTLE_LAYOUT_MS, "pinch-terminal");
   }
 
   private resumeZoomSettleAfterLiveInk(): void {
@@ -3835,14 +3901,17 @@ export class ViewerInkSession {
     this.zoomSettlePausedForLiveInk = false;
     this.zoomSettlePausedAt = null;
     this.zoomSettlePausedReason = null;
-    const waitedMs = pausedAt === null ? 0 : performance.now() - pausedAt;
+    const liftLagMs = this.penLiftedForSettleAt === 0
+      ? (pausedAt === null ? 0 : performance.now() - pausedAt)
+      : performance.now() - this.penLiftedForSettleAt;
+    this.penLiftedForSettleAt = 0;
     const span = this.slowSpans.record({
       kind: "async",
       category: "zoom",
       stage: "settle-paused-for-live-ink",
-      durationMs: waitedMs,
+      durationMs: liftLagMs,
       activeWorkMs: 0,
-      waitMs: waitedMs,
+      waitMs: liftLagMs,
       reason,
       zoomBurstId: this.zoomCorrelationId
     });
@@ -4009,16 +4078,40 @@ export class ViewerInkSession {
       zoomBurstId: settledBurstId
     });
     if (settleSpan) this.logger.perfSlowSpan({ ...settleSpan });
-    const settleWaitMs = this.settleWaitStartedAt === 0 ? 0 : performance.now() - this.settleWaitStartedAt;
+    const nowPerf = performance.now();
+    const zoomGestureDurationMs = this.pinchTerminalAt !== 0 && this.zoomGestureStartedAt !== 0
+      ? this.pinchTerminalAt - this.zoomGestureStartedAt
+      : null;
+    const pinchTerminalToSettleMs = this.pinchTerminalAt !== 0 ? nowPerf - this.pinchTerminalAt : null;
+    const lastScaleChangeToSettleMs = this.lastScaleChangeAt !== 0 ? nowPerf - this.lastScaleChangeAt : null;
+    const liveInkWaitAfterPinchTerminalMs = this.pinchTerminalAt !== 0 ? this.liveInkWaitAfterPinchTerminalMs : null;
+    const postGestureMs = pinchTerminalToSettleMs
+      ?? (this.zoomGestureStartedAt !== 0 ? nowPerf - this.zoomGestureStartedAt : 0);
+    const perceivedPostGestureMs = Math.max(0, postGestureMs - (liveInkWaitAfterPinchTerminalMs ?? 0));
+    this.postZoomTrace.noteBurstActivity({
+      zoomGestureDurationMs: zoomGestureDurationMs === null ? null : Math.round(zoomGestureDurationMs * 10) / 10,
+      pinchTerminalToSettleMs: pinchTerminalToSettleMs === null ? null : Math.round(pinchTerminalToSettleMs * 10) / 10,
+      lastScaleChangeToSettleMs: lastScaleChangeToSettleMs === null ? null : Math.round(lastScaleChangeToSettleMs * 10) / 10,
+      liveInkWaitAfterPinchTerminalMs: liveInkWaitAfterPinchTerminalMs === null ? null : Math.round(liveInkWaitAfterPinchTerminalMs * 10) / 10,
+      inGestureResetCount: this.inGestureResetCount,
+      postGestureResetCount: this.settleTimerResetCount
+    });
     const churn = this.slowSpans.recordSettleChurn({
-      settleDelayMs: settleWaitMs,
+      settleDelayMs: perceivedPostGestureMs,
       settleTimerResetCount: this.settleTimerResetCount,
+      inGestureResetCount: this.inGestureResetCount,
       resetReasons: this.settleResetReasons,
       lastDeferralReason: this.lastSettleDeferralReason,
-      zoomBurstId: settledBurstId
+      zoomBurstId: settledBurstId,
+      zoomGestureDurationMs,
+      pinchTerminalToSettleMs,
+      lastScaleChangeToSettleMs,
+      liveInkWaitAfterPinchTerminalMs
     });
     if (churn) this.logger.perfSlowSpan({ ...churn });
     this.settleWaitStartedAt = 0;
+    this.inGestureResetCount = 0;
+    this.liveInkWaitAfterPinchTerminalMs = 0;
     this.settleResetReasons = {};
     this.logger.zoomLifecycle("zoom-burst-settle", {
       zoomBurstId: this.zoomCorrelationId,
