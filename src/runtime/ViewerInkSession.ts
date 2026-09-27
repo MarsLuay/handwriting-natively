@@ -965,7 +965,7 @@ export class ViewerInkSession {
   private readonly slowSpans = new SlowSpanTrace();
   private readonly openInkStrokeGeometry = new Map<number, OpenInkStrokeGeometry>();
   private readonly recentInkStrokeGeometry: InkStrokeGeometryRecord[] = [];
-  private settleDeferralMs = 0;
+  private settleWaitStartedAt = 0;
   private settleResetReasons: Record<string, number> = {};
   private readonly pointerTypeOrigins = new PointerTypeOriginLog();
   private readonly pinchCleanup = new PinchGestureCleanup();
@@ -3420,6 +3420,11 @@ export class ViewerInkSession {
 
   private scheduleZoomRepaint(reason: string, scale?: number): void {
     if (this.destroyed) return;
+    if (this.shouldCoalesceZoomSettleSignal(reason, scale)) {
+      if (this.zoomProfile) this.zoomProfile.coalescedVisualUpdates += 1;
+      if (this.zoomCompositing) this.scheduleZoomOverlayLayout();
+      return;
+    }
     this.mountBurst += 1;
     const now = performance.now();
     this.lastZoomSignalAt = now;
@@ -3440,6 +3445,8 @@ export class ViewerInkSession {
         prunedBeforeBurstTouchIdentifiers: seed.prunedBeforeBurstTouchIdentifiers
       });
       this.settleTimerResetCount = 0;
+      this.settleWaitStartedAt = 0;
+      this.settleResetReasons = {};
       this.runZoomSettlePaintCallCount = 0;
       this.lastSettleDeferralReason = null;
       this.zoomSequence += 1;
@@ -3502,8 +3509,20 @@ export class ViewerInkSession {
     });
     if (this.zoomSettleTimer !== null && this.zoomProfile) this.zoomProfile.settleTimerResets += 1;
     this.cancelPinchCleanupFrame();
-    this.lastSettleDeferralReason = "timer-reset";
-    this.armZoomSettleTimer(settleMs);
+    this.armZoomSettleTimer(settleMs, reason);
+  }
+
+  /**
+   * Page renders and scroll ticks after the scale has stopped were restarting
+   * the 560ms quiet window and writing a vault log each time. The last iPad
+   * paste summed those cancelled waits into a 12–23s settle-timer-churn while
+   * the zoom itself lasted about 1s.
+   */
+  private shouldCoalesceZoomSettleSignal(reason: string, scale?: number): boolean {
+    if (!this.zoomProfile || this.zoomSettleTimer === null) return false;
+    if (reason.includes("scale") || reason.includes("rotation")) return false;
+    if (scale === undefined || this.zoomBurstScaleEnd === null) return false;
+    return Math.abs(scale - this.zoomBurstScaleEnd) < 1e-4;
   }
 
   /**
@@ -3757,14 +3776,15 @@ export class ViewerInkSession {
     return false;
   }
 
-  private armZoomSettleTimer(delayMs: number): void {
+  private armZoomSettleTimer(delayMs: number, reason = this.lastSettleDeferralReason ?? "timer-reset"): void {
     if (this.zoomSettleTimer !== null) {
       window.clearTimeout(this.zoomSettleTimer);
       this.settleTimerResetCount += 1;
-      const bucket = settleResetBucket(this.lastSettleDeferralReason);
+      const bucket = settleResetBucket(reason);
       this.settleResetReasons[bucket] = (this.settleResetReasons[bucket] ?? 0) + 1;
     }
-    this.settleDeferralMs += delayMs;
+    this.lastSettleDeferralReason = reason;
+    if (this.settleWaitStartedAt === 0) this.settleWaitStartedAt = performance.now();
     this.zoomSettleTimerGeneration += 1;
     const generation = this.zoomSettleTimerGeneration;
     this.zoomSettleTimerDueAt = performance.now() + delayMs;
@@ -3989,15 +4009,16 @@ export class ViewerInkSession {
       zoomBurstId: settledBurstId
     });
     if (settleSpan) this.logger.perfSlowSpan({ ...settleSpan });
+    const settleWaitMs = this.settleWaitStartedAt === 0 ? 0 : performance.now() - this.settleWaitStartedAt;
     const churn = this.slowSpans.recordSettleChurn({
-      settleDelayMs: this.settleDeferralMs,
+      settleDelayMs: settleWaitMs,
       settleTimerResetCount: this.settleTimerResetCount,
       resetReasons: this.settleResetReasons,
       lastDeferralReason: this.lastSettleDeferralReason,
       zoomBurstId: settledBurstId
     });
     if (churn) this.logger.perfSlowSpan({ ...churn });
-    this.settleDeferralMs = 0;
+    this.settleWaitStartedAt = 0;
     this.settleResetReasons = {};
     this.logger.zoomLifecycle("zoom-burst-settle", {
       zoomBurstId: this.zoomCorrelationId,

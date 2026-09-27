@@ -502,15 +502,17 @@ describe("zoom ink compositing", () => {
       canvasResizes: number;
       hqUpgrades: number;
       longestTaskMs: number;
+      coalescedVisualUpdates: number;
     } | undefined;
     expect(profile).toMatchObject({
       scaleChangingEvents: 60,
       scrollEvents: 60,
-      compositorTicks: 120,
+      compositorTicks: 60,
       mobileRefreshDeferred: 60,
       routerRebinds: 0,
       routerDestroys: 0
     });
+    expect(profile?.coalescedVisualUpdates).toBeGreaterThanOrEqual(60);
     expect(profile?.layoutFramesScheduled).toBeLessThanOrEqual(60);
     expect(profile?.layoutFramesExecuted).toBeLessThanOrEqual(60);
     expect(profile?.vectorRepaints).toBeGreaterThan(0);
@@ -692,6 +694,24 @@ describe("zoom ink compositing", () => {
     expect(settles).toHaveLength(1);
     expect(settles[0]?.[2]).toMatchObject({ focusSync: true, focusPage: 1 });
 
+    await session.destroy();
+  });
+
+  it("keeps the quiet window when later page renders do not change scale", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    const ticks = debugCalls("ink zoom tick").length;
+    await vi.advanceTimersByTimeAsync(400);
+    const pages = session as unknown as { onPagesChanged(reason: string): void };
+    pages.onPagesChanged("page-render");
+    pages.onPagesChanged("page-render");
+    pages.onPagesChanged("page-render");
+    expect(debugCalls("ink zoom tick")).toHaveLength(ticks);
+    await vi.advanceTimersByTimeAsync(160);
+    expect(debugCalls("ink zoom composite").filter((call) => (call[2] as { phase?: string }).phase === "settle-paint")).toHaveLength(1);
     await session.destroy();
   });
 
