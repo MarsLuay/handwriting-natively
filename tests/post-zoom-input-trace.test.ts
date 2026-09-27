@@ -3,6 +3,7 @@ import {
   PostZoomInputTrace,
   classifyPostZoomFailure,
   pointerHandledForGeneration,
+  postZoomFinalDisposition,
   stylusIdentityFromClassification,
   validPhysicalDisplacementPx
 } from "../src/runtime/PostZoomInputTrace";
@@ -119,6 +120,49 @@ describe("PostZoomInputTrace", () => {
     ]);
     expect(diagnosis.lastPostZoomAnomaly?.classification).toBe("post-zoom-pointer-capture-stale");
     expect(diagnosis.anomalyLifecycle.map((entry) => entry.event)).toContain("zoom-settle");
+  });
+
+  it("replaces the start-phase classification when the same contact ends", () => {
+    const trace = new PostZoomInputTrace();
+    trace.begin();
+    trace.settle(1_000, { scaleBefore: 1.2, scaleAfter: 2.96 });
+    trace.notePageContact(1_100, true);
+    trace.remember("post-zoom-contact", {
+      physicalContactId: "physical-contact-18",
+      postZoomContactIndex: 1,
+      classification: "unknown",
+      startClassification: "unknown",
+      pointerEventPenSeen: false,
+      finalClassification: null
+    });
+    trace.remember("post-zoom-contact", {
+      physicalContactId: "physical-contact-18",
+      classification: "paired",
+      finalClassification: "paired",
+      pointerEventPenSeen: false,
+      representation: "paired-pointer-touch",
+      stylusIdentity: "absent",
+      strokeStarted: false,
+      ...postZoomFinalDisposition({
+        penToolActive: true,
+        stylusIdentity: "absent",
+        strokeStarted: false,
+        anomalyClassification: null
+      })
+    });
+
+    const contacts = trace.diagnosis().firstPostZoomContacts;
+    expect(contacts).toHaveLength(1);
+    expect(contacts[0]).toMatchObject({
+      startClassification: "unknown",
+      classification: "paired",
+      finalClassification: "paired",
+      finalDisposition: "post-zoom-contact-no-stylus-identity",
+      possibleFinger: true,
+      stylusIdentity: "absent"
+    });
+    expect(trace.diagnosis().scaleBefore).toBe(1.2);
+    expect(trace.diagnosis().lastPostZoomAnomaly).toBeNull();
   });
 
   it("does not treat a rejected origin terminal as native page movement", () => {

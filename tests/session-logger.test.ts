@@ -287,6 +287,32 @@ describe("SessionLogger", () => {
     expect((anomaly?.payload.lifecycle as Array<{ event: string }>)[0]?.event).toBe("event-8");
   });
 
+  it("keeps the browser identity of the last successful stroke", () => {
+    const logger = new SessionLogger("Notes/example.pdf");
+    logger.inputStroke("start", {
+      page: 1,
+      routerGeneration: 1,
+      pointerType: "pen",
+      physicalContactId: "physical-contact-4",
+      pointerEventPenSeen: true,
+      classification: "pen-only",
+      pressure: 0.42,
+      width: 1,
+      height: 1,
+      touchEvidenceSeen: false
+    });
+    logger.inputStroke("end", { page: 1, routerGeneration: 1 });
+    expect(logger.lastSuccessfulStroke()).toMatchObject({
+      pointerType: "pen",
+      physicalContactId: "physical-contact-4",
+      pointerEventPenSeen: true,
+      classification: "pen-only",
+      pressure: 0.42,
+      touchEvidenceSeen: false,
+      lastRouterGeneration: 1
+    });
+  });
+
   it("logs renderer parity when an ink stroke commits", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const logger = new SessionLogger("Notes/example.pdf", {
