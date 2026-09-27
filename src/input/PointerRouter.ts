@@ -883,6 +883,10 @@ export class PointerRouter {
     return this.palmPolicy.activePenIds();
   }
 
+  activeTouchPointerIds(): number[] {
+    return [...this.touches];
+  }
+
   activeRoutedPointerIds(): number[] {
     return [...this.routed.keys()];
   }

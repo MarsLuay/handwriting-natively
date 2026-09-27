@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  PinchGestureCleanup,
   PostZoomInputTrace,
   classifyPostZoomFailure,
   pointerHandledForGeneration,
@@ -164,6 +165,49 @@ describe("PostZoomInputTrace", () => {
     });
     expect(trace.diagnosis().scaleBefore).toBe(1.2);
     expect(trace.diagnosis().lastPostZoomAnomaly).toBeNull();
+  });
+
+  it("keeps zoom unsettled until both pinch touches end, then records one frame", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observePointer(7, "pointerdown", "pen");
+    pinch.observePointer(4, "pointerdown", "touch");
+    pinch.observePointer(5, "pointerdown", "touch");
+    pinch.observeTouch(4, "touchstart");
+    pinch.observeTouch(5, "touchstart");
+    pinch.beginBurst();
+
+    const waiting = pinch.evaluate(1_000);
+    expect(waiting.quiescent).toBe(false);
+    expect(waiting.pinchPointerIds).toEqual([4, 5]);
+    expect(waiting.activePinchTouchesAtSettle).toEqual([4, 5]);
+    expect(waiting.settleDeferredForGestureCleanup).toBe(true);
+
+    pinch.observePointer(4, "pointerup", "touch");
+    pinch.observePointer(5, "pointercancel", "touch");
+    pinch.observePointer(4, "lostpointercapture", "touch");
+    pinch.observeTouch(4, "touchend");
+    pinch.observeTouch(5, "touchcancel");
+    const finished = pinch.evaluate(1_040);
+    expect(finished.quiescent).toBe(true);
+    expect(finished.terminalPointerIds).toEqual([4, 5]);
+    expect(finished.terminalTouchIdentifiers).toEqual([4, 5]);
+    expect(finished.lostCapturePointerIds).toEqual([4]);
+    expect(finished.gestureCleanupWaitMs).toBe(40);
+    expect(pinch.needsAnimationFrame()).toBe(true);
+    pinch.noteAnimationFrame();
+    expect(pinch.evaluate(1_050).postCleanupAnimationFrames).toBe(1);
+  });
+
+  it("settles a stuck pinch after the cleanup timeout without treating it as a pen", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observePointer(9, "pointerdown", "touch");
+    pinch.observeTouch(9, "touchstart");
+    pinch.beginBurst();
+    expect(pinch.evaluate(0, 800).quiescent).toBe(false);
+    const timedOut = pinch.evaluate(800, 800);
+    expect(timedOut.quiescent).toBe(true);
+    expect(timedOut.gestureCleanupTimedOut).toBe(true);
+    expect(timedOut.activePinchPointersAtSettle).toEqual([9]);
   });
 
   it("emits one browser identity regression after a pen stroke without calling touch a Pencil", () => {
