@@ -152,3 +152,12 @@ export function describePdfPageDom(root: HTMLElement | undefined): Record<string
     childSample
   };
 }
+
+/** A modal above the PDF shares the page rectangle without being a page hit. */
+export function contactBlockedByOverlay(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(".modal, .modal-container"));
+}
+
+export function targetInsidePage(target: EventTarget | null, page: Element | null): boolean {
+  return target instanceof Element && page !== null && (target === page || page.contains(target));
+}

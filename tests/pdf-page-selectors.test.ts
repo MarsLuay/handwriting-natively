@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  contactBlockedByOverlay,
   describePdfPageDom,
   ensurePdfPageNumbers,
   queryPdfPageNodes,
+  targetInsidePage,
   waitForPdfPageNodes
 } from "../src/integration/pdfPageSelectors";
 
@@ -120,5 +122,25 @@ describe("pdfPageSelectors", () => {
 
     expect(queryPdfPageNodes(root)).toEqual([page]);
     expect(queryPdfPageNodes(chrome)).toEqual([page]);
+  });
+
+  it("treats a settings modal over the page rectangle as not a page hit", () => {
+    const page = document.createElement("div");
+    page.className = "page";
+    const canvas = document.createElement("canvas");
+    page.append(canvas);
+    const modal = document.createElement("div");
+    modal.className = "modal-container mod-dim";
+    const settings = document.createElement("div");
+    settings.className = "modal mod-settings";
+    const item = document.createElement("div");
+    item.className = "setting-item-description";
+    settings.append(item);
+    modal.append(settings);
+    document.body.append(page, modal);
+    expect(targetInsidePage(canvas, page)).toBe(true);
+    expect(contactBlockedByOverlay(canvas)).toBe(false);
+    expect(targetInsidePage(item, page)).toBe(false);
+    expect(contactBlockedByOverlay(item)).toBe(true);
   });
 });
