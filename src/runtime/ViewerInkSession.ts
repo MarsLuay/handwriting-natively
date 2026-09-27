@@ -2235,6 +2235,7 @@ export class ViewerInkSession {
         this.pinchCleanup.observeTouch(identifier, event.eventType);
       }
     }
+    this.syncStylusPinchExclusion(event.stylusTouchAssociations ?? []);
     this.updatePhysicalContactMappings(event);
     for (const record of event.records) this.notePostZoomPhysicalContact(record);
     if (!event.shouldLog) return;
@@ -2299,6 +2300,28 @@ export class ViewerInkSession {
 
   private handlePhysicalContactDuplicate(details: PhysicalContactDuplicateObserver): void {
     this.logger.physicalContactDuplicateObserver({ ...details });
+  }
+
+  private syncStylusPinchExclusion(associations: readonly { touchIdentifier: number; physicalContactId: string; pointerId: number | null }[]): void {
+    const live = new Set(associations.map((association) => association.touchIdentifier));
+    for (const association of associations) {
+      if (!this.pinchCleanup.excludeStylusTouch(association.touchIdentifier)) continue;
+      this.logger.pinchTouchExcludedAsStylus({
+        touchIdentifier: association.touchIdentifier,
+        physicalContactId: association.physicalContactId,
+        pointerId: association.pointerId,
+        pointerType: "pen"
+      });
+    }
+    for (const id of this.pinchCleanup.associationState().stylusAssociatedTouchIdentifiers) {
+      if (live.has(id)) continue;
+      this.pinchCleanup.releaseStylusTouch(id);
+      this.postZoomTrace.noteBurstActivity({ stylusAssociationReleasedAt: Date.now() });
+    }
+    this.postZoomTrace.noteBurstActivity({
+      ...this.pinchCleanup.associationState(),
+      stylusAssociationSourcePhysicalContactId: associations[0]?.physicalContactId ?? null
+    });
   }
 
   private updatePhysicalContactMappings(event: PhysicalContactCollectorEvent): void {
@@ -3614,6 +3637,7 @@ export class ViewerInkSession {
       liveInkAtLastSettleAttempt: liveInkPages.length > 0,
       liveInkPages,
       activePenIds: [...this.surfaces.values()].flatMap((surface) => surface.router?.activePenIds() ?? []),
+      ...this.pinchCleanup.associationState(),
       activeTouchPointerIds: this.pluginTouchPointerIds(),
       zoomProfileActive: this.zoomProfile !== null,
       zoomCompositing: this.zoomCompositing,

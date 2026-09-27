@@ -271,6 +271,23 @@ describe("PostZoomInputTrace", () => {
     })).toEqual({ action: "wait", reason: "active-pinch" });
   });
 
+  it("keeps a finger pinch and excludes only a touch paired to a pen", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observeTouch(11, "touchstart");
+    pinch.beginBurst();
+    expect(pinch.associationState().pinchEligibleTouchIdentifiers).toEqual([11]);
+    expect(pinch.activePinchCount().touches).toBe(1);
+    pinch.observeTouch(771228036, "touchstart");
+    expect(pinch.excludeStylusTouch(771228036)).toBe(true);
+    expect(pinch.activePinchCount().touches).toBe(1);
+    expect(pinch.watchState(Date.now() + 5_000).staleTouchIds).not.toContain(771228036);
+    expect(pinch.associationState().excludedStylusTouchIdentifiers).toEqual([771228036]);
+    expect(pinch.associationState().pinchEligibleTouchIdentifiers).toEqual([11]);
+    pinch.releaseStylusTouch(771228036);
+    pinch.observeTouch(42, "touchstart");
+    expect(pinch.beginBurst().seededPinchTouchIdentifiers.sort((a, b) => a - b)).toEqual([11, 42]);
+  });
+
   it("does not seed an orphan touch that the browser has already cleared", () => {
     const pinch = new PinchGestureCleanup();
     pinch.observeTouch(-2034777937, "touchstart");
