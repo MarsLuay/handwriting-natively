@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PinchGestureCleanup,
+  decideZoomBurstWatchdog,
   PostZoomInputTrace,
   classifyPostZoomFailure,
   pointerHandledForGeneration,
@@ -196,6 +197,35 @@ describe("PostZoomInputTrace", () => {
     expect(pinch.needsAnimationFrame()).toBe(true);
     pinch.noteAnimationFrame();
     expect(pinch.evaluate(1_050).postCleanupAnimationFrames).toBe(1);
+  });
+
+  it("recovers a quiet burst only after its settle continuation is gone", () => {
+    const quiet = {
+      now: 5_000,
+      lastZoomSignalAt: 1_000,
+      zoomSettleTimerArmed: false,
+      zoomSettleTimerDueAt: 0,
+      pinchCleanupFrameArmed: false,
+      activePinchPointers: 0,
+      activePinchTouches: 0,
+      liveInk: false
+    };
+    expect(decideZoomBurstWatchdog(quiet)).toEqual({ action: "recover", reason: "no-continuation" });
+    expect(decideZoomBurstWatchdog({ ...quiet, now: 2_000 })).toEqual({ action: "wait", reason: "recent-zoom-signal" });
+    expect(decideZoomBurstWatchdog({ ...quiet, zoomSettleTimerArmed: true, zoomSettleTimerDueAt: 5_500 })).toEqual({
+      action: "wait",
+      reason: "settle-timer-pending"
+    });
+    expect(decideZoomBurstWatchdog({ ...quiet, zoomSettleTimerArmed: true, zoomSettleTimerDueAt: 4_000 })).toEqual({
+      action: "recover",
+      reason: "settle-timer-lost"
+    });
+    expect(decideZoomBurstWatchdog({ ...quiet, pinchCleanupFrameArmed: true })).toEqual({
+      action: "wait",
+      reason: "pinch-cleanup-frame"
+    });
+    expect(decideZoomBurstWatchdog({ ...quiet, activePinchTouches: 2 })).toEqual({ action: "wait", reason: "active-pinch" });
+    expect(decideZoomBurstWatchdog({ ...quiet, liveInk: true })).toEqual({ action: "wait", reason: "live-ink" });
   });
 
   it("settles immediately when the zoom never saw a pinch contact", () => {

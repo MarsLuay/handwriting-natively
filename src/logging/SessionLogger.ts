@@ -525,7 +525,7 @@ export class SessionLogger {
   }
 
   /** Explicit zoom lifecycle anchors used by later Pencil regression summaries. */
-  zoomLifecycle(phase: "zoom-burst-start" | "zoom-burst-settle" | "zoom-burst-release", details: Record<string, unknown> = {}): void {
+  zoomLifecycle(phase: "zoom-burst-start" | "zoom-burst-settle" | "zoom-burst-release" | "zoom-burst-watchdog-wait" | "zoom-burst-watchdog-recovery", details: Record<string, unknown> = {}): void {
     this.emit("info", "zoom lifecycle", {
       document: this.documentPath,
       phase,
@@ -803,6 +803,14 @@ export class SessionLogger {
   }
 
   /** Last zoom diagnosis, written at Copy Logs so it is not lost from the log tail. */
+  zoomBurstStuck(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "zoom-burst-stuck", {
+      document: this.documentPath,
+      event: "zoom-burst-stuck",
+      ...details
+    }, true);
+  }
+
   zoomDiagnosis(details: Record<string, unknown> = {}): void {
     this.emit("info", "last-zoom-trace", {
       document: this.documentPath,

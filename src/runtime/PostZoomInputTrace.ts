@@ -40,6 +40,29 @@ export interface PostZoomContactObservation {
 export const POST_ZOOM_CAPTURE_RECOVERY = "release-annotation-pointer-captures";
 export const POST_ZOOM_GESTURE_RECOVERY = "wait-for-all-pinch-contacts-to-fully-terminate-before-post-zoom-enable";
 export const PINCH_CLEANUP_MAX_WAIT_MS = 800;
+export const ZOOM_BURST_STUCK_MS = 2_000;
+
+export interface ZoomBurstWatchInput {
+  now: number;
+  lastZoomSignalAt: number;
+  zoomSettleTimerArmed: boolean;
+  zoomSettleTimerDueAt: number;
+  pinchCleanupFrameArmed: boolean;
+  activePinchPointers: number;
+  activePinchTouches: number;
+  liveInk: boolean;
+}
+
+/** Keep a quiet, idle burst from staying open after its settle callback was lost. */
+export function decideZoomBurstWatchdog(input: ZoomBurstWatchInput): { action: "recover" | "wait"; reason: string } {
+  if (input.liveInk) return { action: "wait", reason: "live-ink" };
+  if (input.activePinchPointers > 0 || input.activePinchTouches > 0) return { action: "wait", reason: "active-pinch" };
+  if (input.now - input.lastZoomSignalAt <= ZOOM_BURST_STUCK_MS) return { action: "wait", reason: "recent-zoom-signal" };
+  if (input.pinchCleanupFrameArmed) return { action: "wait", reason: "pinch-cleanup-frame" };
+  if (input.zoomSettleTimerArmed && input.zoomSettleTimerDueAt > input.now) return { action: "wait", reason: "settle-timer-pending" };
+  if (input.zoomSettleTimerArmed) return { action: "recover", reason: "settle-timer-lost" };
+  return { action: "recover", reason: "no-continuation" };
+}
 
 export interface StylusIdentityRegression {
   event: "post-zoom-stylus-identity-regression";
@@ -115,6 +138,7 @@ export interface LastZoomDiagnosis {
   recoveryExperiment: string | null;
   capturesReleased: number;
   gestureCleanup: Record<string, unknown> | null;
+  burstActivity: Record<string, unknown> | null;
 }
 
 export function validPhysicalDisplacementPx(contact: {
@@ -214,7 +238,8 @@ export class PostZoomInputTrace {
     stylusIdentityRegression: null,
     recoveryExperiment: null,
     capturesReleased: 0,
-    gestureCleanup: null
+    gestureCleanup: null,
+    burstActivity: null
   };
 
   currentBurstId(): string | null {
@@ -242,6 +267,7 @@ export class PostZoomInputTrace {
     this.diagnosisState.recoveryExperiment = null;
     this.diagnosisState.capturesReleased = 0;
     this.diagnosisState.gestureCleanup = null;
+    this.diagnosisState.burstActivity = null;
     this.remember("zoom-begin", { zoomBurstId: this.activeId }, at);
     return this.activeId;
   }
@@ -264,8 +290,17 @@ export class PostZoomInputTrace {
       stylusIdentityRegression: this.diagnosisState.stylusIdentityRegression
         ? { ...this.diagnosisState.stylusIdentityRegression }
         : null,
-      gestureCleanup: this.diagnosisState.gestureCleanup ? { ...this.diagnosisState.gestureCleanup } : null
+      gestureCleanup: this.diagnosisState.gestureCleanup ? { ...this.diagnosisState.gestureCleanup } : null,
+      burstActivity: this.diagnosisState.burstActivity ? { ...this.diagnosisState.burstActivity } : null
     };
+  }
+
+  isBurstOpen(): boolean {
+    return this.activeId !== null;
+  }
+
+  noteBurstActivity(details: Record<string, unknown>): void {
+    this.diagnosisState.burstActivity = { ...(this.diagnosisState.burstActivity ?? {}), ...details };
   }
 
   noteGestureCleanup(details: Record<string, unknown>): void {
@@ -396,6 +431,7 @@ export interface PinchCleanupReport {
 export class PinchGestureCleanup {
   private tracking = false;
   private deferredAt: number | null = null;
+  private evaluateCount = 0;
   private animationFrames = 0;
   private timedOut = false;
   private readonly pointers = new Map<number, PinchPointerState>();
@@ -407,6 +443,7 @@ export class PinchGestureCleanup {
     this.tracking = true;
     this.deferredAt = null;
     this.animationFrames = 0;
+    this.evaluateCount = 0;
     this.timedOut = false;
     this.pinchPointers.clear();
     this.pinchTouches.clear();
@@ -460,7 +497,19 @@ export class PinchGestureCleanup {
    * `lostpointercapture` is recorded, but it does not keep settle open after
    * the pointer already ended: the last build showed no annotation capture.
    */
+  activePinchCount(): { pointers: number; touches: number } {
+    return {
+      pointers: [...this.pinchPointers].filter((id) => !this.pointers.get(id)?.terminal).length,
+      touches: [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal).length
+    };
+  }
+
+  diagnostics(): { evaluateCount: number; needsAnimationFrame: boolean } {
+    return { evaluateCount: this.evaluateCount, needsAnimationFrame: this.needsAnimationFrame() };
+  }
+
   evaluate(now: number, maxWaitMs = PINCH_CLEANUP_MAX_WAIT_MS): PinchCleanupReport {
+    this.evaluateCount += 1;
     const activePinchPointersAtSettle = [...this.pinchPointers].filter((id) => !this.pointers.get(id)?.terminal);
     const activePinchTouchesAtSettle = [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal);
     const blocking = activePinchPointersAtSettle.length > 0 || activePinchTouchesAtSettle.length > 0;
