@@ -17,6 +17,8 @@ import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
 import {
   PINCH_CLEANUP_MAX_WAIT_MS,
+  ZOOM_BURST_STUCK_MS,
+  decideZoomBurstWatchdog,
   PinchGestureCleanup,
   pointerHandledForGeneration,
   PostZoomInputTrace,
@@ -907,6 +909,15 @@ export class ViewerInkSession {
   private pendingMobileScrollRemount = false;
   private mountBurst = 0;
   private zoomSettleTimer: number | null = null;
+  private zoomSettleTimerGeneration = 0;
+  private zoomSettleTimerDueAt = 0;
+  private settleTimerResetCount = 0;
+  private runZoomSettlePaintCallCount = 0;
+  private lastRunZoomSettlePaintAt = 0;
+  private lastSettleDeferralReason: string | null = null;
+  private lastZoomSignalReason = "";
+  private lastZoomSignalScale: number | null = null;
+  private zoomBurstWatchdog: number | null = null;
   /** Coalesces repeated native scale signals to one overlay/layout pass per frame. */
   private zoomLayoutFrame: number | null = null;
   private zoomBurstStartedAt = 0;
@@ -3136,12 +3147,17 @@ export class ViewerInkSession {
     this.mountBurst += 1;
     const now = performance.now();
     this.lastZoomSignalAt = now;
+    this.lastZoomSignalReason = reason;
+    this.lastZoomSignalScale = scale ?? this.lastZoomSignalScale;
     // Keep one burst for the full gesture. A long, healthy pinch can last well
     // beyond ZOOM_ACTIVE_MS while still delivering scale ticks every frame;
     // the settle timer is the actual quiet-window boundary.
     if (!this.zoomProfile) {
       this.zoomCorrelationId = this.postZoomTrace.begin();
       this.pinchCleanup.beginBurst();
+      this.settleTimerResetCount = 0;
+      this.runZoomSettlePaintCallCount = 0;
+      this.lastSettleDeferralReason = null;
       this.zoomSequence += 1;
       this.postZoomStrokePointers.clear();
       this.postZoomRouterByPointer.clear();
@@ -3201,15 +3217,10 @@ export class ViewerInkSession {
       settleMs,
       ...(scale !== undefined ? { scale: Number(scale.toFixed(4)) } : {})
     });
-    if (this.zoomSettleTimer !== null) {
-      if (this.zoomProfile) this.zoomProfile.settleTimerResets += 1;
-      window.clearTimeout(this.zoomSettleTimer);
-    }
+    if (this.zoomSettleTimer !== null && this.zoomProfile) this.zoomProfile.settleTimerResets += 1;
     this.cancelPinchCleanupFrame();
-    this.zoomSettleTimer = window.setTimeout(() => {
-      this.zoomSettleTimer = null;
-      this.runZoomSettlePaint();
-    }, settleMs);
+    this.lastSettleDeferralReason = "timer-reset";
+    this.armZoomSettleTimer(settleMs);
   }
 
   /**
@@ -3430,20 +3441,19 @@ export class ViewerInkSession {
     const pluginTouchPointerIds = this.pluginTouchPointerIds();
     const report = this.pinchCleanup.evaluate(performance.now(), PINCH_CLEANUP_MAX_WAIT_MS);
     if (!report.quiescent) {
-      if (this.zoomSettleTimer !== null) window.clearTimeout(this.zoomSettleTimer);
-      this.zoomSettleTimer = window.setTimeout(() => {
-        this.zoomSettleTimer = null;
-        this.runZoomSettlePaint();
-      }, 32);
+      this.lastSettleDeferralReason = "pinch-cleanup";
+      this.armZoomSettleTimer(32);
       return true;
     }
     if (this.pinchCleanup.needsAnimationFrame()) {
+      this.lastSettleDeferralReason = "pinch-cleanup-frame";
       this.cancelPinchCleanupFrame();
       this.pinchCleanupFrame = window.requestAnimationFrame(() => {
         this.pinchCleanupFrame = null;
         this.pinchCleanup.noteAnimationFrame();
         this.runZoomSettlePaint();
       });
+      this.refreshZoomBurstActivity();
       return true;
     }
     this.postZoomTrace.noteGestureCleanup({
@@ -3453,8 +3463,116 @@ export class ViewerInkSession {
     return false;
   }
 
+  private armZoomSettleTimer(delayMs: number): void {
+    if (this.zoomSettleTimer !== null) {
+      window.clearTimeout(this.zoomSettleTimer);
+      this.settleTimerResetCount += 1;
+    }
+    this.zoomSettleTimerGeneration += 1;
+    const generation = this.zoomSettleTimerGeneration;
+    this.zoomSettleTimerDueAt = performance.now() + delayMs;
+    this.zoomSettleTimer = window.setTimeout(() => {
+      if (generation !== this.zoomSettleTimerGeneration) return;
+      this.zoomSettleTimer = null;
+      this.runZoomSettlePaint();
+    }, delayMs);
+    this.armZoomBurstWatchdog();
+    this.refreshZoomBurstActivity();
+  }
+
+  private armZoomBurstWatchdog(): void {
+    if (this.zoomBurstWatchdog !== null) window.clearTimeout(this.zoomBurstWatchdog);
+    this.zoomBurstWatchdog = window.setTimeout(() => {
+      this.zoomBurstWatchdog = null;
+      this.considerZoomBurstWatchdog();
+    }, ZOOM_BURST_STUCK_MS);
+  }
+
+  private clearZoomBurstWatchdog(): void {
+    if (this.zoomBurstWatchdog === null) return;
+    window.clearTimeout(this.zoomBurstWatchdog);
+    this.zoomBurstWatchdog = null;
+  }
+
+  private considerZoomBurstWatchdog(): void {
+    if (this.destroyed || !this.postZoomTrace.isBurstOpen()) return;
+    this.refreshZoomBurstActivity();
+    const pinch = this.pinchCleanup.activePinchCount();
+    const decision = decideZoomBurstWatchdog({
+      now: performance.now(),
+      lastZoomSignalAt: this.lastZoomSignalAt,
+      zoomSettleTimerArmed: this.zoomSettleTimer !== null,
+      zoomSettleTimerDueAt: this.zoomSettleTimerDueAt,
+      pinchCleanupFrameArmed: this.pinchCleanupFrame !== null,
+      activePinchPointers: pinch.pointers,
+      activePinchTouches: pinch.touches,
+      liveInk: this.hasAnyLiveInkInput()
+    });
+    this.postZoomTrace.noteBurstActivity({ lastWatchdogReason: decision.reason, lastWatchdogAction: decision.action });
+    if (decision.action === "wait") {
+      this.logger.zoomLifecycle("zoom-burst-watchdog-wait", {
+        zoomBurstId: this.postZoomTrace.currentBurstId(),
+        reason: decision.reason,
+        ...this.postZoomTrace.diagnosis().burstActivity
+      });
+      this.armZoomBurstWatchdog();
+      return;
+    }
+    this.lastSettleDeferralReason = decision.reason;
+    this.logger.zoomLifecycle("zoom-burst-watchdog-recovery", {
+      zoomBurstId: this.postZoomTrace.currentBurstId(),
+      event: "zoom-burst-watchdog-recovery",
+      reason: decision.reason,
+      ...this.postZoomTrace.diagnosis().burstActivity
+    });
+    if (this.zoomSettleTimer !== null) {
+      window.clearTimeout(this.zoomSettleTimer);
+      this.zoomSettleTimer = null;
+    }
+    this.runZoomSettlePaint();
+  }
+
+  private refreshZoomBurstActivity(): void {
+    if (!this.postZoomTrace.isBurstOpen()) return;
+    const beganAt = this.postZoomTrace.diagnosis().beganAt;
+    const beganMs = beganAt ? Date.parse(beganAt) : Date.now();
+    const pinch = this.pinchCleanup.activePinchCount();
+    const pinchDiag = this.pinchCleanup.diagnostics();
+    const liveInkPages = [...this.surfaces.entries()]
+      .filter(([, surface]) => this.surfaceHasLiveInkInput(surface))
+      .map(([page]) => page);
+    this.postZoomTrace.noteBurstActivity({
+      activeBurstAgeMs: Math.max(0, Date.now() - beganMs),
+      lastZoomSignalAt: this.lastZoomSignalAt,
+      lastZoomSignalReason: this.lastZoomSignalReason,
+      lastZoomSignalScale: this.lastZoomSignalScale,
+      lastZoomSignalAgeMs: this.lastZoomSignalAt > 0 ? Math.max(0, Math.round(performance.now() - this.lastZoomSignalAt)) : null,
+      zoomSettleTimerArmed: this.zoomSettleTimer !== null,
+      zoomSettleTimerDueAt: this.zoomSettleTimerDueAt,
+      zoomSettleTimerGeneration: this.zoomSettleTimerGeneration,
+      settleTimerResetCount: this.settleTimerResetCount,
+      runZoomSettlePaintCallCount: this.runZoomSettlePaintCallCount,
+      lastRunZoomSettlePaintAt: this.lastRunZoomSettlePaintAt,
+      lastSettleDeferralReason: this.lastSettleDeferralReason,
+      pinchCleanupEvaluateCount: pinchDiag.evaluateCount,
+      pinchCleanupQuiescent: pinch.pointers === 0 && pinch.touches === 0,
+      pinchCleanupNeedsAnimationFrame: pinchDiag.needsAnimationFrame,
+      pinchCleanupFrameArmed: this.pinchCleanupFrame !== null,
+      liveInkAtLastSettleAttempt: liveInkPages.length > 0,
+      liveInkPages,
+      activePenIds: [...this.surfaces.values()].flatMap((surface) => surface.router?.activePenIds() ?? []),
+      activeTouchPointerIds: this.pluginTouchPointerIds(),
+      zoomProfileActive: this.zoomProfile !== null,
+      zoomCompositing: this.zoomCompositing,
+      zoomHandoffActive: this.isZoomHandoffActive(),
+      pendingMobileScrollRemount: this.pendingMobileScrollRemount
+    });
+  }
+
   private runZoomSettlePaint(): void {
     if (this.destroyed) return;
+    this.runZoomSettlePaintCallCount += 1;
+    this.lastRunZoomSettlePaintAt = performance.now();
     if (this.awaitPinchGestureCleanup()) return;
     // Keep CSS compositing + draft canvas intact until the tip lifts. Mid-drag
     // settle was clearing the live draft and force-rebinding routers (log proof).
@@ -3465,10 +3583,8 @@ export class ViewerInkSession {
         pages: this.surfaces.size,
         retryMs: ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS
       });
-      this.zoomSettleTimer = window.setTimeout(() => {
-        this.zoomSettleTimer = null;
-        this.runZoomSettlePaint();
-      }, ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS);
+      this.lastSettleDeferralReason = "live-ink";
+      this.armZoomSettleTimer(ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS);
       return;
     }
     const burstTicks = this.zoomTickCount;
@@ -3501,6 +3617,7 @@ export class ViewerInkSession {
       scaleBefore: scaleStart,
       scaleAfter: scaleEnd ?? this.options.adapter.getViewState().scale
     };
+    this.clearZoomBurstWatchdog();
     this.postZoomTrace.settle(Date.now(), settleSnapshot);
     this.logger.zoomLifecycle("zoom-burst-settle", {
       zoomBurstId: this.zoomCorrelationId,
@@ -5100,8 +5217,21 @@ export class ViewerInkSession {
       nativePdfToolbarCount: host.querySelectorAll(".pdf-toolbar, .pdf-toolbar-container").length,
       nativeAddButtons
     };
+    this.refreshZoomBurstActivity();
+    const lastZoomTrace = this.postZoomTrace.diagnosis();
+    const activeBurstAgeMs = typeof lastZoomTrace.burstActivity?.activeBurstAgeMs === "number"
+      ? lastZoomTrace.burstActivity.activeBurstAgeMs
+      : 0;
+    if (lastZoomTrace.beganAt && !lastZoomTrace.settledAt && activeBurstAgeMs > ZOOM_BURST_STUCK_MS) {
+      this.logger.zoomBurstStuck({
+        zoomBurstId: lastZoomTrace.zoomBurstId,
+        activeBurstAgeMs,
+        lastSettleDeferralReason: lastZoomTrace.burstActivity?.lastSettleDeferralReason ?? null,
+        zoomSettleTimerArmed: lastZoomTrace.burstActivity?.zoomSettleTimerArmed ?? null
+      });
+    }
     this.logger.zoomDiagnosis({
-      lastZoomTrace: this.postZoomTrace.diagnosis(),
+      lastZoomTrace,
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
     });
     this.logger.handwritingUiSnapshot(snapshot);
@@ -6581,6 +6711,7 @@ export class ViewerInkSession {
       this.mobileScrollRefreshFrame = null;
     }
     this.pendingMobileScrollRemount = false;
+    this.clearZoomBurstWatchdog();
     if (this.zoomSettleTimer !== null) {
       window.clearTimeout(this.zoomSettleTimer);
       this.zoomSettleTimer = null;
