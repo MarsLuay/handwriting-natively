@@ -2,6 +2,8 @@ import { getDebugNodeId } from "../dom/debugNodeId";
 import { describeTarget } from "../dom/describeElement";
 import {
   PhysicalContactTracker,
+  rawSampleCloneCount,
+  resetRawSampleCloneCount,
   type PhysicalContactRecord,
   type RawPointerContactSample,
   type RawTouchContactEvent,
@@ -13,6 +15,50 @@ type TouchEventType = RawTouchContactEvent["eventType"];
 
 const REGISTRATION_SCOPE = "document-capture" as const;
 const REGISTRATION_SOURCE = "ViewerInkSession.installPointerProbe" as const;
+const HOT_PATH_LONG_TASK_MS = 2;
+const HOT_PATH_LONG_TASK_INTERVAL_MS = 1_000;
+
+export interface PhysicalContactHotPathStats {
+  pointerMoveCount: number;
+  touchMoveCount: number;
+  pathLabelBuildCount: number;
+  pathLabelBuildOnMoveCount: number;
+  rawSampleCloneCount: number;
+  maxCollectorMoveMs: number;
+  p95CollectorMoveMs: number;
+}
+
+const hotPathMoveSamples: number[] = [];
+const hotPathStats: PhysicalContactHotPathStats = {
+  pointerMoveCount: 0,
+  touchMoveCount: 0,
+  pathLabelBuildCount: 0,
+  pathLabelBuildOnMoveCount: 0,
+  rawSampleCloneCount: 0,
+  maxCollectorMoveMs: 0,
+  p95CollectorMoveMs: 0
+};
+let lastHotPathLongTaskAt = 0;
+
+export function physicalContactHotPathStats(): PhysicalContactHotPathStats {
+  return { ...hotPathStats, rawSampleCloneCount: rawSampleCloneCount() };
+}
+
+export function resetPhysicalContactHotPathStats(): void {
+  hotPathMoveSamples.length = 0;
+  lastHotPathLongTaskAt = 0;
+  resetRawSampleCloneCount();
+  Object.assign(hotPathStats, {
+    pointerMoveCount: 0,
+    touchMoveCount: 0,
+    pathLabelBuildCount: 0,
+    pathLabelBuildOnMoveCount: 0,
+    rawSampleCloneCount: 0,
+    maxCollectorMoveMs: 0,
+    p95CollectorMoveMs: 0
+  });
+}
+
 const SEEN_EVENT_TTL_MS = 30_000;
 const MAX_SEEN_EVENTS = 512;
 const MAX_DUPLICATE_ANOMALIES = 96;
@@ -67,6 +113,7 @@ export interface PhysicalContactCollectorOwner {
   withinTarget(target: EventTarget | null): boolean;
   onPhysicalContactEvent(event: PhysicalContactCollectorEvent): void;
   onPhysicalContactDuplicate(details: PhysicalContactDuplicateObserver): void;
+  onInputHotPathLongTask?(details: Record<string, unknown>): void;
 }
 
 export interface PhysicalContactCollectorOwnerSnapshot {
@@ -176,14 +223,17 @@ class PhysicalContactCollector {
   }
 
   private handlePointer(event: PointerEvent, eventType: PointerEventType): void {
+    const started = performance.now();
     const observers = this.activeObservers(event.target);
     const selected = this.selectOwner(observers);
     if (!selected) return;
     const alreadySeen = this.markSeen(event, this.pointerKey(event, eventType));
     const now = Date.now();
+    const enrichStarted = performance.now();
     const records = alreadySeen
       ? []
       : this.processPointer(now, selected, event, eventType);
+    const diagnosticEnrichmentMs = performance.now() - enrichStarted;
     const pointerContactId = this.tracker.pointerContactId(event.pointerId);
     const chosenPhysicalContactId = records.at(-1)?.contact.physicalContactId ?? pointerContactId;
     this.dispatch({
@@ -200,9 +250,11 @@ class PhysicalContactCollector {
       chosenPhysicalContactId,
       eventTimeStamp: event.timeStamp
     });
+    this.noteMoveCost(selected, eventType, event.pointerType || "", started, diagnosticEnrichmentMs, performance.now() - started);
   }
 
   private handleTouch(event: TouchEvent, eventType: TouchEventType): void {
+    const started = performance.now();
     const observers = this.activeObservers(event.target);
     const selected = this.selectOwner(observers);
     if (!selected) return;
@@ -229,6 +281,38 @@ class PhysicalContactCollector {
       touchIdentifiers: identifiers,
       chosenPhysicalContactId,
       eventTimeStamp: event.timeStamp
+    });
+    this.noteMoveCost(selected, eventType, "touch", started, 0, performance.now() - started);
+  }
+
+  private noteMoveCost(
+    owner: PhysicalContactCollectorOwner,
+    eventType: string,
+    pointerType: string,
+    started: number,
+    diagnosticEnrichmentMs: number,
+    collectorWorkMs: number
+  ): void {
+    if (eventType !== "pointermove" && eventType !== "touchmove") return;
+    if (eventType === "pointermove") hotPathStats.pointerMoveCount += 1;
+    else hotPathStats.touchMoveCount += 1;
+    hotPathMoveSamples.push(collectorWorkMs);
+    if (hotPathMoveSamples.length > 200) hotPathMoveSamples.shift();
+    hotPathStats.maxCollectorMoveMs = Math.max(hotPathStats.maxCollectorMoveMs, collectorWorkMs);
+    const sorted = [...hotPathMoveSamples].sort((a, b) => a - b);
+    hotPathStats.p95CollectorMoveMs = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0;
+    if (collectorWorkMs <= HOT_PATH_LONG_TASK_MS) return;
+    const now = Date.now();
+    if (now - lastHotPathLongTaskAt < HOT_PATH_LONG_TASK_INTERVAL_MS) return;
+    lastHotPathLongTaskAt = now;
+    owner.onInputHotPathLongTask?.({
+      event: "input-hot-path-long-task",
+      eventType,
+      pointerType,
+      collectorWorkMs,
+      trackerWorkMs: Math.max(0, collectorWorkMs - diagnosticEnrichmentMs),
+      diagnosticEnrichmentMs,
+      dispatchWorkMs: Math.max(0, performance.now() - started - collectorWorkMs)
     });
   }
 
@@ -397,6 +481,7 @@ class PhysicalContactCollector {
 }
 
 export function rawPointerContactSample(event: PointerEvent, eventType: PointerEventType): RawPointerContactSample {
+  const path = eventType === "pointermove" ? emptyPath() : pathSnapshot(event, eventType);
   return {
     eventType,
     timeStamp: event.timeStamp,
@@ -412,9 +497,9 @@ export function rawPointerContactSample(event: PointerEvent, eventType: PointerE
     button: event.button,
     clientX: event.clientX,
     clientY: event.clientY,
-    targetId: getDebugNodeId(event.target),
-    composedPath: physicalComposedPath(event),
-    composedPathLabels: physicalComposedPathLabels(event),
+    targetId: eventType === "pointermove" ? null : getDebugNodeId(event.target),
+    composedPath: path.ids,
+    composedPathLabels: path.labels,
     eventPhase: event.eventPhase,
     cancelable: event.cancelable,
     defaultPrevented: event.defaultPrevented
@@ -437,6 +522,7 @@ export function rawTouchContactEvent(event: TouchEvent, eventType: TouchEventTyp
   });
   const activeTouches = [...event.touches].slice(0, 8).map(toPoint);
   const changedTouches = [...event.changedTouches].slice(0, 8).map(toPoint);
+  const path = eventType === "touchmove" ? emptyPath() : pathSnapshot(event, eventType);
   const touches = changedTouches.map((touch) => ({
     eventType,
     timeStamp: event.timeStamp,
@@ -448,21 +534,30 @@ export function rawTouchContactEvent(event: TouchEvent, eventType: TouchEventTyp
     force: touch.force,
     touchCount: event.touches.length,
     changedCount,
-    activeTouches: activeTouches.map((active) => ({ ...active })),
-    changedTouches: changedTouches.map((changed) => ({ ...changed })),
-    targetId: getDebugNodeId(event.target),
-    composedPath: physicalComposedPath(event),
-    composedPathLabels: physicalComposedPathLabels(event)
+    activeTouches,
+    changedTouches,
+    targetId: eventType === "touchmove" ? null : getDebugNodeId(event.target),
+    composedPath: path.ids,
+    composedPathLabels: path.labels
   }));
   return { eventType, touches };
 }
 
-function physicalComposedPath(event: Event): string[] {
-  return composedPathEntries(event).map((entry) => entry instanceof Element ? String(getDebugNodeId(entry)) : Object.prototype.toString.call(entry));
+function emptyPath(): { ids: string[]; labels: string[] } {
+  return { ids: [], labels: [] };
 }
 
-function physicalComposedPathLabels(event: Event): string[] {
-  return composedPathEntries(event).map((entry) => describeTarget(entry));
+function pathSnapshot(event: Event, eventType: string): { ids: string[]; labels: string[] } {
+  if (eventType === "pointermove" || eventType === "touchmove") {
+    hotPathStats.pathLabelBuildOnMoveCount += 1;
+    return emptyPath();
+  }
+  const entries = composedPathEntries(event);
+  hotPathStats.pathLabelBuildCount += 1;
+  return {
+    ids: entries.map((entry) => entry instanceof Element ? String(getDebugNodeId(entry)) : Object.prototype.toString.call(entry)),
+    labels: entries.map((entry) => describeTarget(entry))
+  };
 }
 
 function composedPathEntries(event: Event): EventTarget[] {
