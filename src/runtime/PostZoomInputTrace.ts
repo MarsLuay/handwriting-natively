@@ -533,6 +533,7 @@ export class PinchGestureCleanup {
   private readonly pinchTouches = new Set<number>();
   private readonly activePointerIds = new Set<number>();
   private readonly activeTouchIdentifiers = new Set<number>();
+  private readonly stylusAssociated = new Set<number>();
   private readonly pointerSeenAt = new Map<number, number>();
   private readonly touchSeenAt = new Map<number, number>();
   private lastSeed: PinchBurstSeed = {
@@ -556,7 +557,9 @@ export class PinchGestureCleanup {
     this.pinchPointers.clear();
     this.pinchTouches.clear();
     for (const id of this.activePointerIds) this.pinchPointers.add(id);
-    for (const id of this.activeTouchIdentifiers) this.pinchTouches.add(id);
+    for (const id of this.activeTouchIdentifiers) {
+      if (!this.stylusAssociated.has(id)) this.pinchTouches.add(id);
+    }
     this.lastSeed = {
       seededPinchPointerIds: [...this.pinchPointers],
       seededPinchTouchIdentifiers: [...this.pinchTouches],
@@ -574,6 +577,31 @@ export class PinchGestureCleanup {
     };
   }
 
+  /** Called only after the physical-contact collector pairs this touch with a pen pointer. */
+  excludeStylusTouch(touchIdentifier: number): boolean {
+    const added = !this.stylusAssociated.has(touchIdentifier);
+    this.stylusAssociated.add(touchIdentifier);
+    this.activeTouchIdentifiers.delete(touchIdentifier);
+    this.pinchTouches.delete(touchIdentifier);
+    return added;
+  }
+
+  releaseStylusTouch(touchIdentifier: number): void {
+    this.stylusAssociated.delete(touchIdentifier);
+  }
+
+  associationState(): {
+    stylusAssociatedTouchIdentifiers: number[];
+    excludedStylusTouchIdentifiers: number[];
+    pinchEligibleTouchIdentifiers: number[];
+  } {
+    return {
+      stylusAssociatedTouchIdentifiers: [...this.stylusAssociated],
+      excludedStylusTouchIdentifiers: [...this.stylusAssociated],
+      pinchEligibleTouchIdentifiers: [...this.activeTouchIdentifiers].filter((id) => !this.stylusAssociated.has(id))
+    };
+  }
+
   endBurst(): void {
     this.tracking = false;
   }
@@ -587,6 +615,11 @@ export class PinchGestureCleanup {
     if (activeIds.length === 0) return this.clearActiveTouches("touch-list-all-clear", now);
     const live = new Set(activeIds);
     for (const id of activeIds) {
+      if (this.stylusAssociated.has(id)) {
+        this.activeTouchIdentifiers.delete(id);
+        this.pinchTouches.delete(id);
+        continue;
+      }
       this.activeTouchIdentifiers.add(id);
       this.touches.set(id, { terminal: false });
       this.touchSeenAt.set(id, now);
@@ -713,7 +746,7 @@ export class PinchGestureCleanup {
       ? [...this.pinchPointers].filter((id) => !this.pointers.get(id)?.terminal)
       : [];
     const staleTouchIds = stale
-      ? [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal)
+      ? [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal && !this.stylusAssociated.has(id))
       : [];
     return { timedOut: this.timedOut, lastPinchEventAgeMs: age, stalePointerIds, staleTouchIds };
   }
@@ -721,7 +754,7 @@ export class PinchGestureCleanup {
   activePinchCount(): { pointers: number; touches: number } {
     return {
       pointers: [...this.pinchPointers].filter((id) => !this.pointers.get(id)?.terminal).length,
-      touches: [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal).length
+      touches: [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal && !this.stylusAssociated.has(id)).length
     };
   }
 

@@ -32,6 +32,7 @@ export interface PhysicalContactCollectorEvent {
   pointerId: number | null;
   pointerContactId: string | null;
   touchIdentifiers: readonly number[];
+  stylusTouchAssociations: readonly { touchIdentifier: number; physicalContactId: string; pointerId: number | null }[];
   chosenPhysicalContactId: string | null;
   registrationScope: typeof REGISTRATION_SCOPE;
   registrationSource: typeof REGISTRATION_SOURCE;
@@ -328,6 +329,7 @@ class PhysicalContactCollector {
         pointerId: args.pointerId,
         pointerContactId: args.pointerContactId,
         touchIdentifiers: args.touchIdentifiers,
+        stylusTouchAssociations: this.tracker.stylusTouchAssociations(),
         chosenPhysicalContactId: args.chosenPhysicalContactId,
         registrationScope: REGISTRATION_SCOPE,
         registrationSource: REGISTRATION_SOURCE
