@@ -26,8 +26,10 @@ import {
   stylusIdentityFromClassification,
   stylusIdentityRegression,
   validPhysicalDisplacementPx,
-  type PostZoomContactObservation
+  type PostZoomContactObservation,
+  type StylusIdentity
 } from "./PostZoomInputTrace";
+import { PostZoomDurabilityTrace } from "./PostZoomDurabilityTrace";
 import {
   inkVisibilityCause,
   inkVisibilityFlash,
@@ -939,6 +941,7 @@ export class ViewerInkSession {
   private zoomCorrelationId: string | null = null;
   private zoomSequence = 0;
   private readonly postZoomTrace = new PostZoomInputTrace();
+  private readonly postZoomDurability = new PostZoomDurabilityTrace();
   private readonly pinchCleanup = new PinchGestureCleanup();
   private pinchCleanupFrame: number | null = null;
   private readonly postZoomStrokePointers = new Set<number>();
@@ -2091,6 +2094,71 @@ export class ViewerInkSession {
     };
   }
 
+  private notePostZoomDurability(record: PhysicalContactRecord, details: {
+    atMs: number;
+    pageNumber: number | null;
+    stylusIdentity: StylusIdentity;
+    strokeStarted: boolean;
+    routerReceived: boolean;
+    routerRejected: boolean;
+    routerRejectReason: string | null;
+    route: string | null;
+    scrollLeftAtStart: number | null;
+    scrollTopAtStart: number | null;
+    scrollLeftAtEnd: number;
+    scrollTopAtEnd: number;
+    nativeScrollDeltaPx: number | null;
+    panObserved: boolean;
+    pageElementId: number | null;
+    overlayId: number | null;
+    routerGeneration: number | null;
+    pageMountGeneration: number | null;
+    touchActionClasses: string[];
+    activeElement: string;
+  }): void {
+    const contact = record.contact;
+    const pointer = contact.rawPointer.first ?? contact.rawPointer.last;
+    const events = this.postZoomDurability.note({
+      atMs: details.atMs,
+      physicalContactId: contact.physicalContactId,
+      pointerType: pointer?.pointerType ?? (contact.touchEventSeen ? "touch" : null),
+      pointerEventPenSeen: contact.pointerEventPenSeen,
+      pointerEventTouchSeen: contact.pointerEventTouchSeen,
+      touchEventSeen: contact.touchEventSeen,
+      classification: contact.classification,
+      pressure: pointer?.pressure ?? null,
+      width: pointer?.width ?? null,
+      height: pointer?.height ?? null,
+      stylusIdentity: details.stylusIdentity,
+      pageNumber: details.pageNumber,
+      pageMountGeneration: details.pageMountGeneration,
+      pageElementId: details.pageElementId,
+      overlayId: details.overlayId,
+      routerGeneration: details.routerGeneration,
+      routerReceived: details.routerReceived,
+      routerRejected: details.routerRejected,
+      routerRejectReason: details.routerRejectReason,
+      route: details.route,
+      strokeStarted: details.strokeStarted,
+      strokeEnded: details.strokeStarted,
+      scrollLeftAtStart: details.scrollLeftAtStart,
+      scrollTopAtStart: details.scrollTopAtStart,
+      scrollLeftAtEnd: details.scrollLeftAtEnd,
+      scrollTopAtEnd: details.scrollTopAtEnd,
+      nativeScrollDeltaPx: details.nativeScrollDeltaPx,
+      panObserved: details.panObserved,
+      panAccepted: null,
+      target: pointer?.composedPath[0] ?? null,
+      composedPath: pointer?.composedPath ?? contact.rawTouch.first?.composedPath ?? null,
+      touchActionClasses: details.touchActionClasses,
+      activeElement: details.activeElement
+    });
+    for (const event of events) {
+      if (event.event === "post-zoom-recovery-regressed") this.logger.postZoomRecoveryRegressed({ ...event });
+      else this.logger.postZoomPageDragContact({ ...event });
+    }
+  }
+
   private notePostZoomPhysicalContact(record: PhysicalContactRecord): void {
     const point = record.contact.firstPoint ?? record.contact.lastPoint;
     const page = point
@@ -2150,6 +2218,28 @@ export class ViewerInkSession {
         || record.contact.pointerCaptureLost
         || record.contact.terminalPointRejectReason?.startsWith("lostpointercapture") === true
     };
+    if (overPage && page) this.notePostZoomDurability(record, {
+      atMs: Date.now(),
+      pageNumber,
+      stylusIdentity,
+      strokeStarted,
+      routerReceived: observation.routerReceived,
+      routerRejected: observation.routerRejected,
+      routerRejectReason: observation.routerRejected ? "route-rejected" : null,
+      route: observation.routerReceived ? (observation.routerRejected ? "rejected" : "received") : null,
+      scrollLeftAtStart: startLeft,
+      scrollTopAtStart: startTop,
+      scrollLeftAtEnd: scroll.scrollLeft,
+      scrollTopAtEnd: scroll.scrollTop,
+      nativeScrollDeltaPx,
+      panObserved: nativeScrollDeltaPx !== null && nativeScrollDeltaPx > 1,
+      pageElementId: page ? getDebugNodeId(page.element) : null,
+      overlayId: surface ? getDebugNodeId(surface.overlay) : null,
+      routerGeneration: surface?.router?.generation ?? null,
+      pageMountGeneration: surface?.page.mountGeneration ?? null,
+      touchActionClasses: [...page.element.classList].filter((name) => name.startsWith("native-pdf-handwriting-touch-")),
+      activeElement: describeTarget(page.element.ownerDocument.activeElement ?? null)
+    });
     const anomaly = overPage ? this.postZoomTrace.anomaly(observation, Date.now()) : null;
     this.postZoomTrace.completeAdmittedContact(record.contact.physicalContactId, Date.now());
     const disposition = postZoomFinalDisposition({
@@ -3218,6 +3308,7 @@ export class ViewerInkSession {
     // the settle timer is the actual quiet-window boundary.
     if (!this.zoomProfile) {
       this.zoomCorrelationId = this.postZoomTrace.begin();
+      this.postZoomDurability.onZoomBegin(this.zoomCorrelationId);
       const seed = this.pinchCleanup.beginBurst();
       for (const prune of seed.pruned) this.logger.stalePinchContact({ ...prune });
       this.postZoomTrace.noteBurstActivity({
@@ -3695,7 +3786,9 @@ export class ViewerInkSession {
       scaleAfter: scaleEnd ?? this.options.adapter.getViewState().scale
     };
     this.clearZoomBurstWatchdog();
-    this.postZoomTrace.settle(Date.now(), settleSnapshot);
+    const settledAt = Date.now();
+    const settledBurstId = this.postZoomTrace.settle(settledAt, settleSnapshot);
+    if (settledBurstId) this.postZoomDurability.onZoomSettle(settledBurstId, settledAt);
     this.logger.zoomLifecycle("zoom-burst-settle", {
       zoomBurstId: this.zoomCorrelationId,
       burstTicks,
@@ -5392,6 +5485,7 @@ export class ViewerInkSession {
     }
     this.logger.zoomDiagnosis({
       lastZoomTrace,
+      lastPostZoomDurabilityTrace: this.postZoomDurability.snapshot(Date.now()),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
     });
     this.logger.handwritingUiSnapshot(snapshot);

@@ -561,6 +561,25 @@ export class SessionLogger {
     }, true);
   }
 
+  postZoomRecoveryRegressed(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "post-zoom-recovery-regressed", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      event: "post-zoom-recovery-regressed",
+      physicalToolClaimed: false,
+      ...details
+    }, true);
+  }
+
+  postZoomPageDragContact(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "post-zoom-page-drag-contact", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      event: "post-zoom-page-drag-contact",
+      ...details
+    }, true);
+  }
+
   postZoomAnomaly(details: Record<string, unknown> = {}): void {
     this.emit("warn", "post-zoom-input-anomaly", {
       document: this.documentPath,
