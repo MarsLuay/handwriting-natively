@@ -31,4 +31,5 @@ pressure/tilt features later — do not route pointer-move floods through
 
 ## Git
 
-- Always commit and merge to main for changes. Use `/sync` if push is not clean. 
+- Always commit and merge to main for changes. Use `/sync` if push is not clean.
+- Keep `.github/workflows/brat-prerelease.yml`: it is the intentional BRAT prerelease exception that tests, builds, and publishes the current `main` artifact for BRAT. Stable release publication remains local.
