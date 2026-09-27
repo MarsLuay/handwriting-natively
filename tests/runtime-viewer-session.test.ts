@@ -319,24 +319,24 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150));
     await session.manualSave();
     const erasedSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(erasedSidecar![1]).pages[0].strokes).toHaveLength(2);
+    expect(JSON.parse(erasedSidecar![1]).pages[0].strokes).toHaveLength(3);
 
     adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='undo']")?.click();
     await session.manualSave();
     const restoredSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(restoredSidecar![1]).pages[0].strokes).toHaveLength(1);
+    expect(JSON.parse(restoredSidecar![1]).pages[0].strokes).toHaveLength(2);
 
     settings.toolPreferences.eraser.size = 12;
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 130, 150));
     adapter.pageElement.dispatchEvent(pointer("pointercancel", 130, 150));
     await session.manualSave();
     const cancelledSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(cancelledSidecar![1]).pages[0].strokes).toHaveLength(1);
+    expect(JSON.parse(cancelledSidecar![1]).pages[0].strokes).toHaveLength(2);
 
     adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='redo']")?.click();
     await session.manualSave();
     const redoneSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(redoneSidecar![1]).pages[0].strokes).toHaveLength(2);
+    expect(JSON.parse(redoneSidecar![1]).pages[0].strokes).toHaveLength(3);
 
     await session.exportCopy();
     expect(exported).toBeDefined();
@@ -357,10 +357,12 @@ describe("viewer runtime tracer", () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.mouseInputMode = "annotate";
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/example.png",
-      settings: structuredClone(DEFAULT_SETTINGS),
+      settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
       saveSettings: async () => undefined,
@@ -465,18 +467,22 @@ describe("viewer runtime tracer", () => {
   it("correlates stroke serialization, persistence, and reload restoration", async () => {
     const files = new MemoryFiles();
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
-    const createSession = (adapter: FakeAdapter) => ViewerInkSession.create({
-      adapter,
-      documentPath: "Notes/example.png",
-      settings: structuredClone(DEFAULT_SETTINGS),
-      sidecars: new SidecarRepository(files, "annotations"),
-      recovery: new RecoveryRepository(files, "recovery"),
-      saveSettings: async () => undefined,
-      readDocument: async () => new Uint8Array([1, 2, 3]),
-      notice: () => undefined,
-      debugEnabled: () => true,
-      vaultLog: { write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} }) }
-    });
+    const createSession = (adapter: FakeAdapter) => {
+      const settings = structuredClone(DEFAULT_SETTINGS);
+      settings.mouseInputMode = "annotate";
+      return ViewerInkSession.create({
+        adapter,
+        documentPath: "Notes/example.png",
+        settings,
+        sidecars: new SidecarRepository(files, "annotations"),
+        recovery: new RecoveryRepository(files, "recovery"),
+        saveSettings: async () => undefined,
+        readDocument: async () => new Uint8Array([1, 2, 3]),
+        notice: () => undefined,
+        debugEnabled: () => true,
+        vaultLog: { write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} }) }
+      });
+    };
 
     const adapter = new FakeAdapter();
     const session = await createSession(adapter);
@@ -534,10 +540,12 @@ describe("viewer runtime tracer", () => {
     const files = new MemoryFiles();
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const adapter = new FakeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.mouseInputMode = "annotate";
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/pixels.png",
-      settings: structuredClone(DEFAULT_SETTINGS),
+      settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
       saveSettings: async () => undefined,
@@ -576,10 +584,12 @@ describe("viewer runtime tracer", () => {
     const files = new MemoryFiles();
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const adapter = new FakeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.mouseInputMode = "annotate";
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/pixels-unavailable.png",
-      settings: structuredClone(DEFAULT_SETTINGS),
+      settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
       saveSettings: async () => undefined,

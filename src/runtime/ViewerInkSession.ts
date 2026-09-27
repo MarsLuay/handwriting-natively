@@ -952,6 +952,8 @@ export class ViewerInkSession {
   private zoomBurstWatchdog: number | null = null;
   /** Coalesces repeated native scale signals to one overlay/layout pass per frame. */
   private zoomLayoutFrame: number | null = null;
+  /** One-frame geometry cache used to keep zoom reads ahead of DOM writes. */
+  private zoomLayoutCache: Map<number, PageCoordinateLayout> | null = null;
   private zoomBurstStartedAt = 0;
   private zoomTickCount = 0;
   private zoomBurstScaleStart: number | null = null;
@@ -3638,9 +3640,13 @@ export class ViewerInkSession {
    */
   private shouldCoalesceZoomSettleSignal(reason: string, scale?: number): boolean {
     if (!this.zoomProfile || this.zoomSettleTimer === null) return false;
-    if (reason.includes("scale") || reason.includes("rotation")) return false;
     if (scale === undefined || this.zoomBurstScaleEnd === null) return false;
     const sameScale = Math.abs(scale - this.zoomBurstScaleEnd) < 1e-4;
+    // PDF.js can publish the same data-scale attribute once per replaced page.
+    // It is a structural observation, not a new scale gesture, so do not reset
+    // the quiet timer for every page in a multi-page document.
+    if (reason.includes("data-scale") && sameScale) return true;
+    if (reason.includes("scale") || reason.includes("rotation")) return false;
     // Some mobile PDF hosts report a stale scale on the scroll notification
     // that follows a scale tick. Do not let that one-frame notification end a
     // live 120Hz scale burst and arm the short layout settle timer.
@@ -4897,25 +4903,46 @@ export class ViewerInkSession {
     if (this.zoomProfile) this.zoomProfile.layoutSyncs += 1;
     const pages = this.options.adapter.pages();
     const byNumber = new Map(pages.map((page) => [page.pageNumber, page]));
+    const active: PageSurface[] = [];
+    // Reconcile page nodes and routers before taking geometry reads. Reattach
+    // used to read and write one page at a time, forcing layout between pages.
     for (const [pageNumber, surface] of this.surfaces) {
       const current = byNumber.get(pageNumber);
       if (!current) continue;
-      if (!this.reattachSurface(surface, current)) {
+      if (!this.reattachSurface(surface, current, false)) {
         // Page node replaced while the overlay stayed on the old node — move
         // both overlay and page-bound PointerRouter onto the live page.
         if (current.element.isConnected) {
-          this.remountSurfaceOnPageReplacement(surface, current);
+          this.remountSurfaceOnPageReplacement(surface, current, false);
         } else {
           continue;
         }
       }
       this.ensurePageRouter(surface);
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
-      this.syncOverlayLayout(surface);
-      this.syncTextLayoutDuringZoom(surface);
-      this.logZoomInkLayout(surface, phase);
+      active.push(surface);
     }
-    this.refreshSurfaceCursors();
+
+    // Read every page layout first, then apply all overlay/text writes using
+    // that one-frame snapshot. This preserves the existing coordinates while
+    // avoiding read-after-write reflows across mounted pages.
+    const layouts = new Map<number, PageCoordinateLayout>();
+    for (const surface of active) layouts.set(surface.page.pageNumber, this.pageLayout(surface));
+    this.zoomLayoutCache = layouts;
+    try {
+      for (const surface of active) {
+        const layout = layouts.get(surface.page.pageNumber);
+        this.syncOverlayLayout(surface, layout);
+        this.syncTextLayoutDuringZoom(surface, layout);
+        this.logZoomInkLayout(surface, phase);
+      }
+    } finally {
+      this.zoomLayoutCache = null;
+    }
+    // Cursor position is not visible during an active touch pinch and each
+    // refresh walks every page router. The settle/handoff refresh restores the
+    // affordance without adding work to the gesture frame.
+    if (!this.isZoomGestureActive()) this.refreshSurfaceCursors();
   }
 
   /**
@@ -6175,13 +6202,13 @@ export class ViewerInkSession {
     });
   }
 
-  private reattachSurface(surface: PageSurface, page: AnnotationPageInfo): boolean {
+  private reattachSurface(surface: PageSurface, page: AnnotationPageInfo, syncLayout = true): boolean {
     if (!page.element.isConnected || surface.page.element !== page.element) return false;
     if (surface.overlay.isConnected) {
       if (!page.element.contains(surface.overlay)) return false;
       this.rememberPageMetrics(page);
       this.applyTouchDrawPolicy(page.element);
-      this.syncOverlayLayout(surface);
+      if (syncLayout) this.syncOverlayLayout(surface);
       this.ensurePageRouter(surface);
       return true;
     }
@@ -6189,12 +6216,12 @@ export class ViewerInkSession {
     page.element.append(surface.overlay);
     this.rememberPageMetrics(page);
     this.applyTouchDrawPolicy(page.element);
-    this.syncOverlayLayout(surface);
+    if (syncLayout) this.syncOverlayLayout(surface);
     this.ensurePageRouter(surface);
     return true;
   }
 
-  private remountSurfaceOnPageReplacement(surface: PageSurface, page: AnnotationPageInfo): void {
+  private remountSurfaceOnPageReplacement(surface: PageSurface, page: AnnotationPageInfo, syncLayout = true): void {
     this.lastPageReplacementAt = Date.now();
     const previousPage = surface.page.element;
     this.logger.inputLifecycleEvent("page-dom-replacement", {
@@ -6215,7 +6242,7 @@ export class ViewerInkSession {
     this.claimInputOwner(page.element, page.pageNumber);
     this.rememberPageMetrics(page);
     this.applyTouchDrawPolicy(page.element);
-    this.syncOverlayLayout(surface);
+    if (syncLayout) this.syncOverlayLayout(surface);
     surface.router = this.createPageRouter(surface);
   }
 
@@ -10961,7 +10988,7 @@ export class ViewerInkSession {
    * content. Reproject it immediately so it stays anchored to its PDF-space
    * coordinates instead of retaining the previous scale until settle.
    */
-  private syncTextLayoutDuringZoom(surface: PageSurface): void {
+  private syncTextLayoutDuringZoom(surface: PageSurface, layout?: PageCoordinateLayout): void {
     const storedAnnotations = this.texts.page(surface.page.pageNumber);
     const activeEditor = this.activeTextEditor?.surface === surface ? this.activeTextEditor : null;
     if (!storedAnnotations.length && !activeEditor) return;
@@ -10996,7 +11023,7 @@ export class ViewerInkSession {
 
     if (this.zoomTextLayoutLoggedPages.has(surface.page.pageNumber)) return;
     this.zoomTextLayoutLoggedPages.add(surface.page.pageNumber);
-    const layout = this.pageLayout(surface);
+    const layoutSnapshot = layout ?? this.pageLayout(surface);
     const first = annotations[0];
     const origin = first ? this.mapper(surface).toViewport({ x: first.x, y: first.y }) : null;
     this.logger.textTool("zoom-layout", {
@@ -11005,10 +11032,10 @@ export class ViewerInkSession {
       activeEditor: Boolean(activeEditor),
       transforming,
       scale: round(scale),
-      offsetX: round(layout.offsetX),
-      offsetY: round(layout.offsetY),
-      contentWidth: round(layout.contentWidth),
-      contentHeight: round(layout.contentHeight),
+      offsetX: round(layoutSnapshot.offsetX),
+      offsetY: round(layoutSnapshot.offsetY),
+      contentWidth: round(layoutSnapshot.contentWidth),
+      contentHeight: round(layoutSnapshot.contentHeight),
       ...(first && origin ? {
         annotationId: first.id,
         pdfX: round(first.x),
@@ -12532,8 +12559,7 @@ export class ViewerInkSession {
     }
   }
 
-  private syncOverlayLayout(surface: PageSurface): void {
-    const layout = this.pageLayout(surface);
+  private syncOverlayLayout(surface: PageSurface, layout = this.pageLayout(surface)): void {
     if (layout.contentWidth < 8 || layout.contentHeight < 8) return;
     const overlay = surface.overlay;
     if (overlay.parentElement !== surface.page.element) {
@@ -12698,6 +12724,8 @@ export class ViewerInkSession {
   }
 
   private pageLayout(surface: PageSurface): PageCoordinateLayout {
+    const cached = this.zoomLayoutCache?.get(surface.page.pageNumber);
+    if (cached) return cached;
     const metrics = this.metricsFor(surface);
     return resolvePageCoordinateLayout({
       ...surface.page,

@@ -308,6 +308,26 @@ describe("zoom ink compositing", () => {
     document.body.replaceChildren();
   });
 
+  it("does not re-arm settle for duplicate data-scale mutations", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const internal = session as unknown as {
+      scheduleZoomRepaint(reason: string, scale?: number): void;
+      zoomSettleTimer: number | null;
+      settleTimerResetCount: number;
+    };
+    vi.useFakeTimers();
+
+    internal.scheduleZoomRepaint("scalechanging", 1.5);
+    const timer = internal.zoomSettleTimer;
+    internal.scheduleZoomRepaint("data-scale", 1.5);
+    internal.scheduleZoomRepaint("view-scroll-mobile", 1.5);
+
+    expect(internal.zoomSettleTimer).toBe(timer);
+    expect(internal.settleTimerResetCount).toBe(0);
+    await session.destroy();
+  });
+
   it("defers expensive stroke paint during zoom burst and repaints after settle", async () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);

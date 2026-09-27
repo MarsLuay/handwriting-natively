@@ -60,6 +60,24 @@ describe("ZoomFrameDiagnostics", () => {
     });
   });
 
+  it("retains the worst frame from a prior burst when a later burst is tiny", () => {
+    const harness = testClock();
+    const diagnostics = new ZoomFrameDiagnostics(harness.clock);
+    diagnostics.begin("zoom-slow", 0);
+    diagnostics.recordFrame({ requestedAt: 0, callbackAt: 0, pluginWorkMs: 0 });
+    diagnostics.recordFrame({ requestedAt: 500, callbackAt: 500, pluginWorkMs: 0 });
+    diagnostics.finish();
+
+    diagnostics.begin("zoom-tap", 600);
+    diagnostics.recordFrame({ requestedAt: 600, callbackAt: 600, pluginWorkMs: 0 });
+    diagnostics.recordFrame({ requestedAt: 601, callbackAt: 601, pluginWorkMs: 0 });
+    const summary = diagnostics.finish();
+
+    expect(summary.maxFrameGapMs).toBe(500);
+    expect(summary.worstFrames[0]).toMatchObject({ zoomBurstId: "zoom-slow", frameDeltaMs: 500 });
+    expect(summary.slowFrameCount).toBe(1);
+  });
+
   it("keeps frame records, worst samples, and signal names bounded", () => {
     const harness = testClock();
     const diagnostics = new ZoomFrameDiagnostics(harness.clock);

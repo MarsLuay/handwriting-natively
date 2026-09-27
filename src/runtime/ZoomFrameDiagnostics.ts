@@ -3,6 +3,7 @@
 export const ZOOM_FRAME_SLOW_MS = 8;
 const MAX_FRAMES = 32;
 const MAX_WORST_FRAMES = 10;
+const MAX_RETAINED_BURSTS = 5;
 const MAX_PDF_SIGNALS = 16;
 const EVENT_LOOP_PROBE_INTERVAL_MS = 50;
 
@@ -96,6 +97,11 @@ interface Clock {
   clearTimeout(timer: ReturnType<typeof setTimeout>): void;
 }
 
+interface CompletedBurst {
+  summary: FrameAttributionSummary;
+  frameGaps: number[];
+}
+
 const defaultClock: Clock = {
   now: () => (typeof performance === "undefined" ? Date.now() : performance.now()),
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -147,6 +153,8 @@ export class ZoomFrameDiagnostics {
   private readonly pdfSignals = new Map<string, PdfSignalSummary>();
   private readonly observerSignals = new Map<string, PdfSignalSummary>();
   private readonly knownOperations = new Map<string, KnownOperationTiming>();
+  /** Retain bounded evidence from recent bursts so a short follow-up tap cannot hide a stall. */
+  private readonly completedBursts: CompletedBurst[] = [];
   private phase: ZoomDiagnosticPhase = "settled";
   private zoomBurstId: string | null = null;
   private previousRafCallbackAt: number | null = null;
@@ -279,6 +287,66 @@ export class ZoomFrameDiagnostics {
   }
 
   summary(): FrameAttributionSummary {
+    const current = this.currentSummary();
+    const includeCurrent = this.active || this.completedBursts.length === 0;
+    const summaries = [
+      ...this.completedBursts.map((burst) => burst.summary),
+      ...(includeCurrent ? [current] : [])
+    ];
+    const gaps = [
+      ...this.completedBursts.flatMap((burst) => burst.frameGaps),
+      ...(includeCurrent ? this.frameGaps : [])
+    ];
+    const byAttribution: Record<string, number> = {};
+    const knownOperations = new Map<string, KnownOperationTiming>();
+    const worstFrames = summaries.flatMap((summary) => summary.worstFrames)
+      .sort((a, b) => b.frameDeltaMs - a.frameDeltaMs)
+      .slice(0, MAX_WORST_FRAMES);
+    for (const summary of summaries) {
+      for (const [name, count] of Object.entries(summary.byAttribution)) {
+        byAttribution[name] = (byAttribution[name] ?? 0) + count;
+      }
+      for (const [name, timing] of Object.entries(summary.knownOperations)) {
+        const existing = knownOperations.get(name) ?? { count: 0, totalMs: 0, maxMs: 0 };
+        existing.count += timing.count;
+        existing.totalMs = rounded(existing.totalMs + timing.totalMs);
+        existing.maxMs = rounded(Math.max(existing.maxMs, timing.maxMs));
+        knownOperations.set(name, existing);
+      }
+    }
+    return {
+      slowFrameCount: summaries.reduce((total, summary) => total + summary.slowFrameCount, 0),
+      byAttribution,
+      maxFrameGapMs: rounded(Math.max(0, ...gaps)),
+      p95FrameGapMs: rounded(percentile(gaps, 0.95)),
+      maxRafSchedulingDelayMs: rounded(Math.max(0, ...summaries.map((summary) => summary.maxRafSchedulingDelayMs))),
+      maxEventLoopDelayMs: rounded(Math.max(0, ...summaries.map((summary) => summary.maxEventLoopDelayMs))),
+      maxMeasuredPluginWorkMs: rounded(Math.max(0, ...summaries.map((summary) => summary.maxMeasuredPluginWorkMs))),
+      maxMeasuredPdfCallbackWorkMs: rounded(Math.max(0, ...summaries.map((summary) => summary.maxMeasuredPdfCallbackWorkMs))),
+      knownOperations: Object.fromEntries([...knownOperations.entries()].map(([name, value]) => [name, { ...value }])),
+      unattributedFrameCount: summaries.reduce((total, summary) => total + summary.unattributedFrameCount, 0),
+      worstFrames: worstFrames.map((frame) => ({
+        ...frame,
+        pdfSignals: { ...frame.pdfSignals },
+        observerSignals: { ...frame.observerSignals },
+        knownOperations: { ...frame.knownOperations }
+      })),
+      capabilities: { ...current.capabilities, supportedEntryTypes: [...current.capabilities.supportedEntryTypes] }
+    };
+  }
+
+  finish(): FrameAttributionSummary {
+    if (!this.active) return this.summary();
+    const current = this.currentSummary();
+    this.completedBursts.unshift({ summary: current, frameGaps: [...this.frameGaps] });
+    if (this.completedBursts.length > MAX_RETAINED_BURSTS) this.completedBursts.length = MAX_RETAINED_BURSTS;
+    this.active = false;
+    this.stopProbe();
+    this.phase = "settled";
+    return this.summary();
+  }
+
+  private currentSummary(): FrameAttributionSummary {
     return {
       slowFrameCount: this.frameGaps.length,
       byAttribution: Object.fromEntries(this.byAttribution),
@@ -293,13 +361,6 @@ export class ZoomFrameDiagnostics {
       worstFrames: this.worst.map((frame) => ({ ...frame, pdfSignals: { ...frame.pdfSignals }, observerSignals: { ...frame.observerSignals }, knownOperations: { ...frame.knownOperations } })),
       capabilities: { ...this.capability, supportedEntryTypes: [...this.capability.supportedEntryTypes] }
     };
-  }
-
-  finish(): FrameAttributionSummary {
-    this.active = false;
-    this.stopProbe();
-    this.phase = "settled";
-    return this.summary();
   }
 
   private attribute(input: {
