@@ -473,6 +473,14 @@ export class SessionLogger {
   }
 
   /** Raw pointer/touch probe — every type (mouse/pen/touch/…) for diagnosis. */
+  pointerTypeOrigin(details: Record<string, unknown> = {}): void {
+    this.emit("info", "pointer-type-origin", {
+      document: this.documentPath,
+      event: "pointer-type-origin",
+      ...details
+    }, true);
+  }
+
   pointerSeen(details: Record<string, unknown>): void {
     this.emit("info", "pointer seen", {
       document: this.documentPath,
