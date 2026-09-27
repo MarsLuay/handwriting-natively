@@ -553,6 +553,14 @@ export class SessionLogger {
     }, true);
   }
 
+  stalePinchPointerReconciled(details: Record<string, unknown> = {}): void {
+    this.emit("info", "stale-pinch-pointer-reconciled", {
+      document: this.documentPath,
+      event: "stale-pinch-pointer-reconciled",
+      ...details
+    }, true);
+  }
+
   stalePinchContact(details: Record<string, unknown> = {}): void {
     this.emit("info", "stale-pinch-contact-pruned", {
       document: this.documentPath,

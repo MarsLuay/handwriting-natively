@@ -367,6 +367,123 @@ describe("PostZoomInputTrace", () => {
     expect(timedOut.activePinchPointersAtSettle).toEqual([9]);
   });
 
+  it("retires a pinch pointer when its paired touch ends and the pointer event never does", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observePointer(-719735785, "pointerdown", "touch", 1_000);
+    pinch.observePointer(-719735784, "pointerdown", "touch", 1_000);
+    pinch.observeTouch(-719735785, "touchstart", 1_000);
+    pinch.observeTouch(-719735784, "touchstart", 1_000);
+    pinch.beginBurst(1_000);
+    pinch.observePointer(-719735784, "pointerup", "touch", 1_100);
+    pinch.observeTouch(-719735784, "touchend", 1_100);
+    pinch.reconcileTouches("touchend", [-719735785], [], 1_200);
+    const reconciled = pinch.consumePointerReconciliations();
+    expect(reconciled).toEqual([expect.objectContaining({
+      event: "stale-pinch-pointer-reconciled",
+      pointerId: -719735785,
+      pairedTouchIdentifier: -719735785,
+      nativePointerTerminalSeen: false,
+      pairedTouchTerminal: "touchend",
+      remainingActiveTouches: [],
+      reason: "paired-touch-ended"
+    })]);
+    const report = pinch.evaluate(1_200);
+    expect(report.quiescent).toBe(true);
+    expect(report.gestureCleanupTimedOut).toBe(false);
+    expect(report.gestureCleanupWaitMs).toBe(0);
+    expect(report.activePinchPointersAtSettle).toEqual([]);
+    expect(report.orphanedPinchPointerIds).toEqual([-719735785]);
+    expect(report.pointerRetireReason["-719735785"]).toBe("paired-touch-ended");
+    expect(pinch.activePinchCount()).toEqual({ pointers: 0, touches: 0 });
+    expect(decideZoomBurstWatchdog({
+      now: 5_000,
+      lastZoomSignalAt: 0,
+      zoomSettleTimerArmed: false,
+      zoomSettleTimerDueAt: 0,
+      pinchCleanupFrameArmed: false,
+      activePinchPointers: 0,
+      activePinchTouches: 0,
+      liveInk: false
+    }).reason).not.toBe("active-pinch");
+  });
+
+  it("retires a pointer when touchcancel is the only terminal event", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.associate(8, 18);
+    pinch.observePointer(8, "pointerdown", "touch", 1_000);
+    pinch.observeTouch(18, "touchstart", 1_000);
+    pinch.beginBurst(1_000);
+    pinch.reconcileTouches("touchcancel", [18], [], 1_100);
+    expect(pinch.consumePointerReconciliations()[0]).toMatchObject({
+      pointerId: 8,
+      pairedTouchIdentifier: 18,
+      pairedTouchTerminal: "touchcancel",
+      nativePointerTerminalSeen: false,
+      reason: "paired-touch-ended"
+    });
+    expect(pinch.evaluate(1_100).activePinchPointersAtSettle).toEqual([]);
+    expect(pinch.evaluate(1_100).gestureCleanupTimedOut).toBe(false);
+  });
+
+  it("retires a paired touch when the pointer ends and the touch event is missing", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.associate(7, 70);
+    pinch.observePointer(7, "pointerdown", "touch");
+    pinch.observeTouch(70, "touchstart");
+    pinch.beginBurst();
+    pinch.observePointer(7, "pointerup", "touch");
+    expect(pinch.activePinchCount()).toEqual({ pointers: 0, touches: 0 });
+    expect(pinch.evaluate(50).quiescent).toBe(true);
+    expect(pinch.evaluate(50).gestureCleanupWaitMs).toBe(0);
+    expect(pinch.consumePointerReconciliations()).toEqual([]);
+  });
+
+  it("keeps a pointer that has no paired touch, and does not retire an unrelated pointer", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observePointer(9, "pointerdown", "touch");
+    pinch.observePointer(1, "pointerdown", "touch");
+    pinch.observeTouch(2, "touchstart");
+    pinch.beginBurst();
+    pinch.reconcileTouches("touchend", [2], []);
+    expect(pinch.consumePointerReconciliations()).toEqual([]);
+    expect(pinch.activePinchCount().pointers).toBe(2);
+    expect(pinch.evaluate(0).quiescent).toBe(false);
+    expect(pinch.evaluate(800).activePinchPointersAtSettle.sort((a, b) => a - b)).toEqual([1, 9]);
+    expect(pinch.evaluate(800).gestureCleanupTimedOut).toBe(true);
+  });
+
+  it("does not retire a pointer that is still a live pen", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.noteLivePens([-719735785]);
+    pinch.associate(-719735785, -719735785);
+    pinch.observePointer(-719735785, "pointerdown", "touch");
+    pinch.observeTouch(-719735785, "touchstart");
+    pinch.beginBurst();
+    pinch.reconcileTouches("touchend", [-719735785], []);
+    expect(pinch.consumePointerReconciliations()).toEqual([]);
+    expect(pinch.activePinchCount().pointers).toBe(1);
+  });
+
+  it("settles a normal two-finger pinch without the cleanup timeout", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observePointer(4, "pointerdown", "touch");
+    pinch.observePointer(5, "pointerdown", "touch");
+    pinch.observeTouch(4, "touchstart");
+    pinch.observeTouch(5, "touchstart");
+    pinch.beginBurst();
+    pinch.observePointer(4, "pointerup", "touch");
+    pinch.observePointer(5, "pointerup", "touch");
+    pinch.observeTouch(4, "touchend");
+    pinch.observeTouch(5, "touchend");
+    const report = pinch.evaluate(40);
+    expect(report.quiescent).toBe(true);
+    expect(report.gestureCleanupTimedOut).toBe(false);
+    expect(report.gestureCleanupWaitMs).toBe(0);
+    expect(report.activePinchPointersAtSettle).toEqual([]);
+    expect(report.activePinchTouchesAtSettle).toEqual([]);
+    expect(pinch.consumePointerReconciliations()).toEqual([]);
+  });
+
   it("emits one browser identity regression after a pen stroke without calling touch a Pencil", () => {
     const trace = new PostZoomInputTrace();
     trace.begin();
