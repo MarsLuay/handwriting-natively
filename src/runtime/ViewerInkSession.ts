@@ -28,6 +28,8 @@ import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type Doc
 import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
 import {
   acquirePhysicalContactCollector,
+  rawPointerContactSample,
+  rawTouchContactEvent,
   type PhysicalContactCollectorEvent,
   type PhysicalContactCollectorLease,
   type PhysicalContactDuplicateObserver
@@ -221,9 +223,15 @@ interface ObsidianUiShellSnapshot {
   kind: ObsidianUiShellKind;
   active: boolean;
   details: Record<string, unknown>;
-  surfaceInstanceId: string | null;
-  initiatorPointerType: string | null;
-  initiatorAt: number | null;
+  surfaceInstanceId?: string | null;
+  initiatorPointerType?: string | null;
+  initiatorAt?: number | null;
+  lastInputPointerType?: string | null;
+  nestedShellCount?: number;
+  nestedShellIds?: Array<string | number | null>;
+  openedAt?: number | null;
+  openedByPointerType?: string | null;
+  routerGenerations?: Array<number | null>;
 }
 
 interface NativePenContact {
@@ -1005,6 +1013,8 @@ export class ViewerInkSession {
   private readonly documentInputRegistrationSource = "ViewerInkSession.installPointerProbe";
   private documentInputOwnership: DocumentInputOwnershipHandle | null = null;
   private documentInputOwnershipRevoked = false;
+  private physicalContactCollectorLease: PhysicalContactCollectorLease | null = null;
+  private inputTeardownStarted = false;
   /** Bounded raw browser contact correlation; observation only, never routing ownership. */
   private readonly physicalContactTracker = new PhysicalContactTracker(`physical-contact-${this.documentInputOwnerId}`);
   /** A browser event object must never be processed twice by one collector. */
@@ -1059,7 +1069,6 @@ export class ViewerInkSession {
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
-      drawEnabled: this.drawEnabled,
       supportedMoreActions: [
         ...(pdfExtensions && options.writeExport
           ? ["export", "export-editable"] as const
@@ -1478,9 +1487,9 @@ export class ViewerInkSession {
           canonicalSurfaceId: getDebugNodeId(shell),
           nestedShellCount: previous.nestedShellCount,
           nestedShellIds: previous.nestedShellIds,
-          openedAt: previous.openedAt,
+          openedAt: previous.openedAt ?? null,
           closedAt: now,
-          durationMs: previous.openedAt === null ? null : Math.max(0, now - previous.openedAt),
+          durationMs: previous.openedAt == null ? null : Math.max(0, now - previous.openedAt),
           openedByPointerType: previous.openedByPointerType,
           closingPointerType: this.lastUiInputPointerType,
           lastInputPointerType: previous.lastInputPointerType,
@@ -1506,9 +1515,9 @@ export class ViewerInkSession {
           canonicalSurfaceId: getDebugNodeId(shell),
           nestedShellCount: previous.nestedShellCount,
           nestedShellIds: previous.nestedShellIds,
-          openedAt: previous.openedAt,
+          openedAt: previous.openedAt ?? null,
           closedAt: now,
-          durationMs: previous.openedAt === null ? null : Math.max(0, now - previous.openedAt),
+          durationMs: previous.openedAt == null ? null : Math.max(0, now - previous.openedAt),
           openedByPointerType: previous.openedByPointerType,
           closingPointerType: this.lastUiInputPointerType,
           lastInputPointerType: previous.lastInputPointerType,
@@ -2164,7 +2173,7 @@ export class ViewerInkSession {
 
   private logPhysicalContactRecords(
     records: PhysicalContactCollectorEvent["records"],
-    event: PhysicalContactCollectorEvent
+    _event?: PhysicalContactCollectorEvent
   ): void {
     for (const record of records) {
       const contact = record.contact;
@@ -2214,7 +2223,7 @@ export class ViewerInkSession {
     if (this.seenPhysicalPointerEvents.has(event)) return;
     this.seenPhysicalPointerEvents.add(event);
     const now = Date.now();
-    const sample = this.rawPointerContactSample(event, eventType);
+    const sample = rawPointerContactSample(event, eventType);
     const records = this.physicalContactTracker.expire(now);
     const current = eventType === "pointerdown"
       ? this.physicalContactTracker.pointerDown(now, sample)
@@ -2232,7 +2241,7 @@ export class ViewerInkSession {
     if (this.seenPhysicalTouchEvents.has(event)) return;
     this.seenPhysicalTouchEvents.add(event);
     const now = Date.now();
-    const raw = this.rawTouchContactEvent(event, eventType);
+    const raw = rawTouchContactEvent(event, eventType);
     const records = this.physicalContactTracker.expire(now);
     const current = eventType === "touchstart"
       ? this.physicalContactTracker.touchStart(now, raw)
@@ -5840,7 +5849,7 @@ export class ViewerInkSession {
       pageRouters,
       ownedInputPages: this.ownedInputPages.size,
       physicalContactPointers: this.physicalContactIdsByPointer.size,
-      physicalContactCollector: physicalContactCollector?.listenerRegistered ? 1 : 0,
+      physicalContactCollector: this.physicalContactCollectorLease?.snapshot().listenerRegistered ? 1 : 0,
       viewerMousePan: this.inputTeardownStarted || this.destroyed ? 0 : 1
     };
     const base = (() => {
@@ -5861,7 +5870,7 @@ export class ViewerInkSession {
         ...activeInputCollectors,
         total: Object.values(activeInputCollectors).reduce((sum, count) => sum + count, 0)
       },
-      physicalContactCollector,
+      physicalContactCollector: this.physicalContactCollectorLease?.snapshot() ?? null,
       activeRouterGenerations: [...this.surfaces.values()]
         .map((surface) => surface.router?.generation ?? null)
         .filter((generation): generation is number => generation !== null)
@@ -6694,7 +6703,7 @@ export class ViewerInkSession {
         });
         this.postZoomRouterByPointer.set(event.pointerId, {
           received: true,
-          rejected: route === "ignored" || route === "native" || route === "touch-pan" || route === "touch-zoom-pan",
+          rejected: route !== "draw" && route !== "edit" && route !== "text",
           captureStale: this.handledDrawPointers.get(event.pointerId) !== undefined
             && this.handledDrawPointers.get(event.pointerId) !== surface.router?.generation
         });

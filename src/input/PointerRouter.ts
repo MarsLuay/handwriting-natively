@@ -879,10 +879,6 @@ export class PointerRouter {
     return this.abort.signal.aborted;
   }
 
-  boundElement(): HTMLElement {
-    return this.element;
-  }
-
   activePenIds(): number[] {
     return this.palmPolicy.activePenIds();
   }
