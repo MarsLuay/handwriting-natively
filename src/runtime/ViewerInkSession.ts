@@ -3498,6 +3498,7 @@ export class ViewerInkSession {
     if (this.destroyed || !this.postZoomTrace.isBurstOpen()) return;
     this.refreshZoomBurstActivity();
     const pinch = this.pinchCleanup.activePinchCount();
+    const pinchWatch = this.pinchCleanup.watchState();
     const decision = decideZoomBurstWatchdog({
       now: performance.now(),
       lastZoomSignalAt: this.lastZoomSignalAt,
@@ -3506,7 +3507,8 @@ export class ViewerInkSession {
       pinchCleanupFrameArmed: this.pinchCleanupFrame !== null,
       activePinchPointers: pinch.pointers,
       activePinchTouches: pinch.touches,
-      liveInk: this.hasAnyLiveInkInput()
+      liveInk: this.hasAnyLiveInkInput(),
+      gestureCleanupTimedOut: pinchWatch.timedOut
     });
     this.postZoomTrace.noteBurstActivity({ lastWatchdogReason: decision.reason, lastWatchdogAction: decision.action });
     if (decision.action === "wait") {
@@ -3538,6 +3540,7 @@ export class ViewerInkSession {
     const beganMs = beganAt ? Date.parse(beganAt) : Date.now();
     const pinch = this.pinchCleanup.activePinchCount();
     const pinchDiag = this.pinchCleanup.diagnostics();
+    const pinchWatch = this.pinchCleanup.watchState();
     const liveInkPages = [...this.surfaces.entries()]
       .filter(([, surface]) => this.surfaceHasLiveInkInput(surface))
       .map(([page]) => page);
@@ -3555,7 +3558,11 @@ export class ViewerInkSession {
       lastRunZoomSettlePaintAt: this.lastRunZoomSettlePaintAt,
       lastSettleDeferralReason: this.lastSettleDeferralReason,
       pinchCleanupEvaluateCount: pinchDiag.evaluateCount,
-      pinchCleanupQuiescent: pinch.pointers === 0 && pinch.touches === 0,
+      pinchCleanupQuiescent: (pinch.pointers === 0 && pinch.touches === 0) || pinchWatch.timedOut,
+      gestureCleanupTimedOut: pinchWatch.timedOut,
+      lastPinchEventAgeMs: pinchWatch.lastPinchEventAgeMs,
+      stalePinchPointerIds: pinchWatch.stalePointerIds,
+      stalePinchTouchIdentifiers: pinchWatch.staleTouchIds,
       pinchCleanupNeedsAnimationFrame: pinchDiag.needsAnimationFrame,
       pinchCleanupFrameArmed: this.pinchCleanupFrame !== null,
       liveInkAtLastSettleAttempt: liveInkPages.length > 0,

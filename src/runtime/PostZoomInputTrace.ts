@@ -51,14 +51,19 @@ export interface ZoomBurstWatchInput {
   activePinchPointers: number;
   activePinchTouches: number;
   liveInk: boolean;
+  /** IDs that never ended should not keep the burst open after the cleanup timeout. */
+  gestureCleanupTimedOut?: boolean;
 }
 
 /** Keep a quiet, idle burst from staying open after its settle callback was lost. */
 export function decideZoomBurstWatchdog(input: ZoomBurstWatchInput): { action: "recover" | "wait"; reason: string } {
+  const stalePinch = input.gestureCleanupTimedOut === true;
   if (input.liveInk) return { action: "wait", reason: "live-ink" };
-  if (input.activePinchPointers > 0 || input.activePinchTouches > 0) return { action: "wait", reason: "active-pinch" };
+  if (!stalePinch && (input.activePinchPointers > 0 || input.activePinchTouches > 0)) {
+    return { action: "wait", reason: "active-pinch" };
+  }
   if (input.now - input.lastZoomSignalAt <= ZOOM_BURST_STUCK_MS) return { action: "wait", reason: "recent-zoom-signal" };
-  if (input.pinchCleanupFrameArmed) return { action: "wait", reason: "pinch-cleanup-frame" };
+  if (input.pinchCleanupFrameArmed && !stalePinch) return { action: "wait", reason: "pinch-cleanup-frame" };
   if (input.zoomSettleTimerArmed && input.zoomSettleTimerDueAt > input.now) return { action: "wait", reason: "settle-timer-pending" };
   if (input.zoomSettleTimerArmed) return { action: "recover", reason: "settle-timer-lost" };
   return { action: "recover", reason: "no-continuation" };
@@ -434,6 +439,7 @@ export class PinchGestureCleanup {
   private evaluateCount = 0;
   private animationFrames = 0;
   private timedOut = false;
+  private lastPinchEventAt: number | null = null;
   private readonly pointers = new Map<number, PinchPointerState>();
   private readonly touches = new Map<number, { terminal: boolean }>();
   private readonly pinchPointers = new Set<number>();
@@ -470,6 +476,7 @@ export class PinchGestureCleanup {
       this.pointers.set(pointerId, current);
     }
     if (this.tracking) this.pinchPointers.add(pointerId);
+    if (this.tracking || this.pinchPointers.has(pointerId)) this.lastPinchEventAt = Date.now();
   }
 
   observeTouch(identifier: number, eventType: string): void {
@@ -481,6 +488,7 @@ export class PinchGestureCleanup {
       this.touches.set(identifier, current);
     }
     if (this.tracking) this.pinchTouches.add(identifier);
+    if (this.tracking || this.pinchTouches.has(identifier)) this.lastPinchEventAt = Date.now();
   }
 
   noteAnimationFrame(): void {
@@ -497,6 +505,23 @@ export class PinchGestureCleanup {
    * `lostpointercapture` is recorded, but it does not keep settle open after
    * the pointer already ended: the last build showed no annotation capture.
    */
+  watchState(now = Date.now()): {
+    timedOut: boolean;
+    lastPinchEventAgeMs: number | null;
+    stalePointerIds: number[];
+    staleTouchIds: number[];
+  } {
+    const age = this.lastPinchEventAt == null ? null : Math.max(0, now - this.lastPinchEventAt);
+    const stale = this.timedOut || (age != null && age > ZOOM_BURST_STUCK_MS);
+    const stalePointerIds = stale
+      ? [...this.pinchPointers].filter((id) => !this.pointers.get(id)?.terminal)
+      : [];
+    const staleTouchIds = stale
+      ? [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal)
+      : [];
+    return { timedOut: this.timedOut, lastPinchEventAgeMs: age, stalePointerIds, staleTouchIds };
+  }
+
   activePinchCount(): { pointers: number; touches: number } {
     return {
       pointers: [...this.pinchPointers].filter((id) => !this.pointers.get(id)?.terminal).length,
@@ -513,7 +538,7 @@ export class PinchGestureCleanup {
     const activePinchPointersAtSettle = [...this.pinchPointers].filter((id) => !this.pointers.get(id)?.terminal);
     const activePinchTouchesAtSettle = [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal);
     const blocking = activePinchPointersAtSettle.length > 0 || activePinchTouchesAtSettle.length > 0;
-    if (blocking) {
+    if (blocking && !this.timedOut) {
       if (this.deferredAt === null) this.deferredAt = now;
       this.animationFrames = 0;
     }

@@ -226,6 +226,52 @@ describe("PostZoomInputTrace", () => {
     });
     expect(decideZoomBurstWatchdog({ ...quiet, activePinchTouches: 2 })).toEqual({ action: "wait", reason: "active-pinch" });
     expect(decideZoomBurstWatchdog({ ...quiet, liveInk: true })).toEqual({ action: "wait", reason: "live-ink" });
+    expect(decideZoomBurstWatchdog({
+      ...quiet,
+      activePinchPointers: 1,
+      activePinchTouches: 1,
+      gestureCleanupTimedOut: true
+    })).toEqual({ action: "recover", reason: "no-continuation" });
+    expect(decideZoomBurstWatchdog({
+      ...quiet,
+      now: 1_500,
+      activePinchPointers: 1,
+      gestureCleanupTimedOut: false
+    })).toEqual({ action: "wait", reason: "active-pinch" });
+  });
+
+  it("runs one post-timeout frame when a pinch id never ends", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observePointer(4, "pointerdown", "touch");
+    pinch.observeTouch(4, "touchstart");
+    pinch.beginBurst();
+    let settled = false;
+    let calls = 0;
+    const step = (now: number): void => {
+      calls += 1;
+      const report = pinch.evaluate(now);
+      if (!report.quiescent) return;
+      if (pinch.needsAnimationFrame()) {
+        pinch.noteAnimationFrame();
+        return;
+      }
+      settled = true;
+    };
+    step(0);
+    expect(settled).toBe(false);
+    step(800);
+    expect(pinch.needsAnimationFrame()).toBe(false);
+    step(801);
+    expect(settled).toBe(true);
+    const callsAtSettle = calls;
+    for (let index = 0; index < 100; index += 1) {
+      if (settled) break;
+      step(900 + index);
+    }
+    expect(callsAtSettle).toBeLessThan(50);
+    expect(pinch.diagnostics().evaluateCount).toBeLessThan(50);
+    expect(pinch.watchState().timedOut).toBe(true);
+    expect(pinch.watchState().stalePointerIds).toEqual([4]);
   });
 
   it("settles immediately when the zoom never saw a pinch contact", () => {
