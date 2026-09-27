@@ -729,7 +729,7 @@ export class SessionLogger {
   }
 
   addPageUiLifecycle(
-    phase: "mounted" | "duplicate" | "destroyed",
+    phase: "mounted" | "duplicate" | "destroyed" | "busy",
     details: Record<string, unknown> = {}
   ): void {
     this.emit(phase === "duplicate" ? "warn" : "info", `add-page-ui-${phase}`, {

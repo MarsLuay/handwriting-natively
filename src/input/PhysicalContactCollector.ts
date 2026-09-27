@@ -393,7 +393,7 @@ class PhysicalContactCollector {
   }
 }
 
-function rawPointerContactSample(event: PointerEvent, eventType: PointerEventType): RawPointerContactSample {
+export function rawPointerContactSample(event: PointerEvent, eventType: PointerEventType): RawPointerContactSample {
   return {
     eventType,
     timeStamp: event.timeStamp,
@@ -417,7 +417,7 @@ function rawPointerContactSample(event: PointerEvent, eventType: PointerEventTyp
   };
 }
 
-function rawTouchContactEvent(event: TouchEvent, eventType: TouchEventType): RawTouchContactEvent {
+export function rawTouchContactEvent(event: TouchEvent, eventType: TouchEventType): RawTouchContactEvent {
   const changedCount = event.changedTouches.length;
   const toPoint = (touch: Touch): RawTouchPoint => ({
     identifier: touch.identifier,

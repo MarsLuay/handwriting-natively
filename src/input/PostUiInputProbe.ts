@@ -2,6 +2,7 @@ export type PostUiProbeOutcome =
   | "post-ui-pen-missing-before-document-listener"
   | "post-ui-pen-missed-page-router"
   | "post-ui-pen-seen-document-not-router"
+  | "pen-seen-document-not-router"
   | "post-ui-pen-fallback-rejected"
   | "post-ui-pen-already-handled"
   | "post-ui-pen-ui-occluded"
@@ -28,6 +29,7 @@ export type PostUiProbeStage =
   | "fallback"
   | "pan"
   | "native"
+  | "native-evidence"
   | "claim"
   | "stroke-start"
   | "terminal"
@@ -80,7 +82,6 @@ export interface PostUiProbeContactSummary {
   eventPhase: number | null;
   composedPathLength: number | null;
   targetOwnership: string | null;
-  fallbackConsidered: boolean;
   fallbackDecision: string | null;
   panObserved: boolean;
   panAccepted: boolean;
@@ -136,7 +137,6 @@ interface ProbeContact {
   eventPhase: number | null;
   composedPathLength: number | null;
   targetOwnership: string | null;
-  fallbackConsidered: boolean;
   fallbackDecision: string | null;
   panObserved: boolean;
   panAccepted: boolean;
@@ -160,7 +160,6 @@ interface ActiveProbe {
   penContactCount: number;
   observedPointerTypes: Set<string>;
   contacts: Map<number, ProbeContact>;
-  penContactCount: number;
   acceptingContacts: boolean;
 }
 
@@ -194,7 +193,6 @@ export class PostUiInputProbe {
       penContactCount: 0,
       observedPointerTypes: new Set<string>(),
       contacts: new Map<number, ProbeContact>(),
-      penContactCount: 0,
       acceptingContacts: true
     };
     return { armId, expiresAt: now + PostUiInputProbe.WINDOW_MS };
@@ -390,17 +388,7 @@ export class PostUiInputProbe {
     }
     this.stage(now, pointerId, "terminal", { ...details, terminal });
     contact.finalized = true;
-    return {
-      armId: active.armId,
-      correlationId: contact.correlationId,
-      outcome: this.outcomeFor(contact),
-      elapsedMs: Math.max(0, now - active.armedAt),
-      pointerDownCount: active.pointerDownCount,
-      observedPointerTypes: [...active.observedPointerTypes],
-      contactCount: active.contacts.size,
-      contact: this.summary(contact, now),
-      details: { ...this.contextDetails(active), ...contact.details, ...details }
-    };
+    return this.result(active, contact, this.outcomeFor(contact), now, details);
   }
 
   finishWithOutcome(
@@ -505,6 +493,7 @@ export class PostUiInputProbe {
       fallbackDecision: null,
       strokeStarted: false,
       terminal: null,
+      terminalState: null,
       finalized: false,
       details: { ...details }
     };
@@ -690,7 +679,6 @@ export class PostUiInputProbe {
       eventPhase: contact.eventPhase,
       composedPathLength: contact.composedPathLength,
       targetOwnership: contact.targetOwnership,
-      fallbackConsidered: contact.fallbackConsidered,
       fallbackDecision: contact.fallbackDecision,
       panObserved: contact.panObserved,
       panAccepted: contact.panAccepted,
