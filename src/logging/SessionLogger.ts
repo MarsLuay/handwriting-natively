@@ -1,4 +1,5 @@
 import type { AnnotationViewState } from "../runtime/AnnotationSurface";
+import { FRAME_MS_120 } from "./PerformanceMetrics";
 import type { VaultLogSink } from "./VaultLogSink";
 
 const PREFIX = "[Handwriting Natively]";
@@ -328,7 +329,7 @@ export class SessionLogger {
     } = {}
   ): void {
     if (!this.isEnabled() || durationMs < 8) return;
-    this.emit(durationMs >= 16 ? "warn" : "info", "ink input paint", {
+    this.emit(durationMs >= FRAME_MS_120 ? "warn" : "info", "ink input paint", {
       document: this.documentPath,
       page,
       kind,
@@ -1112,7 +1113,7 @@ export class SessionLogger {
       burstWindowMs: round(burstWindowMs)
     };
     this.emit("info", "ink zoom repaint", payload);
-    if (details.durationMs >= 16 || (msSinceLastRepaint !== null && msSinceLastRepaint < 32)) {
+    if (details.durationMs >= FRAME_MS_120 || (msSinceLastRepaint !== null && msSinceLastRepaint < FRAME_MS_120)) {
       this.emit("warn", "ink zoom repaint hot", payload);
     }
   }

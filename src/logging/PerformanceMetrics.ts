@@ -1,4 +1,6 @@
 export const PERFORMANCE_SAMPLE_LIMIT = 256;
+/** One frame on a 120 Hz display. */
+export const FRAME_MS_120 = 1000 / 120;
 
 export interface TimingSummary {
   count: number;
@@ -24,7 +26,10 @@ export class BoundedTiming {
   private lateValue = 0;
   private droppedValue = 0;
 
-  constructor(private readonly lateThresholdMs = 24, private readonly frameBudgetMs = 1000 / 60) {}
+  constructor(
+    private readonly lateThresholdMs = FRAME_MS_120,
+    private readonly frameBudgetMs = FRAME_MS_120
+  ) {}
 
   add(value: number): void {
     const safe = Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -72,12 +77,13 @@ export function buildScaleDeltaHistogram(values: readonly number[]): Record<stri
 }
 
 export function buildTimingHistogram(values: readonly number[]): Record<string, number> {
-  const histogram = { "0-16": 0, "16-24": 0, "24-50": 0, "50+": 0 };
+  const frame = FRAME_MS_120;
+  const histogram = { "0-8.3": 0, "8.3-16.7": 0, "16.7-33.3": 0, "33.3+": 0 };
   for (const value of values) {
-    if (value < 16) histogram["0-16"] += 1;
-    else if (value < 24) histogram["16-24"] += 1;
-    else if (value < 50) histogram["24-50"] += 1;
-    else histogram["50+"] += 1;
+    if (value < frame) histogram["0-8.3"] += 1;
+    else if (value < frame * 2) histogram["8.3-16.7"] += 1;
+    else if (value < frame * 4) histogram["16.7-33.3"] += 1;
+    else histogram["33.3+"] += 1;
   }
   return histogram;
 }
