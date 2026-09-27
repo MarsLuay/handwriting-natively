@@ -3,6 +3,7 @@ import {
   contactBlockedByOverlay,
   describePdfPageDom,
   ensurePdfPageNumbers,
+  isPostZoomPageTarget,
   queryPdfPageNodes,
   targetInsidePage,
   waitForPdfPageNodes
@@ -142,5 +143,11 @@ describe("pdfPageSelectors", () => {
     expect(contactBlockedByOverlay(canvas)).toBe(false);
     expect(targetInsidePage(item, page)).toBe(false);
     expect(contactBlockedByOverlay(item)).toBe(true);
+    expect(isPostZoomPageTarget(canvas, page)).toBe(true);
+    expect(isPostZoomPageTarget(item, page)).toBe(false);
+    const gear = document.createElement("div");
+    gear.className = "clickable-icon workspace-drawer-header-icon";
+    document.body.append(gear);
+    expect(isPostZoomPageTarget(gear, page)).toBe(false);
   });
 });
