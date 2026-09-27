@@ -172,6 +172,8 @@ export interface ToolPreferences {
   /** User-selectable drawing configurations; capped during settings migration. */
   presets: DrawingPreset[];
   activePresetId: string | null;
+  /** Pinned drawing presets shown under Pen in the sidebar, in insertion order. */
+  sidebarPresetIds: string[];
 }
 
 export interface EnabledSurfaceSettings {
@@ -290,7 +292,8 @@ export function createDefaultToolPreferences(): ToolPreferences {
     },
     recentColors: ["#111827", "#2563eb", "#dc2626", "#059669", "#f59e0b", "#facc15"],
     presets,
-    activePresetId: presets[0]?.id ?? null
+    activePresetId: presets[0]?.id ?? null,
+    sidebarPresetIds: []
   };
 }
 
@@ -442,9 +445,14 @@ export function mergeSettings(
         )
       },
       presets: normalizeDrawingPresets(cleaned.toolPreferences?.presets, defaults.toolPreferences.presets),
-      activePresetId: null as string | null
+      activePresetId: null as string | null,
+      sidebarPresetIds: [] as string[]
     }
   };
+  merged.toolPreferences.sidebarPresetIds = normalizeSidebarPresetIds(
+    cleaned.toolPreferences?.sidebarPresetIds,
+    merged.toolPreferences.presets
+  );
   const savedPresetId = cleaned.toolPreferences?.activePresetId;
   merged.toolPreferences.activePresetId = typeof savedPresetId === "string" &&
     merged.toolPreferences.presets.some((preset) => preset.id === savedPresetId)
@@ -551,7 +559,22 @@ function normalizeDrawingPresets(value: unknown, fallback: readonly DrawingPrese
     });
     if (result.length === 8) break;
   }
-  return result.length ? result : fallback.map(cloneDrawingPreset);
+  if (result.length) return result;
+  const seed = fallback[0];
+  return seed ? [cloneDrawingPreset(seed)] : [];
+}
+
+function normalizeSidebarPresetIds(value: unknown, presets: readonly DrawingPreset[]): string[] {
+  if (!Array.isArray(value)) return [];
+  const known = new Set(presets.map((preset) => preset.id));
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const id of value) {
+    if (typeof id !== "string" || !known.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    result.push(id);
+  }
+  return result;
 }
 
 function cloneDrawingPreset(preset: DrawingPreset): DrawingPreset {

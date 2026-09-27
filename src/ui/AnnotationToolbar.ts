@@ -84,6 +84,7 @@ export class AnnotationToolbar {
     this.controls.append(this.presetSlots());
     this.controls.append(this.colorButton());
     this.controls.append(this.groupedTool("drawing", () => this.drawingMenu()));
+    this.controls.append(this.sidebarPresetHost());
     this.controls.append(this.groupedTool("eraser", () => this.eraserMenuOptions()));
     this.controls.append(this.groupedTool("laser", () => this.laserMenuOptions()));
     this.controls.append(this.groupedTool("lasso", () => ({ label: "Lasso options", options: this.lassoMenu() })));
@@ -123,6 +124,40 @@ export class AnnotationToolbar {
       button.setAttribute("aria-pressed", String(active));
       button.addEventListener("click", () => this.applyDrawingPreset(preset), { signal: this.abort.signal });
       slots.append(button);
+    }
+  }
+
+  private sidebarPresetHost(): HTMLElement {
+    const host = createDetachedDiv(this.ownerDocument);
+    host.className = "native-pdf-handwriting-sidebar-presets";
+    host.setAttribute("aria-label", "Pinned drawing presets");
+    return host;
+  }
+
+  private renderSidebarPresets(): void {
+    const host = this.element.querySelector(".native-pdf-handwriting-sidebar-presets");
+    if (!(host instanceof HTMLElement)) return;
+    host.replaceChildren();
+    const pinned = this.preferences.sidebarPresetIds ?? [];
+    for (const id of pinned) {
+      const preset = this.preferences.presets.find((candidate) => candidate.id === id);
+      if (!preset) continue;
+      const button = createDetachedEl(this.ownerDocument, "button");
+      button.type = "button";
+      button.className = "native-pdf-handwriting-toolbar-button clickable-icon native-pdf-handwriting-sidebar-preset";
+      button.dataset.sidebarPresetId = preset.id;
+      button.setAttribute("aria-label", preset.name);
+      button.removeAttribute("title");
+      const active = this.preferences.activePresetId === preset.id && this.preferences.activeTool === preset.tool;
+      button.setAttribute("aria-pressed", String(active));
+      setToolbarIcon(button, preset.tool);
+      const swatch = createDetachedEl(this.ownerDocument, "span");
+      swatch.className = "native-pdf-handwriting-color-icon";
+      swatch.setAttribute("aria-hidden", "true");
+      swatch.style.backgroundColor = preset.settings.color;
+      button.append(swatch);
+      button.addEventListener("click", () => this.applyDrawingPreset(preset), { signal: this.abort.signal });
+      host.append(button);
     }
   }
 
@@ -273,7 +308,10 @@ export class AnnotationToolbar {
         let id = idBase;
         let suffix = 2;
         while (this.preferences.presets.some((preset) => preset.id === id)) id = `${idBase}-${suffix++}`;
-        if (this.preferences.presets.length >= 8) this.preferences.presets.shift();
+        if (this.preferences.presets.length >= 8) {
+          const dropped = this.preferences.presets.shift();
+          if (dropped) this.preferences.sidebarPresetIds = this.preferences.sidebarPresetIds.filter((id) => id !== dropped.id);
+        }
         this.preferences.presets.push({ id, name, tool, settings: { ...this.preferences[tool] } });
         this.preferences.activePresetId = id;
       }
@@ -286,14 +324,38 @@ export class AnnotationToolbar {
       const remove = createDetachedEl(this.ownerDocument, "button");
       remove.type = "button";
       remove.textContent = "Delete selected preset";
+      const lastPreset = this.preferences.presets.length <= 1;
+      remove.disabled = lastPreset;
+      if (lastPreset) {
+        remove.title = "At least one preset is required.";
+        remove.setAttribute("aria-description", "At least one preset is required.");
+      }
       remove.addEventListener("click", () => {
+        if (this.preferences.presets.length <= 1) return;
         const index = this.preferences.presets.findIndex((preset) => preset.id === selected.id);
         if (index < 0) return;
+        const next = this.preferences.presets[index + 1] ?? this.preferences.presets[index - 1];
+        const deletingActive = this.preferences.activePresetId === selected.id;
         this.preferences.presets.splice(index, 1);
-        this.preferences.activePresetId = this.preferences.presets[0]?.id ?? null;
-        this.changed();
+        this.preferences.sidebarPresetIds = this.preferences.sidebarPresetIds.filter((id) => id !== selected.id);
+        if (deletingActive && next) this.applyDrawingPreset(next);
+        else this.changed();
       }, { signal: this.abort.signal });
       wrapper.append(remove);
+      const pinned = this.preferences.sidebarPresetIds.includes(selected.id);
+      const sidebarToggle = createDetachedEl(this.ownerDocument, "button");
+      sidebarToggle.type = "button";
+      sidebarToggle.dataset.action = "sidebar-preset";
+      sidebarToggle.textContent = pinned ? "Remove preset from sidebar" : "Add preset to sidebar";
+      sidebarToggle.addEventListener("click", () => {
+        if (this.preferences.sidebarPresetIds.includes(selected.id)) {
+          this.preferences.sidebarPresetIds = this.preferences.sidebarPresetIds.filter((id) => id !== selected.id);
+        } else {
+          this.preferences.sidebarPresetIds.push(selected.id);
+        }
+        this.changed();
+      }, { signal: this.abort.signal });
+      wrapper.append(sidebarToggle);
     }
     return wrapper;
   }
@@ -480,6 +542,7 @@ export class AnnotationToolbar {
 
   private updateButtons(): void {
     this.renderPresetSlots();
+    this.renderSidebarPresets();
     const active = this.preferences.activeTool;
     this.presentButton(
       this.buttons.get("drawing")!,
