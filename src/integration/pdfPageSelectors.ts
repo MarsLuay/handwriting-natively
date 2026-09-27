@@ -166,3 +166,47 @@ export function targetInsidePage(target: EventTarget | null, page: Element | nul
 export function isPostZoomPageTarget(target: EventTarget | null, page: Element | null): boolean {
   return targetInsidePage(target, page) && !contactBlockedByOverlay(target);
 }
+
+export interface RejectedPostZoomPageContact {
+  geometricPageHit: true;
+  targetInsidePage: false;
+  blockedByOverlay: boolean;
+  pageContactAdmission: "rejected";
+  pageContactRejectReason: "target-outside-page-dom";
+}
+
+/** Coordinate overlap alone is not admission. UI chrome stays out of every post-zoom trace. */
+export function decidePostZoomPageContact(input: {
+  pageConnected: boolean;
+  targetInsidePage: boolean;
+  blockedByOverlay: boolean;
+  geometricPageHit: boolean;
+}): {
+  recordPageContact: boolean;
+  recordDurability: boolean;
+  allowStylusIdentityRegression: boolean;
+  rejection: RejectedPostZoomPageContact | null;
+} {
+  if (input.pageConnected && input.targetInsidePage && !input.blockedByOverlay) {
+    return {
+      recordPageContact: true,
+      recordDurability: true,
+      allowStylusIdentityRegression: true,
+      rejection: null
+    };
+  }
+  return {
+    recordPageContact: false,
+    recordDurability: false,
+    allowStylusIdentityRegression: false,
+    rejection: input.geometricPageHit
+      ? {
+        geometricPageHit: true,
+        targetInsidePage: false,
+        blockedByOverlay: input.blockedByOverlay,
+        pageContactAdmission: "rejected",
+        pageContactRejectReason: "target-outside-page-dom"
+      }
+      : null
+  };
+}

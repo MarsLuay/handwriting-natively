@@ -1,6 +1,7 @@
 /** Bounded pinch/zoom correlation for the first contacts after settle. */
 
 export const POST_ZOOM_CONTACT_LIMIT = 3;
+export const POST_ZOOM_REJECTED_CONTACT_LIMIT = 8;
 export const POST_ZOOM_WINDOW_MS = 8_000;
 export const POST_ZOOM_RING_LIMIT = 30;
 
@@ -137,6 +138,7 @@ export interface LastZoomDiagnosis {
   settleSnapshot: Record<string, unknown> | null;
   pendingMobileScrollRemount: boolean | null;
   firstPostZoomContacts: Array<Record<string, unknown>>;
+  rejectedPostZoomContacts: Array<Record<string, unknown>>;
   lastPostZoomAnomaly: Omit<PostZoomAnomaly, "lifecycle"> | null;
   anomalyLifecycle: PostZoomLifecycleEvent[];
   stylusIdentityRegression: StylusIdentityRegression | null;
@@ -245,6 +247,7 @@ export class PostZoomInputTrace {
     settleSnapshot: null,
     pendingMobileScrollRemount: null,
     firstPostZoomContacts: [],
+    rejectedPostZoomContacts: [],
     lastPostZoomAnomaly: null,
     anomalyLifecycle: [],
     stylusIdentityRegression: null,
@@ -275,6 +278,7 @@ export class PostZoomInputTrace {
     this.diagnosisState.settleSnapshot = null;
     this.diagnosisState.pendingMobileScrollRemount = null;
     this.diagnosisState.firstPostZoomContacts = [];
+    this.diagnosisState.rejectedPostZoomContacts = [];
     this.diagnosisState.lastPostZoomAnomaly = null;
     this.diagnosisState.anomalyLifecycle = [];
     this.diagnosisState.stylusIdentityRegression = null;
@@ -299,6 +303,7 @@ export class PostZoomInputTrace {
       ...this.diagnosisState,
       settleSnapshot: this.diagnosisState.settleSnapshot ? { ...this.diagnosisState.settleSnapshot } : null,
       firstPostZoomContacts: this.diagnosisState.firstPostZoomContacts.map((contact) => ({ ...contact })),
+      rejectedPostZoomContacts: this.diagnosisState.rejectedPostZoomContacts.map((contact) => ({ ...contact })),
       lastPostZoomAnomaly: this.diagnosisState.lastPostZoomAnomaly ? { ...this.diagnosisState.lastPostZoomAnomaly } : null,
       anomalyLifecycle: this.diagnosisState.anomalyLifecycle.map((event) => ({ ...event, details: { ...event.details } })),
       stylusIdentityRegression: this.diagnosisState.stylusIdentityRegression
@@ -377,6 +382,12 @@ export class PostZoomInputTrace {
     this.remember("zoom-settle", { zoomBurstId: this.settledId, ...snapshot });
     this.activeId = null;
     return this.settledId;
+  }
+
+  /** UI chrome that overlapped a page rectangle. Does not consume a post-zoom slot. */
+  noteRejectedPageContact(contact: Record<string, unknown>): void {
+    if (this.diagnosisState.rejectedPostZoomContacts.length >= POST_ZOOM_REJECTED_CONTACT_LIMIT) return;
+    this.diagnosisState.rejectedPostZoomContacts.push({ ...contact });
   }
 
   /** Index of a page-overlapping contact inside the post-settle window, or null. */
