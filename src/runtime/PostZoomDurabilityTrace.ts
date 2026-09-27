@@ -142,18 +142,13 @@ export class PostZoomDurabilityTrace {
     if (input.atMs - this.settledAtMs > POST_ZOOM_DURABILITY_WINDOW_MS) return [];
     const contact = this.toContact(input);
     const successfulPen = durabilitySuccessfulPen(contact);
-    if (!this.firstSuccessfulPostZoomPenAt) {
-      if (!successfulPen) return [];
-      this.rememberPen(contact);
-      this.push(contact);
-      return [];
-    }
     this.push(contact);
-    const events: PostZoomDurabilityEvent[] = [];
     if (successfulPen) {
       this.rememberPen(contact);
-      return events;
+      return [];
     }
+    if (!this.firstSuccessfulPostZoomPenAt) return [];
+    const events: PostZoomDurabilityEvent[] = [];
     const identityLost = !contact.pointerEventPenSeen
       && contact.stylusIdentity === "absent"
       && contact.pointerType !== "pen";

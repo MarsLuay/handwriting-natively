@@ -1,4 +1,5 @@
 import { getDebugNodeId } from "../dom/debugNodeId";
+import { describeTarget } from "../dom/describeElement";
 import {
   PhysicalContactTracker,
   type PhysicalContactRecord,
@@ -413,6 +414,7 @@ export function rawPointerContactSample(event: PointerEvent, eventType: PointerE
     clientY: event.clientY,
     targetId: getDebugNodeId(event.target),
     composedPath: physicalComposedPath(event),
+    composedPathLabels: physicalComposedPathLabels(event),
     eventPhase: event.eventPhase,
     cancelable: event.cancelable,
     defaultPrevented: event.defaultPrevented
@@ -449,14 +451,22 @@ export function rawTouchContactEvent(event: TouchEvent, eventType: TouchEventTyp
     activeTouches: activeTouches.map((active) => ({ ...active })),
     changedTouches: changedTouches.map((changed) => ({ ...changed })),
     targetId: getDebugNodeId(event.target),
-    composedPath: physicalComposedPath(event)
+    composedPath: physicalComposedPath(event),
+    composedPathLabels: physicalComposedPathLabels(event)
   }));
   return { eventType, touches };
 }
 
 function physicalComposedPath(event: Event): string[] {
-  const path = typeof event.composedPath === "function" ? event.composedPath().slice(0, 12) : [];
-  return path.map((entry) => entry instanceof Element ? String(getDebugNodeId(entry)) : Object.prototype.toString.call(entry));
+  return composedPathEntries(event).map((entry) => entry instanceof Element ? String(getDebugNodeId(entry)) : Object.prototype.toString.call(entry));
+}
+
+function physicalComposedPathLabels(event: Event): string[] {
+  return composedPathEntries(event).map((entry) => describeTarget(entry));
+}
+
+function composedPathEntries(event: Event): EventTarget[] {
+  return typeof event.composedPath === "function" ? event.composedPath().slice(0, 12) : [];
 }
 
 function uniqueContactIds(records: readonly PhysicalContactRecord[], chosen: string | null): string[] {
