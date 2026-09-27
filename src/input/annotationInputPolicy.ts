@@ -47,8 +47,9 @@ export function canAnnotatePointer(
   if (event.pointerType === "pen") return stylusAnnotationEnabled();
   if (event.pointerType === "touch") return false;
   if (event.pointerType === "mouse") {
+    if (ctx.mouseInputMode !== "annotate") return false;
     if (ctx.mouseOverPdfPage !== undefined) return ctx.mouseOverPdfPage;
-    return ctx.mouseInputMode === "annotate";
+    return true;
   }
   return false;
 }

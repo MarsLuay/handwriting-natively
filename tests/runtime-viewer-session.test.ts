@@ -265,8 +265,11 @@ describe("viewer runtime tracer", () => {
     const nativePointer = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 2 });
     adapter.pageElement.dispatchEvent(nativePointer);
     adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 120, { pointerType: "mouse", pointerId: 2 }));
-    // Primary mouse input on a PDF page is now owned by the handwriting route.
-    expect(nativePointer.defaultPrevented).toBe(true);
+    // Primary mouse input on a PDF page is not owned by handwriting route unless mouseInputMode is annotate.
+    expect(nativePointer.defaultPrevented).toBe(false);
+
+    settings.mouseInputMode = "annotate";
+    session.updateMouseInputBindings();
 
     const dragDown = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 3 });
     const dragMove = pointer("pointermove", 100, 160, { pointerType: "mouse", pointerId: 3 });
@@ -285,9 +288,9 @@ describe("viewer runtime tracer", () => {
     session.updateMouseInputBindings();
     expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
 
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180));
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 4 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 4 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 4 }));
     const diagnostics: HnDevProbeDiagnostic[] = [];
     const listener = (event: Event) => diagnostics.push((event as CustomEvent<HnDevProbeDiagnostic>).detail);
     window.addEventListener(HN_DEV_PROBE_EVENT, listener);
@@ -301,9 +304,9 @@ describe("viewer runtime tracer", () => {
 
     const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(sidecar).toBeDefined();
-    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(3);
+    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(2);
     expect(diagnostics.find((diagnostic) => diagnostic.type === "sidecar-persist")).toMatchObject({
-      metrics: { outcome: "saved", strokeCount: 3, textCount: 0 }
+      metrics: { outcome: "saved", strokeCount: 2, textCount: 0 }
     });
     expect(diagnostics.find((diagnostic) => diagnostic.type === "manual-save")).toMatchObject({
       metrics: { ok: true, durationMs: expect.any(Number) }
@@ -316,24 +319,24 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150));
     await session.manualSave();
     const erasedSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(erasedSidecar![1]).pages[0].strokes).toHaveLength(4);
+    expect(JSON.parse(erasedSidecar![1]).pages[0].strokes).toHaveLength(2);
 
     adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='undo']")?.click();
     await session.manualSave();
     const restoredSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(restoredSidecar![1]).pages[0].strokes).toHaveLength(3);
+    expect(JSON.parse(restoredSidecar![1]).pages[0].strokes).toHaveLength(1);
 
     settings.toolPreferences.eraser.size = 12;
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 130, 150));
     adapter.pageElement.dispatchEvent(pointer("pointercancel", 130, 150));
     await session.manualSave();
     const cancelledSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(cancelledSidecar![1]).pages[0].strokes).toHaveLength(3);
+    expect(JSON.parse(cancelledSidecar![1]).pages[0].strokes).toHaveLength(1);
 
     adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='redo']")?.click();
     await session.manualSave();
     const redoneSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(redoneSidecar![1]).pages[0].strokes).toHaveLength(4);
+    expect(JSON.parse(redoneSidecar![1]).pages[0].strokes).toHaveLength(2);
 
     await session.exportCopy();
     expect(exported).toBeDefined();
@@ -690,16 +693,17 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 1 }));
     await session.manualSave();
     let sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(sidecar ? JSON.parse(sidecar[1]).pages?.[0]?.strokes ?? [] : []).toHaveLength(1);
+    expect(sidecar ? JSON.parse(sidecar[1]).pages?.[0]?.strokes ?? [] : []).toHaveLength(0);
 
     settings.mouseInputMode = "annotate";
     settings.mouseDragScroll = false;
+    session.updateMouseInputBindings();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 2 }));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 2 }));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 2 }));
     await session.manualSave();
     sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(2);
+    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
     await session.destroy();
   });
 
