@@ -77,7 +77,7 @@ import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type P
 import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { getDebugNodeId } from "../dom/debugNodeId";
 import { isElement, isElementInDocument, isHTMLElement, setElementCssProps } from "../dom/typeGuards";
-import { ensurePdfPageNumbers, isHandwritingPageChrome } from "../integration/pdfPageSelectors";
+import { contactBlockedByOverlay, ensurePdfPageNumbers, isHandwritingPageChrome, targetInsidePage } from "../integration/pdfPageSelectors";
 import { PdfExportService, annotatedFilename, editableAnnotatedFilename } from "../pdf/PdfExportService";
 import type { ImportedPdfPages } from "../pdf/PdfNoteService";
 import { exportInkStrokesToSvg } from "../pdf/SvgInkExportService";
@@ -2162,12 +2162,15 @@ export class ViewerInkSession {
     }
   }
 
-  private notePostZoomPhysicalContact(record: PhysicalContactRecord): void {
+  private notePostZoomPhysicalContact(record: PhysicalContactRecord, target: EventTarget | null): void {
     const point = record.contact.firstPoint ?? record.contact.lastPoint;
-    const page = point
+    const geometricPage = point
       ? this.options.adapter.pages().find((candidate) => containsClientPoint(candidate.element, point.x, point.y))
       : undefined;
+    const blockedByOverlay = contactBlockedByOverlay(target);
+    const page = blockedByOverlay ? undefined : geometricPage;
     const overPage = Boolean(page?.element.isConnected);
+    const insidePage = targetInsidePage(target, page?.element ?? null);
     const retained = record.phase === "terminal"
       ? this.postZoomTrace.retainedContact(record.contact.physicalContactId)
       : null;
@@ -2182,6 +2185,8 @@ export class ViewerInkSession {
           finalClassification: null,
           scrollLeftAtStart: scroll.scrollLeft,
           scrollTopAtStart: scroll.scrollTop,
+          targetInsidePage: insidePage,
+          blockedByOverlay,
           ...this.gesturePolicyForPage(page.pageNumber),
           pointerTypeOrigins: this.pointerTypeOrigins.forContact(record.contact.pointerIds, record.contact.touchIdentifiers)
         });
@@ -2351,16 +2356,16 @@ export class ViewerInkSession {
     }
     this.syncStylusPinchExclusion(event.stylusTouchAssociations ?? []);
     this.updatePhysicalContactMappings(event);
-    for (const record of event.records) this.notePostZoomPhysicalContact(record);
-    if (!event.shouldLog) return;
-    this.logPhysicalContactRecords(event.records, event);
-    const diagnostic = this.physicalContactDiagnostics(event);
     if (event.kind === "pointer" && event.eventType === "pointerdown") {
       this.notePointerTypeOrigin(event.event, "document-physical-contact-collector", "capture");
     }
     if (event.kind === "touch" && event.eventType === "touchstart") {
       this.notePointerTypeOrigin(event.event, "document-physical-contact-collector", "capture");
     }
+    for (const record of event.records) this.notePostZoomPhysicalContact(record, event.event.target);
+    if (!event.shouldLog) return;
+    this.logPhysicalContactRecords(event.records, event);
+    const diagnostic = this.physicalContactDiagnostics(event);
     if (event.kind === "pointer" && event.eventType === "pointerdown") {
       const pointer = event.event as PointerEvent;
       const hitPage = this.closestPdfPageElement(pointer.target);
