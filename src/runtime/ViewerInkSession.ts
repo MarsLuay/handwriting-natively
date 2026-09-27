@@ -2310,6 +2310,21 @@ export class ViewerInkSession {
   }
 
   private handlePhysicalContactEvent(event: PhysicalContactCollectorEvent): void {
+    this.pinchCleanup.noteLivePens(
+      [...this.surfaces.values()].flatMap((surface) => surface.router?.activePenIds() ?? [])
+    );
+    for (const record of event.records) {
+      const pointers = record.contact.pointerIds;
+      const touches = record.contact.touchIdentifiers;
+      for (const pointerId of pointers) {
+        if (touches.includes(pointerId)) this.pinchCleanup.associate(pointerId, pointerId);
+      }
+      const pointerId = pointers[0];
+      const touchId = touches[0];
+      if (pointers.length === 1 && touches.length === 1 && pointerId !== undefined && touchId !== undefined) {
+        this.pinchCleanup.associate(pointerId, touchId);
+      }
+    }
     if (event.kind === "pointer" && event.pointerId !== null) {
       const pointer = event.event as PointerEvent;
       this.pinchCleanup.observePointer(event.pointerId, event.eventType, pointer.pointerType || "");
@@ -2324,6 +2339,9 @@ export class ViewerInkSession {
       for (const identifier of event.touchIdentifiers) {
         this.pinchCleanup.observeTouch(identifier, event.eventType);
       }
+    }
+    for (const reconciled of this.pinchCleanup.consumePointerReconciliations()) {
+      this.logger.stalePinchPointerReconciled({ ...reconciled });
     }
     this.syncStylusPinchExclusion(event.stylusTouchAssociations ?? []);
     this.updatePhysicalContactMappings(event);
@@ -3729,6 +3747,7 @@ export class ViewerInkSession {
       liveInkPages,
       activePenIds: [...this.surfaces.values()].flatMap((surface) => surface.router?.activePenIds() ?? []),
       ...this.pinchCleanup.associationState(),
+      ...this.pinchCleanup.reconciliationState(),
       activeTouchPointerIds: this.pluginTouchPointerIds(),
       zoomProfileActive: this.zoomProfile !== null,
       zoomCompositing: this.zoomCompositing,

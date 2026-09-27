@@ -485,6 +485,27 @@ export class PostZoomInputTrace {
 interface PinchPointerState {
   terminal: boolean;
   lostCapture: boolean;
+  nativeTerminalSeen: boolean;
+  retireReason: PinchPointerRetireReason | null;
+}
+
+export type PinchPointerRetireReason =
+  | "pointerup"
+  | "pointercancel"
+  | "lostpointercapture"
+  | "paired-touch-ended"
+  | "active-set-reconciled"
+  | "stale-after-paired-stream-ended";
+
+export interface StalePinchPointerReconcile {
+  event: "stale-pinch-pointer-reconciled";
+  pointerId: number;
+  pairedTouchIdentifier: number;
+  nativePointerTerminalSeen: boolean;
+  pairedTouchTerminal: "touchend" | "touchcancel" | "active-set-reconciled";
+  remainingActiveTouches: number[];
+  reason: "paired-touch-ended" | "active-set-reconciled" | "stale-after-paired-stream-ended";
+  pointerLastSeenAgeMs: number | null;
 }
 
 export interface PinchCleanupReport {
@@ -493,6 +514,11 @@ export interface PinchCleanupReport {
   terminalPointerIds: number[];
   terminalTouchIdentifiers: number[];
   lostCapturePointerIds: number[];
+  orphanedPinchPointerIds: number[];
+  pairedTouchTerminalForPointerIds: number[];
+  pointerRetiredByCrossStreamReconciliation: number[];
+  pointerRetireReason: Record<string, string>;
+  pointerLastSeenAgeMs: Record<string, number | null>;
   activePinchPointersAtSettle: number[];
   activePinchTouchesAtSettle: number[];
   settleDeferredForGestureCleanup: boolean;
@@ -536,6 +562,11 @@ export class PinchGestureCleanup {
   private readonly stylusAssociated = new Set<number>();
   private readonly pointerSeenAt = new Map<number, number>();
   private readonly touchSeenAt = new Map<number, number>();
+  private readonly pointerToTouch = new Map<number, number>();
+  private readonly touchToPointer = new Map<number, number>();
+  private readonly livePenPointerIds = new Set<number>();
+  private readonly pointerReconciliations: StalePinchPointerReconcile[] = [];
+  private loggedPointerReconciliations = 0;
   private lastSeed: PinchBurstSeed = {
     seededPinchPointerIds: [],
     seededPinchTouchIdentifiers: [],
@@ -606,13 +637,66 @@ export class PinchGestureCleanup {
     this.tracking = false;
   }
 
+  /** Deterministic pointer/touch pair. Same id or a one-to-one contact, never geometry. */
+  associate(pointerId: number, touchIdentifier: number): void {
+    this.pointerToTouch.set(pointerId, touchIdentifier);
+    this.touchToPointer.set(touchIdentifier, pointerId);
+  }
+
+  noteLivePens(pointerIds: readonly number[]): void {
+    this.livePenPointerIds.clear();
+    for (const id of pointerIds) this.livePenPointerIds.add(id);
+  }
+
+  consumePointerReconciliations(): StalePinchPointerReconcile[] {
+    const fresh = this.pointerReconciliations.slice(this.loggedPointerReconciliations);
+    this.loggedPointerReconciliations = this.pointerReconciliations.length;
+    return fresh.map((entry) => ({ ...entry, remainingActiveTouches: [...entry.remainingActiveTouches] }));
+  }
+
+  reconciliationState(): {
+    orphanedPinchPointerIds: number[];
+    pairedTouchTerminalForPointerIds: number[];
+    pointerRetiredByCrossStreamReconciliation: number[];
+    pointerRetireReason: Record<string, string>;
+    pointerLastSeenAgeMs: Record<string, number | null>;
+  } {
+    const retired = this.pointerReconciliations;
+    const pointerRetireReason: Record<string, string> = {};
+    const pointerLastSeenAgeMs: Record<string, number | null> = {};
+    for (const entry of retired) {
+      pointerRetireReason[String(entry.pointerId)] = entry.reason;
+      pointerLastSeenAgeMs[String(entry.pointerId)] = entry.pointerLastSeenAgeMs;
+    }
+    const ids = retired.map((entry) => entry.pointerId);
+    return {
+      orphanedPinchPointerIds: ids.filter((id) => this.pointers.get(id)?.nativeTerminalSeen !== true),
+      pairedTouchTerminalForPointerIds: ids,
+      pointerRetiredByCrossStreamReconciliation: ids,
+      pointerRetireReason,
+      pointerLastSeenAgeMs
+    };
+  }
+
   /** Drop touches the browser no longer lists, and clear everything when no touches remain. */
   reconcileTouches(eventType: string, changedIds: readonly number[], activeIds: readonly number[], now = Date.now()): StalePinchPrune[] {
-    for (const id of changedIds) this.touchSeenAt.set(id, now);
-    if (eventType === "touchend" || eventType === "touchcancel") {
-      for (const id of changedIds) this.finishTouch(id);
+    for (const id of changedIds) {
+      this.touchSeenAt.set(id, now);
+      this.noteSameIdPair(id);
     }
-    if (activeIds.length === 0) return this.clearActiveTouches("touch-list-all-clear", now);
+    if (eventType === "touchend" || eventType === "touchcancel") {
+      for (const id of changedIds) {
+        this.finishTouch(id);
+        this.reconcilePairedPointer(id, eventType, now);
+      }
+    }
+    if (activeIds.length === 0) {
+      return this.clearActiveTouches(
+        "touch-list-all-clear",
+        now,
+        eventType === "touchend" || eventType === "touchcancel" ? eventType : "active-set-reconciled"
+      );
+    }
     const live = new Set(activeIds);
     for (const id of activeIds) {
       if (this.stylusAssociated.has(id)) {
@@ -623,44 +707,59 @@ export class PinchGestureCleanup {
       this.activeTouchIdentifiers.add(id);
       this.touches.set(id, { terminal: false });
       this.touchSeenAt.set(id, now);
+      this.noteSameIdPair(id);
       if (this.tracking) this.pinchTouches.add(id);
     }
     const pruned: StalePinchPrune[] = [];
     for (const id of [...this.activeTouchIdentifiers]) {
       if (live.has(id)) continue;
       pruned.push(this.pruneTouch(id, "not-in-current-active-set", now));
+      this.reconcilePairedPointer(id, "active-set-reconciled", now);
     }
     return pruned;
   }
 
-  clearActiveTouches(reason: StalePinchPrune["reason"] = "touch-list-all-clear", now = Date.now()): StalePinchPrune[] {
-    const pruned = [...this.activeTouchIdentifiers].map((id) => this.pruneTouch(id, reason, now));
+  clearActiveTouches(
+    reason: StalePinchPrune["reason"] = "touch-list-all-clear",
+    now = Date.now(),
+    touchTerminal: "touchend" | "touchcancel" | "active-set-reconciled" = "active-set-reconciled"
+  ): StalePinchPrune[] {
+    const ids = [...this.activeTouchIdentifiers];
+    const pruned = ids.map((id) => this.pruneTouch(id, reason, now));
+    for (const id of ids) this.reconcilePairedPointer(id, touchTerminal, now);
     this.activeTouchIdentifiers.clear();
     if (!this.tracking) this.pinchTouches.clear();
     return pruned;
   }
 
-  observePointer(pointerId: number, eventType: string, pointerType: string): void {
+  observePointer(pointerId: number, eventType: string, pointerType: string, now = Date.now()): void {
     if (pointerType === "pen" || pointerType === "mouse") return;
-    const current = this.pointers.get(pointerId) ?? { terminal: false, lostCapture: false };
-    this.pointerSeenAt.set(pointerId, Date.now());
+    const current = this.pointers.get(pointerId) ?? this.freshPointer();
+    this.pointerSeenAt.set(pointerId, now);
     if (eventType === "pointerdown") {
       this.activePointerIds.add(pointerId);
-      this.pointers.set(pointerId, { terminal: false, lostCapture: false });
+      this.pointers.set(pointerId, this.freshPointer());
     } else {
       if (eventType === "pointerup" || eventType === "pointercancel") {
         current.terminal = true;
+        current.nativeTerminalSeen = true;
+        current.retireReason = eventType;
         this.activePointerIds.delete(pointerId);
+        this.retirePairedTouch(pointerId);
       }
-      if (eventType === "lostpointercapture") current.lostCapture = true;
+      if (eventType === "lostpointercapture") {
+        current.lostCapture = true;
+        if (!current.retireReason) current.retireReason = "lostpointercapture";
+      }
       this.pointers.set(pointerId, current);
     }
+    this.noteSameIdPair(pointerId);
     if (this.tracking && this.activePointerIds.has(pointerId)) this.pinchPointers.add(pointerId);
-    if (this.tracking || this.pinchPointers.has(pointerId)) this.lastPinchEventAt = Date.now();
+    if (this.tracking || this.pinchPointers.has(pointerId)) this.lastPinchEventAt = now;
   }
 
-  observeTouch(identifier: number, eventType: string): void {
-    this.touchSeenAt.set(identifier, Date.now());
+  observeTouch(identifier: number, eventType: string, now = Date.now()): void {
+    this.touchSeenAt.set(identifier, now);
     const current = this.touches.get(identifier) ?? { terminal: false };
     if (eventType === "touchstart") {
       this.activeTouchIdentifiers.add(identifier);
@@ -672,8 +771,55 @@ export class PinchGestureCleanup {
       }
       this.touches.set(identifier, current);
     }
+    this.noteSameIdPair(identifier);
+    if (eventType === "touchend" || eventType === "touchcancel") this.reconcilePairedPointer(identifier, eventType, now);
     if (this.tracking && this.activeTouchIdentifiers.has(identifier)) this.pinchTouches.add(identifier);
-    if (this.tracking || this.pinchTouches.has(identifier)) this.lastPinchEventAt = Date.now();
+    if (this.tracking || this.pinchTouches.has(identifier)) this.lastPinchEventAt = now;
+  }
+
+  private freshPointer(): PinchPointerState {
+    return { terminal: false, lostCapture: false, nativeTerminalSeen: false, retireReason: null };
+  }
+
+  private noteSameIdPair(id: number): void {
+    if (this.pointers.has(id) && (this.touches.has(id) || this.activeTouchIdentifiers.has(id))) this.associate(id, id);
+  }
+
+  private reconcilePairedPointer(
+    touchIdentifier: number,
+    touchTerminal: "touchend" | "touchcancel" | "active-set-reconciled",
+    now: number
+  ): void {
+    const pointerId = this.touchToPointer.get(touchIdentifier);
+    if (pointerId == null || this.pointerToTouch.get(pointerId) !== touchIdentifier) return;
+    if (this.livePenPointerIds.has(pointerId)) return;
+    if (this.activeTouchIdentifiers.has(touchIdentifier)) return;
+    const state = this.pointers.get(pointerId);
+    if (!state || state.terminal || state.nativeTerminalSeen) return;
+    const seen = this.pointerSeenAt.get(pointerId);
+    if (seen != null && seen > now) return;
+    const reason = touchTerminal === "active-set-reconciled" ? "active-set-reconciled" : "paired-touch-ended";
+    state.terminal = true;
+    state.retireReason = reason;
+    this.pointers.set(pointerId, state);
+    this.activePointerIds.delete(pointerId);
+    this.pointerReconciliations.push({
+      event: "stale-pinch-pointer-reconciled",
+      pointerId,
+      pairedTouchIdentifier: touchIdentifier,
+      nativePointerTerminalSeen: false,
+      pairedTouchTerminal: touchTerminal,
+      remainingActiveTouches: [...this.activeTouchIdentifiers],
+      reason,
+      pointerLastSeenAgeMs: seen == null ? null : Math.max(0, now - seen)
+    });
+  }
+
+  private retirePairedTouch(pointerId: number): void {
+    const touchIdentifier = this.pointerToTouch.get(pointerId);
+    if (touchIdentifier == null || this.touchToPointer.get(touchIdentifier) !== pointerId) return;
+    if (this.touches.get(touchIdentifier)?.terminal) return;
+    this.finishTouch(touchIdentifier);
   }
 
   private finishTouch(id: number): void {
@@ -773,12 +919,14 @@ export class PinchGestureCleanup {
     }
     const gestureCleanupWaitMs = this.deferredAt === null ? 0 : Math.max(0, Math.round(now - this.deferredAt));
     if (blocking && gestureCleanupWaitMs >= maxWaitMs) this.timedOut = true;
+    const reconciled = this.reconciliationState();
     return {
       pinchPointerIds: [...this.pinchPointers],
       pinchTouchIdentifiers: [...this.pinchTouches],
       terminalPointerIds: [...this.pinchPointers].filter((id) => this.pointers.get(id)?.terminal === true),
       terminalTouchIdentifiers: [...this.pinchTouches].filter((id) => this.touches.get(id)?.terminal === true),
       lostCapturePointerIds: [...this.pinchPointers].filter((id) => this.pointers.get(id)?.lostCapture === true),
+      ...reconciled,
       activePinchPointersAtSettle,
       activePinchTouchesAtSettle,
       settleDeferredForGestureCleanup: this.deferredAt !== null,
