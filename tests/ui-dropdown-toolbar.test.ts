@@ -42,6 +42,24 @@ describe("DropdownController", () => {
     expect(dropdown.isOpen()).toBe(false);
   });
 
+  it("closes on a page pen even when the page listener stops the event", () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    const dropdown = new DropdownController(document);
+    dropdown.open("drawing", trigger, { label: "Drawing", options: [{ id: "pen", label: "Pen", onSelect: vi.fn() }] });
+    const page = document.createElement("div");
+    page.className = "textLayer";
+    document.body.append(page);
+    document.addEventListener("pointerdown", (event) => event.stopImmediatePropagation(), { capture: true, once: true });
+    page.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "pen" }));
+    expect(dropdown.isOpen()).toBe(false);
+    page.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "touch" }));
+    dropdown.open("drawing", trigger, { label: "Drawing", options: [{ id: "pen", label: "Pen", onSelect: vi.fn() }] });
+    document.addEventListener("pointerdown", (event) => event.stopImmediatePropagation(), { capture: true, once: true });
+    page.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "touch" }));
+    expect(dropdown.isOpen()).toBe(false);
+  });
+
   it("caps every icon dropdown so long menus scroll inside it", () => {
     const trigger = document.createElement("button");
     document.body.append(trigger);
