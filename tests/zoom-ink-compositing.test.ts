@@ -765,7 +765,10 @@ describe("zoom ink compositing", () => {
     await vi.advanceTimersByTimeAsync(560);
 
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
-    expect(debugCalls("ink zoom composite").some((call) => (call[2] as { phase?: string }).phase === "settle-deferred")).toBe(true);
+    const deferred = () => debugCalls("ink zoom composite").filter((call) => (call[2] as { phase?: string }).phase === "settle-deferred");
+    expect(deferred()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(deferred()).toHaveLength(1);
     expect(debugCalls("ink zoom composite").filter((call) => (call[2] as { phase?: string }).phase === "settle-paint")).toHaveLength(0);
     expect(debugCalls("ink zoom repaint")).toHaveLength(0);
 

@@ -394,11 +394,14 @@ function isIgnorableStaleOutsideHit(
 
 function settleResetBucket(reason: string | null): string {
   if (!reason) return "other";
+  if (reason.includes("live-ink")) return "live-ink";
   if (reason.includes("page-render")) return "pages-page-render";
   if (reason.includes("scale")) return "scale-change";
   if (reason.includes("pinch")) return "pinch-cleanup";
   if (reason.includes("remount")) return "viewer-remount";
   if (reason.includes("mutation")) return "mutation";
+  if (reason.includes("timer-reset")) return "timer-reset";
+  if (reason.includes("scroll")) return "view-scroll";
   return "other";
 }
 
@@ -932,6 +935,11 @@ export class ViewerInkSession {
   private pendingMobileScrollRemount = false;
   private mountBurst = 0;
   private zoomSettleTimer: number | null = null;
+  /** Live ink blocks HQ settle until the tip lifts. One pause, not a poll. */
+  private zoomSettlePausedForLiveInk = false;
+  private zoomSettlePausedAt: number | null = null;
+  private zoomSettlePausedReason: "live-ink" | "live-ink-slice" | null = null;
+  private zoomSettleResumeTimer: number | null = null;
   private zoomSettleTimerGeneration = 0;
   private zoomSettleTimerDueAt = 0;
   private settleTimerResetCount = 0;
@@ -1033,8 +1041,6 @@ export class ViewerInkSession {
   private static readonly ZOOM_SETTLE_TINY_RELATIVE = 0.015;
   /** Must cover ZOOM_SETTLE_MS so gesture-active / handoff guards hold through coalesce. */
   private static readonly ZOOM_ACTIVE_MS = 600;
-  /** Retry settle while a live stroke/edit is in progress (avoid wiping draft mid-drag). */
-  private static readonly ZOOM_SETTLE_LIVE_INK_RETRY_MS = 120;
   /** PDF.js usually swaps canvas/text layers hundreds of ms after scalechanging. */
   private static readonly ZOOM_NATIVE_RENDER_GRACE_MS = 500;
   /** Do not release during the tail of a native page-content replacement burst. */
@@ -3770,6 +3776,64 @@ export class ViewerInkSession {
     this.armZoomBurstWatchdog();
   }
 
+  /**
+   * One pause while the tip is down. The old 120ms retry logged and re-armed
+   * for the whole stroke (19.7s, 34 resets on the last iPad paste) and stamped
+   * lastZoomSignalAt so the zoom burst never went quiet.
+   */
+  private pauseZoomSettleForLiveInk(reason: "live-ink" | "live-ink-slice"): void {
+    this.lastSettleDeferralReason = reason;
+    if (this.zoomSettlePausedForLiveInk) return;
+    this.zoomSettlePausedForLiveInk = true;
+    this.zoomSettlePausedAt = performance.now();
+    this.zoomSettlePausedReason = reason;
+    if (this.zoomSettleTimer !== null) {
+      window.clearTimeout(this.zoomSettleTimer);
+      this.zoomSettleTimer = null;
+    }
+    this.logger.zoomComposite("settle-deferred", {
+      reason,
+      pages: this.surfaces.size,
+      remaining: this.zoomSettleQueue.length,
+      once: true
+    });
+  }
+
+  private scheduleZoomSettleResume(): void {
+    if (!this.zoomSettlePausedForLiveInk || this.zoomSettleResumeTimer !== null) return;
+    this.zoomSettleResumeTimer = window.setTimeout(() => {
+      this.zoomSettleResumeTimer = null;
+      this.resumeZoomSettleAfterLiveInk();
+    }, 0);
+  }
+
+  private resumeZoomSettleAfterLiveInk(): void {
+    if (this.destroyed || !this.zoomSettlePausedForLiveInk) return;
+    if (this.hasAnyLiveInkInput()) return;
+    const pausedAt = this.zoomSettlePausedAt;
+    const reason = this.zoomSettlePausedReason;
+    this.zoomSettlePausedForLiveInk = false;
+    this.zoomSettlePausedAt = null;
+    this.zoomSettlePausedReason = null;
+    const waitedMs = pausedAt === null ? 0 : performance.now() - pausedAt;
+    const span = this.slowSpans.record({
+      kind: "async",
+      category: "zoom",
+      stage: "settle-paused-for-live-ink",
+      durationMs: waitedMs,
+      activeWorkMs: 0,
+      waitMs: waitedMs,
+      reason,
+      zoomBurstId: this.zoomCorrelationId
+    });
+    if (span) this.logger.perfSlowSpan({ ...span });
+    if (reason === "live-ink-slice" && this.zoomSettleQueue.length > 0) {
+      this.paintZoomSettleSlice();
+      return;
+    }
+    this.runZoomSettlePaint();
+  }
+
   private armZoomBurstWatchdog(): void {
     if (this.zoomBurstWatchdog !== null) window.clearTimeout(this.zoomBurstWatchdog);
     this.zoomBurstWatchdog = window.setTimeout(() => {
@@ -3876,14 +3940,7 @@ export class ViewerInkSession {
     // Keep CSS compositing + draft canvas intact until the tip lifts. Mid-drag
     // settle was clearing the live draft and force-rebinding routers (log proof).
     if (this.hasAnyLiveInkInput()) {
-      this.lastZoomSignalAt = performance.now();
-      this.logger.zoomComposite("settle-deferred", {
-        reason: "live-ink",
-        pages: this.surfaces.size,
-        retryMs: ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS
-      });
-      this.lastSettleDeferralReason = "live-ink";
-      this.armZoomSettleTimer(ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS);
+      this.pauseZoomSettleForLiveInk("live-ink");
       return;
     }
     const settleWorkStarted = performance.now();
@@ -4063,15 +4120,7 @@ export class ViewerInkSession {
   private paintZoomSettleSlice(): void {
     if (this.destroyed) return;
     if (this.hasAnyLiveInkInput()) {
-      this.logger.zoomComposite("settle-deferred", {
-        reason: "live-ink-slice",
-        remaining: this.zoomSettleQueue.length,
-        retryMs: ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS
-      });
-      this.zoomSettleTimer = window.setTimeout(() => {
-        this.zoomSettleTimer = null;
-        this.paintZoomSettleSlice();
-      }, ViewerInkSession.ZOOM_SETTLE_LIVE_INK_RETRY_MS);
+      this.pauseZoomSettleForLiveInk("live-ink-slice");
       return;
     }
     if (this.zoomSettleQueue.length === 0) {
@@ -7120,6 +7169,13 @@ export class ViewerInkSession {
     }
     this.pendingMobileScrollRemount = false;
     this.clearZoomBurstWatchdog();
+    this.zoomSettlePausedForLiveInk = false;
+    this.zoomSettlePausedAt = null;
+    this.zoomSettlePausedReason = null;
+    if (this.zoomSettleResumeTimer !== null) {
+      window.clearTimeout(this.zoomSettleResumeTimer);
+      this.zoomSettleResumeTimer = null;
+    }
     if (this.zoomSettleTimer !== null) {
       window.clearTimeout(this.zoomSettleTimer);
       this.zoomSettleTimer = null;
@@ -9182,6 +9238,17 @@ export class ViewerInkSession {
       ...(stabilization !== undefined ? { stabilization } : {}),
       ...(draftResized !== undefined ? { draftResized } : {})
     });
+    const paintSpan = this.slowSpans.record({
+      kind: "sync",
+      category: "ink",
+      stage: pending.kind === "draw" ? "live-draw-paint" : "live-edit-paint",
+      durationMs: completedAt - startedAt,
+      activeWorkMs: completedAt - startedAt,
+      waitMs: 0,
+      reason: this.zoomCompositing ? "zoom-compositing" : null,
+      zoomBurstId: this.zoomCorrelationId
+    });
+    if (paintSpan) this.logger.perfSlowSpan({ ...paintSpan });
     if (pending.event && this.logger.isEnabled()) this.updateDebug(surface, pending.event);
   }
 
@@ -9613,10 +9680,12 @@ export class ViewerInkSession {
       this.moveShapePreview = null;
       this.updateDebug(surface, event);
       if (this.needsPagePaint(surface.page.pageNumber)) this.renderPage(surface.page.pageNumber);
+      this.scheduleZoomSettleResume();
       return;
     }
     if (route === "text") {
       this.finishTextIntent(surface, samples.at(-1)!, event);
+      this.scheduleZoomSettleResume();
       return;
     }
     if (route === "draw" && surface.builder) {
@@ -9634,6 +9703,7 @@ export class ViewerInkSession {
     }
     this.updateDebug(surface, event);
     if (this.needsPagePaint(surface.page.pageNumber)) this.renderPage(surface.page.pageNumber);
+    this.scheduleZoomSettleResume();
   }
 
   /** Commit a completed draw gesture, including one interrupted by page virtualization. */
@@ -9788,6 +9858,7 @@ export class ViewerInkSession {
     this.textMoveDrag = null;
     this.updateDebug(surface, event);
     this.renderPage(surface.page.pageNumber);
+    this.scheduleZoomSettleResume();
   }
 
   private finishEdit(surface: PageSurface): void {
