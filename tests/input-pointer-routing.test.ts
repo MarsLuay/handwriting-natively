@@ -411,7 +411,7 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
-  it("clears pen lock on lostpointercapture", () => {
+  it("keeps pen lock across lostpointercapture until pointerup", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -425,8 +425,51 @@ describe("PointerRouter", () => {
     });
     element.dispatchEvent(pointer("pen", 71, { pressure: 0.7 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
-    element.dispatchEvent(pointer("pen", 71, { eventType: "lostpointercapture", pressure: 0, buttons: 0 }));
+    element.dispatchEvent(pointer("pen", 71, { eventType: "lostpointercapture", pressure: 0, buttons: 0, clientX: 0, clientY: 0 }));
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    element.dispatchEvent(pointer("pen", 71, { eventType: "pointerup", pressure: 0, buttons: 0, clientX: 40, clientY: 50 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    router.destroy();
+    element.remove();
+  });
+
+  it("keeps a pen stroke open after lostpointercapture and appends document moves once", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture: vi.fn()
+    });
+    const moves = vi.fn();
+    const ends = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true,
+      onMove: moves,
+      onEnd: ends
+    });
+    element.dispatchEvent(pointer("pen", 12, { clientX: 10, clientY: 20, pressure: 0.5 }));
+    element.dispatchEvent(pointer("pen", 12, { eventType: "lostpointercapture", clientX: 0, clientY: 0, pressure: 0, buttons: 0 }));
+    expect(ends).not.toHaveBeenCalled();
+    const first = pointer("pen", 12, { eventType: "pointermove", clientX: 30, clientY: 70, pressure: 0.4 });
+    const second = pointer("pen", 12, { eventType: "pointermove", clientX: 60, clientY: 80, pressure: 0.4 });
+    Object.defineProperty(first, "timeStamp", { value: 1 });
+    Object.defineProperty(second, "timeStamp", { value: 2 });
+    const curve = pointer("pen", 12, {
+      eventType: "pointermove",
+      clientX: 80,
+      clientY: 30,
+      pressure: 0.4,
+      getCoalescedEvents: () => [first, second]
+    });
+    expect(router.acceptDocumentPenStroke(curve)).toBe(true);
+    expect(router.acceptDocumentPenStroke(curve)).toBe(true);
+    expect(moves).toHaveBeenCalledTimes(1);
+    const samples = moves.mock.calls[0]?.[0] as Array<{ clientX: number }>;
+    expect(samples.map((sample) => sample.clientX)).toEqual([30, 60, 80]);
+    element.dispatchEvent(pointer("pen", 12, { eventType: "pointerup", clientX: 90, clientY: 40, pressure: 0, buttons: 0 }));
+    expect(ends).toHaveBeenCalledTimes(1);
     router.destroy();
     element.remove();
   });
