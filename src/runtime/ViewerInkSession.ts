@@ -77,7 +77,7 @@ import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type P
 import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { getDebugNodeId } from "../dom/debugNodeId";
 import { isElement, isElementInDocument, isHTMLElement, setElementCssProps } from "../dom/typeGuards";
-import { contactBlockedByOverlay, ensurePdfPageNumbers, isHandwritingPageChrome, isPostZoomPageTarget } from "../integration/pdfPageSelectors";
+import { contactBlockedByOverlay, decidePostZoomPageContact, ensurePdfPageNumbers, isHandwritingPageChrome, isPostZoomPageTarget } from "../integration/pdfPageSelectors";
 import { PdfExportService, annotatedFilename, editableAnnotatedFilename } from "../pdf/PdfExportService";
 import type { ImportedPdfPages } from "../pdf/PdfNoteService";
 import { exportInkStrokesToSvg } from "../pdf/SvgInkExportService";
@@ -2163,9 +2163,26 @@ export class ViewerInkSession {
   }
 
   private notePostZoomPhysicalContact(record: PhysicalContactRecord, target: EventTarget | null): void {
+    const point = record.contact.firstPoint ?? record.contact.lastPoint;
+    const geometricPage = point
+      ? this.options.adapter.pages().find((candidate) => containsClientPoint(candidate.element, point.x, point.y))
+      : undefined;
     const page = this.options.adapter.pages().find((candidate) => isPostZoomPageTarget(target, candidate.element));
-    const overPage = Boolean(page?.element.isConnected);
     const blockedByOverlay = contactBlockedByOverlay(target);
+    const decision = decidePostZoomPageContact({
+      pageConnected: Boolean(page?.element.isConnected),
+      targetInsidePage: Boolean(page),
+      blockedByOverlay,
+      geometricPageHit: Boolean(geometricPage?.element.isConnected)
+    });
+    const overPage = decision.recordPageContact;
+    if (record.phase === "start" && decision.rejection) {
+      this.postZoomTrace.noteRejectedPageContact({
+        ...decision.rejection,
+        physicalContactId: record.contact.physicalContactId,
+        geometricPageNumber: geometricPage?.pageNumber ?? null
+      });
+    }
     const retained = record.phase === "terminal"
       ? this.postZoomTrace.retainedContact(record.contact.physicalContactId)
       : null;

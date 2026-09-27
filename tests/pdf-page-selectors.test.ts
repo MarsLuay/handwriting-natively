@@ -3,6 +3,7 @@ import {
   contactBlockedByOverlay,
   describePdfPageDom,
   ensurePdfPageNumbers,
+  decidePostZoomPageContact,
   isPostZoomPageTarget,
   queryPdfPageNodes,
   targetInsidePage,
@@ -149,5 +150,37 @@ describe("pdfPageSelectors", () => {
     gear.className = "clickable-icon workspace-drawer-header-icon";
     document.body.append(gear);
     expect(isPostZoomPageTarget(gear, page)).toBe(false);
+    const text = document.createElement("div");
+    text.className = "textLayer";
+    const ink = document.createElement("canvas");
+    ink.className = "native-pdf-handwriting-overlay";
+    page.append(text, ink);
+    const toolbar = document.createElement("button");
+    const body = document.body;
+    for (const target of [canvas, text, ink]) {
+      expect(decidePostZoomPageContact({
+        pageConnected: true,
+        targetInsidePage: targetInsidePage(target, page),
+        blockedByOverlay: contactBlockedByOverlay(target),
+        geometricPageHit: true
+      }).recordPageContact).toBe(true);
+    }
+    for (const target of [item, gear, toolbar, body]) {
+      const decision = decidePostZoomPageContact({
+        pageConnected: false,
+        targetInsidePage: targetInsidePage(target, page),
+        blockedByOverlay: contactBlockedByOverlay(target),
+        geometricPageHit: true
+      });
+      expect(decision.recordPageContact).toBe(false);
+      expect(decision.recordDurability).toBe(false);
+      expect(decision.allowStylusIdentityRegression).toBe(false);
+      expect(decision.rejection).toMatchObject({
+        geometricPageHit: true,
+        targetInsidePage: false,
+        pageContactAdmission: "rejected",
+        pageContactRejectReason: "target-outside-page-dom"
+      });
+    }
   });
 });
