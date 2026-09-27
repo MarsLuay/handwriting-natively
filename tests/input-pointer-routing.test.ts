@@ -722,7 +722,7 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
-  it("uses one sample per pointermove when coalesced is off", () => {
+  it("keeps coalesced Pencil samples so a pointermove is not just the last point", () => {
     const element = document.createElement("div");
     Object.assign(element, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
     const onMove = vi.fn();
@@ -732,8 +732,7 @@ describe("PointerRouter", () => {
     const b = pointer("pen", 4, { pressure: 0.9 });
     const move = pointer("pen", 4, { eventType: "pointermove", pressure: 0.9, getCoalescedEvents: () => [a, b] });
     element.dispatchEvent(move);
-    // Coalesced intermediates are off by default (xor-fill / positional jitter).
-    expect(onMove.mock.calls[0]?.[0].map((sample: { pressure: number }) => sample.pressure)).toEqual([0.9]);
+    expect(onMove.mock.calls[0]?.[0].map((sample: { pressure: number }) => sample.pressure)).toEqual([0.2, 0.9]);
     router.destroy();
   });
 
