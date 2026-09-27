@@ -4,6 +4,7 @@ import {
   describePdfPageDom,
   ensurePdfPageNumbers,
   decidePostZoomPageContact,
+  isPluginInputChromeTarget,
   isPostZoomPageTarget,
   queryPdfPageNodes,
   targetInsidePage,
@@ -150,6 +151,17 @@ describe("pdfPageSelectors", () => {
     gear.className = "clickable-icon workspace-drawer-header-icon";
     document.body.append(gear);
     expect(isPostZoomPageTarget(gear, page)).toBe(false);
+    const viewerChrome = document.createElement("div");
+    viewerChrome.className = "native-pdf-handwriting-chrome is-toolbar-left";
+    const textLayer = document.createElement("div");
+    textLayer.className = "textLayer";
+    page.append(textLayer);
+    viewerChrome.append(page);
+    const pluginToolbar = document.createElement("button");
+    pluginToolbar.className = "native-pdf-handwriting-toolbar";
+    document.body.append(viewerChrome, pluginToolbar);
+    expect(isPluginInputChromeTarget(textLayer)).toBe(false);
+    expect(isPluginInputChromeTarget(pluginToolbar)).toBe(true);
     const text = document.createElement("div");
     text.className = "textLayer";
     const ink = document.createElement("canvas");

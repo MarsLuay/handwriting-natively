@@ -22,6 +22,24 @@ export function hasHeuristicPdfPageNumber(element: HTMLElement): boolean {
  * owns the real PDF scroll/viewer tree after the sidebar rail mounts. Filtering
  * its descendants empties `adapter.pages()` and leaves surfaces at 0.
  */
+const PLUGIN_INPUT_CHROME_SELECTOR = [
+  ".native-pdf-handwriting-toolbar",
+  ".native-pdf-handwriting-dropdown",
+  ".native-pdf-handwriting-selection-toolbar",
+  ".native-pdf-handwriting-text-input",
+  ".native-pdf-handwriting-rail"
+].join(", ");
+
+/**
+ * Toolbar and rail controls, not the chrome wrapper. That wrapper contains the
+ * PDF page, so a pen on `div.textLayer` must not be treated as chrome.
+ */
+export function isPluginInputChromeTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest(".page, .pdf-page-view, .native-pdf-handwriting-image-page")) return false;
+  return Boolean(target.closest(PLUGIN_INPUT_CHROME_SELECTOR));
+}
+
 export function isHandwritingPageChrome(element: Element): boolean {
   return Boolean(
     element.closest(
