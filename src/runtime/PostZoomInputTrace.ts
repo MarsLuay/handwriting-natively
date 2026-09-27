@@ -451,6 +451,7 @@ export class PinchGestureCleanup {
   }
 
   needsAnimationFrame(): boolean {
+    if (this.pinchPointers.size === 0 && this.pinchTouches.size === 0) return false;
     return this.animationFrames < 1;
   }
 
