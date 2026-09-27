@@ -60,6 +60,7 @@ export class DropdownController {
     trigger.setAttribute("aria-expanded", "true");
     this.reposition();
 
+    this.ownerDocument.defaultView?.addEventListener("pointerdown", this.onOutsidePointer, { capture: true, signal: this.abort.signal });
     this.ownerDocument.addEventListener("pointerdown", this.onOutsidePointer, { capture: true, signal: this.abort.signal });
     this.ownerDocument.addEventListener("keydown", this.onKeyDown, { signal: this.abort.signal });
     this.ownerDocument.defaultView?.addEventListener("resize", this.reposition, { signal: this.abort.signal });

@@ -122,7 +122,7 @@ export class AnnotationToolbar {
       button.setAttribute("aria-label", preset.name);
       const active = this.preferences.activePresetId === preset.id && this.preferences.activeTool === preset.tool;
       button.setAttribute("aria-pressed", String(active));
-      button.addEventListener("click", () => this.applyDrawingPreset(preset), { signal: this.abort.signal });
+      button.addEventListener("click", () => this.openPresetSettings(preset, button), { signal: this.abort.signal });
       slots.append(button);
     }
   }
@@ -156,7 +156,7 @@ export class AnnotationToolbar {
       swatch.setAttribute("aria-hidden", "true");
       swatch.style.backgroundColor = preset.settings.color;
       button.append(swatch);
-      button.addEventListener("click", () => this.applyDrawingPreset(preset), { signal: this.abort.signal });
+      button.addEventListener("click", () => this.openPresetSettings(preset, button, `preset-${preset.id}`), { signal: this.abort.signal });
       host.append(button);
     }
   }
@@ -194,11 +194,13 @@ export class AnnotationToolbar {
 
   private groupedTool(id: "drawing" | "text" | "eraser" | "lasso" | "laser", menu: () => DropdownOpenOptions): HTMLButtonElement {
     const main = this.actionButton(id, id, () => {
-      const active = id === "drawing"
-        ? isDrawingTool(this.preferences.activeTool)
-        : this.preferences.activeTool === id;
+      if (id === "drawing") {
+        this.openOriginalPenPreset(main);
+        return;
+      }
+      const active = this.preferences.activeTool === id;
       if (active) this.dropdown.toggle(id, main, menu());
-      else this.activate(id === "drawing" ? this.lastDrawingTool : id);
+      else this.activate(id);
     });
     if (id === "text") {
       main.addEventListener("pointerdown", () => this.callbacks.onTextFormatPointerDown?.(), { signal: this.abort.signal });
@@ -259,9 +261,12 @@ export class AnnotationToolbar {
       this.lastDrawingTool = tool;
       this.changed("tool");
     }, (width) => {
-      this.preferences[this.lastDrawingTool].width = width;
-      this.preferences.activeTool = this.lastDrawingTool;
-      this.preferences.activePresetId = null;
+      const tool = this.lastDrawingTool;
+      this.preferences[tool].width = width;
+      this.preferences.activeTool = tool;
+      const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId && preset.tool === tool);
+      if (selected) selected.settings = { ...this.preferences[tool] };
+      else this.preferences.activePresetId = null;
       this.changed();
     }, (preset) => {
       this.applyDrawingPreset(preset);
@@ -273,6 +278,31 @@ export class AnnotationToolbar {
     content.append(this.presetEditor());
     content.append(drawingAdvanced(this.ownerDocument, this.preferences, () => this.changed(), this.abort.signal));
     return { label: "Drawing options", content };
+  }
+
+  private originalPenPreset(): DrawingPreset | undefined {
+    return this.preferences.presets.find((preset) => preset.id === "black-pen")
+      ?? this.preferences.presets.find((preset) => preset.tool === "pen")
+      ?? this.preferences.presets[0];
+  }
+
+  /** The pen button is the original preset. Added presets open their own settings. */
+  private openOriginalPenPreset(anchor: HTMLElement): void {
+    const current = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
+    const preset = current ?? this.originalPenPreset();
+    if (preset) this.applyDrawingPreset(preset);
+    else if (!isDrawingTool(this.preferences.activeTool)) this.activate(this.lastDrawingTool);
+    this.dropdown.toggle("drawing", anchor, this.drawingMenu());
+  }
+
+  private openPresetSettings(preset: DrawingPreset, anchor: HTMLElement, menuId = "drawing"): void {
+    this.applyDrawingPreset(preset);
+    const live = menuId === "drawing"
+      ? anchor
+      : this.element.querySelector<HTMLElement>(`[data-sidebar-preset-id="${preset.id}"]`)
+        ?? this.element.querySelector<HTMLElement>(`[data-preset-id="${preset.id}"]`)
+        ?? anchor;
+    this.dropdown.open(menuId, live, this.drawingMenu());
   }
 
   private applyDrawingPreset(preset: DrawingPreset): void {
@@ -292,6 +322,8 @@ export class AnnotationToolbar {
     input.type = "text";
     input.maxLength = 80;
     input.placeholder = `${DRAWING_LABELS[this.lastDrawingTool]} preset`;
+    const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
+    if (selected) input.value = selected.name;
     const save = createDetachedEl(this.ownerDocument, "button");
     save.type = "button";
     save.textContent = "Save";
@@ -319,7 +351,6 @@ export class AnnotationToolbar {
     }, { signal: this.abort.signal });
     label.append(input, save);
     wrapper.append(label);
-    const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
     if (selected) {
       const remove = createDetachedEl(this.ownerDocument, "button");
       remove.type = "button";
