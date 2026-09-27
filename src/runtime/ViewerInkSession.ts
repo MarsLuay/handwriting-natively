@@ -6220,23 +6220,20 @@ export class ViewerInkSession {
     this.uiShellMutationObserver = null;
   }
 
-  /**
-   * @param source `window` lets Obsidian's configurable command hotkeys own
-   * Ctrl/Cmd+Alt ink bindings so a user rebind is not also handled here.
-   */
-  handleKeyDown(event: KeyboardEvent, source: "session" | "window" = "session"): boolean {
+  /** `window` is the capture listener. Both paths use the same text-versus-ink split. */
+  handleKeyDown(event: KeyboardEvent, _source: "session" | "window" = "session"): boolean {
     // A native contenteditable owns every editor shortcut while it is open. The
     // window-level listener may receive a retargeted event from Obsidian, so
     // checking event.target alone is not sufficient here. Cmd/Ctrl+A is the
     // exception: claim it before Obsidian's document shortcuts can move the
-    // selection outside this editor. Ink commands require Alt/Option.
+    // selection outside this editor. Ctrl/Cmd+A stays with that text.
+    // Ctrl/Cmd+Option+A selects the ink on the current page.
     if (this.destroyed) return false;
     if (this.beginTemporaryEraserModifier(event)) return true;
     if (this.handleActiveTextEditorSelectAll(event)) {
       this.logKeyboardShortcut(event, "native-text", null, true);
       return true;
     }
-    if (source === "window" && inkHotkeyCommand(event)) return false;
     const textFocused = Boolean(this.activeTextEditor) || shouldIgnoreSelectionShortcut(event.target);
     const historyAction = parseHistoryShortcut(event);
     const action = parseSelectionShortcut(event);
