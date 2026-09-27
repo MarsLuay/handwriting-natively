@@ -1473,12 +1473,12 @@ export default class NativePdfInkPlugin extends Plugin {
       id: string,
       name: string,
       action: SelectionShortcutAction,
-      hotkey?: { modifiers: Array<"Mod" | "Alt" | "Shift" | "Ctrl" | "Meta">; key: string }
+      hotkey?: Array<{ modifiers: Array<"Mod" | "Alt" | "Shift" | "Ctrl" | "Meta">; key: string }>
     ): void => {
       this.addCommand({
         id,
         name,
-        ...(hotkey ? { hotkeys: [hotkey] } : {}),
+        ...(hotkey ? { hotkeys: hotkey } : {}),
         checkCallback: (checking) => {
           const session = this.activeSession();
           if (!session?.canSelectionShortcut(action)) return false;
@@ -1488,10 +1488,14 @@ export default class NativePdfInkPlugin extends Plugin {
       });
     };
     register("delete-selected-pdf-ink", "Delete selected PDF ink", "delete");
-    register("copy-selected-pdf-ink", "Copy selected ink", "copy", { modifiers: ["Mod", "Alt"], key: "c" });
-    register("cut-selected-pdf-ink", "Cut selected ink", "cut", { modifiers: ["Mod", "Alt"], key: "x" });
-    register("paste-selected-pdf-ink", "Paste ink", "paste", { modifiers: ["Mod", "Alt"], key: "v" });
-    register("select-all-pdf-ink", "Select all ink", "selectAll", { modifiers: ["Mod", "Alt"], key: "a" });
+    const inkChord = (key: string): Array<{ modifiers: Array<"Mod" | "Alt" | "Ctrl">; key: string }> => [
+      { modifiers: ["Mod", "Alt"], key },
+      { modifiers: ["Ctrl", "Alt"], key }
+    ];
+    register("copy-selected-pdf-ink", "Copy selected ink", "copy", inkChord("c"));
+    register("cut-selected-pdf-ink", "Cut selected ink", "cut", inkChord("x"));
+    register("paste-selected-pdf-ink", "Paste ink", "paste", inkChord("v"));
+    register("select-all-pdf-ink", "Select all ink", "selectAll", inkChord("a"));
   }
 
   /**
