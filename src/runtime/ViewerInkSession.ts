@@ -49,7 +49,7 @@ import {
 } from "../input/annotationInputPolicy";
 import { AddPageControl } from "../ui/AddPageControl";
 import { AddPageTiming } from "../ui/AddPageTiming";
-import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, type SelectionShortcutAction } from "../input/SelectionShortcuts";
+import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, inkHotkeyCommand, type InkHotkeyCommand, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
 import { InkSession, type InkLifecycleEvent } from "../ink/InkSession";
@@ -6090,25 +6090,42 @@ export class ViewerInkSession {
     this.uiShellMutationObserver = null;
   }
 
-  handleKeyDown(event: KeyboardEvent): boolean {
+  /**
+   * @param source `window` lets Obsidian's configurable command hotkeys own
+   * Ctrl/Cmd+Alt ink bindings so a user rebind is not also handled here.
+   */
+  handleKeyDown(event: KeyboardEvent, source: "session" | "window" = "session"): boolean {
     // A native contenteditable owns every editor shortcut while it is open. The
     // window-level listener may receive a retargeted event from Obsidian, so
     // checking event.target alone is not sufficient here. Cmd/Ctrl+A is the
     // exception: claim it before Obsidian's document shortcuts can move the
-    // selection outside this editor.
+    // selection outside this editor. Ink commands require Alt/Option.
     if (this.destroyed) return false;
     if (this.beginTemporaryEraserModifier(event)) return true;
-    if (this.handleActiveTextEditorSelectAll(event)) return true;
-    if (this.activeTextEditor || shouldIgnoreSelectionShortcut(event.target)) return false;
-    const historyAction = parseHistoryShortcut(event);
-    if (historyAction) {
-      const ok = historyAction === "undo" ? this.history.undo() : this.history.redo();
-      if (!ok) return false;
-      event.preventDefault();
-      event.stopPropagation();
+    if (this.handleActiveTextEditorSelectAll(event)) {
+      this.logKeyboardShortcut(event, "native-text", null, true);
       return true;
     }
+    if (source === "window" && inkHotkeyCommand(event)) return false;
+    const textFocused = Boolean(this.activeTextEditor) || shouldIgnoreSelectionShortcut(event.target);
+    const historyAction = parseHistoryShortcut(event);
     const action = parseSelectionShortcut(event);
+    if (textFocused && !event.altKey) {
+      this.logKeyboardShortcut(event, "native-text", null, false);
+      return false;
+    }
+    if (historyAction) {
+      const ok = historyAction === "undo" ? this.history.undo() : this.history.redo();
+      if (!ok) {
+        this.logKeyboardShortcut(event, "ignored", historyAction === "undo" ? "undo-ink" : "redo-ink", false);
+        return false;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      this.logKeyboardShortcut(event, "ink-command", historyAction === "undo" ? "undo-ink" : "redo-ink", true);
+      return true;
+    }
+    if (action === "delete" && textFocused) return false;
     if (action === "delete") {
       this.reconcileSelection();
       if (this.selected.length > 0 || this.selectedTexts.length > 0) {
@@ -6125,11 +6142,53 @@ export class ViewerInkSession {
       }
       return false;
     }
-    if (!action || !this.canSelectionShortcut(action)) return false;
+    if (!action || !this.canSelectionShortcut(action)) {
+      if (inkHotkeyCommand(event)) this.logKeyboardShortcut(event, "ignored", inkHotkeyCommand(event), false);
+      return false;
+    }
     this.applySelectionShortcut(action);
     event.preventDefault();
     event.stopPropagation();
+    this.logKeyboardShortcut(event, "ink-command", inkHotkeyCommand(event), true);
     return true;
+  }
+
+  private logKeyboardShortcut(
+    event: KeyboardEvent,
+    route: "native-text" | "ink-command" | "ignored",
+    command: InkHotkeyCommand | null,
+    defaultPrevented: boolean
+  ): void {
+    const target = event.target;
+    const focusKind = this.activeTextEditor
+      || (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']"))
+      ? "text-editor"
+      : target instanceof Element && target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-selection-toolbar")
+        ? "toolbar"
+        : target instanceof Element && (this.options.adapter.host.contains(target) || this.options.adapter.root.contains(target))
+          ? "pdf"
+          : "other";
+    this.logger.keyboardShortcut({
+      key: event.key.toLowerCase(),
+      ctrl: event.ctrlKey,
+      meta: event.metaKey,
+      alt: event.altKey,
+      shift: event.shiftKey,
+      focusKind,
+      route,
+      command,
+      defaultPrevented
+    });
+  }
+
+  private preserveEditorTextSelection(run: () => void): void {
+    const editor = this.activeTextEditor;
+    const selection = editor?.element.ownerDocument.getSelection() ?? null;
+    const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
+    run();
+    if (!editor || !range || !selection || !editor.element.isConnected) return;
+    selection.removeAllRanges();
+    selection.addRange(range);
   }
 
   handleKeyUp(event: KeyboardEvent): boolean {
@@ -6188,7 +6247,7 @@ export class ViewerInkSession {
 
   canSelectionShortcut(action: SelectionShortcutAction): boolean {
     if (this.destroyed) return false;
-    if (action === "selectAll") return this.annotationShortcutContext();
+    if (action === "selectAll") return this.isAttached();
     if (action === "paste") {
       const clipboard = StrokeClipboard.peek();
       return this.annotationShortcutContext() && Boolean(clipboard?.strokes.length || clipboard?.texts.length);
@@ -6233,6 +6292,10 @@ export class ViewerInkSession {
   }
 
   applySelectionShortcut(action: SelectionShortcutAction): void {
+    this.preserveEditorTextSelection(() => this.applySelectionShortcutNow(action));
+  }
+
+  private applySelectionShortcutNow(action: SelectionShortcutAction): void {
     this.logger.textTool("selection-shortcut", {
       action,
       page: this.selectionPage,

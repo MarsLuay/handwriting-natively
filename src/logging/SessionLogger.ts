@@ -740,6 +740,15 @@ export class SessionLogger {
     });
   }
 
+  /** Compact shortcut routing when vault debug is on. */
+  keyboardShortcut(details: Record<string, unknown> = {}): void {
+    this.emit("info", "keyboard-shortcut", {
+      document: this.documentPath,
+      event: "keyboard-shortcut",
+      ...details
+    });
+  }
+
   /** A finger route must either finish or leave a terminal breadcrumb. */
   touchInput(
     phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block" | "pen-state" | "touchend" | "touchcancel" | "axis-lock",

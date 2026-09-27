@@ -304,7 +304,7 @@ export default class NativePdfInkPlugin extends Plugin {
       this.emergencyPersistAllSessions();
     });
     this.registerDomEvent(window, "keydown", (event) => {
-      this.activeSession()?.handleKeyDown(event);
+      this.activeSession()?.handleKeyDown(event, "window");
     }, { capture: true });
     this.registerDomEvent(window, "keyup", (event) => {
       for (const session of this.sessions.values()) session.handleKeyUp(event);
@@ -1469,10 +1469,16 @@ export default class NativePdfInkPlugin extends Plugin {
     // Commands stay in the palette, but no default hotkeys — Obsidian does not fall through
     // when checkCallback is false, which breaks Delete/Backspace/Cmd+C in normal Markdown.
     // Shortcuts still work on PDF ink via window capture in ViewerInkSession.
-    const register = (id: string, name: string, action: SelectionShortcutAction): void => {
+    const register = (
+      id: string,
+      name: string,
+      action: SelectionShortcutAction,
+      hotkey?: { modifiers: Array<"Mod" | "Alt" | "Shift" | "Ctrl" | "Meta">; key: string }
+    ): void => {
       this.addCommand({
         id,
         name,
+        ...(hotkey ? { hotkeys: [hotkey] } : {}),
         checkCallback: (checking) => {
           const session = this.activeSession();
           if (!session?.canSelectionShortcut(action)) return false;
@@ -1482,10 +1488,10 @@ export default class NativePdfInkPlugin extends Plugin {
       });
     };
     register("delete-selected-pdf-ink", "Delete selected PDF ink", "delete");
-    register("copy-selected-pdf-ink", "Copy selected PDF ink", "copy");
-    register("cut-selected-pdf-ink", "Cut selected PDF ink", "cut");
-    register("paste-selected-pdf-ink", "Paste PDF ink", "paste");
-    register("select-all-pdf-ink", "Select all PDF ink", "selectAll");
+    register("copy-selected-pdf-ink", "Copy selected ink", "copy", { modifiers: ["Mod", "Alt"], key: "c" });
+    register("cut-selected-pdf-ink", "Cut selected ink", "cut", { modifiers: ["Mod", "Alt"], key: "x" });
+    register("paste-selected-pdf-ink", "Paste ink", "paste", { modifiers: ["Mod", "Alt"], key: "v" });
+    register("select-all-pdf-ink", "Select all ink", "selectAll", { modifiers: ["Mod", "Alt"], key: "a" });
   }
 
   /**
@@ -1510,10 +1516,11 @@ export default class NativePdfInkPlugin extends Plugin {
         }
       });
     };
-    const registerHistory = (id: string, name: string, action: "undo" | "redo"): void => {
+    const registerHistory = (id: string, name: string, action: "undo" | "redo", shift = false): void => {
       this.addCommand({
         id,
         name,
+        hotkeys: [{ modifiers: shift ? ["Mod", "Alt", "Shift"] : ["Mod", "Alt"], key: "z" }],
         checkCallback: (checking) => {
           const session = this.activeSession();
           if (!session || !(action === "undo" ? session.canUndo() : session.canRedo())) return false;
@@ -1531,8 +1538,8 @@ export default class NativePdfInkPlugin extends Plugin {
     registerTool("select-pdf-laser-pointer", "Switch to laser pointer", "laser");
     registerTool("select-pdf-lasso", "Switch to lasso", "lasso");
     registerTool("select-pdf-text", "Switch to text", "text");
-    registerHistory("undo-pdf-annotation", "Undo annotation", "undo");
-    registerHistory("redo-pdf-annotation", "Redo annotation", "redo");
+    registerHistory("undo-pdf-annotation", "Undo ink", "undo");
+    registerHistory("redo-pdf-annotation", "Redo ink", "redo", true);
   }
 
   /**

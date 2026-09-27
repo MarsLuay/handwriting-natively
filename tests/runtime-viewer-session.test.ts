@@ -3067,7 +3067,7 @@ describe("viewer runtime tracer", () => {
     settings.toolPreferences.activeTool = "lasso";
     session.selectTool("lasso");
 
-    const selectAll = new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true });
+    const selectAll = new KeyboardEvent("keydown", { key: "a", metaKey: true, altKey: true, bubbles: true, cancelable: true });
     expect(session.handleKeyDown(selectAll)).toBe(true);
     expect(selectAll.defaultPrevented).toBe(true);
 
@@ -3077,7 +3077,7 @@ describe("viewer runtime tracer", () => {
       return JSON.parse(entry[1]).pages.flatMap((page: { strokes: unknown[] }) => page.strokes).length;
     };
 
-    const copy = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true });
+    const copy = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, altKey: true, bubbles: true, cancelable: true });
     expect(session.handleKeyDown(copy)).toBe(true);
     expect(copy.defaultPrevented).toBe(true);
 
@@ -3086,14 +3086,14 @@ describe("viewer runtime tracer", () => {
     await session.manualSave();
     expect(strokeCount()).toBe(0);
 
-    const paste = new KeyboardEvent("keydown", { key: "v", ctrlKey: true, bubbles: true, cancelable: true });
+    const paste = new KeyboardEvent("keydown", { key: "v", ctrlKey: true, altKey: true, bubbles: true, cancelable: true });
     expect(session.handleKeyDown(paste)).toBe(true);
     await session.manualSave();
     const restored = JSON.parse([...files.values.entries()].find(([path]) => path.startsWith("annotations/"))![1]).pages[0].strokes;
     expect(restored).toHaveLength(1);
     expect(restored[0].points[0].x).toBeGreaterThan(100);
 
-    const cut = new KeyboardEvent("keydown", { key: "x", metaKey: true, bubbles: true, cancelable: true });
+    const cut = new KeyboardEvent("keydown", { key: "x", metaKey: true, altKey: true, bubbles: true, cancelable: true });
     expect(session.handleKeyDown(cut)).toBe(true);
     await session.manualSave();
     expect(strokeCount()).toBe(0);
@@ -3153,9 +3153,16 @@ describe("viewer runtime tracer", () => {
     expect(editor.dispatchEvent(selectAllInEditor)).toBe(false);
     expect(selectAllInEditor.defaultPrevented).toBe(true);
     expect(editor.ownerDocument.getSelection()?.toString()).toBe("Select this text");
+    const inkSelect = new KeyboardEvent("keydown", { key: "a", metaKey: true, altKey: true, bubbles: true, cancelable: true });
+    expect(session.handleKeyDown(inkSelect)).toBe(true);
+    expect(inkSelect.defaultPrevented).toBe(true);
+    expect(editor.ownerDocument.getSelection()?.toString()).toBe("Select this text");
+    const plainCopy = new KeyboardEvent("keydown", { key: "c", metaKey: true, bubbles: true, cancelable: true });
+    expect(session.handleKeyDown(plainCopy)).toBe(false);
+    expect(plainCopy.defaultPrevented).toBe(false);
     expect(session.handleKeyDown(deleteInEditor)).toBe(false);
     expect(deleteInEditor.defaultPrevented).toBe(false);
-    expect(internal.selectedTexts).toEqual([]);
+    expect(internal.selectedTexts.map((annotation) => annotation.id)).toEqual(["editor-shortcut"]);
     expect(internal.texts.all()).toHaveLength(1);
 
     // Browser editing replaces the native range selected above. Simulate that
@@ -3173,7 +3180,10 @@ describe("viewer runtime tracer", () => {
     editor.dispatchEvent(new Event("input", { bubbles: true }));
     internal.commitActiveTextEditor("test-editor-shortcuts");
     expect(internal.texts.all()[0]?.text).toBe("Replacement");
-    const selectAllAnnotations = new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true });
+    const plainSelectAll = new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true });
+    expect(session.handleKeyDown(plainSelectAll)).toBe(false);
+    expect(plainSelectAll.defaultPrevented).toBe(false);
+    const selectAllAnnotations = new KeyboardEvent("keydown", { key: "a", metaKey: true, altKey: true, bubbles: true, cancelable: true });
     expect(session.handleKeyDown(selectAllAnnotations)).toBe(true);
     expect(selectAllAnnotations.defaultPrevented).toBe(true);
     expect(internal.selectedTexts).toHaveLength(1);
