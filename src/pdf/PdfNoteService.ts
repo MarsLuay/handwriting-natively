@@ -190,9 +190,11 @@ export async function insertScannedPages(
 /** Inserts a blank page matching the preceding page (or page one at the start). */
 export async function insertMatchingBlankPage(
   sourceBytes: Uint8Array,
-  requestedPageNumber: number
+  requestedPageNumber: number,
+  report?: (stage: string) => void
 ): Promise<InsertedPdfPage> {
   const source = await loadRewrittenPdf(sourceBytes);
+  report?.("pdf-lib-load-complete");
   const pages = source.getPages();
   if (!pages.length) throw new Error("Cannot add a page to a PDF with no pages.");
   const requested = Number.isFinite(requestedPageNumber)
@@ -202,7 +204,9 @@ export async function insertMatchingBlankPage(
   const reference = pages[Math.max(0, pageNumber - 2)]!;
   const addedPage = source.insertPage(pageNumber - 1, [reference.getWidth(), reference.getHeight()]);
   addedPage.setRotation(reference.getRotation());
-  return { bytes: await source.save(), pageNumber };
+  const bytes = await source.save();
+  report?.("pdf-lib-save-complete");
+  return { bytes, pageNumber };
 }
 
 /** Rewrites source PDF bytes with a blank page matching its final page. */
