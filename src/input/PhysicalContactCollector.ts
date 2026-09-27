@@ -1,3 +1,4 @@
+import { percentile } from "../logging/PerformanceMetrics";
 import { getDebugNodeId } from "../dom/debugNodeId";
 import { describeTarget } from "../dom/describeElement";
 import {
@@ -300,7 +301,7 @@ class PhysicalContactCollector {
     if (hotPathMoveSamples.length > 200) hotPathMoveSamples.shift();
     hotPathStats.maxCollectorMoveMs = Math.max(hotPathStats.maxCollectorMoveMs, collectorWorkMs);
     const sorted = [...hotPathMoveSamples].sort((a, b) => a - b);
-    hotPathStats.p95CollectorMoveMs = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0;
+    hotPathStats.p95CollectorMoveMs = percentile(sorted, 0.95);
     if (collectorWorkMs <= HOT_PATH_LONG_TASK_MS) return;
     const now = Date.now();
     if (now - lastHotPathLongTaskAt < HOT_PATH_LONG_TASK_INTERVAL_MS) return;
