@@ -240,6 +240,30 @@ describe("PostZoomInputTrace", () => {
     })).toEqual({ action: "wait", reason: "active-pinch" });
   });
 
+  it("does not seed an orphan touch that the browser has already cleared", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observeTouch(-2034777937, "touchstart");
+    pinch.observeTouch(-2034777926, "touchstart");
+    const cleared = pinch.reconcileTouches("touchend", [-2034777926], []);
+    expect(cleared.map((entry) => entry.id)).toContain(-2034777937);
+    expect(cleared.every((entry) => entry.reason === "touch-list-all-clear")).toBe(true);
+    const seed = pinch.beginBurst();
+    expect(seed.seededPinchTouchIdentifiers).toEqual([]);
+    expect(pinch.evaluate(0).quiescent).toBe(true);
+    expect(pinch.needsAnimationFrame()).toBe(false);
+  });
+
+  it("drops a touch that disappeared from the active browser list", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observeTouch(1, "touchstart");
+    pinch.observeTouch(2, "touchstart");
+    const pruned = pinch.reconcileTouches("touchmove", [], [2]);
+    expect(pruned).toEqual([
+      expect.objectContaining({ id: 1, stream: "touch", reason: "not-in-current-active-set", event: "stale-pinch-contact-pruned" })
+    ]);
+    expect(pinch.beginBurst().seededPinchTouchIdentifiers).toEqual([2]);
+  });
+
   it("runs one post-timeout frame when a pinch id never ends", () => {
     const pinch = new PinchGestureCleanup();
     pinch.observePointer(4, "pointerdown", "touch");
