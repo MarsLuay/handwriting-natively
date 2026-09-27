@@ -81,6 +81,27 @@ function openTrace(): PostZoomDurabilityTrace {
 }
 
 describe("PostZoomDurabilityTrace", () => {
+  it("keeps page touches after settle even when the Pencil never returns as pen", () => {
+    const trace = openTrace();
+    const events = trace.note(genericTouch("page-touch", settleAt + 1_200, {
+      nativeScrollDeltaPx: 40,
+      panObserved: true,
+      composedPath: ["canvas.page", "div.pdf-page"]
+    }));
+    expect(events).toEqual([]);
+    const copy = trace.snapshot(settleAt + 2_000);
+    expect(copy.firstSuccessfulPostZoomPenAt).toBeNull();
+    expect(copy.contacts).toHaveLength(1);
+    expect(copy.contacts[0]).toMatchObject({
+      physicalContactId: "page-touch",
+      pointerType: "touch",
+      nativeScrollDeltaPx: 40,
+      composedPath: ["canvas.page", "div.pdf-page"]
+    });
+    expect(copy.firstLaterGenericTouchAfterPenRecovery).toBeNull();
+    expect(copy.firstLaterPageDragAfterPenRecovery).toBeNull();
+  });
+
   it("keeps a later generic touch after three successful pens, separate from the 8-second anomaly", () => {
     const durability = openTrace();
     const immediate = new PostZoomInputTrace();

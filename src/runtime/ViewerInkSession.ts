@@ -2077,7 +2077,8 @@ export class ViewerInkSession {
       tiltYAtDown: pointer?.tiltY ?? null,
       buttonAtDown: pointer?.button ?? null,
       buttonsAtDown: pointer?.buttons ?? null,
-      composedPathAtDown: pointer?.composedPath.slice(0, 6) ?? null,
+      composedPathAtDown: pointer?.composedPath.slice(0, 12) ?? touch?.composedPath.slice(0, 12) ?? null,
+      composedPathLabelsAtDown: pointer?.composedPathLabels ?? touch?.composedPathLabels ?? null,
       widthAtDown: pointer?.width ?? null,
       heightAtDown: pointer?.height ?? null,
       touchRadiusX: touch?.radiusX ?? null,
@@ -2151,7 +2152,7 @@ export class ViewerInkSession {
       panObserved: details.panObserved,
       panAccepted: null,
       target: pointer?.composedPath[0] ?? null,
-      composedPath: pointer?.composedPath ?? contact.rawTouch.first?.composedPath ?? null,
+      composedPath: pointer?.composedPathLabels ?? contact.rawTouch.first?.composedPathLabels ?? pointer?.composedPath ?? contact.rawTouch.first?.composedPath ?? null,
       touchActionClasses: details.touchActionClasses,
       activeElement: details.activeElement
     });

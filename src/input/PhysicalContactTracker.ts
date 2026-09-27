@@ -31,6 +31,7 @@ export interface RawPointerContactSample {
   clientY: number;
   targetId: number | string | null;
   composedPath: string[];
+  composedPathLabels?: string[];
   eventPhase: number;
   cancelable: boolean;
   defaultPrevented: boolean;
@@ -64,6 +65,7 @@ export interface RawTouchContactSample {
   changedTouches: RawTouchPoint[];
   targetId: number | string | null;
   composedPath: string[];
+  composedPathLabels?: string[];
 }
 
 export interface RawTouchContactEvent {
@@ -360,12 +362,21 @@ export class PhysicalContactTracker {
     this.updateTouch(contact, now, sample);
   }
 
+  private clonePointerSample(sample: RawPointerContactSample): RawPointerContactSample {
+    return {
+      ...sample,
+      composedPath: [...sample.composedPath],
+      composedPathLabels: [...(sample.composedPathLabels ?? [])]
+    };
+  }
+
   private cloneTouchSample(sample: RawTouchContactSample): RawTouchContactSample {
     return {
       ...sample,
       activeTouches: sample.activeTouches.map((touch) => ({ ...touch })),
       changedTouches: sample.changedTouches.map((touch) => ({ ...touch })),
-      composedPath: [...sample.composedPath]
+      composedPath: [...sample.composedPath],
+      composedPathLabels: [...(sample.composedPathLabels ?? [])]
     };
   }
 
@@ -375,8 +386,8 @@ export class PhysicalContactTracker {
     if (sample.pointerType === "touch") contact.pointerEventTouchSeen = true;
     this.refreshClassification(contact, now);
     if (sample.eventType === "pointermove") contact.pointerMoveCount += 1;
-    if (!contact.rawPointerFirst) contact.rawPointerFirst = { ...sample, composedPath: [...sample.composedPath] };
-    contact.rawPointerLast = { ...sample, composedPath: [...sample.composedPath] };
+    if (!contact.rawPointerFirst) contact.rawPointerFirst = this.clonePointerSample(sample);
+    contact.rawPointerLast = this.clonePointerSample(sample);
     this.updatePoint(contact, sample);
   }
 
@@ -545,8 +556,8 @@ export class PhysicalContactTracker {
       touchTerminal: contact.touchTerminal,
       terminal: contact.terminal,
       rawPointer: {
-        first: contact.rawPointerFirst ? { ...contact.rawPointerFirst, composedPath: [...contact.rawPointerFirst.composedPath] } : null,
-        last: contact.rawPointerLast ? { ...contact.rawPointerLast, composedPath: [...contact.rawPointerLast.composedPath] } : null
+        first: contact.rawPointerFirst ? this.clonePointerSample(contact.rawPointerFirst) : null,
+        last: contact.rawPointerLast ? this.clonePointerSample(contact.rawPointerLast) : null
       },
       rawTouch: {
         first: contact.rawTouchFirst ? this.cloneTouchSample(contact.rawTouchFirst) : null,
