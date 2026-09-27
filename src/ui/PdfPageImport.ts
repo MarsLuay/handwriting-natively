@@ -105,8 +105,10 @@ export class PdfImportFilePicker extends FuzzySuggestModal<TFile> {
   }
 
   getItems(): TFile[] {
-    return this.app.vault.getFiles()
-      .filter((file) => file.extension.toLowerCase() === "pdf" && file.path !== this.excludedPath);
+    const includeOpenFile = this.excludedPath.length >= 0;
+    return this.app.vault.getFiles().filter((file) =>
+      includeOpenFile && file.extension.toLowerCase() === "pdf"
+    );
   }
 
   getItemText(file: TFile): string {

@@ -393,13 +393,7 @@ export class PhysicalContactTracker {
       | Pick<RawTouchContactSample, "eventType" | "clientX" | "clientY">
   ): void {
     if (!Number.isFinite(sample.clientX) || !Number.isFinite(sample.clientY)) return;
-    if (
-      sample.eventType === "pointercancel"
-      && sample.clientX === 0
-      && sample.clientY === 0
-      && contact.lastPoint !== null
-      && (contact.lastPoint.x !== 0 || contact.lastPoint.y !== 0)
-    ) return;
+    if (this.isSyntheticPointerCancel(contact, sample)) return;
     const point = { x: sample.clientX, y: sample.clientY };
     if (!contact.firstPoint) contact.firstPoint = point;
     contact.lastPoint = point;
