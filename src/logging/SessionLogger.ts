@@ -1079,6 +1079,21 @@ export class SessionLogger {
    * Heuristic flash detectors (blank/handoff races). Warn so vault debug log
    * surfaces them without a dedicated frame-capture metric.
    */
+  inkVisibility(details: Record<string, unknown> = {}): void {
+    this.emit("info", "ink-visibility", {
+      document: this.documentPath,
+      ...details
+    });
+  }
+
+  inkVisibilityFlash(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "ink-visibility-flash", {
+      document: this.documentPath,
+      event: "ink-visibility-flash",
+      ...details
+    }, true);
+  }
+
   zoomFlashProxy(proxy: string, details: Record<string, unknown> = {}): void {
     this.emit("warn", "ink zoom flash proxy", {
       document: this.documentPath,

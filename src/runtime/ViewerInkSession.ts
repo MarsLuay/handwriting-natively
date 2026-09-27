@@ -28,6 +28,14 @@ import {
   validPhysicalDisplacementPx,
   type PostZoomContactObservation
 } from "./PostZoomInputTrace";
+import {
+  inkVisibilityCause,
+  inkVisibilityFlash,
+  probeInkCanvas,
+  replacementInkReady,
+  type InkVisibilityPhase,
+  type InkVisibilitySnapshot
+} from "./InkVisibility";
 import { deferredRenderDisposition } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
 import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
@@ -940,6 +948,8 @@ export class ViewerInkSession {
   }>();
   /** Delayed release avoids exposing an ink redraw before PDF.js finishes its own render. */
   private zoomCompositeReleaseFrame: number | null = null;
+  private inkReleaseHolds = 0;
+  private readonly lastInkPixelByPage = new Map<number, boolean>();
   private zoomCompositeReleaseTimer: number | null = null;
   private zoomCompositeSettledAt = 0;
   private zoomNativeContentMutations = 0;
@@ -4149,7 +4159,22 @@ export class ViewerInkSession {
   }
 
   private releaseZoomCompositeLayers(): void {
+    this.recordInkVisibility("before-final-canonical");
     this.rebaseZoomAfterNativeRender();
+    this.recordInkVisibility("after-final-canonical");
+    if (!this.replacementInkReady() && this.inkReleaseHolds < 2) {
+      this.inkReleaseHolds += 1;
+      const view = this.options.adapter.host.ownerDocument.defaultView;
+      if (view) {
+        this.zoomCompositeReleaseFrame = view.requestAnimationFrame(() => {
+          this.zoomCompositeReleaseFrame = null;
+          this.releaseZoomCompositeLayers();
+        });
+        return;
+      }
+    }
+    this.inkReleaseHolds = 0;
+    this.recordInkVisibility("before-composite-release");
     const now = performance.now();
     if (this.lastZoomNativeContentAt > 0) {
       const msSinceNative = now - this.lastZoomNativeContentAt;
@@ -4162,6 +4187,15 @@ export class ViewerInkSession {
     }
     for (const surface of this.surfaces.values()) {
       surface.overlay.classList.remove("native-pdf-handwriting-zoom-compositing");
+    }
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (view) {
+      view.requestAnimationFrame(() => {
+        this.recordInkVisibility("post-composite-release-frame-1");
+        view.requestAnimationFrame(() => {
+          this.recordInkVisibility("post-composite-release-frame-2");
+        });
+      });
     }
     const heldAfterSettleMs = this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null;
     this.logger.zoomComposite("release", {
@@ -4191,6 +4225,65 @@ export class ViewerInkSession {
     this.flushPendingMobileScrollRemount();
     // Strict settle may have deferred off-screen pages; idle-margin prefetch once handoff ends.
     this.scheduleViewportPaint();
+  }
+
+  private replacementInkReady(): boolean {
+    for (const [pageNumber, surface] of this.surfaces) {
+      if (!replacementInkReady(this.inkVisibilitySnapshot(pageNumber, surface, "before-composite-release"))) return false;
+    }
+    return true;
+  }
+
+  private recordInkVisibility(phase: InkVisibilityPhase): void {
+    for (const [pageNumber, surface] of this.surfaces) {
+      const snapshot = this.inkVisibilitySnapshot(pageNumber, surface, phase);
+      const previous = this.lastInkPixelByPage.has(pageNumber) ? this.lastInkPixelByPage.get(pageNumber)! : null;
+      this.logger.inkVisibility({ ...snapshot, cause: inkVisibilityCause(snapshot) });
+      const flash = inkVisibilityFlash({ previousHasInk: previous, current: snapshot });
+      if (flash) {
+        this.logger.inkVisibilityFlash({
+          ...flash,
+          zoomBurstId: this.postZoomTrace.currentBurstId(),
+          viewerGeneration: this.viewerGeneration,
+          pageMountGeneration: surface.page.mountGeneration,
+          routerGeneration: surface.router?.generation ?? null
+        });
+      }
+      if (snapshot.pixelProbeRan) this.lastInkPixelByPage.set(pageNumber, snapshot.pixelProbeHasInk);
+    }
+  }
+
+  private inkVisibilitySnapshot(pageNumber: number, surface: PageSurface, phase: InkVisibilityPhase): InkVisibilitySnapshot {
+    const canvas = surface.canvas;
+    const styles = canvas.ownerDocument.defaultView?.getComputedStyle(surface.overlay);
+    const probe = probeInkCanvas({
+      width: canvas.width,
+      height: canvas.height,
+      readAlpha: (x, y) => {
+        try {
+          return surface.context.getImageData(x, y, 1, 1).data[3] ?? 0;
+        } catch {
+          return null;
+        }
+      }
+    });
+    const rect = surface.overlay.getBoundingClientRect();
+    return {
+      pageNumber,
+      phase,
+      modelStrokeCount: this.ink.page(pageNumber).length,
+      overlayConnected: surface.overlay.isConnected,
+      overlayDisplay: styles?.display || surface.overlay.style.display || "visible",
+      overlayVisibility: styles?.visibility || surface.overlay.style.visibility || "visible",
+      overlayOpacity: styles?.opacity || surface.overlay.style.opacity || "1",
+      compositingClassPresent: surface.overlay.classList.contains("native-pdf-handwriting-zoom-compositing"),
+      canvasConnected: canvas.isConnected,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+      canonicalPaintComplete: surface.inkLayerValid && !surface.inkLayerBurstCapture,
+      ...probe,
+      overlayRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+    };
   }
 
   private cancelZoomCompositeRelease(): void {
