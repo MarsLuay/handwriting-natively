@@ -15,6 +15,12 @@ import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMen
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
+import {
+  pointerHandledForGeneration,
+  PostZoomInputTrace,
+  stylusIdentityFromClassification,
+  type PostZoomContactObservation
+} from "./PostZoomInputTrace";
 import { deferredRenderDisposition } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
 import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
@@ -898,6 +904,13 @@ export class ViewerInkSession {
   private zoomBurstReason = "view-scalechanging";
   private zoomCorrelationId: string | null = null;
   private zoomSequence = 0;
+  private readonly postZoomTrace = new PostZoomInputTrace();
+  private readonly postZoomStrokePointers = new Set<number>();
+  private readonly postZoomRouterByPointer = new Map<number, {
+    received: boolean;
+    rejected: boolean;
+    captureStale: boolean;
+  }>();
   /** Delayed release avoids exposing an ink redraw before PDF.js finishes its own render. */
   private zoomCompositeReleaseFrame: number | null = null;
   private zoomCompositeReleaseTimer: number | null = null;
@@ -1952,8 +1965,62 @@ export class ViewerInkSession {
     });
   }
 
+  private notePostZoomPhysicalContact(record: PhysicalContactRecord): void {
+    const point = record.contact.firstPoint ?? record.contact.lastPoint;
+    const page = point
+      ? this.options.adapter.pages().find((candidate) => containsClientPoint(candidate.element, point.x, point.y))
+      : undefined;
+    const overPage = Boolean(page?.element.isConnected);
+    if (record.phase === "start") {
+      const noted = this.postZoomTrace.notePageContact(Date.now(), overPage);
+      if (noted) {
+        this.postZoomTrace.remember("post-zoom-contact", {
+          ...noted,
+          physicalContactId: record.contact.physicalContactId,
+          classification: record.contact.classification,
+          pointerEventPenSeen: record.contact.pointerEventPenSeen
+        });
+      }
+      return;
+    }
+    if (!overPage || !page) return;
+    const surface = this.surfaces.get(page.pageNumber);
+    const strokeStarted = record.contact.pointerIds.some((pointerId) => this.postZoomStrokePointers.has(pointerId));
+    const route = record.contact.pointerIds
+      .map((pointerId) => this.postZoomRouterByPointer.get(pointerId))
+      .find((entry) => entry);
+    const observation: PostZoomContactObservation = {
+      overAnnotatablePage: true,
+      stylusIdentity: stylusIdentityFromClassification(record.contact),
+      physicalContactId: record.contact.physicalContactId,
+      strokeStarted,
+      routerReceived: route?.received === true,
+      routerRejected: route?.rejected === true,
+      stalePageBinding: Boolean(surface && (surface.page.element !== page.element || !surface.router?.bindsTo(page.element))),
+      inputOwnerMismatch: Boolean(page.element.isConnected && inputOwners(page.element).get(page.element) !== this),
+      fallbackRejected: false,
+      nativePanWon: !strokeStarted && record.contact.pointerEventPenSeen && record.contact.maxDisplacementPx > 8 && route?.received !== true,
+      pointerCaptureStale: route?.captureStale === true || record.contact.pointerCaptureLost
+    };
+    const anomaly = this.postZoomTrace.anomaly(observation);
+    if (!anomaly) return;
+    this.logger.postZoomAnomaly({
+      classification: anomaly.classification,
+      zoomBurstId: anomaly.zoomBurstId,
+      physicalContactId: anomaly.physicalContactId,
+      stylusIdentity: anomaly.stylusIdentity,
+      postZoomContactIndex: anomaly.postZoomContactIndex,
+      lifecycle: anomaly.lifecycle
+    });
+    for (const pointerId of record.contact.pointerIds) {
+      this.postZoomStrokePointers.delete(pointerId);
+      this.postZoomRouterByPointer.delete(pointerId);
+    }
+  }
+
   private handlePhysicalContactEvent(event: PhysicalContactCollectorEvent): void {
     this.updatePhysicalContactMappings(event);
+    for (const record of event.records) this.notePostZoomPhysicalContact(record);
     if (!event.shouldLog) return;
     this.logPhysicalContactRecords(event.records, event);
     const diagnostic = this.physicalContactDiagnostics(event);
@@ -2355,7 +2422,7 @@ export class ViewerInkSession {
       this.logger.zoomRepaintInterrupt(reason, { kind });
       this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
       if (reason.includes("scroll") || reason.includes("pagechanging")) {
-        this.pendingMobileScrollRemount = true;
+        this.markPendingMobileScrollRemount();
       }
       return;
     }
@@ -2383,7 +2450,7 @@ export class ViewerInkSession {
     if (this.destroyed || !this.runtimePlatform().mobile) return;
     if (this.zoomProfile) this.zoomProfile.mobileRefreshSignals += 1;
     if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
-      this.pendingMobileScrollRemount = true;
+      this.markPendingMobileScrollRemount();
       if (this.zoomProfile) this.zoomProfile.mobileRefreshDeferred += 1;
       this.scheduleZoomRepaint("view-scroll-mobile", this.options.adapter.getViewState().scale);
       return;
@@ -2403,7 +2470,7 @@ export class ViewerInkSession {
       this.mobileScrollRefreshFrame = null;
       if (this.destroyed || mountWorkSuperseded(burst, this.mountBurst)) return;
       if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
-        this.pendingMobileScrollRemount = true;
+        this.markPendingMobileScrollRemount();
         if (this.zoomProfile) this.zoomProfile.mobileRefreshDeferred += 1;
         return;
       }
@@ -2414,11 +2481,60 @@ export class ViewerInkSession {
     });
   }
 
+  private markPendingMobileScrollRemount(): void {
+    this.pendingMobileScrollRemount = true;
+    this.postZoomTrace.remember("pending-mobile-remount", { pendingMobileScrollRemount: true });
+  }
+
   private flushPendingMobileScrollRemount(): void {
     if (!this.pendingMobileScrollRemount || this.destroyed) return;
     this.pendingMobileScrollRemount = false;
+    this.postZoomTrace.remember("pending-mobile-remount-cleared", { pendingMobileScrollRemount: false });
     if (!this.runtimePlatform().mobile) return;
     this.scheduleMobileScrollRefresh();
+  }
+
+  private zoomBurstSnapshot(): Record<string, unknown> {
+    const view = this.options.adapter.getViewState();
+    const surface = this.surfaces.get(view.pageNumber);
+    const pageElement = surface?.page.element ?? null;
+    const router = surface?.router ?? null;
+    return {
+      zoomBurstId: this.postZoomTrace.currentBurstId(),
+      scaleBefore: this.zoomBurstScaleStart,
+      scaleAfter: this.zoomBurstScaleEnd ?? view.scale,
+      currentPage: view.pageNumber,
+      viewerGeneration: this.viewerGeneration,
+      pageMountGeneration: surface?.page.mountGeneration ?? null,
+      pageElementId: getDebugNodeId(pageElement),
+      pageElementConnected: Boolean(pageElement?.isConnected),
+      overlayId: getDebugNodeId(surface?.overlay ?? null),
+      overlayConnected: Boolean(surface?.overlay.isConnected),
+      routerGeneration: router?.generation ?? null,
+      routerAlive: Boolean(router?.isAlive()),
+      routerBindsToPage: Boolean(pageElement && router?.bindsTo(pageElement)),
+      routerBoundElementId: getDebugNodeId(router?.boundElement() ?? null),
+      routerListenerAborted: Boolean(router?.isListenerAborted()),
+      pendingMobileScrollRemount: this.pendingMobileScrollRemount,
+      zoomGestureActive: this.isZoomGestureActive(),
+      zoomHandoffActive: this.isZoomHandoffActive(),
+      activeTool: this.activeTool(),
+      ...this.inputPolicyLogFields()
+    };
+  }
+
+  /** Close a post-zoom window where the live page no longer matches its router. */
+  private rebindStaleZoomRouters(reason: string): void {
+    const pages = new Map(this.options.adapter.pages().map((page) => [page.pageNumber, page]));
+    for (const [pageNumber, surface] of this.surfaces) {
+      const current = pages.get(pageNumber);
+      if (!current?.element.isConnected || this.surfaceHasLiveInkInput(surface)) continue;
+      const sameElement = surface.page.element === current.element;
+      const bound = Boolean(surface.router?.bindsTo(current.element) && surface.router.isAlive() && !surface.router.isListenerAborted());
+      if (sameElement && bound) continue;
+      if (!sameElement) this.remountSurfaceOnPageReplacement(surface, current);
+      this.ensurePageRouter(surface, { force: true, reason });
+    }
   }
 
   private mobileMountSetUnchanged(pages: AnnotationPageInfo[]): boolean {
@@ -2838,6 +2954,10 @@ export class ViewerInkSession {
     // beyond ZOOM_ACTIVE_MS while still delivering scale ticks every frame;
     // the settle timer is the actual quiet-window boundary.
     if (!this.zoomProfile) {
+      this.zoomCorrelationId = this.postZoomTrace.begin();
+      this.zoomSequence += 1;
+      this.postZoomStrokePointers.clear();
+      this.postZoomRouterByPointer.clear();
       this.zoomBurstStartedAt = now;
       this.zoomTickCount = 0;
       this.startZoomProfile(scale, now);
@@ -2855,10 +2975,12 @@ export class ViewerInkSession {
         surfaces: this.surfaces.size
       });
       this.logger.zoomLifecycle("zoom-burst-start", {
+        zoomBurstId: this.zoomCorrelationId,
         reason,
         scale: scale ?? null,
         mountedPages: [...this.surfaces.keys()].sort((a, b) => a - b),
-        routerGenerations: this.currentRouterGenerations()
+        routerGenerations: this.currentRouterGenerations(),
+        ...this.zoomBurstSnapshot()
       });
     }
     this.zoomTickCount += 1;
@@ -2880,7 +3002,13 @@ export class ViewerInkSession {
       this.lastKnownViewScale = scale;
     }
     const settleMs = this.zoomSettleCoalesceMs(scale);
+    this.postZoomTrace.remember("zoom-scale", {
+      reason,
+      tick: this.zoomTickCount,
+      ...(scale !== undefined ? { scale: Number(scale.toFixed(4)) } : {})
+    });
     this.logger.zoomTick({
+      zoomBurstId: this.postZoomTrace.currentBurstId(),
       reason,
       tick: this.zoomTickCount,
       settleMs,
@@ -3128,12 +3256,19 @@ export class ViewerInkSession {
     this.zoomCompositeSettledAt = performance.now();
     this.lastZoomSettleAt = Date.now();
     this.zoomSettleSliceStartedAt = this.zoomCompositeSettledAt;
+    this.rebindStaleZoomRouters("zoom-settle");
+    this.handledDrawPointers.clear();
+    this.postZoomTrace.remember("zoom-cleared-handled-pointers", { zoomBurstId: this.zoomCorrelationId });
+    const settleSnapshot = this.zoomBurstSnapshot();
+    this.postZoomTrace.settle(Date.now(), settleSnapshot);
     this.logger.zoomLifecycle("zoom-burst-settle", {
+      zoomBurstId: this.zoomCorrelationId,
       burstTicks,
       burstDurationMs,
       scaleStart,
       scaleEnd,
-      routerGenerations: this.currentRouterGenerations()
+      routerGenerations: this.currentRouterGenerations(),
+      ...settleSnapshot
     });
     this.zoomSettleBurst = {
       reason: this.zoomBurstReason,
@@ -3668,7 +3803,12 @@ export class ViewerInkSession {
       nativeContentMutations: this.zoomNativeContentMutations,
       heldAfterSettleMs
     });
+    this.postZoomTrace.remember("zoom-release", {
+      pages: this.surfaces.size,
+      heldAfterSettleMs
+    });
     this.logger.zoomLifecycle("zoom-burst-release", {
+      zoomBurstId: this.postZoomTrace.currentBurstId(),
       pages: this.surfaces.size,
       nativeContentMutations: this.zoomNativeContentMutations,
       heldAfterSettleMs,
@@ -4134,7 +4274,7 @@ export class ViewerInkSession {
     ) {
       this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
       if (reason.includes("scroll") || reason.includes("pagechanging")) {
-        this.pendingMobileScrollRemount = true;
+        this.markPendingMobileScrollRemount();
       }
       return;
     }
@@ -6476,6 +6616,13 @@ export class ViewerInkSession {
           handledPointerGeneration: this.handledDrawPointers.get(event.pointerId) ?? null,
           touchAction: [...surface.page.element.classList].filter((name) => name.startsWith("native-pdf-handwriting-touch-")),
         });
+        this.postZoomRouterByPointer.set(event.pointerId, {
+          received: true,
+          rejected: route === "ignored" || route === "native" || route === "touch-pan" || route === "touch-zoom-pan",
+          captureStale: this.handledDrawPointers.get(event.pointerId) !== undefined
+            && this.handledDrawPointers.get(event.pointerId) !== surface.router?.generation
+        });
+        if (route === "draw" && event.pointerType === "pen") this.postZoomStrokePointers.add(event.pointerId);
         if (route === "draw" && surface.builder && event.pointerType === "pen") {
           this.logger.inputStroke("start", {
             page: surface.page.pageNumber,
@@ -6708,8 +6855,9 @@ export class ViewerInkSession {
     this.handledDrawPointers.set(pointerId, generation);
   }
 
-  private wasDrawPointerHandled(pointerId: number, _generation?: number): boolean {
-    return this.handledDrawPointers.has(pointerId);
+  private wasDrawPointerHandled(pointerId: number, generation?: number): boolean {
+    if (generation === undefined) return this.handledDrawPointers.has(pointerId);
+    return pointerHandledForGeneration(this.handledDrawPointers, pointerId, generation);
   }
 
   private releaseDrawPointerOwner(generation: number, handoff?: PointerRouterHandoff): void {
@@ -7178,7 +7326,14 @@ export class ViewerInkSession {
     hitTest = this.inspectPointerHit(event, this.closestPdfPageElement(event.target), within(event.target))
   ): void {
     if (!this.shouldFallbackRoutePointer(event)) return;
-    if (this.wasDrawPointerHandled(event.pointerId)) return;
+    const fallbackPage = this.closestPdfPageElement(event.target);
+    const fallbackSurface = fallbackPage
+      ? [...this.surfaces.values()].find((surface) => surface.page.element === fallbackPage)
+      : undefined;
+    const liveGeneration = fallbackSurface?.router?.generation;
+    if (liveGeneration !== undefined) {
+      if (this.wasDrawPointerHandled(event.pointerId, liveGeneration)) return;
+    } else if (this.wasDrawPointerHandled(event.pointerId)) return;
     const targetWithin = within(event.target);
     if (isInputChromeTarget(event.target)) return;
     if (this.skipOccludedPointer(event, hitTest)) return;
@@ -7299,8 +7454,14 @@ export class ViewerInkSession {
         page: surface.page.pageNumber,
         reason,
         listenerGeneration: surface.router.generation,
+        zoomBurstId: this.postZoomTrace.currentBurstId(),
         binds,
         alive
+      });
+      this.postZoomTrace.remember("router-destroy", {
+        page: surface.page.pageNumber,
+        reason,
+        listenerGeneration: surface.router.generation
       });
     }
     surface.router?.destroy();
@@ -7326,6 +7487,13 @@ export class ViewerInkSession {
     if (this.panProfile) this.panProfile.routerRebinds += 1;
     if (surface.strokePerformance) surface.strokePerformance.routerRebinds += 1;
     this.logger.inputLifecycleEvent("router-rebind", {
+      page: surface.page.pageNumber,
+      reason,
+      listenerGeneration: surface.router.generation,
+      zoomBurstId: this.postZoomTrace.currentBurstId(),
+      pageId: getDebugNodeId(pageElement)
+    });
+    this.postZoomTrace.remember("router-rebind", {
       page: surface.page.pageNumber,
       reason,
       listenerGeneration: surface.router.generation,

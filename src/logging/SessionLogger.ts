@@ -71,6 +71,7 @@ export interface ZoomRepaintLog {
 }
 
 export interface ZoomTickLog {
+  zoomBurstId?: string | null;
   reason: string;
   tick: number;
   source?: string;
@@ -512,6 +513,17 @@ export class SessionLogger {
     this.emit("info", "zoom lifecycle", {
       document: this.documentPath,
       phase,
+      ...details
+    });
+  }
+
+  /** One self-contained failure for the first Pencil contact after a zoom settle. */
+  postZoomAnomaly(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "post-zoom-input-anomaly", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      event: "post-zoom-input-anomaly",
+      reason: "post-zoom-contact-not-routed",
       ...details
     });
   }
