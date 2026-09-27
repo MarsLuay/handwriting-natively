@@ -901,6 +901,23 @@ export class PointerRouter {
     this.syncTouchActionMode();
   }
 
+  /**
+   * Drop captures this router still owns. Does not clear touch bookkeeping or
+   * change the next route. Used once at zoom settle as a single recovery probe.
+   */
+  releaseOwnedPointerCaptures(): number[] {
+    const ids = new Set<number>([
+      ...this.routed.keys(),
+      ...this.touches,
+      ...(this.touchAxis ? [this.touchAxis.pointerId] : [])
+    ]);
+    const released: number[] = [];
+    for (const pointerId of ids) {
+      if (safeReleasePointerCapture(this.element, pointerId)) released.push(pointerId);
+    }
+    return released;
+  }
+
   hasPointerCapture(pointerId: number): boolean {
     try {
       return this.element.hasPointerCapture?.(pointerId) ?? false;
