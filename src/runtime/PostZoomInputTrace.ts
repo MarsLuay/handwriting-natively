@@ -98,6 +98,23 @@ export function classifyPostZoomFailure(contact: PostZoomContactObservation): Po
   return "post-zoom-router-not-received";
 }
 
+/** Neutral diagnosis when the browser never established a stylus for a drawing-tool contact. */
+export function postZoomFinalDisposition(input: {
+  penToolActive: boolean;
+  stylusIdentity: StylusIdentity;
+  strokeStarted: boolean;
+  anomalyClassification: PostZoomFailureClass | null;
+}): { finalDisposition: string; possibleFinger: boolean } {
+  if (input.strokeStarted) return { finalDisposition: "stroke-started", possibleFinger: false };
+  if (input.penToolActive && input.stylusIdentity !== "established") {
+    return { finalDisposition: "post-zoom-contact-no-stylus-identity", possibleFinger: true };
+  }
+  if (input.anomalyClassification) {
+    return { finalDisposition: input.anomalyClassification, possibleFinger: false };
+  }
+  return { finalDisposition: "observed", possibleFinger: false };
+}
+
 /** A handled pointer only blocks the router generation that claimed it. */
 export function pointerHandledForGeneration(
   handled: ReadonlyMap<number, number>,
@@ -153,6 +170,13 @@ export class PostZoomInputTrace {
     return this.activeId;
   }
 
+  retainedContact(physicalContactId: string): Record<string, unknown> | null {
+    const contact = this.diagnosisState.firstPostZoomContacts.find(
+      (entry) => entry.physicalContactId === physicalContactId
+    );
+    return contact ? { ...contact } : null;
+  }
+
   /** Compact diagnosis kept after the ordinary log ring scrolls away. */
   diagnosis(): LastZoomDiagnosis {
     return {
@@ -177,8 +201,14 @@ export class PostZoomInputTrace {
     if (event === "pending-mobile-remount" || event === "pending-mobile-remount-cleared") {
       this.diagnosisState.pendingMobileScrollRemount = details.pendingMobileScrollRemount === true;
     }
-    if (event === "post-zoom-contact" && this.diagnosisState.firstPostZoomContacts.length < POST_ZOOM_CONTACT_LIMIT) {
-      this.diagnosisState.firstPostZoomContacts.push({ ...details });
+    if (event === "post-zoom-contact" && typeof details.physicalContactId === "string") {
+      const existing = this.diagnosisState.firstPostZoomContacts.find(
+        (contact) => contact.physicalContactId === details.physicalContactId
+      );
+      if (existing) Object.assign(existing, details);
+      else if (this.diagnosisState.firstPostZoomContacts.length < POST_ZOOM_CONTACT_LIMIT) {
+        this.diagnosisState.firstPostZoomContacts.push({ ...details });
+      }
     }
   }
 

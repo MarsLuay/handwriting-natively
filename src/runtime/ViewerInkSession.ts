@@ -18,6 +18,7 @@ import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from 
 import {
   pointerHandledForGeneration,
   PostZoomInputTrace,
+  postZoomFinalDisposition,
   stylusIdentityFromClassification,
   validPhysicalDisplacementPx,
   type PostZoomContactObservation
@@ -2018,55 +2019,135 @@ export class ViewerInkSession {
     });
   }
 
+  private postZoomContactEvidence(record: PhysicalContactRecord, pageNumber: number | null): Record<string, unknown> {
+    const contact = record.contact;
+    const pointer = contact.rawPointer.first;
+    const touch = contact.rawTouch.first;
+    const page = pageNumber === null ? undefined : this.options.adapter.pages().find((candidate) => candidate.pageNumber === pageNumber);
+    const surface = pageNumber === null ? undefined : this.surfaces.get(pageNumber);
+    return {
+      physicalContactId: contact.physicalContactId,
+      startedAt: contact.startedAt,
+      endedAt: contact.endedAt,
+      durationMs: contact.durationMs,
+      classification: contact.classification,
+      classificationTransitions: contact.classificationTransitions,
+      pointerIds: contact.pointerIds,
+      touchIdentifiers: contact.touchIdentifiers,
+      pointerEventPenSeen: contact.pointerEventPenSeen,
+      pointerEventTouchSeen: contact.pointerEventTouchSeen,
+      touchEventSeen: contact.touchEventSeen,
+      representation: contact.representation,
+      rawPointerTypeAtDown: pointer?.pointerType ?? null,
+      pressureAtDown: pointer?.pressure ?? null,
+      widthAtDown: pointer?.width ?? null,
+      heightAtDown: pointer?.height ?? null,
+      touchRadiusX: touch?.radiusX ?? null,
+      touchRadiusY: touch?.radiusY ?? null,
+      touchForce: touch?.force ?? null,
+      firstPoint: contact.firstPoint,
+      lastValidPoint: contact.lastValidPoint,
+      validPhysicalDisplacementPx: validPhysicalDisplacementPx(contact),
+      pointerCaptureLost: contact.pointerCaptureLost,
+      terminalPointRejectReason: contact.terminalPointRejectReason,
+      pageNumber,
+      pageMountGeneration: surface?.page.mountGeneration ?? null,
+      pageElementId: page ? getDebugNodeId(page.element) : null,
+      overlayId: surface ? getDebugNodeId(surface.overlay) : null,
+      routerGeneration: surface?.router?.generation ?? null
+    };
+  }
+
   private notePostZoomPhysicalContact(record: PhysicalContactRecord): void {
     const point = record.contact.firstPoint ?? record.contact.lastPoint;
     const page = point
       ? this.options.adapter.pages().find((candidate) => containsClientPoint(candidate.element, point.x, point.y))
       : undefined;
     const overPage = Boolean(page?.element.isConnected);
+    const retained = record.phase === "terminal"
+      ? this.postZoomTrace.retainedContact(record.contact.physicalContactId)
+      : null;
     if (record.phase === "start") {
       const noted = this.postZoomTrace.notePageContact(Date.now(), overPage);
-      if (noted) {
+      if (noted && page) {
+        const scroll = this.options.adapter.scrollElement();
         this.postZoomTrace.remember("post-zoom-contact", {
           ...noted,
-          physicalContactId: record.contact.physicalContactId,
-          classification: record.contact.classification,
-          pointerEventPenSeen: record.contact.pointerEventPenSeen,
-          validPhysicalDisplacementPx: validPhysicalDisplacementPx(record.contact),
-          terminalPointRejectReason: record.contact.terminalPointRejectReason,
-          pointerCaptureLost: record.contact.pointerCaptureLost
+          ...this.postZoomContactEvidence(record, page.pageNumber),
+          startClassification: record.contact.classification,
+          finalClassification: null,
+          scrollLeftAtStart: scroll.scrollLeft,
+          scrollTopAtStart: scroll.scrollTop
         });
       }
       return;
     }
-    if (!overPage || !page) return;
-    const surface = this.surfaces.get(page.pageNumber);
+    if ((!overPage || !page) && !retained) return;
+    const pageNumber = page?.pageNumber ?? (typeof retained?.pageNumber === "number" ? retained.pageNumber : null);
+    const surface = pageNumber === null ? undefined : this.surfaces.get(pageNumber);
     const strokeStarted = record.contact.pointerIds.some((pointerId) => this.postZoomStrokePointers.has(pointerId));
     const route = record.contact.pointerIds
       .map((pointerId) => this.postZoomRouterByPointer.get(pointerId))
       .find((entry) => entry);
     const validPhysicalDisplacement = validPhysicalDisplacementPx(record.contact);
+    const scroll = this.options.adapter.scrollElement();
+    const startLeft = typeof retained?.scrollLeftAtStart === "number" ? retained.scrollLeftAtStart : null;
+    const startTop = typeof retained?.scrollTopAtStart === "number" ? retained.scrollTopAtStart : null;
+    const nativeScrollDeltaPx = startLeft === null || startTop === null
+      ? null
+      : Math.hypot(scroll.scrollLeft - startLeft, scroll.scrollTop - startTop);
+    const stylusIdentity = stylusIdentityFromClassification(record.contact);
     const observation: PostZoomContactObservation = {
-      overAnnotatablePage: true,
-      stylusIdentity: stylusIdentityFromClassification(record.contact),
+      overAnnotatablePage: overPage,
+      stylusIdentity,
       physicalContactId: record.contact.physicalContactId,
       strokeStarted,
       routerReceived: route?.received === true,
       routerRejected: route?.rejected === true,
-      stalePageBinding: Boolean(surface && (surface.page.element !== page.element || !surface.router?.bindsTo(page.element))),
-      inputOwnerMismatch: Boolean(page.element.isConnected && inputOwners(page.element).get(page.element) !== this),
+      stalePageBinding: Boolean(surface && page && (surface.page.element !== page.element || !surface.router?.bindsTo(page.element))),
+      inputOwnerMismatch: Boolean(page?.element.isConnected && inputOwners(page.element).get(page.element) !== this),
       fallbackRejected: false,
       nativePanWon: !strokeStarted
         && record.contact.pointerEventPenSeen
         && record.contact.terminalPointRejectReason == null
         && !record.contact.pointerCaptureLost
-        && validPhysicalDisplacement > 8
-        && route?.received !== true,
+        && route?.received !== true
+        && (validPhysicalDisplacement > 8 || (nativeScrollDeltaPx !== null && nativeScrollDeltaPx > 1)),
       pointerCaptureStale: route?.captureStale === true
         || record.contact.pointerCaptureLost
         || record.contact.terminalPointRejectReason?.startsWith("lostpointercapture") === true
     };
-    const anomaly = this.postZoomTrace.anomaly(observation);
+    const anomaly = overPage ? this.postZoomTrace.anomaly(observation) : null;
+    const disposition = postZoomFinalDisposition({
+      penToolActive: isDrawingTool(this.activeTool()),
+      stylusIdentity,
+      strokeStarted,
+      anomalyClassification: anomaly?.classification ?? null
+    });
+    if (retained) {
+      this.postZoomTrace.remember("post-zoom-contact", {
+        ...this.postZoomContactEvidence(record, pageNumber),
+        classification: record.contact.classification,
+        finalClassification: record.contact.classification,
+        stylusIdentity,
+        strokeStarted,
+        strokeEnded: strokeStarted,
+        routerReceived: observation.routerReceived,
+        routerRejected: observation.routerRejected,
+        routerRejectReason: observation.routerRejected ? "route-rejected" : null,
+        route: observation.routerReceived ? (observation.routerRejected ? "rejected" : "received") : null,
+        fallbackConsidered: null,
+        fallbackRejectedReason: null,
+        pageMountGeneration: surface?.page.mountGeneration ?? retained.pageMountGeneration ?? null,
+        pageElementId: page ? getDebugNodeId(page.element) : retained.pageElementId ?? null,
+        overlayId: surface ? getDebugNodeId(surface.overlay) : retained.overlayId ?? null,
+        routerGeneration: surface?.router?.generation ?? retained.routerGeneration ?? null,
+        nativeScrollDeltaPx,
+        panObserved: nativeScrollDeltaPx !== null && nativeScrollDeltaPx > 1,
+        panAccepted: null,
+        ...disposition
+      });
+    }
     if (!anomaly) return;
     this.logger.postZoomAnomaly({
       classification: anomaly.classification,
@@ -3323,7 +3404,12 @@ export class ViewerInkSession {
     this.rebindStaleZoomRouters("zoom-settle");
     this.handledDrawPointers.clear();
     this.postZoomTrace.remember("zoom-cleared-handled-pointers", { zoomBurstId: this.zoomCorrelationId });
-    const settleSnapshot = this.zoomBurstSnapshot();
+    const settleSnapshot = {
+      ...this.zoomBurstSnapshot(),
+      // Captured before the burst fields are cleared. The live snapshot reads those fields.
+      scaleBefore: scaleStart,
+      scaleAfter: scaleEnd ?? this.options.adapter.getViewState().scale
+    };
     this.postZoomTrace.settle(Date.now(), settleSnapshot);
     this.logger.zoomLifecycle("zoom-burst-settle", {
       zoomBurstId: this.zoomCorrelationId,
@@ -6728,7 +6814,15 @@ export class ViewerInkSession {
           this.logger.inputStroke("start", {
             page: surface.page.pageNumber,
             routerGeneration: surface.router?.generation ?? null,
-            correlationId: this.postUiInputProbe.handoffCorrelationId(event.pointerId)
+            correlationId: this.postUiInputProbe.handoffCorrelationId(event.pointerId),
+            pointerType: event.pointerType,
+            physicalContactId: this.physicalContactIdsByPointer.get(event.pointerId) ?? null,
+            pointerEventPenSeen: true,
+            classification: "pen-only",
+            pressure: event.pressure,
+            width: event.width,
+            height: event.height,
+            touchEvidenceSeen: false
           });
         }
       },
