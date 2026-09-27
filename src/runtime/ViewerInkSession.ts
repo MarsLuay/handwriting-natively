@@ -77,7 +77,7 @@ import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type P
 import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { getDebugNodeId } from "../dom/debugNodeId";
 import { isElement, isElementInDocument, isHTMLElement, setElementCssProps } from "../dom/typeGuards";
-import { contactBlockedByOverlay, ensurePdfPageNumbers, isHandwritingPageChrome, targetInsidePage } from "../integration/pdfPageSelectors";
+import { contactBlockedByOverlay, ensurePdfPageNumbers, isHandwritingPageChrome, isPostZoomPageTarget } from "../integration/pdfPageSelectors";
 import { PdfExportService, annotatedFilename, editableAnnotatedFilename } from "../pdf/PdfExportService";
 import type { ImportedPdfPages } from "../pdf/PdfNoteService";
 import { exportInkStrokesToSvg } from "../pdf/SvgInkExportService";
@@ -2163,14 +2163,9 @@ export class ViewerInkSession {
   }
 
   private notePostZoomPhysicalContact(record: PhysicalContactRecord, target: EventTarget | null): void {
-    const point = record.contact.firstPoint ?? record.contact.lastPoint;
-    const geometricPage = point
-      ? this.options.adapter.pages().find((candidate) => containsClientPoint(candidate.element, point.x, point.y))
-      : undefined;
-    const blockedByOverlay = contactBlockedByOverlay(target);
-    const page = blockedByOverlay ? undefined : geometricPage;
+    const page = this.options.adapter.pages().find((candidate) => isPostZoomPageTarget(target, candidate.element));
     const overPage = Boolean(page?.element.isConnected);
-    const insidePage = targetInsidePage(target, page?.element ?? null);
+    const blockedByOverlay = contactBlockedByOverlay(target);
     const retained = record.phase === "terminal"
       ? this.postZoomTrace.retainedContact(record.contact.physicalContactId)
       : null;
@@ -2185,7 +2180,7 @@ export class ViewerInkSession {
           finalClassification: null,
           scrollLeftAtStart: scroll.scrollLeft,
           scrollTopAtStart: scroll.scrollTop,
-          targetInsidePage: insidePage,
+          targetInsidePage: true,
           blockedByOverlay,
           ...this.gesturePolicyForPage(page.pageNumber),
           pointerTypeOrigins: this.pointerTypeOrigins.forContact(record.contact.pointerIds, record.contact.touchIdentifiers)

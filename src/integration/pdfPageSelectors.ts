@@ -161,3 +161,8 @@ export function contactBlockedByOverlay(target: EventTarget | null): boolean {
 export function targetInsidePage(target: EventTarget | null, page: Element | null): boolean {
   return target instanceof Element && page !== null && (target === page || page.contains(target));
 }
+
+/** Coordinates under a drawer or modal do not make that tap a page contact. */
+export function isPostZoomPageTarget(target: EventTarget | null, page: Element | null): boolean {
+  return targetInsidePage(target, page) && !contactBlockedByOverlay(target);
+}
