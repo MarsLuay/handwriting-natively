@@ -16,7 +16,8 @@ import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMuta
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
 import {
-  POST_ZOOM_CAPTURE_RECOVERY,
+  PINCH_CLEANUP_MAX_WAIT_MS,
+  PinchGestureCleanup,
   pointerHandledForGeneration,
   PostZoomInputTrace,
   postZoomFinalDisposition,
@@ -918,6 +919,8 @@ export class ViewerInkSession {
   private zoomCorrelationId: string | null = null;
   private zoomSequence = 0;
   private readonly postZoomTrace = new PostZoomInputTrace();
+  private readonly pinchCleanup = new PinchGestureCleanup();
+  private pinchCleanupFrame: number | null = null;
   private readonly postZoomStrokePointers = new Set<number>();
   private readonly postZoomRouterByPointer = new Map<number, {
     received: boolean;
@@ -2194,6 +2197,14 @@ export class ViewerInkSession {
   }
 
   private handlePhysicalContactEvent(event: PhysicalContactCollectorEvent): void {
+    if (event.kind === "pointer" && event.pointerId !== null) {
+      const pointer = event.event as PointerEvent;
+      this.pinchCleanup.observePointer(event.pointerId, event.eventType, pointer.pointerType || "");
+    } else {
+      for (const identifier of event.touchIdentifiers) {
+        this.pinchCleanup.observeTouch(identifier, event.eventType);
+      }
+    }
     this.updatePhysicalContactMappings(event);
     for (const record of event.records) this.notePostZoomPhysicalContact(record);
     if (!event.shouldLog) return;
@@ -3130,6 +3141,7 @@ export class ViewerInkSession {
     // the settle timer is the actual quiet-window boundary.
     if (!this.zoomProfile) {
       this.zoomCorrelationId = this.postZoomTrace.begin();
+      this.pinchCleanup.beginBurst();
       this.zoomSequence += 1;
       this.postZoomStrokePointers.clear();
       this.postZoomRouterByPointer.clear();
@@ -3193,6 +3205,7 @@ export class ViewerInkSession {
       if (this.zoomProfile) this.zoomProfile.settleTimerResets += 1;
       window.clearTimeout(this.zoomSettleTimer);
     }
+    this.cancelPinchCleanupFrame();
     this.zoomSettleTimer = window.setTimeout(() => {
       this.zoomSettleTimer = null;
       this.runZoomSettlePaint();
@@ -3394,17 +3407,55 @@ export class ViewerInkSession {
     return false;
   }
 
-  /** Experiment 1 only: release captures still held by annotation routers. */
-  private releaseAnnotationPointerCaptures(): number[] {
-    const released: number[] = [];
+  private cancelPinchCleanupFrame(): void {
+    if (this.pinchCleanupFrame === null) return;
+    window.cancelAnimationFrame(this.pinchCleanupFrame);
+    this.pinchCleanupFrame = null;
+  }
+
+  /** Plugin touch ids still held by page routers. Logged, not cleared. */
+  private pluginTouchPointerIds(): number[] {
+    const ids: number[] = [];
     for (const surface of this.surfaces.values()) {
-      released.push(...(surface.router?.releaseOwnedPointerCaptures() ?? []));
+      ids.push(...(surface.router?.activeTouchPointerIds() ?? []));
     }
-    return released;
+    return ids;
+  }
+
+  /**
+   * Experiment: do not open the post-zoom window until pinch pointer and touch
+   * terminals have arrived, then one animation frame. Capture release is not repeated.
+   */
+  private awaitPinchGestureCleanup(): boolean {
+    const pluginTouchPointerIds = this.pluginTouchPointerIds();
+    const report = this.pinchCleanup.evaluate(performance.now(), PINCH_CLEANUP_MAX_WAIT_MS);
+    if (!report.quiescent) {
+      if (this.zoomSettleTimer !== null) window.clearTimeout(this.zoomSettleTimer);
+      this.zoomSettleTimer = window.setTimeout(() => {
+        this.zoomSettleTimer = null;
+        this.runZoomSettlePaint();
+      }, 32);
+      return true;
+    }
+    if (this.pinchCleanup.needsAnimationFrame()) {
+      this.cancelPinchCleanupFrame();
+      this.pinchCleanupFrame = window.requestAnimationFrame(() => {
+        this.pinchCleanupFrame = null;
+        this.pinchCleanup.noteAnimationFrame();
+        this.runZoomSettlePaint();
+      });
+      return true;
+    }
+    this.postZoomTrace.noteGestureCleanup({
+      ...report,
+      pluginTouchPointerIds
+    });
+    return false;
   }
 
   private runZoomSettlePaint(): void {
     if (this.destroyed) return;
+    if (this.awaitPinchGestureCleanup()) return;
     // Keep CSS compositing + draft canvas intact until the tip lifts. Mid-drag
     // settle was clearing the live draft and force-rebinding routers (log proof).
     if (this.hasAnyLiveInkInput()) {
@@ -3440,13 +3491,7 @@ export class ViewerInkSession {
     this.zoomCompositeSettledAt = performance.now();
     this.lastZoomSettleAt = Date.now();
     this.zoomSettleSliceStartedAt = this.zoomCompositeSettledAt;
-    const releasedCaptures = this.releaseAnnotationPointerCaptures();
-    this.postZoomTrace.noteCaptureRecovery(POST_ZOOM_CAPTURE_RECOVERY, releasedCaptures.length);
-    this.postZoomTrace.remember("zoom-capture-recovery", {
-      recoveryExperiment: POST_ZOOM_CAPTURE_RECOVERY,
-      capturesReleased: releasedCaptures.length,
-      pointerIds: releasedCaptures.slice(0, 8)
-    });
+    this.pinchCleanup.endBurst();
     this.rebindStaleZoomRouters("zoom-settle");
     this.handledDrawPointers.clear();
     this.postZoomTrace.remember("zoom-cleared-handled-pointers", { zoomBurstId: this.zoomCorrelationId });
@@ -3464,7 +3509,8 @@ export class ViewerInkSession {
       scaleStart,
       scaleEnd,
       routerGenerations: this.currentRouterGenerations(),
-      ...settleSnapshot
+      ...settleSnapshot,
+      ...(this.postZoomTrace.diagnosis().gestureCleanup ?? {})
     });
     this.zoomSettleBurst = {
       reason: this.zoomBurstReason,

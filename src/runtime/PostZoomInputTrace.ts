@@ -38,6 +38,8 @@ export interface PostZoomContactObservation {
 
 /** One settle-time recovery, so a later device log can attribute the next pointer type. */
 export const POST_ZOOM_CAPTURE_RECOVERY = "release-annotation-pointer-captures";
+export const POST_ZOOM_GESTURE_RECOVERY = "wait-for-all-pinch-contacts-to-fully-terminate-before-post-zoom-enable";
+export const PINCH_CLEANUP_MAX_WAIT_MS = 800;
 
 export interface StylusIdentityRegression {
   event: "post-zoom-stylus-identity-regression";
@@ -112,6 +114,7 @@ export interface LastZoomDiagnosis {
   stylusIdentityRegression: StylusIdentityRegression | null;
   recoveryExperiment: string | null;
   capturesReleased: number;
+  gestureCleanup: Record<string, unknown> | null;
 }
 
 export function validPhysicalDisplacementPx(contact: {
@@ -210,7 +213,8 @@ export class PostZoomInputTrace {
     anomalyLifecycle: [],
     stylusIdentityRegression: null,
     recoveryExperiment: null,
-    capturesReleased: 0
+    capturesReleased: 0,
+    gestureCleanup: null
   };
 
   currentBurstId(): string | null {
@@ -237,6 +241,7 @@ export class PostZoomInputTrace {
     this.diagnosisState.stylusIdentityRegression = null;
     this.diagnosisState.recoveryExperiment = null;
     this.diagnosisState.capturesReleased = 0;
+    this.diagnosisState.gestureCleanup = null;
     this.remember("zoom-begin", { zoomBurstId: this.activeId }, at);
     return this.activeId;
   }
@@ -258,8 +263,14 @@ export class PostZoomInputTrace {
       anomalyLifecycle: this.diagnosisState.anomalyLifecycle.map((event) => ({ ...event, details: { ...event.details } })),
       stylusIdentityRegression: this.diagnosisState.stylusIdentityRegression
         ? { ...this.diagnosisState.stylusIdentityRegression }
-        : null
+        : null,
+      gestureCleanup: this.diagnosisState.gestureCleanup ? { ...this.diagnosisState.gestureCleanup } : null
     };
+  }
+
+  noteGestureCleanup(details: Record<string, unknown>): void {
+    this.diagnosisState.recoveryExperiment = POST_ZOOM_GESTURE_RECOVERY;
+    this.diagnosisState.gestureCleanup = { ...details, recoveryExperiment: POST_ZOOM_GESTURE_RECOVERY };
   }
 
   noteCaptureRecovery(experiment: string, capturesReleased: number): void {
@@ -358,5 +369,119 @@ export class PostZoomInputTrace {
       physicalContactId: contact.physicalContactId
     });
     return payload;
+  }
+}
+
+interface PinchPointerState {
+  terminal: boolean;
+  lostCapture: boolean;
+}
+
+export interface PinchCleanupReport {
+  pinchPointerIds: number[];
+  pinchTouchIdentifiers: number[];
+  terminalPointerIds: number[];
+  terminalTouchIdentifiers: number[];
+  lostCapturePointerIds: number[];
+  activePinchPointersAtSettle: number[];
+  activePinchTouchesAtSettle: number[];
+  settleDeferredForGestureCleanup: boolean;
+  gestureCleanupWaitMs: number;
+  postCleanupAnimationFrames: number;
+  gestureCleanupTimedOut: boolean;
+  quiescent: boolean;
+}
+
+/** Touch contacts in the zoom burst. Pen and mouse are not pinch participants. */
+export class PinchGestureCleanup {
+  private tracking = false;
+  private deferredAt: number | null = null;
+  private animationFrames = 0;
+  private timedOut = false;
+  private readonly pointers = new Map<number, PinchPointerState>();
+  private readonly touches = new Map<number, { terminal: boolean }>();
+  private readonly pinchPointers = new Set<number>();
+  private readonly pinchTouches = new Set<number>();
+
+  beginBurst(): void {
+    this.tracking = true;
+    this.deferredAt = null;
+    this.animationFrames = 0;
+    this.timedOut = false;
+    this.pinchPointers.clear();
+    this.pinchTouches.clear();
+    for (const [id, state] of this.pointers) {
+      if (!state.terminal) this.pinchPointers.add(id);
+    }
+    for (const [id, state] of this.touches) {
+      if (!state.terminal) this.pinchTouches.add(id);
+    }
+  }
+
+  endBurst(): void {
+    this.tracking = false;
+  }
+
+  observePointer(pointerId: number, eventType: string, pointerType: string): void {
+    if (pointerType === "pen" || pointerType === "mouse") return;
+    const current = this.pointers.get(pointerId) ?? { terminal: false, lostCapture: false };
+    if (eventType === "pointerdown") {
+      this.pointers.set(pointerId, { terminal: false, lostCapture: false });
+    } else {
+      if (eventType === "pointerup" || eventType === "pointercancel") current.terminal = true;
+      if (eventType === "lostpointercapture") current.lostCapture = true;
+      this.pointers.set(pointerId, current);
+    }
+    if (this.tracking) this.pinchPointers.add(pointerId);
+  }
+
+  observeTouch(identifier: number, eventType: string): void {
+    const current = this.touches.get(identifier) ?? { terminal: false };
+    if (eventType === "touchstart") {
+      this.touches.set(identifier, { terminal: false });
+    } else {
+      if (eventType === "touchend" || eventType === "touchcancel") current.terminal = true;
+      this.touches.set(identifier, current);
+    }
+    if (this.tracking) this.pinchTouches.add(identifier);
+  }
+
+  noteAnimationFrame(): void {
+    this.animationFrames += 1;
+  }
+
+  needsAnimationFrame(): boolean {
+    return this.animationFrames < 1;
+  }
+
+  /**
+   * Quiescent once every pinch pointer and touch has a terminal event.
+   * `lostpointercapture` is recorded, but it does not keep settle open after
+   * the pointer already ended: the last build showed no annotation capture.
+   */
+  evaluate(now: number, maxWaitMs = PINCH_CLEANUP_MAX_WAIT_MS): PinchCleanupReport {
+    const activePinchPointersAtSettle = [...this.pinchPointers].filter((id) => !this.pointers.get(id)?.terminal);
+    const activePinchTouchesAtSettle = [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal);
+    const blocking = activePinchPointersAtSettle.length > 0 || activePinchTouchesAtSettle.length > 0;
+    if (blocking) {
+      if (this.deferredAt === null) this.deferredAt = now;
+      this.animationFrames = 0;
+    }
+    const gestureCleanupWaitMs = this.deferredAt === null ? 0 : Math.max(0, Math.round(now - this.deferredAt));
+    if (blocking && gestureCleanupWaitMs >= maxWaitMs) this.timedOut = true;
+    return {
+      pinchPointerIds: [...this.pinchPointers],
+      pinchTouchIdentifiers: [...this.pinchTouches],
+      terminalPointerIds: [...this.pinchPointers].filter((id) => this.pointers.get(id)?.terminal === true),
+      terminalTouchIdentifiers: [...this.pinchTouches].filter((id) => this.touches.get(id)?.terminal === true),
+      lostCapturePointerIds: [...this.pinchPointers].filter((id) => this.pointers.get(id)?.lostCapture === true),
+      activePinchPointersAtSettle,
+      activePinchTouchesAtSettle,
+      settleDeferredForGestureCleanup: this.deferredAt !== null,
+      gestureCleanupWaitMs,
+      postCleanupAnimationFrames: this.animationFrames,
+      gestureCleanupTimedOut: this.timedOut,
+      quiescent: !blocking || this.timedOut
+    };
   }
 }
