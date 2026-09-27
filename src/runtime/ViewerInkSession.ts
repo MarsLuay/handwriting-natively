@@ -663,6 +663,9 @@ interface ZoomProfileState {
   layoutFramesScheduled: number;
   layoutFramesExecuted: number;
   coalescedVisualUpdates: number;
+  pagesTouched: number;
+  overlaysTouched: number;
+  offscreenPagesSkipped: number;
   layoutSyncs: number;
   compositorTicks: number;
   bitmapBlits: number;
@@ -951,6 +954,7 @@ export class ViewerInkSession {
   private zoomBurstWatchdog: number | null = null;
   /** Coalesces repeated native scale signals to one overlay/layout pass per frame. */
   private zoomLayoutFrame: number | null = null;
+  private zoomLayoutPhase: "burst" | "native-content" = "burst";
   private zoomBurstStartedAt = 0;
   private zoomTickCount = 0;
   private zoomBurstScaleStart: number | null = null;
@@ -3079,6 +3083,9 @@ export class ViewerInkSession {
       layoutFramesScheduled: 0,
       layoutFramesExecuted: 0,
       coalescedVisualUpdates: 0,
+      pagesTouched: 0,
+      overlaysTouched: 0,
+      offscreenPagesSkipped: 0,
       layoutSyncs: 0,
       compositorTicks: 0,
       bitmapBlits: 0,
@@ -3171,8 +3178,9 @@ export class ViewerInkSession {
     return adapter.consumeSidebarFollowZoomMetrics?.() ?? null;
   }
 
-  private scheduleZoomOverlayLayout(): void {
+  private scheduleZoomOverlayLayout(phase: "burst" | "native-content" = "burst"): void {
     if (this.destroyed || !this.zoomCompositing) return;
+    if (phase === "native-content") this.zoomLayoutPhase = phase;
     if (this.zoomLayoutFrame !== null) {
       if (this.zoomProfile) this.zoomProfile.coalescedVisualUpdates += 1;
       return;
@@ -3183,14 +3191,17 @@ export class ViewerInkSession {
     this.zoomLayoutFrame = view.requestAnimationFrame(() => {
       this.zoomLayoutFrame = null;
       if (this.destroyed || !this.zoomCompositing) return;
+      const layoutPhase = this.zoomLayoutPhase;
+      this.zoomLayoutPhase = "burst";
       const now = performance.now();
+      let frameIntervalMs: number | null = null;
       if (this.zoomProfile) {
         this.zoomProfile.layoutFramesExecuted += 1;
         this.zoomProfile.frameCount += 1;
         if (this.zoomProfile.lastFrameAt !== null) {
-          const frameInterval = Math.max(0, now - this.zoomProfile.lastFrameAt);
-          this.zoomProfile.frameIntervals.add(frameInterval);
-          if (frameInterval >= this.zoomProfile.frameIntervals.maxMs) {
+          frameIntervalMs = Math.max(0, now - this.zoomProfile.lastFrameAt);
+          this.zoomProfile.frameIntervals.add(frameIntervalMs);
+          if (frameIntervalMs >= this.zoomProfile.frameIntervals.maxMs) {
             this.zoomProfile.worstFrameOffsetMs = roundMs(now - this.zoomProfile.startedAt);
           }
         }
@@ -3217,7 +3228,7 @@ export class ViewerInkSession {
         }
       }
       const layoutStarted = performance.now();
-      this.syncZoomOverlayLayouts();
+      this.syncZoomOverlayLayouts(layoutPhase);
       const layoutMs = performance.now() - layoutStarted;
       const geometryStarted = performance.now();
       this.recordZoomGeometry();
@@ -3241,7 +3252,7 @@ export class ViewerInkSession {
       if (pluginWorkMs >= FRAME_MS_120) {
         this.logger.zoomLongFrame({
           zoomBurstId: this.postZoomTrace.currentBurstId(),
-          frameDeltaMs: this.zoomProfile?.lastFrameAt == null ? null : roundMs(pluginWorkMs),
+          frameDeltaMs: frameIntervalMs === null ? null : roundMs(frameIntervalMs),
           pluginWorkMs: roundMs(pluginWorkMs),
           contributors: {
             syncZoomOverlayLayouts: roundMs(layoutMs),
@@ -3304,6 +3315,7 @@ export class ViewerInkSession {
   }
 
   private cancelZoomOverlayLayout(): void {
+    this.zoomLayoutPhase = "burst";
     if (this.zoomLayoutFrame === null) return;
     this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.zoomLayoutFrame);
     this.zoomLayoutFrame = null;
@@ -3402,6 +3414,9 @@ export class ViewerInkSession {
       settleTimerResets: profile.settleTimerResets,
       layoutFramesScheduled: profile.layoutFramesScheduled,
       layoutFramesExecuted: profile.layoutFramesExecuted,
+      pagesTouched: profile.pagesTouched,
+      overlaysTouched: profile.overlaysTouched,
+      offscreenPagesSkipped: profile.offscreenPagesSkipped,
       layoutSyncs: profile.layoutSyncs,
       compositorTicks: profile.compositorTicks,
       bitmapBlits: profile.bitmapBlits,
@@ -4509,8 +4524,14 @@ export class ViewerInkSession {
     this.lastZoomNativeContentAt = 0;
     this.zoomHandoffNeedsFinalRebase = false;
     this.zoomCompositing = true;
+    this.zoomLayoutPhase = "burst";
     const started = performance.now();
+    const rootRect = this.options.adapter.root.getBoundingClientRect();
     for (const surface of this.surfaces.values()) {
+      if (!this.surfaceNearViewport(surface, "idle", rootRect)) {
+        if (this.zoomProfile) this.zoomProfile.offscreenPagesSkipped += 1;
+        continue;
+      }
       this.captureInkLayerFromCanvas(surface);
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
     }
@@ -4675,10 +4696,15 @@ export class ViewerInkSession {
 
     if (handoffGuard && this.isZoomHandoffActive()) {
       // PDF.js may finish canvas/text replacement after the first zoom settle.
-      // Follow that geometry immediately, but reserve the one canonical redraw
-      // for the quiet handoff boundary instead of beginning another zoom burst.
-      this.syncZoomOverlayLayouts("native-content");
-      if (!this.zoomCompositing) this.zoomHandoffNeedsFinalRebase = true;
+      // During the active burst, share the existing display-frame update with
+      // scale ticks instead of forcing one layout pass per mutation callback.
+      // The post-settle handoff remains immediate so the compositor stays
+      // aligned while native content is being replaced.
+      if (this.zoomCompositing) this.scheduleZoomOverlayLayout("native-content");
+      else {
+        this.syncZoomOverlayLayouts("native-content");
+        this.zoomHandoffNeedsFinalRebase = true;
+      }
       if (reattached) {
         this.logger.zoomFlashProxy("reattach-layout-only", {
           reattachedOverlayPages,
@@ -4859,7 +4885,12 @@ export class ViewerInkSession {
     if (this.zoomProfile) this.zoomProfile.layoutSyncs += 1;
     const pages = this.options.adapter.pages();
     const byNumber = new Map(pages.map((page) => [page.pageNumber, page]));
+    const rootRect = this.options.adapter.root.getBoundingClientRect();
     for (const [pageNumber, surface] of this.surfaces) {
+      if (!this.surfaceNearViewport(surface, "idle", rootRect)) {
+        if (this.zoomProfile) this.zoomProfile.offscreenPagesSkipped += 1;
+        continue;
+      }
       const current = byNumber.get(pageNumber);
       if (!current) continue;
       if (!this.reattachSurface(surface, current)) {
@@ -4871,9 +4902,14 @@ export class ViewerInkSession {
           continue;
         }
       }
-      this.ensurePageRouter(surface);
+      // reattachSurface/remountSurfaceOnPageReplacement already synchronize the
+      // layout and router. Do not repeat those DOM reads/writes for every
+      // surface on every display frame.
+      if (this.zoomProfile) {
+        this.zoomProfile.pagesTouched += 1;
+        this.zoomProfile.overlaysTouched += 1;
+      }
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
-      this.syncOverlayLayout(surface);
       this.syncTextLayoutDuringZoom(surface);
       this.logZoomInkLayout(surface, phase);
     }
@@ -4897,8 +4933,14 @@ export class ViewerInkSession {
       skippedCulled: 0,
       skippedBlitOnly: 0
     };
+    const rootRect = this.options.adapter.root.getBoundingClientRect();
     const pages = new Map(this.options.adapter.pages().map((page) => [page.pageNumber, page]));
     for (const [pageNumber, surface] of this.surfaces) {
+      if (!this.surfaceNearViewport(surface, "strict", rootRect)) {
+        surface.viewportCullPending = true;
+        stats.skippedCulled += 1;
+        continue;
+      }
       const current = pages.get(pageNumber);
       if (!current) {
         stats.skippedDisconnected += 1;
@@ -4912,9 +4954,8 @@ export class ViewerInkSession {
           continue;
         }
       }
-      this.ensurePageRouter(surface, {
-        reason: this.surfaceHasLiveInkInput(surface) ? "zoom-handoff-final-live-ink" : "zoom-handoff-final"
-      });
+      // Reattach/remount already restores the page-bound router. Avoid a
+      // second canvas probe during the final handoff frame.
       // A capped backing canvas can keep the same pixel dimensions while its
       // CSS geometry changes. Invalidating forces a canonical PDF-space paint
       // at the final scale in either case.
@@ -8601,11 +8642,14 @@ export class ViewerInkSession {
     const force = options?.force === true;
     const binds = Boolean(surface.router?.bindsTo(pageElement));
     const alive = Boolean(surface.router?.isAlive());
+    // Stable routers do not need a PDF canvas probe on every zoom frame. Apart
+    // from avoiding a DOM read, this keeps a healthy router out of PDF.js's
+    // canvas replacement path until the caller has evidence it is stale.
+    // Callers pass force after zoom handoff / page remount when rebinding is required.
+    if (!force && binds && alive) return;
     const pdfCanvas = pdfRenderCanvas(pageElement);
     const hasPdfCanvas = Boolean(pdfCanvas);
     // Early PDF.js paints may lack a canvas briefly; do not thrash routers on that.
-    // Callers pass force after zoom handoff / page remount when rebinding is required.
-    if (!force && binds && alive) return;
     if (surface.router) {
       if (this.zoomProfile) this.zoomProfile.routerDestroys += 1;
       this.logger.inputLifecycleEvent("router-destroy", {

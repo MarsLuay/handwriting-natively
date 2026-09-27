@@ -179,6 +179,59 @@ class ZoomAdapter implements ObsidianPdfAdapter {
   }
 }
 
+/** Two mounted pages let the zoom regression verify viewport culling. */
+class MultiPageZoomAdapter extends ZoomAdapter {
+  readonly offscreenPage = document.createElement("div");
+  readonly offscreenCanvas = document.createElement("canvas");
+  readonly offscreenWrapper = document.createElement("div");
+  readonly offscreenBox = rect(0, 2000, 600, 800);
+
+  constructor() {
+    super();
+    this.offscreenPage.dataset.pageNumber = "2";
+    this.offscreenWrapper.className = "canvasWrapper";
+    this.offscreenWrapper.append(this.offscreenCanvas);
+    this.offscreenPage.append(this.offscreenWrapper);
+    this.root.append(this.offscreenPage);
+    Object.defineProperty(this.root, "getBoundingClientRect", {
+      configurable: true,
+      value: () => rect(0, 0, 600, 800)
+    });
+    Object.defineProperty(this.offscreenPage, "getBoundingClientRect", {
+      configurable: true,
+      value: () => this.offscreenBox
+    });
+    Object.defineProperty(this.offscreenCanvas, "getBoundingClientRect", {
+      configurable: true,
+      value: () => this.offscreenBox
+    });
+  }
+
+  pages(): PdfPageInfo[] {
+    return [...super.pages(), {
+      pageNumber: 2,
+      width: this.pageWidth,
+      height: this.pageHeight,
+      scale: this.scale,
+      rotation: 0,
+      element: this.offscreenPage
+    }];
+  }
+
+  mountOverlay(pageNumber: number): HTMLElement {
+    if (pageNumber !== 2) return super.mountOverlay(pageNumber);
+    const overlay = document.createElement("div");
+    overlay.dataset.pageNumber = String(pageNumber);
+    overlay.className = "native-pdf-handwriting-overlay";
+    Object.defineProperty(overlay, "getBoundingClientRect", {
+      configurable: true,
+      value: () => this.offscreenBox
+    });
+    this.offscreenPage.append(overlay);
+    return overlay;
+  }
+}
+
 type CanvasSpy = {
   setTransform: ReturnType<typeof vi.fn>;
   clearRect: ReturnType<typeof vi.fn>;
@@ -440,6 +493,55 @@ describe("zoom ink compositing", () => {
     expect(profile.layoutFramesExecuted).toBe(1);
     expect(profile.coalescedVisualUpdates).toBe(7);
     expect(profile.vectorRepaints).toBeGreaterThan(0);
+    await session.destroy();
+  });
+
+  it("skips offscreen pages during the active compositor burst", async () => {
+    const adapter = new MultiPageZoomAdapter();
+    const session = await createSession(adapter);
+    const offscreenOverlay = adapter.offscreenPage.querySelector<HTMLElement>(".native-pdf-handwriting-overlay");
+    expect(offscreenOverlay).toBeTruthy();
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.35, { left: 0, top: 0, width: 810, height: 1080 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(offscreenOverlay?.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+    const profile = debugCalls("ink zoom profile").at(-1)?.[2] as {
+      offscreenPagesSkipped: number;
+      pagesTouched: number;
+    };
+    expect(profile.offscreenPagesSkipped).toBeGreaterThan(0);
+    expect(profile.pagesTouched).toBeGreaterThan(0);
+    await session.destroy();
+  });
+
+  it("coalesces PDF.js mutations into the active zoom display frame", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const profile = () => (session as unknown as {
+      zoomProfile: { layoutSyncs: number } | null;
+    }).zoomProfile;
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.3, { left: 0, top: 0, width: 780, height: 1040 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    expect(profile()?.layoutSyncs).toBe(1);
+
+    session.onPdfPageContentMutation(1);
+    session.onPdfPageContentMutation(2);
+    session.onPdfPageContentMutation(3);
+    expect(profile()?.layoutSyncs).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(16);
+    expect(profile()?.layoutSyncs).toBe(2);
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+    expect(debugCalls("ink zoom profile")).toHaveLength(1);
     await session.destroy();
   });
 
