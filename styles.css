@@ -536,10 +536,10 @@
   position: fixed;
 }
 /* Draw mode: native text/annotation layers must not steal mouse/stylus hits.
-   Touch-action modes (Ink-style) live on the page shell via PointerRouter:
-   - .touch-pan-xy while Draw is on and tip is up (fingers may scroll/pinch)
-   - .touch-none while Pencil tip is down, or single-finger vertical axis lock
-   - neither class when Draw is off (PDF.js default)
+   Touch-action modes live on the page shell via PointerRouter:
+   - .touch-pan-xy while the manipulation machine is armed and the Pencil tip is up
+   - .touch-none while the Pencil tip is down, or a vertical axis lock is active
+   Finger touch stays native and does not depend on a Draw mode.
    Single-finger Draw scroll: after 4px, axis lock — vertical drives PDF scroll;
    horizontal leaves native (avoids fighty diagonal pan next to writing). */
 .pdf-viewer .native-pdf-handwriting-draw-hit-page > .textLayer,

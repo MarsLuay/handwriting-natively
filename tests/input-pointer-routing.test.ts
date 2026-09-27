@@ -49,9 +49,14 @@ describe("PointerRouter", () => {
       activeTool: () => "pen",
       canAnnotatePointer: () => true
     });
-    // Pencil-first: annotation availability alone never locks touch-action.
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
+    expect(router.gesturePolicy()).toMatchObject({
+      manipulationState: "armed",
+      manipulationTouchAction: "pan-xy",
+      touchPanXyClassPresent: true,
+      touchNoneClassPresent: false
+    });
     element.dispatchEvent(pointer("pen", 90, { pressure: 0.5 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
     expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
@@ -215,8 +220,8 @@ describe("PointerRouter", () => {
 
     element.dispatchEvent(pointer("pen", 50, { eventType: "pointerup", pressure: 0 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
-    // Pencil-first: never re-apply pan-xy from annotation availability alone.
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
+    expect(router.gesturePolicy().manipulationState).toBe("armed");
 
     const fingerScroll = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
     Object.defineProperty(fingerScroll, "touches", { value: [{ identifier: 99 }] });
@@ -1234,8 +1239,112 @@ describe("safeReleasePointerCapture", () => {
   });
 });
 
+describe("manipulation touch-action integration", () => {
+  function mountedRouter(starts = vi.fn()): { element: HTMLElement; router: PointerRouter; starts: ReturnType<typeof vi.fn>; routes: string[] } {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const routes: string[] = [];
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: (event) => event.pointerType === "pen",
+      onStart: starts,
+      onRoute: (route) => routes.push(route)
+    });
+    return { element, router, starts, routes };
+  }
+
+  it("keeps the first and second fingers native while the machine enters pinch", () => {
+    const { element, router, starts, routes } = mountedRouter();
+    element.dispatchEvent(pointer("touch", 1, { isPrimary: true }));
+    expect(routes.at(-1)).toBe("touch-pan");
+    expect(router.gesturePolicy()).toMatchObject({
+      manipulationState: "assisted-touch",
+      manipulationActiveTouches: 1,
+      manipulationTouchAction: "pan-xy",
+      touchPanXyClassPresent: true
+    });
+    element.dispatchEvent(pointer("touch", 2, { isPrimary: false }));
+    expect(routes.at(-1)).toBe("touch-zoom-pan");
+    expect(router.gesturePolicy()).toMatchObject({
+      manipulationState: "pinch",
+      manipulationActiveTouches: 2,
+      touchNoneClassPresent: false,
+      touchPanXyClassPresent: true
+    });
+    expect(starts).not.toHaveBeenCalled();
+    element.dispatchEvent(pointer("touch", 1, { eventType: "pointerup", buttons: 0, pressure: 0 }));
+    element.dispatchEvent(pointer("touch", 2, { eventType: "pointerup", buttons: 0, pressure: 0, isPrimary: false }));
+    expect(router.gesturePolicy()).toMatchObject({
+      manipulationState: "armed",
+      manipulationActiveTouches: 0,
+      manipulationTouchAction: "pan-xy",
+      touchPanXyClassPresent: true,
+      touchNoneClassPresent: false
+    });
+    router.destroy();
+    element.remove();
+  });
+
+  it("restores pan-xy on a replacement page before the next contact", () => {
+    const first = document.createElement("div");
+    const second = document.createElement("div");
+    document.body.append(first, second);
+    const oldRouter = new PointerRouter(first, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true
+    });
+    oldRouter.destroy();
+    const router = new PointerRouter(second, {
+      activeTool: () => "pen",
+      canAnnotatePointer: (event) => event.pointerType === "pen"
+    });
+    expect(router.gesturePolicy()).toMatchObject({
+      manipulationState: "armed",
+      touchPanXyClassPresent: true,
+      touchNoneClassPresent: false,
+      manipulationTouchAction: "pan-xy"
+    });
+    router.destroy();
+    first.remove();
+    second.remove();
+  });
+
+  it("returns to pan-xy after pen, pinch, and pinch end before the next pen down", () => {
+    const { element, router, starts, routes } = mountedRouter();
+    const pen = pointer("pen", 9, { pressure: 0.6 });
+    element.dispatchEvent(pen);
+    expect(pen.pointerType).toBe("pen");
+    expect(routes.at(-1)).toBe("draw");
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
+    element.dispatchEvent(pointer("pen", 9, { eventType: "pointerup", pressure: 0, buttons: 0 }));
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
+    element.dispatchEvent(pointer("touch", 1));
+    element.dispatchEvent(pointer("touch", 2, { isPrimary: false }));
+    element.dispatchEvent(pointer("touch", 1, { eventType: "pointerup", buttons: 0, pressure: 0 }));
+    element.dispatchEvent(pointer("touch", 2, { eventType: "pointerup", buttons: 0, pressure: 0, isPrimary: false }));
+    expect(router.gesturePolicy()).toMatchObject({
+      manipulationState: "armed",
+      touchPanXyClassPresent: true,
+      touchNoneClassPresent: false
+    });
+    const nextPen = pointer("pen", 11, { pressure: 0.4 });
+    element.dispatchEvent(nextPen);
+    expect(nextPen.pointerType).toBe("pen");
+    expect(routes.at(-1)).toBe("draw");
+    expect(starts).toHaveBeenCalled();
+    router.destroy();
+    element.remove();
+  });
+});
+
 describe("Regression Tests", () => {
-  it("does not add touch-pan-xy class from annotation availability alone", () => {
+  it("applies pan-xy from the manipulation machine, not from annotation availability", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -1245,12 +1354,12 @@ describe("Regression Tests", () => {
     });
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
-      canAnnotatePointer: () => true
+      canAnnotatePointer: () => false
     });
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
     router.syncToolState();
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
     router.destroy();
     element.remove();
