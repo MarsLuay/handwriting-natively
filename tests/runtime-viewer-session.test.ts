@@ -3067,8 +3067,11 @@ describe("viewer runtime tracer", () => {
     settings.toolPreferences.activeTool = "lasso";
     session.selectTool("lasso");
 
-    const selectAll = new KeyboardEvent("keydown", { key: "a", metaKey: true, altKey: true, bubbles: true, cancelable: true });
-    expect(session.handleKeyDown(selectAll)).toBe(true);
+    const textSelect = new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true, cancelable: true });
+    expect(session.handleKeyDown(textSelect, "window")).toBe(false);
+    expect(textSelect.defaultPrevented).toBe(false);
+    const selectAll = new KeyboardEvent("keydown", { key: "a", ctrlKey: true, altKey: true, bubbles: true, cancelable: true });
+    expect(session.handleKeyDown(selectAll, "window")).toBe(true);
     expect(selectAll.defaultPrevented).toBe(true);
 
     const strokeCount = () => {
