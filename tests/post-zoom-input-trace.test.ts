@@ -198,6 +198,15 @@ describe("PostZoomInputTrace", () => {
     expect(pinch.evaluate(1_050).postCleanupAnimationFrames).toBe(1);
   });
 
+  it("settles immediately when the zoom never saw a pinch contact", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.beginBurst();
+    pinch.observePointer(11, "pointerdown", "pen");
+    pinch.observePointer(11, "pointerup", "pen");
+    expect(pinch.evaluate(1_000).quiescent).toBe(true);
+    expect(pinch.needsAnimationFrame()).toBe(false);
+  });
+
   it("settles a stuck pinch after the cleanup timeout without treating it as a pen", () => {
     const pinch = new PinchGestureCleanup();
     pinch.observePointer(9, "pointerdown", "touch");
