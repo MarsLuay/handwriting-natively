@@ -361,6 +361,22 @@ describe("zoom ink compositing", () => {
       strokesRedrawn: 1,
       burstTicks: expect.any(Number)
     });
+    session.writeCopiedLogUiSnapshot();
+    const gesture = (debugCalls("last-zoom-trace").at(-1)?.[2] as {
+      lastZoomGesturePerformance?: Array<{
+        scaleChangingEvents: number;
+        p95FrameDeltaMs: number;
+        lateFrameCount: number;
+        frameIntervalHistogram: Record<string, number>;
+      }>;
+    }).lastZoomGesturePerformance;
+    expect(gesture?.length).toBeGreaterThanOrEqual(1);
+    expect(gesture?.[0]).toEqual(expect.objectContaining({
+      scaleChangingEvents: expect.any(Number),
+      p95FrameDeltaMs: expect.any(Number),
+      lateFrameCount: expect.any(Number),
+      frameIntervalHistogram: expect.any(Object)
+    }));
     expect(debugCalls("ink renderer").some((call) => {
       const details = call[2] as { phase?: string; renderer?: string };
       return details.phase === "zoom-settle-canonical" && details.renderer === "canonical-pdf-space";
