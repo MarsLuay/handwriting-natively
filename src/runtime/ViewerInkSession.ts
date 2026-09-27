@@ -645,6 +645,7 @@ interface ZoomProfileState {
   refreshExecutions: number;
   layoutFramesScheduled: number;
   layoutFramesExecuted: number;
+  coalescedVisualUpdates: number;
   layoutSyncs: number;
   compositorTicks: number;
   bitmapBlits: number;
@@ -2825,6 +2826,7 @@ export class ViewerInkSession {
       refreshExecutions: 0,
       layoutFramesScheduled: 0,
       layoutFramesExecuted: 0,
+      coalescedVisualUpdates: 0,
       layoutSyncs: 0,
       compositorTicks: 0,
       bitmapBlits: 0,
@@ -2918,7 +2920,11 @@ export class ViewerInkSession {
   }
 
   private scheduleZoomOverlayLayout(): void {
-    if (this.destroyed || !this.zoomCompositing || this.zoomLayoutFrame !== null) return;
+    if (this.destroyed || !this.zoomCompositing) return;
+    if (this.zoomLayoutFrame !== null) {
+      if (this.zoomProfile) this.zoomProfile.coalescedVisualUpdates += 1;
+      return;
+    }
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) return;
     if (this.zoomProfile) this.zoomProfile.layoutFramesScheduled += 1;
@@ -2958,8 +2964,12 @@ export class ViewerInkSession {
         }
         }
       }
+      const layoutStarted = performance.now();
       this.syncZoomOverlayLayouts();
+      const layoutMs = performance.now() - layoutStarted;
+      const geometryStarted = performance.now();
       this.recordZoomGeometry();
+      const geometryMs = performance.now() - geometryStarted;
       // Overlay layout must not correct scroll during the live gesture — any
       // delta here is plugin-owned and belongs in the burst profile.
       const pluginScrollDelta = Math.max(
@@ -2975,6 +2985,18 @@ export class ViewerInkSession {
         this.zoomProfile.lastScrollTop = scroller.scrollTop;
       }
       this.recordZoomProfileTask(started);
+      const pluginWorkMs = performance.now() - started;
+      if (pluginWorkMs >= 16.7) {
+        this.logger.zoomLongFrame({
+          zoomBurstId: this.postZoomTrace.currentBurstId(),
+          frameDeltaMs: this.zoomProfile?.lastFrameAt == null ? null : roundMs(pluginWorkMs),
+          pluginWorkMs: roundMs(pluginWorkMs),
+          contributors: {
+            syncZoomOverlayLayouts: roundMs(layoutMs),
+            recordZoomGeometry: roundMs(geometryMs)
+          }
+        });
+      }
     });
   }
 
@@ -3067,6 +3089,7 @@ export class ViewerInkSession {
       minScale: profile.minScale,
       maxScale: profile.maxScale,
       scaleChangingEvents: profile.scaleChangingEvents,
+      coalescedVisualUpdates: profile.coalescedVisualUpdates,
       scaleEvents: profile.scaleChangingEvents,
       scaleIntervalAvgMs: roundMetric(scaleIntervals.averageMs),
       scaleIntervalP50Ms: roundMetric(scaleIntervals.p50Ms),
@@ -3220,8 +3243,7 @@ export class ViewerInkSession {
     if (ViewerInkSession.shouldCompositeDuring(reason) && !this.zoomCompositing) {
       this.beginZoomCompositing();
     }
-    // Burst: keep overlay box glued to PDF canvas content box; skip stroke redraw.
-    // The first tick syncs immediately; subsequent native signals share one rAF.
+    // Many scale events before the next paint share one overlay update.
     if (this.zoomCompositing) this.scheduleZoomOverlayLayout();
     if (scale !== undefined) {
       if (this.zoomBurstScaleStart === null) this.zoomBurstScaleStart = scale;
@@ -3501,7 +3523,6 @@ export class ViewerInkSession {
       this.runZoomSettlePaint();
     }, delayMs);
     this.armZoomBurstWatchdog();
-    this.refreshZoomBurstActivity();
   }
 
   private armZoomBurstWatchdog(): void {

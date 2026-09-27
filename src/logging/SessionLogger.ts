@@ -1102,6 +1102,14 @@ export class SessionLogger {
     }, true);
   }
 
+  zoomLongFrame(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "zoom-long-frame", {
+      document: this.documentPath,
+      event: "zoom-long-frame",
+      ...details
+    });
+  }
+
   zoomFlashProxy(proxy: string, details: Record<string, unknown> = {}): void {
     this.emit("warn", "ink zoom flash proxy", {
       document: this.documentPath,
