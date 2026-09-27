@@ -20,9 +20,10 @@ describe("annotationInputPolicy", () => {
     expect(stylusAnnotationEnabled()).toBe(true);
     expect(canAnnotatePointer({ pointerType: "pen" }, { mouseInputMode: "pan" })).toBe(true);
     expect(canAnnotatePointer({ pointerType: "touch" }, { mouseInputMode: "annotate" })).toBe(false);
-    expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInputMode: "pan", mouseOverPdfPage: true })).toBe(true);
+    expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInputMode: "pan", mouseOverPdfPage: true })).toBe(false);
     expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInputMode: "annotate", mouseOverPdfPage: false })).toBe(false);
-    expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInputMode: "native", mouseOverPdfPage: true })).toBe(true);
+    expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInputMode: "native", mouseOverPdfPage: true })).toBe(false);
+    expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInputMode: "annotate", mouseOverPdfPage: true })).toBe(true);
     expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInputMode: "pan" })).toBe(false);
     expect(describeInputPolicies({ mouseInputMode: "native" })).toEqual({
       stylusPolicy: "annotate",
