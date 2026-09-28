@@ -388,6 +388,8 @@ export class SessionLogger {
       | "stroke-pixel-region-pre"
       | "stroke-pixel-region-post"
       | "stroke-pixel-presence-check"
+      | "stroke-cache-anomaly"
+      | "stroke-cache-handoff"
       | "stroke-lifecycle-regression",
     details: Record<string, unknown> = {}
   ): void {
