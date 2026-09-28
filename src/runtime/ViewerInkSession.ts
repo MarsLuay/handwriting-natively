@@ -3168,6 +3168,27 @@ export class ViewerInkSession {
     });
   }
 
+  /** Keep late refresh callbacks on the compositor path once a pinch owns the frame. */
+  private deferRefreshDuringZoom(reason: string): boolean {
+    if (reason === "create") return false;
+    const zoomActive = this.zoomCompositing || this.isZoomGestureActive();
+    const handoffActive = this.isZoomHandoffActive();
+    if (!zoomActive && !handoffActive) return false;
+    if (zoomActive) {
+      this.logger.zoomRepaintInterrupt(reason, {
+        kind: "full-refresh-during-zoom",
+        deferred: true
+      });
+    } else {
+      this.logger.zoomFlashProxy("full-refresh-during-handoff", { reason, deferred: true });
+    }
+    this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
+    if (reason.includes("scroll") || reason.includes("pagechanging")) {
+      this.markPendingMobileScrollRemount();
+    }
+    return true;
+  }
+
   private scheduleRefresh(reason: string, repaintOnly = false): void {
     if (this.destroyed) return;
     if (this.zoomProfile) this.zoomProfile.refreshRequests += 1;
@@ -3197,6 +3218,7 @@ export class ViewerInkSession {
       this.resizeFrame = null;
       this.pendingScheduledRefresh = null;
       if (!pending) return;
+      if (this.deferRefreshDuringZoom(pending.reason)) return;
       const started = performance.now();
       if (pending.repaintOnly) this.repaintSurfaces(pending.reason);
       else this.refresh(pending.reason);
@@ -6113,23 +6135,7 @@ export class ViewerInkSession {
     this.addPageControl?.refresh();
     if (this.zoomProfile) this.zoomProfile.refreshExecutions += 1;
     if (this.panProfile) this.panProfile.refreshes += 1;
-    if (
-      reason !== "create"
-      && (this.isZoomGestureActive() || this.isZoomHandoffActive())
-      && (reason.startsWith("pages-") || reason.startsWith("view-"))
-    ) {
-      this.scheduleZoomRepaint(reason, this.options.adapter.getViewState().scale);
-      if (reason.includes("scroll") || reason.includes("pagechanging")) {
-        this.markPendingMobileScrollRemount();
-      }
-      return;
-    }
-    if (this.isZoomGestureActive() && reason !== "create") {
-      this.logger.zoomRepaintInterrupt(reason, { kind: "full-refresh-during-zoom" });
-    }
-    if (this.isZoomHandoffActive() && reason !== "create") {
-      this.logger.zoomFlashProxy("full-refresh-during-handoff", { reason });
-    }
+    if (this.deferRefreshDuringZoom(reason)) return;
 
     const pages = this.pagesForInkMount();
     // Scroll settle: layout-only when mount set already matches — avoid invalidate/repaint storm.
