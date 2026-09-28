@@ -1044,7 +1044,6 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
           this.compatibility.profile.counters.pageReplacements + 1
         );
         this.emitPageLifecycle("replace");
-        this.callbacks.onPagesChanged?.("pages-dom");
       }
       if (scaleChanged) {
         notify("data-scale");

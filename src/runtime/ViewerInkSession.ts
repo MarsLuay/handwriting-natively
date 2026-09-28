@@ -855,6 +855,18 @@ interface PageMutationShield {
   timeout: number | null;
 }
 
+interface PendingNativeHandoffUpdate {
+  viewerGeneration: number;
+  mutation: AnnotationPageContentMutation | null;
+  lifecycle: AnnotationPageLifecycleChange | null;
+  resizeSignalAt: number | null;
+}
+
+interface NativeHandoffMutationResult {
+  handled: boolean;
+  reattached: boolean;
+}
+
 interface ActiveTextEditor {
   surface: PageSurface;
   existing: TextAnnotation | null;
@@ -993,6 +1005,10 @@ export class ViewerInkSession {
   private detachCheckTimer: number | null = null;
   private refreshDepth = 0;
   private resizeFrame: number | null = null;
+  /** Coalesces PDF.js mutation, render, and root-resize handoff work. */
+  private nativeHandoffUpdateFrame: number | null = null;
+  private nativeHandoffUpdateToken = 0;
+  private pendingNativeHandoffUpdate: PendingNativeHandoffUpdate | null = null;
   private viewportPaintFrame: number | null = null;
   /** Bumped when an ink layer cache entry is invalidated. Deferred HQ from an older epoch cancels. */
   private renderEpoch = 0;
@@ -1399,7 +1415,11 @@ export class ViewerInkSession {
           this.zoomPipelineTrace.noteEvent("resize-observer");
           this.zoomPipelineTrace.noteStage("resize-observer", 0, 1, "resize-observer");
           this.zoomFrameDiagnostics.noteObserverSignal("resizeObserver");
-          this.handleRootResize();
+          this.queueNativeHandoffUpdate({
+            kind: "resize",
+            signalAt: callbackStartedAt,
+            viewerGeneration: this.currentAdapterViewerGeneration()
+          });
         } finally {
           this.zoomNativeHandoffTrace.noteSignal({
             name: "resizeObserver",
@@ -5037,20 +5057,175 @@ export class ViewerInkSession {
     }, delayMs);
   }
 
+  private currentAdapterViewerGeneration(): number {
+    return "viewerGeneration" in this.options.adapter
+      ? this.options.adapter.viewerGeneration
+      : 0;
+  }
+
+  private queueNativeHandoffUpdate(input:
+    | { kind: "mutation"; change: AnnotationPageContentMutation }
+    | { kind: "lifecycle"; change: AnnotationPageLifecycleChange }
+    | { kind: "resize"; signalAt: number; viewerGeneration: number }
+  ): void {
+    if (this.destroyed) return;
+    const viewerGeneration = input.kind === "mutation" || input.kind === "lifecycle"
+      ? input.change.viewerGeneration
+      : input.viewerGeneration;
+    if ("viewerGeneration" in this.options.adapter
+      && viewerGeneration !== this.currentAdapterViewerGeneration()) return;
+
+    if (this.pendingNativeHandoffUpdate?.viewerGeneration !== undefined
+      && this.pendingNativeHandoffUpdate.viewerGeneration !== viewerGeneration) {
+      this.nativeHandoffUpdateToken += 1;
+      if (this.nativeHandoffUpdateFrame !== null) {
+        this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.nativeHandoffUpdateFrame);
+        this.nativeHandoffUpdateFrame = null;
+      }
+      this.pendingNativeHandoffUpdate = null;
+    }
+    const pending = this.pendingNativeHandoffUpdate ?? {
+      viewerGeneration,
+      mutation: null,
+      lifecycle: null,
+      resizeSignalAt: null
+    };
+    this.pendingNativeHandoffUpdate = pending;
+
+    if (input.kind === "mutation") {
+      const previous = pending.mutation;
+      const pageNumbers = new Set([...(previous?.pageNumbers ?? []), ...input.change.pageNumbers]);
+      pending.mutation = {
+        ...input.change,
+        recordCount: (previous?.recordCount ?? 0) + input.change.recordCount,
+        pageNumbers: [...pageNumbers].sort((left, right) => left - right).slice(0, 64),
+        mountGenerations: { ...(previous?.mountGenerations ?? {}), ...input.change.mountGenerations },
+        firstSignalAt: Math.min(previous?.firstSignalAt ?? input.change.firstSignalAt, input.change.firstSignalAt),
+        lastSignalAt: Math.max(previous?.lastSignalAt ?? input.change.lastSignalAt, input.change.lastSignalAt)
+      };
+    } else if (input.kind === "lifecycle") {
+      pending.lifecycle = input.change;
+    } else {
+      pending.resizeSignalAt = input.signalAt;
+    }
+
+    const pageNumbers = input.kind === "mutation"
+      ? input.change.pageNumbers
+      : input.kind === "lifecycle" ? input.change.pageNumbers : undefined;
+    if (input.kind !== "resize" && this.nativeHandoffNeedsImmediateRecovery(pageNumbers)) {
+      this.flushNativeHandoffUpdate();
+      return;
+    }
+    this.scheduleNativeHandoffUpdate();
+  }
+
+  private nativeHandoffNeedsImmediateRecovery(pageNumbers?: number[]): boolean {
+    const filter = pageNumbers?.length ? new Set(pageNumbers) : null;
+    const pages = new Map(this.options.adapter.pages().map((page) => [page.pageNumber, page]));
+    for (const [pageNumber, surface] of this.surfaces) {
+      if (filter && !filter.has(pageNumber)) continue;
+      const page = pages.get(pageNumber);
+      if (!page?.element.isConnected) continue;
+      if (!surface.overlay.isConnected || surface.page.element !== page.element) return true;
+    }
+    return false;
+  }
+
+  private scheduleNativeHandoffUpdate(): void {
+    if (this.destroyed || this.nativeHandoffUpdateFrame !== null) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) {
+      this.flushNativeHandoffUpdate();
+      return;
+    }
+    const token = this.nativeHandoffUpdateToken;
+    let frame = 0;
+    frame = view.requestAnimationFrame(() => {
+      if (this.nativeHandoffUpdateFrame !== frame || token !== this.nativeHandoffUpdateToken) return;
+      this.nativeHandoffUpdateFrame = null;
+      const pending = this.pendingNativeHandoffUpdate;
+      this.pendingNativeHandoffUpdate = null;
+      if (!pending || this.destroyed) return;
+      this.processNativeHandoffUpdate(pending);
+    });
+    this.nativeHandoffUpdateFrame = frame;
+  }
+
+  private flushNativeHandoffUpdate(): void {
+    const pending = this.pendingNativeHandoffUpdate;
+    if (!pending) return;
+    this.pendingNativeHandoffUpdate = null;
+    this.nativeHandoffUpdateToken += 1;
+    if (this.nativeHandoffUpdateFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.nativeHandoffUpdateFrame);
+      this.nativeHandoffUpdateFrame = null;
+    }
+    this.processNativeHandoffUpdate(pending);
+  }
+
+  private processNativeHandoffUpdate(update: PendingNativeHandoffUpdate): void {
+    if (this.destroyed) return;
+    if ("viewerGeneration" in this.options.adapter
+      && update.viewerGeneration !== this.currentAdapterViewerGeneration()) return;
+    const callbackStartedAt = performance.now();
+    const lifecycle = update.lifecycle;
+    if (lifecycle?.kind === "viewer-replaced") {
+      this.onPagesChanged("viewer-replaced");
+      return;
+    }
+    if (lifecycle?.kind === "render") {
+      this.zoomNativeHandoffTrace.noteSignal({
+        name: "pagerendered",
+        signalAt: lifecycle.signalAt ?? callbackStartedAt,
+        callbackAt: callbackStartedAt,
+        callbackWorkMs: performance.now() - callbackStartedAt,
+        pageNumbers: lifecycle.pageNumbers,
+        viewerGeneration: lifecycle.viewerGeneration,
+        mountGenerations: lifecycle.mountGenerations,
+        phase: this.nativeHandoffPhase()
+      });
+    }
+    const mutationResult = update.mutation
+      ? this.processPdfPageContentMutation(update.mutation)
+      : { handled: false, reattached: false };
+    const hasMutation = update.mutation !== null;
+    if (lifecycle) {
+      this.onPagesChanged(
+        `page-${lifecycle.kind}`,
+        hasMutation && mutationResult.handled ? { deferSurfaceUpdate: true } : undefined
+      );
+    }
+    if (update.resizeSignalAt !== null && !lifecycle && !mutationResult.handled) {
+      this.processRootResize();
+    }
+  }
+
   /** Adapter breadcrumb for the native PDF.js canvas/text layer replacement. */
   onPdfPageContentMutation(change: number | AnnotationPageContentMutation): void {
     if (this.destroyed) return;
+    const signalAt = performance.now();
+    const normalized: AnnotationPageContentMutation = typeof change === "number"
+      ? {
+        recordCount: change,
+        pageNumbers: this.options.adapter.pages().map((page) => page.pageNumber).slice(0, 64),
+        viewerGeneration: this.currentAdapterViewerGeneration(),
+        mountGenerations: {},
+        firstSignalAt: signalAt,
+        lastSignalAt: signalAt
+      }
+      : change;
+    this.queueNativeHandoffUpdate({ kind: "mutation", change: normalized });
+  }
+
+  private processPdfPageContentMutation(change: AnnotationPageContentMutation): NativeHandoffMutationResult {
+    if (this.destroyed) return { handled: false, reattached: false };
     const callbackStartedAt = performance.now();
-    const recordCount = typeof change === "number" ? change : change.recordCount;
-    const pageNumbers = typeof change === "number"
-      ? this.options.adapter.pages().map((page) => page.pageNumber).slice(0, 64)
-      : change.pageNumbers;
-    const viewerGeneration = typeof change === "number"
-      ? ("viewerGeneration" in this.options.adapter ? this.options.adapter.viewerGeneration : 0)
-      : change.viewerGeneration;
-    const mountGenerations = typeof change === "number" ? {} : change.mountGenerations;
-    const firstSignalAt = typeof change === "number" ? callbackStartedAt : change.firstSignalAt;
-    const lastSignalAt = typeof change === "number" ? callbackStartedAt : change.lastSignalAt;
+    const recordCount = change.recordCount;
+    const pageNumbers = change.pageNumbers;
+    const viewerGeneration = change.viewerGeneration;
+    const mountGenerations = change.mountGenerations;
+    const firstSignalAt = change.firstSignalAt;
+    const lastSignalAt = change.lastSignalAt;
     const noteNativeReplacementTrace = (): void => {
       const callbackWorkMs = performance.now() - callbackStartedAt;
       this.zoomNativeHandoffTrace.noteSignal({
@@ -5155,7 +5330,7 @@ export class ViewerInkSession {
     // update as a page remount (which was the source of zoom flashing).
     if (!handoffGuard && !reattached) {
       noteNativeReplacementTrace();
-      return;
+      return { handled: false, reattached: false };
     }
     const now = performance.now();
     if (releasePending || settleSlicesPending) {
@@ -5173,7 +5348,8 @@ export class ViewerInkSession {
       sinceSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null
     });
 
-    if (handoffGuard && this.isZoomHandoffActive()) {
+    const handoffHandled = handoffGuard && this.isZoomHandoffActive();
+    if (handoffHandled) {
       // PDF.js may finish canvas/text replacement after the first zoom settle.
       // Follow that geometry immediately, but reserve the one canonical redraw
       // for the quiet handoff boundary instead of beginning another zoom burst.
@@ -5191,6 +5367,7 @@ export class ViewerInkSession {
     // Only arm release after settle slices finished (releasePending from finish).
     if (releasePending && !this.zoomCompositing) this.releaseZoomCompositeAfterNativeRender();
     noteNativeReplacementTrace();
+    return { handled: handoffHandled || reattached, reattached };
   }
 
   /**
@@ -5510,7 +5687,7 @@ export class ViewerInkSession {
     });
   }
 
-  private handleRootResize(): void {
+  private processRootResize(): void {
     // After the first settle, PDF.js replaces canvas/text layers and changes
     // their final size. A ResizeObserver used to turn this into a second zoom
     // debounce + repaint, visibly moving ink alongside the native page update.
@@ -6336,31 +6513,11 @@ export class ViewerInkSession {
       ? this.options.adapter.viewerGeneration
       : change.viewerGeneration;
     if (change.viewerGeneration !== adapterGeneration) return;
-    const callbackStartedAt = performance.now();
-    try {
-      this.zoomPipelineTrace.noteEvent(`pdfjs-${change.kind}`);
-      this.zoomPipelineTrace.noteStage("pdfjs-callback", 0, 1, `pdfjs-${change.kind}`);
-      this.zoomPipelineTrace.noteStage("page-maintenance", 0, 1, `page-${change.kind}`);
-      this.zoomFrameDiagnostics.notePdfSignal(change.kind === "render" ? "pagerendered" : "pagesMutation");
-      if (change.kind === "viewer-replaced") {
-        this.onPagesChanged("viewer-replaced");
-        return;
-      }
-      this.onPagesChanged(`page-${change.kind}`);
-    } finally {
-      if (change.kind === "render") {
-        this.zoomNativeHandoffTrace.noteSignal({
-          name: "pagerendered",
-          signalAt: change.signalAt ?? callbackStartedAt,
-          callbackAt: callbackStartedAt,
-          callbackWorkMs: performance.now() - callbackStartedAt,
-          pageNumbers: change.pageNumbers,
-          viewerGeneration: change.viewerGeneration,
-          mountGenerations: change.mountGenerations,
-          phase: this.nativeHandoffPhase()
-        });
-      }
-    }
+    this.zoomPipelineTrace.noteEvent(`pdfjs-${change.kind}`);
+    this.zoomPipelineTrace.noteStage("pdfjs-callback", 0, 1, `pdfjs-${change.kind}`);
+    this.zoomPipelineTrace.noteStage("page-maintenance", 0, 1, `page-${change.kind}`);
+    this.zoomFrameDiagnostics.notePdfSignal(change.kind === "render" ? "pagerendered" : "pagesMutation");
+    this.queueNativeHandoffUpdate({ kind: "lifecycle", change });
   }
 
   onZoomChange(change: AnnotationZoomChange): void {
@@ -6446,7 +6603,7 @@ export class ViewerInkSession {
     return true;
   }
 
-  onPagesChanged(reason: string): void {
+  onPagesChanged(reason: string, options?: { deferSurfaceUpdate?: boolean }): void {
     const pages = this.options.adapter.pages();
     this.logger.inputLifecycleEvent("page-structure", {
       reason,
@@ -6492,6 +6649,7 @@ export class ViewerInkSession {
     this.reconcileAddPageControl(pages);
     this.reconcileToolbarMount(reason);
     this.scheduleUiIntegrityCheck(reason);
+    if (options?.deferSurfaceUpdate) return;
 
     if (this.isZoomGestureActive() && ViewerInkSession.shouldCompositeDuring(this.zoomBurstReason)) {
       this.scheduleZoomRepaint(`pages-${reason}`, this.options.adapter.getViewState().scale);
@@ -8267,6 +8425,12 @@ export class ViewerInkSession {
       window.cancelAnimationFrame(this.resizeFrame);
       this.resizeFrame = null;
     }
+    if (this.nativeHandoffUpdateFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.nativeHandoffUpdateFrame);
+      this.nativeHandoffUpdateFrame = null;
+    }
+    this.nativeHandoffUpdateToken += 1;
+    this.pendingNativeHandoffUpdate = null;
     if (this.viewportPaintFrame !== null) {
       this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.viewportPaintFrame);
       this.viewportPaintFrame = null;
