@@ -35,13 +35,26 @@ describe("SlowSpanTrace", () => {
       settleTimerResetCount: 46,
       resetReasons: { "pages-page-render": 40, "pinch-cleanup": 6 },
       lastDeferralReason: "pinch-cleanup",
-      zoomBurstId: "zoom-7"
+      zoomBurstId: "zoom-7",
+      phaseDurations: {
+        "settle-timer-wait": 1260,
+        "gesture-cleanup": 800,
+        "unattributed-post-gesture": 1260
+      }
     });
     expect(churn).toMatchObject({
       stage: "settle-timer-churn",
       waitMs: 1260,
       activeWorkMs: null,
-      settleTimerResetCount: 46
+      settleTimerResetCount: 46,
+      phaseDurations: {
+        "settle-timer-wait": 1260,
+        "gesture-cleanup": 800,
+        "unattributed-post-gesture": 1260
+      },
+      slowPhases: expect.arrayContaining([
+        expect.objectContaining({ phase: "gesture-cleanup", durationMs: 800, thresholdMs: SLOW_SPAN_ASYNC_MS })
+      ])
     });
     expect(trace.recordSettleChurn({
       settleDelayMs: 2000,

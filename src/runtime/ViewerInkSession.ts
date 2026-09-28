@@ -4334,6 +4334,20 @@ export class ViewerInkSession {
     const unexpectedWaitMs = layoutWait
       ? Math.max(0, perceivedPostGestureMs - ViewerInkSession.ZOOM_SETTLE_LAYOUT_MS)
       : perceivedPostGestureMs;
+    const gestureCleanup = this.postZoomTrace.diagnosis().gestureCleanup;
+    const gestureCleanupWaitMs = typeof gestureCleanup?.gestureCleanupWaitMs === "number"
+      ? gestureCleanup.gestureCleanupWaitMs
+      : null;
+    const settlePhaseDurations = {
+      "settle-timer-wait": this.settleWaitStartedAt === 0
+        ? null
+        : Math.max(0, nowPerf - this.settleWaitStartedAt),
+      "pinch-terminal-to-settle": pinchTerminalToSettleMs,
+      "gesture-cleanup": gestureCleanupWaitMs,
+      "live-ink": liveInkWaitAfterPinchTerminalMs,
+      "last-scale-change-to-settle": lastScaleChangeToSettleMs,
+      "unattributed-post-gesture": unexpectedWaitMs
+    };
     this.postZoomTrace.noteBurstActivity({
       zoomGestureDurationMs: zoomGestureDurationMs === null ? null : Math.round(zoomGestureDurationMs * 10) / 10,
       pinchTerminalToSettleMs: pinchTerminalToSettleMs === null ? null : Math.round(pinchTerminalToSettleMs * 10) / 10,
@@ -4352,7 +4366,8 @@ export class ViewerInkSession {
       zoomGestureDurationMs,
       pinchTerminalToSettleMs,
       lastScaleChangeToSettleMs,
-      liveInkWaitAfterPinchTerminalMs
+      liveInkWaitAfterPinchTerminalMs,
+      phaseDurations: settlePhaseDurations
     });
     if (churn) this.logger.perfSlowSpan({ ...churn });
     this.settleWaitStartedAt = 0;

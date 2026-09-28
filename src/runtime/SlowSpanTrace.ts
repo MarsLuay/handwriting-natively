@@ -46,6 +46,9 @@ export interface SettleChurnSummary {
   reason: string | null;
   correlationId: string | null;
   zoomBurstId: string | null;
+  /** Thresholded sub-phases that explain the aggregate settle wait. */
+  phaseDurations: Record<string, number | null>;
+  slowPhases: Array<{ phase: string; durationMs: number; thresholdMs: number }>;
   settleDelayMs: number;
   settleTimerResetCount: number;
   inGestureResetCount: number;
@@ -242,8 +245,19 @@ export class SlowSpanTrace {
     pinchTerminalToSettleMs?: number | null;
     lastScaleChangeToSettleMs?: number | null;
     liveInkWaitAfterPinchTerminalMs?: number | null;
+    phaseDurations?: Record<string, number | null | undefined>;
   }): SettleChurnSummary | null {
-    if (input.settleDelayMs < SLOW_SPAN_ASYNC_MS) return null;
+    const phaseDurations = Object.fromEntries(
+      Object.entries(input.phaseDurations ?? {})
+        .filter(([, durationMs]) => durationMs === null || Number.isFinite(durationMs))
+        .map(([phase, durationMs]) => [phase, durationMs === null ? null : roundMs(Math.max(0, durationMs!))])
+    ) as Record<string, number | null>;
+    const slowPhases = Object.entries(phaseDurations)
+      .flatMap(([phase, durationMs]) => durationMs !== null && durationMs >= SLOW_SPAN_ASYNC_MS
+        ? [{ phase, durationMs, thresholdMs: SLOW_SPAN_ASYNC_MS }]
+        : []);
+    const maxPhaseMs = Math.max(0, ...slowPhases.map((phase) => phase.durationMs));
+    if (input.settleDelayMs < SLOW_SPAN_ASYNC_MS && maxPhaseMs < SLOW_SPAN_ASYNC_MS) return null;
     const zoomBurstId = input.zoomBurstId ?? this.zoomBurstId;
     const key = `settle-timer-churn|${zoomBurstId ?? ""}`;
     if (this.hasSeen(key)) return null;
@@ -252,13 +266,15 @@ export class SlowSpanTrace {
       event: "perf-slow-span",
       category: "zoom",
       stage: "settle-timer-churn",
-      durationMs: roundMs(input.settleDelayMs),
+      durationMs: roundMs(Math.max(input.settleDelayMs, maxPhaseMs)),
       thresholdMs: SLOW_SPAN_ASYNC_MS,
       activeWorkMs: null,
       waitMs: roundMs(input.settleDelayMs),
       reason: input.lastDeferralReason,
       correlationId: null,
       zoomBurstId,
+      phaseDurations,
+      slowPhases,
       settleDelayMs: roundMs(input.settleDelayMs),
       settleTimerResetCount: input.settleTimerResetCount,
       inGestureResetCount: input.inGestureResetCount ?? 0,
