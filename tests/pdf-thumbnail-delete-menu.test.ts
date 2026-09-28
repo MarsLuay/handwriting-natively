@@ -284,6 +284,48 @@ describe("PDF thumbnail sidebar actions", () => {
     actions.destroy();
   });
 
+  it("shows insertion positions and commits upward, downward, no-op, and edge reorders", () => {
+    vi.useFakeTimers();
+    const { host, thumbnailView, thumbnails } = thumbnailHost([1, 2, 3, 4]);
+    const reordered = vi.fn();
+    const actions = new PdfThumbnailSidebarActions(host, {
+      onAddPage: vi.fn(),
+      onDeletePage: vi.fn(),
+      onReorderPage: reordered
+    });
+
+    dispatchPointer(thumbnails[1]!, "pointerdown", { pointerType: "touch", pointerId: 51, clientY: 140 });
+    dispatchPointer(thumbnails[0]!, "pointermove", { pointerType: "touch", pointerId: 51, clientY: 90 });
+    dispatchPointer(thumbnails[1]!, "pointerleave", { pointerType: "touch", pointerId: 51, clientY: 90 });
+    expect(thumbnailView.querySelector(".native-pdf-handwriting-thumbnail-reorder-indicator")).toBeTruthy();
+    dispatchPointer(thumbnails[0]!, "pointerup", { pointerType: "touch", pointerId: 51, clientY: 90 });
+    expect(reordered).toHaveBeenCalledWith(2, 1);
+    vi.advanceTimersByTime(1_000);
+    expect(reordered).toHaveBeenCalledTimes(1);
+
+    dispatchPointer(thumbnails[0]!, "pointerdown", { pointerType: "mouse", pointerId: 52, clientY: 100 });
+    dispatchPointer(thumbnails[3]!, "pointermove", { pointerType: "mouse", pointerId: 52, clientY: 300 });
+    dispatchPointer(thumbnails[3]!, "pointerup", { pointerType: "mouse", pointerId: 52, clientY: 300 });
+    expect(reordered).toHaveBeenCalledWith(1, 4);
+
+    dispatchPointer(thumbnails[2]!, "pointerdown", { pointerType: "mouse", pointerId: 53, clientY: 140 });
+    dispatchPointer(thumbnails[2]!, "pointermove", { pointerType: "mouse", pointerId: 53, clientY: 195 });
+    dispatchPointer(thumbnails[2]!, "pointerup", { pointerType: "mouse", pointerId: 53, clientY: 195 });
+    expect(reordered).toHaveBeenCalledTimes(2);
+
+    dispatchPointer(thumbnails[3]!, "pointerdown", { pointerType: "pen", pointerId: 54, clientY: 220 });
+    dispatchPointer(thumbnails[0]!, "pointermove", { pointerType: "pen", pointerId: 54, clientY: 90 });
+    dispatchPointer(thumbnails[0]!, "pointerup", { pointerType: "pen", pointerId: 54, clientY: 90 });
+    expect(reordered).toHaveBeenCalledWith(4, 1);
+
+    dispatchPointer(thumbnails[1]!, "pointerdown", { pointerType: "touch", pointerId: 55, clientY: 140 });
+    dispatchPointer(thumbnails[0]!, "pointermove", { pointerType: "touch", pointerId: 55, clientY: 90 });
+    dispatchPointer(thumbnails[0]!, "pointercancel", { pointerType: "touch", pointerId: 55, clientY: 90 });
+    expect(reordered).toHaveBeenCalledTimes(3);
+    expect(thumbnailView.querySelector(".native-pdf-handwriting-thumbnail-reorder-indicator")).toBeNull();
+    actions.destroy();
+  });
+
   it("appends Delete page when Obsidian repopulates a reused native menu", async () => {
     const { host, thumbnail } = thumbnailHost();
     const deleted = vi.fn();

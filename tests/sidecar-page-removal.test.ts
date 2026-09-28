@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { InkStroke, PdfTextAnnotation } from "../src/model";
-import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "../src/storage/SidecarPageRemoval";
+import {
+  insertPageIntoSidecar,
+  insertPagesIntoSidecar,
+  removePageFromSidecar,
+  reorderPageInSidecar
+} from "../src/storage/SidecarPageRemoval";
 import type { SidecarSchemaV1 } from "../src/storage/SidecarSchema";
 
 function stroke(id: string, page: number): InkStroke {
@@ -42,6 +47,35 @@ describe("sidecar page removal", () => {
     expect(result.pages[1]?.strokes[0]?.page).toBe(2);
     expect(result.pages[1]?.texts?.[0]?.page).toBe(2);
     expect(sidecar.pages[2]?.page).toBe(3);
+  });
+
+  it("remaps annotations when moving pages both upward and downward", () => {
+    const sidecar: SidecarSchemaV1 = {
+      schemaVersion: 1,
+      document: { id: "pdf-a", vaultPath: "note.pdf" },
+      pages: [1, 2, 3, 4].map((page) => ({
+        page,
+        width: 400 + page,
+        height: 600 + page,
+        rotation: 0,
+        strokes: [stroke(`stroke-${page}`, page)],
+        texts: [text(`text-${page}`, page)]
+      })),
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01"
+    };
+
+    const movedUp = reorderPageInSidecar(sidecar, 3, 1, "2026-02-01");
+    expect(movedUp.pages.map((page) => page.page)).toEqual([1, 2, 3, 4]);
+    expect(movedUp.pages.map((page) => page.strokes[0]?.id)).toEqual(["stroke-3", "stroke-1", "stroke-2", "stroke-4"]);
+    expect(movedUp.pages.map((page) => page.texts?.[0]?.page)).toEqual([1, 2, 3, 4]);
+    expect(movedUp.updatedAt).toBe("2026-02-01");
+
+    const movedDown = reorderPageInSidecar(sidecar, 2, 4, "2026-03-01");
+    expect(movedDown.pages.map((page) => page.page)).toEqual([1, 2, 3, 4]);
+    expect(movedDown.pages.map((page) => page.strokes[0]?.id)).toEqual(["stroke-1", "stroke-3", "stroke-4", "stroke-2"]);
+    expect(movedDown.pages.map((page) => page.texts?.[0]?.page)).toEqual([1, 2, 3, 4]);
+    expect(reorderPageInSidecar(sidecar, 2, 2)).toBe(sidecar);
   });
 
   it("rejects an invalid deleted page number", () => {

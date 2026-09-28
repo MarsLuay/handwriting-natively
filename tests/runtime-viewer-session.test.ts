@@ -4270,6 +4270,53 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("remaps live annotations when a thumbnail reorder completes", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const reordered = vi.fn(async () => undefined);
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      onReorderPage: reordered,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      reorderPage(fromPage: number, toPage: number): Promise<void>;
+      ink: { add(stroke: InkStroke): void; all(): InkStroke[] };
+    };
+    for (const page of [1, 2, 3, 4]) {
+      internal.ink.add({
+        id: `page-${page}`, page, tool: "pen", color: "#000000", width: 2, opacity: 1, inputType: "pen",
+        points: [{ x: page, y: page, pressure: 0.5, time: page }], createdAt: "2026-01-01", updatedAt: "2026-01-01"
+      });
+    }
+
+    await internal.reorderPage(3, 1);
+    expect(reordered).toHaveBeenCalledWith(3, 1);
+    expect(Object.fromEntries(internal.ink.all().map((stroke) => [stroke.id, stroke.page]))).toEqual({
+      "page-1": 2,
+      "page-2": 3,
+      "page-3": 1,
+      "page-4": 4
+    });
+
+    await internal.reorderPage(1, 4);
+    expect(reordered).toHaveBeenCalledWith(1, 4);
+    expect(Object.fromEntries(internal.ink.all().map((stroke) => [stroke.id, stroke.page]))).toEqual({
+      "page-1": 1,
+      "page-2": 2,
+      "page-3": 4,
+      "page-4": 3
+    });
+    await session.destroy();
+  });
+
   it("surfaces insert failures without mutating live ink when the scan write fails", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
