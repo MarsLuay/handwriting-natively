@@ -86,9 +86,131 @@ describe("SlowSpanTrace", () => {
     expect(interaction?.zoomSettleToPointerDownMs).toBe(616);
     expect(interaction?.slowStages.map((stage) => stage.stage)).toEqual([
       "pointerDownToStrokeStartMs",
-      "strokeStartToFirstInkMs"
+      "strokeStartToFirstCanvasCommitMs"
     ]);
     expect(interaction?.slowStages.some((stage) => stage.stage.includes("zoomSettle"))).toBe(false);
-    expect(interaction?.totalPointerDownToFirstInkMs).toBeGreaterThanOrEqual(SLOW_SPAN_INTERACTION_MS);
+    expect(interaction?.totalPointerDownToFirstCanvasCommitMs).toBeGreaterThanOrEqual(SLOW_SPAN_INTERACTION_MS);
+  });
+
+  it("deduplicates spans by contact correlation instead of collapsing independent strokes", () => {
+    const trace = new SlowSpanTrace();
+    expect(trace.record({
+      kind: "async",
+      category: "ink",
+      stage: "input-to-render",
+      durationMs: 30,
+      correlationId: "physical-contact-1"
+    })).not.toBeNull();
+    expect(trace.record({
+      kind: "async",
+      category: "ink",
+      stage: "input-to-render",
+      durationMs: 40,
+      correlationId: "physical-contact-2"
+    })).not.toBeNull();
+    expect(trace.record({
+      kind: "async",
+      category: "ink",
+      stage: "input-to-render",
+      durationMs: 50,
+      correlationId: "physical-contact-1"
+    })).toBeNull();
+    expect(trace.summary().byStage["input-to-render"]).toBe(2);
+  });
+
+  it("retains all abnormal stroke stages without using total pen-down duration", () => {
+    const trace = new SlowSpanTrace();
+    const record = trace.recordInkStroke({
+      pointerId: 7,
+      physicalContactId: "contact-7",
+      strokeId: "stroke-7",
+      correlationId: "contact-7",
+      page: 2,
+      tool: "pencil",
+      outcome: "pointerup",
+      pointerDownToStrokeStartMs: 8,
+      strokeStartToFirstCanvasCommitMs: 9,
+      totalPointerDownToFirstCanvasCommitMs: 17,
+      maxInputToRenderMs: 25,
+      p95InputToRenderMs: 25,
+      maxPluginCallbackMs: 10,
+      longestLongTaskMs: 50,
+      p95FrameMs: 9,
+      maxFrameMs: 10,
+      pointerUpToCommitMs: 8
+    });
+    expect(record?.slowStages.map((stage) => stage.stage)).toEqual([
+      "pointer-down-to-stroke-start",
+      "stroke-start-to-first-canvas-commit",
+      "input-to-render",
+      "stroke-frame-gap",
+      "plugin-callback",
+      "long-task",
+      "pointerup-to-commit"
+    ]);
+    expect(trace.recordInkStroke({
+      pointerId: 8,
+      physicalContactId: "contact-8",
+      strokeId: "stroke-8",
+      correlationId: "contact-8",
+      page: 2,
+      tool: "pencil",
+      outcome: "pointerup",
+      pointerDownToStrokeStartMs: 1,
+      strokeStartToFirstCanvasCommitMs: 1,
+      totalPointerDownToFirstCanvasCommitMs: 2,
+      maxInputToRenderMs: 1,
+      p95InputToRenderMs: 1,
+      maxPluginCallbackMs: 1,
+      longestLongTaskMs: 1,
+      p95FrameMs: 1,
+      maxFrameMs: 1,
+      pointerUpToCommitMs: 1
+    })).toBeNull();
+    expect(trace.slowInkStrokeSummary().totalSlowStrokes).toBe(1);
+  });
+
+  it("retains only thresholded slow strokes and keeps independent worst records bounded", () => {
+    const trace = new SlowSpanTrace();
+    const fast = {
+      pointerId: 1,
+      physicalContactId: "fast-contact",
+      strokeId: "fast-stroke",
+      correlationId: "fast-contact",
+      page: 1,
+      tool: "pen",
+      outcome: "pointerup",
+      pointerDownToStrokeStartMs: 1,
+      strokeStartToFirstCanvasCommitMs: 2,
+      totalPointerDownToFirstCanvasCommitMs: 3,
+      maxInputToRenderMs: 24,
+      p95InputToRenderMs: 12,
+      maxPluginCallbackMs: 7,
+      longestLongTaskMs: 49,
+      p95FrameMs: 7,
+      maxFrameMs: 7,
+      pointerUpToCommitMs: 7
+    } as const;
+    expect(trace.recordInkStroke(fast)).toBeNull();
+    expect(trace.slowInkStrokeSummary().totalSlowStrokes).toBe(0);
+
+    for (let index = 0; index < SLOW_SPAN_WORST_LIMIT + 2; index += 1) {
+      const slow = trace.recordInkStroke({
+        ...fast,
+        pointerId: index + 2,
+        physicalContactId: `contact-${index}`,
+        strokeId: `stroke-${index}`,
+        correlationId: `contact-${index}`,
+        maxInputToRenderMs: 25 + index
+      });
+      expect(slow?.physicalContactId).toBe(`contact-${index}`);
+    }
+    expect(trace.recordInkStroke(fast)).toBeNull();
+    const summary = trace.slowInkStrokeSummary();
+    expect(summary.totalSlowStrokes).toBe(SLOW_SPAN_WORST_LIMIT + 2);
+    expect(summary.byStage["input-to-render"]).toBe(SLOW_SPAN_WORST_LIMIT + 2);
+    expect(summary.worstStrokes).toHaveLength(SLOW_SPAN_WORST_LIMIT);
+    expect(summary.worstStrokes[0]?.maxInputToRenderMs).toBe(SLOW_SPAN_WORST_LIMIT + 2 + 24);
+    expect(summary.worstStrokes.every((stroke) => stroke.correlationId?.startsWith("contact-") === true)).toBe(true);
   });
 });
