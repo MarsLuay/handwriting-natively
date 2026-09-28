@@ -158,7 +158,6 @@ export class PointerRouter {
   /** Same PointerEvent must not append ink twice when document and page both see it. */
   private readonly consumedStrokeEvents = new WeakSet<Event>();
   private readonly stylusErasers = new Set<number>();
-  private readonly manipulationTouches = new Set<number>();
   private touchAxis: TouchAxisGesture | null = null;
   private readonly manipulation: ManipulationStateMachine;
   private manipulationRearmTimer: number | undefined;
@@ -187,8 +186,9 @@ export class PointerRouter {
     this.palmPolicy = palmPolicy ?? new PalmRejectionPolicy();
     this.ownership = ownership ?? new GestureOwnership();
     this.resetOwnershipOnDestroy = resetOwnershipOnDestroy;
+    this.palmPolicy.setOwnership(this.ownership);
     this.palmPolicy.setResetListener((reason, activePenIds) => {
-      this.emitPenStateReset(reason, activePenIds);
+      this.handlePalmPolicyReset(reason, activePenIds);
     });
     this.eraserCursor = createDetachedSpan(element.ownerDocument);
     this.eraserCursor.className = "native-pdf-handwriting-eraser-cursor";
@@ -347,15 +347,13 @@ export class PointerRouter {
   }
 
   private finishManipulationTouch(event: PointerEvent, panned: boolean): void {
-    if (!this.manipulationTouches.delete(event.pointerId)) return;
+    if (event.pointerType !== "touch" || this.manipulation.activeTouches <= this.touchCount()) return;
     const transition = this.manipulation.touchEnd(panned);
     this.applyManipulationTransition(transition);
   }
 
   /** Native finger contact. Pencil-first: this never creates an ink route. */
-  private beginManipulationTouch(event: PointerEvent): void {
-    if (this.manipulationTouches.has(event.pointerId)) return;
-    this.manipulationTouches.add(event.pointerId);
+  private beginManipulationTouch(): void {
     this.applyManipulationTransition(this.manipulation.touchStart());
   }
 
@@ -383,7 +381,6 @@ export class PointerRouter {
     if (event.pointerType === "touch" && event.isPrimary && this.touchCount() > 0) {
       const trackedBefore = this.touchCount();
       this.ownership.clearTouchContacts();
-      this.manipulationTouches.clear();
       this.clearManipulationRearm();
       this.manipulation.reset();
       // Keep active pens — a stale finger ID must not unlock Pencil scroll lock.
@@ -399,29 +396,34 @@ export class PointerRouter {
     const ownershipDecision = event.pointerType === "touch" || route === "draw" || route === "edit" || route === "text"
       ? this.ownership.pointerDown({
         pointerId: event.pointerId,
-        pointerType: event.pointerType === "pen" ? "pen" : event.pointerType === "touch" ? "touch" : "mouse",
+        pointerType: this.gesturePointerType(event),
         button: event.button,
         buttons: event.buttons,
         target: event.pointerType === "touch" || this.callbacks.canAnnotatePointer(event) ? "page" : "ui",
         inkToolSelected: route === "draw" || route === "edit" || route === "text",
         mouseIntent: route === "draw" || route === "edit" || route === "text" ? "ink" : "pan"
       })
-      : this.ownership.snapshot();
+      : { state: this.ownership.snapshot() };
+    if (this.palmPolicy.hasActivePen()) {
+      this.palmPolicy.adoptActivePenIds(this.activePenIds());
+      this.syncTouchActionMode();
+    }
     let routeReason = routeDecision.reason;
-    if (event.pointerType === "pen"
+    const gesturePointerType = this.gesturePointerType(event);
+    if (gesturePointerType === "pen"
       && (route === "draw" || route === "edit" || route === "text")
       && (ownershipDecision.state.owner !== "pen-ink" || ownershipDecision.state.activePenId !== event.pointerId)) {
       route = "ignored";
       routeReason = "gesture-ownership";
-    } else if (event.pointerType === "mouse"
+    } else if (gesturePointerType === "mouse"
       && (route === "draw" || route === "edit" || route === "text")
       && (ownershipDecision.state.owner !== "mouse-ink" || ownershipDecision.state.activeMousePointerId !== event.pointerId)) {
       route = "native";
       routeReason = "gesture-ownership";
     }
     this.callbacks.onRouteDecision?.(route, routeReason, event);
-    if (event.pointerType === "touch" && route !== "ignored") {
-      this.beginManipulationTouch(event);
+    if (event.pointerType === "touch" && this.manipulation.activeTouches < this.touchCount()) {
+      this.beginManipulationTouch();
     }
     this.callbacks.onRoute?.(route, event);
     if (route === "touch-zoom-pan") {
@@ -518,8 +520,13 @@ export class PointerRouter {
       inkToolSelected: true,
       mouseIntent: "ink"
     });
-    const expectedOwner = event.pointerType === "mouse" ? "mouse-ink" : "pen-ink";
-    if (ownership.state.owner !== expectedOwner || ownership.state.activePenId !== (event.pointerType === "pen" ? event.pointerId : null)) {
+    if (this.palmPolicy.hasActivePen()) this.palmPolicy.adoptActivePenIds(this.activePenIds());
+    const gesturePointerType = this.gesturePointerType(event);
+    const expectedOwner = gesturePointerType === "mouse" ? "mouse-ink" : "pen-ink";
+    if (ownership.state.owner !== expectedOwner
+      || (gesturePointerType === "pen"
+        ? ownership.state.activePenId !== event.pointerId
+        : ownership.state.activeMousePointerId !== event.pointerId)) {
       return false;
     }
     this.routed.set(event.pointerId, route);
@@ -570,8 +577,7 @@ export class PointerRouter {
     const trackedBefore = this.touchCount();
     for (const touch of Array.from(event.changedTouches)) {
       const terminal = this.syntheticPointerEvent(touch.identifier, event.type === "touchcancel" ? "pointercancel" : "pointerup");
-      if (event.type === "touchcancel") this.ownership.pointerCancel(terminal);
-      else this.ownership.pointerUp(terminal);
+      this.releaseGestureOwnership(terminal, event.type === "touchcancel" ? "pointercancel" : "pointerup");
       const panned = this.touchAxis?.pointerId === touch.identifier
         && (this.touchAxis.active || this.touchAxis.lock === "vertical");
       if (this.touchAxis?.pointerId === touch.identifier) {
@@ -597,6 +603,7 @@ export class PointerRouter {
       return;
     }
     this.ownership.clearTouchContacts();
+    this.manipulation.reset();
     // Companion touchend can arrive while Pencil tip is still down — only clear
     // pens that look stale (no tip sample within grace window).
     const stalePenCleared = this.palmPolicy.reconcileStalePenOnTouch();
@@ -704,6 +711,24 @@ export class PointerRouter {
     this.clearTouchAxisGesture("native-touch-policy");
   }
 
+  /** Reconcile policy evidence by clearing the canonical pen owner once. */
+  private handlePalmPolicyReset(reason: PenStateResetReason, activePenIds: number[]): void {
+    for (const pointerId of activePenIds) {
+      const route = this.routed.get(pointerId);
+      if (route) {
+        const cancel = this.syntheticPointerEvent(pointerId, "pointercancel", "pen");
+        this.callbacks.onCancel?.(route, cancel);
+        safeReleasePointerCapture(this.element, pointerId);
+        this.routed.delete(pointerId);
+        this.routedPointerTypes.delete(pointerId);
+      }
+      if (this.stylusErasers.delete(pointerId) && this.stylusErasers.size === 0) {
+        this.callbacks.onStylusEraserEnd?.();
+      }
+      this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
+    }
+    this.emitPenStateReset(reason, activePenIds);
+  }
 
   private emitPenStateReset(
     reason: PenStateResetReason,
@@ -743,7 +768,13 @@ export class PointerRouter {
   }
 
   private gesturePointerType(event: PointerEvent): "pen" | "touch" | "mouse" {
-    return event.pointerType === "pen" ? "pen" : event.pointerType === "touch" ? "touch" : "mouse";
+    if (event.pointerType === "touch") return "touch";
+    if (event.pointerType === "pen") return "pen";
+    if (this.ownership.snapshot().activePenId === event.pointerId
+      || this.palmPolicy.shouldTreatMouseTipAsPen(event)) {
+      return "pen";
+    }
+    return "mouse";
   }
 
   private releaseGestureOwnership(
@@ -785,7 +816,6 @@ export class PointerRouter {
     const owned = this.routed.size > 0
       || this.stylusErasers.size > 0
       || this.touchCount() > 0
-      || this.manipulationTouches.size > 0
       || this.touchAxis !== null
       || this.palmPolicy.hasActivePen();
     if (!owned) return;
@@ -797,11 +827,10 @@ export class PointerRouter {
     if (this.stylusErasers.size > 0) this.callbacks.onStylusEraserEnd?.();
     this.stylusErasers.clear();
     if (this.touchAxis) this.clearTouchAxisGesture(`lifecycle-${event.type}`);
-    this.ownership.replaceGeneration();
-    this.manipulationTouches.clear();
     this.clearManipulationRearm();
     this.manipulation.reset();
     this.palmPolicy.clearAll("pointercancel");
+    this.ownership.replaceGeneration();
     this.syncTouchActionMode();
     this.hideCustomCursors();
     this.callbacks.onTouchLifecycle?.("pointercancel", event, {
@@ -816,7 +845,7 @@ export class PointerRouter {
   /** Clear stylus contact — Ink unlockScroll equivalent. */
   private releasePenContact(event: PointerEvent, reason: Extract<PenStateResetReason, "pointerup" | "pointercancel" | "lostpointercapture">): void {
     if (event.pointerType !== "pen" && event.pointerType !== "mouse") return;
-    if (event.pointerType === "mouse" && !this.palmPolicy.activePenIds().includes(event.pointerId)) return;
+    if (!this.activePenIds().includes(event.pointerId)) return;
     if (reason === "lostpointercapture") {
       this.palmPolicy.clearAll("lostpointercapture");
       return;
@@ -874,13 +903,13 @@ export class PointerRouter {
       this.routed.delete(event.pointerId);
       this.routedPointerTypes.delete(event.pointerId);
     }
+    this.releasePenContact(event, "pointerup");
     this.releaseGestureOwnership(event, "pointerup");
     if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
     const endedTouchGesture = this.touchAxis?.pointerId === event.pointerId;
     const pannedTouch = Boolean(endedTouchGesture && (this.touchAxis?.active || this.touchAxis?.lock === "vertical"));
     if (endedTouchGesture) this.clearTouchAxisGesture("pointerup", event);
     this.finishManipulationTouch(event, pannedTouch);
-    this.releasePenContact(event, "pointerup");
     this.syncTouchActionMode();
     // The custom cursor is a live pointer affordance, never a mark left after
     // drawing. Hover movement paints it again when the mouse/pen is active.
@@ -897,12 +926,12 @@ export class PointerRouter {
       this.routed.delete(event.pointerId);
       this.routedPointerTypes.delete(event.pointerId);
     }
+    this.releasePenContact(event, "pointercancel");
     this.releaseGestureOwnership(event, "pointercancel");
     if (this.stylusErasers.delete(event.pointerId) && this.stylusErasers.size === 0) this.callbacks.onStylusEraserEnd?.();
     const endedTouchGesture = this.touchAxis?.pointerId === event.pointerId;
     if (endedTouchGesture) this.clearTouchAxisGesture("pointercancel", event);
     this.finishManipulationTouch(event, false);
-    this.releasePenContact(event, "pointercancel");
     this.syncTouchActionMode();
     this.hideCustomCursors();
   };
@@ -914,16 +943,16 @@ export class PointerRouter {
     // The document listener keeps appending until pointerup or pointercancel.
     if (event.pointerType === "pen" && this.routed.has(event.pointerId)) return;
     if (event.pointerType === "pen" && this.palmPolicy.hasActivePen()) {
-      this.releaseGestureOwnership(event, "lostpointercapture");
       this.releasePenContact(event, "lostpointercapture");
+      this.releaseGestureOwnership(event, "lostpointercapture");
       this.syncTouchActionMode();
       return;
     }
     // Mouse ink routes (including MockTab tip-as-mouse) need the same finish path.
     if (event.pointerType === "mouse" && this.routed.has(event.pointerId)) {
       this.finishRoutedPointer(event, "pointerup");
-      this.releaseGestureOwnership(event, "lostpointercapture");
       this.releasePenContact(event, "lostpointercapture");
+      this.releaseGestureOwnership(event, "lostpointercapture");
       this.syncTouchActionMode();
     }
   };
@@ -937,7 +966,6 @@ export class PointerRouter {
       const hadPen = this.palmPolicy.hasActivePen();
       const phase = event.type === "pointercancel" ? "pointercancel" : "pointerup";
       this.finishRoutedPointer(event, phase);
-      this.releaseGestureOwnership(event, event.type === "pointercancel" ? "pointercancel" : "pointerup");
       this.releasePenContact(
         event,
         event.type === "lostpointercapture"
@@ -946,6 +974,7 @@ export class PointerRouter {
             ? "pointercancel"
             : "pointerup"
       );
+      this.releaseGestureOwnership(event, event.type === "pointercancel" ? "pointercancel" : "pointerup");
       this.syncTouchActionMode();
       if (hadRoute || hadPen) {
         this.callbacks.onTouchLifecycle?.(
@@ -970,7 +999,6 @@ export class PointerRouter {
     if (endedTouchGesture) {
       this.clearTouchAxisGesture(event.type === "pointerup" ? "pointerup" : "document-touch-terminal", event);
     }
-    this.finishManipulationTouch(event, pannedTouch);
     const route = this.routed.get(event.pointerId);
     const endedOnThisPage = event.target instanceof Node && this.element.contains(event.target);
     let completion: "document-end" | "document-cancel" | undefined;
@@ -997,7 +1025,6 @@ export class PointerRouter {
       event.type === "pointercancel" ? "pointercancel" : event.type === "lostpointercapture" ? "lostpointercapture" : "pointerup"
     );
     const removed = hadTouch;
-    this.palmPolicy.pointerUp(event);
     if (!removed && !completion) return;
     const phase = event.type === "pointerup"
       ? "pointerup"
@@ -1094,7 +1121,6 @@ export class PointerRouter {
     const ids = new Set<number>([
       ...this.routed.keys(),
       ...this.touchIds(),
-      ...this.manipulationTouches,
       ...this.stylusErasers,
       ...(this.touchAxis ? [this.touchAxis.pointerId] : [])
     ]);
@@ -1123,7 +1149,6 @@ export class PointerRouter {
     const captureIds = new Set<number>([
       ...handoff.routed.map(({ pointerId }) => pointerId),
       ...this.touchIds(),
-      ...this.manipulationTouches,
       ...this.stylusErasers,
       ...(this.touchAxis ? [this.touchAxis.pointerId] : [])
     ]);
@@ -1134,7 +1159,6 @@ export class PointerRouter {
     this.routedPointerTypes.clear();
     if (this.stylusErasers.size > 0) this.callbacks.onStylusEraserEnd?.();
     this.stylusErasers.clear();
-    this.manipulationTouches.clear();
     this.manipulation.reset();
     this.clearTouchAxisGesture("destroy");
     this.touchAxis = null;

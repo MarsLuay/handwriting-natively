@@ -1,4 +1,5 @@
 import { isEraserTip, isTipContact } from "./PenPresence";
+import { GestureOwnership } from "./GestureOwnership";
 
 export interface PalmRejectionOptions {
   ignoreTouchWhilePenActive?: boolean;
@@ -28,7 +29,9 @@ export type PenStateResetReason =
  * terminal path, stale-touch reconcile, and inactivity timeout (Ink-style).
  */
 export class PalmRejectionPolicy {
-  private readonly activePens = new Set<number>();
+  /** The router/session owns contacts; this policy only adapts to that state. */
+  private ownership = new GestureOwnership();
+  private ownsStandaloneAuthority = true;
   private readonly ignoreTouchWhilePenActive: boolean;
   private readonly palmWidthThreshold: number;
   private readonly stalePenTouchMs: number;
@@ -52,6 +55,12 @@ export class PalmRejectionPolicy {
       ?? ((handler, ms) => window.setTimeout(handler, ms));
     this.clearSchedule = options.clearTimeout
       ?? ((id) => window.clearTimeout(id));
+  }
+
+  /** Bind policy decisions to the session's canonical contact owner. */
+  setOwnership(ownership: GestureOwnership): void {
+    this.ownership = ownership;
+    this.ownsStandaloneAuthority = false;
   }
 
   /** Optional diagnostic hook when contact flips from active → empty. */
@@ -91,14 +100,24 @@ export class PalmRejectionPolicy {
   pointerDown(event: PointerEvent): void {
     this.notePenPresence(event);
     if (!this.isPenLikeContact(event)) return;
-    this.activePens.add(event.pointerId);
+    if (this.ownsStandaloneAuthority) {
+      this.ownership.pointerDown({
+        pointerId: event.pointerId,
+        pointerType: "pen",
+        target: "page",
+        inkToolSelected: true,
+        mouseIntent: "ink",
+        button: event.button,
+        buttons: event.buttons
+      });
+    }
     this.markPenActivity();
   }
 
   /** Refresh inactivity timer while tip still reports contact. */
   notePenActivity(event: PointerEvent): void {
     this.notePenPresence(event);
-    if (!this.activePens.has(event.pointerId)) return;
+    if (!this.activePenIds().includes(event.pointerId)) return;
     if (event.pointerType !== "pen" && event.pointerType !== "mouse") return;
     if (event.buttons === 0 && event.pressure <= 0) return;
     this.markPenActivity();
@@ -106,33 +125,35 @@ export class PalmRejectionPolicy {
 
   pointerUp(event: PointerEvent): boolean {
     if (event.pointerType !== "pen" && event.pointerType !== "mouse") return false;
-    if (!this.activePens.has(event.pointerId) && event.pointerType !== "pen") return false;
+    if (!this.activePenIds().includes(event.pointerId)) return false;
     return this.clearPenPointer(event.pointerId, "pointerup");
   }
 
   clearPenPointer(pointerId: number, reason: PenStateResetReason): boolean {
-    if (!this.activePens.has(pointerId)) return false;
-    const before = [...this.activePens];
-    this.activePens.delete(pointerId);
-    if (this.activePens.size === 0) {
-      this.clearInactivityTimer();
-      this.onReset?.(reason, before);
-      return true;
+    const before = this.activePenIds();
+    if (!before.includes(pointerId)) return false;
+    this.clearInactivityTimer();
+    this.onReset?.(reason, before);
+    if (this.ownsStandaloneAuthority) {
+      this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
     }
-    this.markPenActivity();
-    return false;
+    return true;
   }
 
   /** Clear every tracked tip (lost capture / timeout / reconcile / destroy). */
   clearAll(reason: PenStateResetReason): boolean {
-    if (this.activePens.size === 0) {
+    const before = this.activePenIds();
+    if (before.length === 0) {
       this.clearInactivityTimer();
       return false;
     }
-    const before = [...this.activePens];
-    this.activePens.clear();
     this.clearInactivityTimer();
     this.onReset?.(reason, before);
+    if (this.ownsStandaloneAuthority) {
+      for (const pointerId of before) {
+        this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
+      }
+    }
     return true;
   }
 
@@ -141,7 +162,7 @@ export class PalmRejectionPolicy {
    * stalePenTouchMs — treat contact as stale (WebKit omitted pointerup).
    */
   reconcileStalePenOnTouch(): boolean {
-    if (this.activePens.size === 0) return false;
+    if (this.activePenIds().length === 0) return false;
     if (this.now() - this.lastPenEventAt <= this.stalePenTouchMs) return false;
     return this.clearAll("touch-after-stale-pen");
   }
@@ -154,7 +175,7 @@ export class PalmRejectionPolicy {
    */
   shouldIgnore(event: PointerEvent, options: { allowGeometryHeuristic?: boolean } = {}): boolean {
     if (event.pointerType !== "touch") return false;
-    if (this.ignoreTouchWhilePenActive && this.activePens.size > 0) return true;
+    if (this.ignoreTouchWhilePenActive && this.hasActivePen()) return true;
     return options.allowGeometryHeuristic === true
       && Math.max(event.width || 0, event.height || 0) >= this.palmWidthThreshold
       && event.pressure > 0.5;
@@ -162,17 +183,17 @@ export class PalmRejectionPolicy {
 
   /** True while at least one stylus tip is down (for scroll-lock / TouchEvent cancel). */
   hasActivePen(): boolean {
-    return this.activePens.size > 0;
+    return this.activePenIds().length > 0;
   }
 
   activePenIds(): number[] {
-    return [...this.activePens];
+    const activePenId = this.ownership.snapshot().activePenId;
+    return activePenId === null ? [] : [activePenId];
   }
 
   /** Restore stylus contact when a page router is rebound during a live tip. */
   adoptActivePenIds(pointerIds: readonly number[]): void {
-    for (const pointerId of pointerIds) this.activePens.add(pointerId);
-    if (this.activePens.size > 0) this.markPenActivity();
+    if (pointerIds.length > 0) this.markPenActivity();
   }
 
   reset(): void {
@@ -182,7 +203,7 @@ export class PalmRejectionPolicy {
   private markPenActivity(): void {
     this.lastPenEventAt = this.now();
     this.clearInactivityTimer();
-    if (this.activePens.size === 0) return;
+    if (!this.hasActivePen()) return;
     this.penResetTimer = this.schedule(() => {
       this.penResetTimer = undefined;
       this.clearAll("pen-inactivity-timeout");
