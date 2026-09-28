@@ -41,7 +41,7 @@ import {
   type ImportedPdfPages
 } from "./pdf/PdfNoteService";
 import { writePdfAndAnnotationStoresAtomic } from "./pdf/PdfPageMutation";
-import { PdfImportFilePicker, PdfPageSelectionModal } from "./ui/PdfPageImport";
+import { isExternalPdfImport, PdfImportFilePicker, PdfPageSelectionModal, type PdfImportSource } from "./ui/PdfPageImport";
 import { mergeSettings, NativePdfInkSettingTab, type CopiedLogDiagnostics } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
 import { createDocumentIdentity, hashDocumentContent } from "./storage/DocumentIdentity";
@@ -1402,17 +1402,20 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private async prepareImportedPages(destination: TFile, afterPage: number): Promise<ImportedPdfPages | null> {
-    const source = await new Promise<TFile | null>((resolve) => {
+    const source = await new Promise<PdfImportSource | null>((resolve) => {
       new PdfImportFilePicker(
         this.app,
         destination.path,
         resolve,
-        () => resolve(null)
+        () => resolve(null),
+        (message) => new Notice(`Could not import PDF: ${message}`)
       ).open();
     });
     if (!source) return null;
 
-    const sourceBytes = new Uint8Array(await this.app.vault.readBinary(source));
+    const sourceBytes = isExternalPdfImport(source)
+      ? source.bytes.slice()
+      : new Uint8Array(await this.app.vault.readBinary(source));
     const sourcePageCount = await getPdfPageCount(sourceBytes);
     if (sourcePageCount < 1) throw new Error("The selected PDF has no pages.");
 
