@@ -32,7 +32,7 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 
 MIT — see [LICENSE](LICENSE).
 
-If this project is used for any others, all that is required is acknowledging this repo. Thank you! Build cool things
+If this project is used for any others, all that is required is acknowledging this repo and me. Thank you! Build cool things
 
 ## Privacy
 
