@@ -163,6 +163,7 @@ export class ScanDocumentModal extends Modal {
     body.createEl("p", { text: "Review the detected page boundary. Drag the corners to correct the perspective crop." });
     this.preview = body.createDiv({ cls: "native-pdf-handwriting-scan-preview" });
     this.preview.append(image);
+    this.applyPreviewRotation();
     const outline = this.createCropOutline();
     this.preview.append(outline.svg);
     this.cropOutline = { shadow: outline.shadow, line: outline.line };
@@ -188,6 +189,7 @@ export class ScanDocumentModal extends Modal {
     const rotate = controls.createEl("button", { text: "Rotate" });
     rotate.addEventListener("click", () => {
       this.currentRotation = rotateQuarterTurns(this.currentRotation);
+      this.applyPreviewRotation();
       rotate.setAttribute("aria-label", `Rotate, ${this.currentRotation * 90} degrees`);
     }, { signal: this.abort.signal });
     const retake = controls.createEl("button", { text: "Retake" });
@@ -202,6 +204,15 @@ export class ScanDocumentModal extends Modal {
     confirm.addEventListener("click", () => void this.confirm(), { signal: this.abort.signal });
     const cancel = controls.createEl("button", { text: "Cancel" });
     cancel.addEventListener("click", () => this.cancel(), { signal: this.abort.signal });
+  }
+
+  private applyPreviewRotation(): void {
+    const image = this.currentImage;
+    if (!image) return;
+    const degrees = this.currentRotation * 90;
+    image.style.transformOrigin = "center center";
+    image.style.transform = degrees === 0 ? "" : `rotate(${degrees}deg)`;
+    this.preview?.setAttribute("data-rotation", String(this.currentRotation));
   }
 
   private moveCorner(event: PointerEvent): void {
