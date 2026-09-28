@@ -271,6 +271,9 @@ export class PointerRouter {
   acceptDocumentPenStroke(event: PointerEvent): boolean {
     if (this.abort.signal.aborted) return false;
     if (event.pointerType !== "pen" || event.type !== "pointermove") return false;
+    // iPadOS also sends document-level Pencil hover moves. They cannot advance
+    // an open tip stroke and would otherwise enter the capture-loss recovery path.
+    if (event.buttons === 0 && event.pressure <= 0) return false;
     if (!this.routed.has(event.pointerId)) return false;
     this.handleMove(event);
     return true;
