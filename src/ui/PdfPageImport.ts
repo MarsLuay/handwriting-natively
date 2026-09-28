@@ -7,6 +7,207 @@ export function parsePdfPageSelection(input: string, pageCount: number): number[
   return parsePageRanges(input, pageCount);
 }
 
+export type PdfImportLocation = "after-current" | "before-current" | "start" | "end" | "after-page";
+
+export interface PdfImportOptions {
+  /** One-indexed source-PDF pages to copy, in document order. */
+  readonly pageNumbers: number[];
+  /** Insert after this destination page; zero inserts at the beginning. */
+  readonly afterPage: number;
+}
+
+export interface PdfImportOptionsModalConfig {
+  readonly sourcePageCount: number;
+  readonly destinationPageCount: number;
+  readonly currentPage: number;
+  readonly sourceName?: string;
+  readonly destinationName?: string;
+}
+
+/**
+ * Second step of Import page: choose the source pages and destination position.
+ * Keeping this in one modal makes the destructive source-PDF write explicit and
+ * prevents an accidental all-pages import at the wrong location.
+ */
+export class PdfImportOptionsModal extends Modal {
+  private readonly abort = new AbortController();
+  private readonly currentPage: number;
+  private readonly config: PdfImportOptionsModalConfig;
+  private pageModeEl: HTMLInputElement | null = null;
+  private pageRangeEl: HTMLInputElement | null = null;
+  private locationEl: HTMLSelectElement | null = null;
+  private afterPageEl: HTMLInputElement | null = null;
+  private summaryEl: HTMLElement | null = null;
+  private errorEl: HTMLElement | null = null;
+  private completed = false;
+
+  constructor(
+    app: App,
+    config: PdfImportOptionsModalConfig,
+    private readonly onChoose: (options: PdfImportOptions) => void,
+    private readonly onCancel: () => void
+  ) {
+    super(app);
+    this.config = config;
+    this.currentPage = Math.min(
+      Math.max(1, Math.trunc(config.currentPage)),
+      Math.max(1, config.destinationPageCount)
+    );
+  }
+
+  onOpen(): void {
+    const source = this.config.sourceName ? ` from ${this.config.sourceName}` : "";
+    const destination = this.config.destinationName ? ` into ${this.config.destinationName}` : "";
+    this.titleEl.setText("Import pages");
+    this.contentEl.createEl("p", {
+      text: `Choose what to import${source} and where to place it${destination}.`
+    });
+
+    const pagesHeading = this.contentEl.createEl("h4", { text: "Pages to import" });
+    pagesHeading.setAttribute("id", "native-pdf-handwriting-import-pages-heading");
+    const pageOptions = this.contentEl.createDiv({ cls: "native-pdf-handwriting-import-options" });
+    this.pageModeEl = pageOptions.createEl("input", { type: "radio" });
+    this.pageModeEl.name = "native-pdf-handwriting-import-page-mode";
+    this.pageModeEl.value = "all";
+    this.pageModeEl.checked = true;
+    this.pageModeEl.id = "native-pdf-handwriting-import-all-pages";
+    const allLabel = pageOptions.createEl("label", { text: `All pages (${this.config.sourcePageCount})` });
+    allLabel.prepend(this.pageModeEl);
+
+    const specificMode = pageOptions.createEl("input", { type: "radio" });
+    specificMode.name = "native-pdf-handwriting-import-page-mode";
+    specificMode.value = "specific";
+    specificMode.id = "native-pdf-handwriting-import-specific-pages";
+    const specificLabel = pageOptions.createEl("label", { text: "Specific pages or ranges" });
+    specificLabel.prepend(specificMode);
+
+    this.pageRangeEl = this.contentEl.createEl("input", {
+      type: "text",
+      placeholder: "1, 3-5",
+      cls: "native-pdf-handwriting-page-range-input"
+    });
+    this.pageRangeEl.setAttribute("aria-label", "Specific pages or ranges to import");
+    this.pageRangeEl.setAttribute("aria-describedby", pagesHeading.id);
+    this.pageRangeEl.disabled = true;
+
+    this.contentEl.createEl("h4", { text: "Import location" });
+    const location = this.contentEl.createDiv({ cls: "native-pdf-handwriting-import-options" });
+    this.locationEl = location.createEl("select", { cls: "native-pdf-handwriting-import-location" });
+    this.locationEl.setAttribute("aria-label", "Where to import pages");
+    this.addLocationOption("after-current", `After current page (page ${this.currentPage})`);
+    this.addLocationOption("before-current", `Before current page (page ${this.currentPage})`);
+    this.addLocationOption("start", "At beginning of document");
+    this.addLocationOption("end", "At end of document");
+    this.addLocationOption("after-page", "After a specific page…");
+    this.afterPageEl = location.createEl("input", {
+      type: "number",
+      value: String(this.currentPage),
+      cls: "native-pdf-handwriting-import-after-page"
+    });
+    this.afterPageEl.setAttribute("aria-label", "Destination page to insert after");
+    this.afterPageEl.min = "1";
+    this.afterPageEl.max = String(this.config.destinationPageCount);
+    this.afterPageEl.disabled = true;
+
+    this.summaryEl = this.contentEl.createEl("p", {
+      cls: "native-pdf-handwriting-import-count"
+    });
+    this.errorEl = this.contentEl.createEl("p", { cls: "native-pdf-handwriting-import-error" });
+    const actions = this.contentEl.createDiv({ cls: "native-pdf-handwriting-confirm-actions" });
+    const importButton = actions.createEl("button", { text: "Import pages", cls: "mod-cta" });
+    const cancel = actions.createEl("button", { text: "Cancel" });
+
+    this.pageRangeEl.addEventListener("input", () => this.refreshSummary(), { signal: this.abort.signal });
+    this.pageRangeEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        this.submit();
+      }
+    }, { signal: this.abort.signal });
+    this.pageModeEl.addEventListener("change", () => this.updatePageMode(), { signal: this.abort.signal });
+    specificMode.addEventListener("change", () => this.updatePageMode(), { signal: this.abort.signal });
+    this.locationEl.addEventListener("change", () => this.updateLocationMode(), { signal: this.abort.signal });
+    this.afterPageEl.addEventListener("input", () => this.refreshSummary(), { signal: this.abort.signal });
+    importButton.addEventListener("click", () => this.submit(), { signal: this.abort.signal });
+    cancel.addEventListener("click", () => this.close(), { signal: this.abort.signal });
+    this.updatePageMode();
+    this.updateLocationMode();
+    this.refreshSummary();
+  }
+
+  onClose(): void {
+    this.abort.abort();
+    this.contentEl.replaceChildren();
+    this.pageModeEl = null;
+    this.pageRangeEl = null;
+    this.locationEl = null;
+    this.afterPageEl = null;
+    this.summaryEl = null;
+    this.errorEl = null;
+    if (!this.completed) this.onCancel();
+  }
+
+  private addLocationOption(value: PdfImportLocation, text: string): void {
+    this.locationEl?.createEl("option", { value, text });
+  }
+
+  private updatePageMode(): void {
+    const specific = this.pageModeEl?.checked !== true;
+    if (this.pageRangeEl) this.pageRangeEl.disabled = !specific;
+    this.refreshSummary();
+  }
+
+  private updateLocationMode(): void {
+    const custom = this.locationEl?.value === "after-page";
+    if (this.afterPageEl) this.afterPageEl.disabled = !custom;
+    this.refreshSummary();
+  }
+
+  private selectedPages(): number[] | null {
+    if (this.pageModeEl?.checked) {
+      return Array.from({ length: this.config.sourcePageCount }, (_, index) => index + 1);
+    }
+    return parsePdfPageSelection(this.pageRangeEl?.value ?? "", this.config.sourcePageCount);
+  }
+
+  private destinationAfterPage(): number | null {
+    switch (this.locationEl?.value as PdfImportLocation | undefined) {
+      case "before-current": return this.currentPage - 1;
+      case "start": return 0;
+      case "end": return this.config.destinationPageCount;
+      case "after-page": {
+        const page = Number(this.afterPageEl?.value ?? "");
+        return Number.isInteger(page) && page >= 1 && page <= this.config.destinationPageCount ? page : null;
+      }
+      case "after-current":
+      default: return this.currentPage;
+    }
+  }
+
+  private refreshSummary(): void {
+    if (!this.summaryEl) return;
+    const count = this.selectedPages()?.length ?? 0;
+    const location = this.locationEl?.selectedOptions[0]?.textContent?.replace("…", "") ?? "the selected location";
+    this.summaryEl.textContent = `${count} page${count === 1 ? "" : "s"} will be imported ${location.toLowerCase()}.`;
+  }
+
+  private submit(): void {
+    const pageNumbers = this.selectedPages();
+    const afterPage = this.destinationAfterPage();
+    if (!pageNumbers?.length) {
+      if (this.errorEl) this.errorEl.textContent = "Choose all pages or enter valid page numbers and ranges.";
+      return;
+    }
+    if (afterPage === null) {
+      if (this.errorEl) this.errorEl.textContent = `Choose a destination page from 1-${this.config.destinationPageCount}.`;
+      return;
+    }
+    this.completed = true;
+    this.onChoose({ pageNumbers, afterPage });
+    this.close();
+  }
+}
+
 export class PdfPageSelectionModal extends Modal {
   private readonly abort = new AbortController();
   private inputEl: HTMLInputElement | null = null;

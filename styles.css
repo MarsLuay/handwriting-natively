@@ -693,6 +693,27 @@
 .native-pdf-handwriting-panning { cursor: grabbing; }
 .native-pdf-handwriting-panning * { cursor: grabbing; }
 
+.native-pdf-handwriting-import-options {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin: 8px 0;
+}
+.native-pdf-handwriting-import-options label {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+.native-pdf-handwriting-import-location,
+.native-pdf-handwriting-import-after-page {
+  font: inherit;
+  max-width: 100%;
+}
+.native-pdf-handwriting-import-location { flex: 1; }
+.native-pdf-handwriting-import-after-page { width: 6em; }
+.native-pdf-handwriting-page-range-input:disabled { opacity: 0.6; }
+.native-pdf-handwriting-import-error { color: var(--text-error, #dc2626); }
+
 /* Explicit page-end action; ordinary overscroll never creates a page. */
 .native-pdf-handwriting-add-page {
   align-items: center;
