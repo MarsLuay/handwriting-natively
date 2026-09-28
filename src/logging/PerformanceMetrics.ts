@@ -8,11 +8,16 @@ export const FRAME_PROFILE_STABLE_SAMPLES = 24;
 const MIN_CLEAN_FRAME_INTERVAL_MS = 4;
 /** Includes real 30 Hz low-power rAF while excluding obvious 10 Hz jank. */
 const MAX_CLEAN_FRAME_INTERVAL_MS = 34;
+const HARMONIC_MIN_RATIO = 1.75;
+const HARMONIC_MAX_RATIO = 2.25;
 
 export type FrameCadenceConfidence = "insufficient" | "low" | "stable";
 export type FrameThresholdSource = "measured-raf" | "platform-fallback";
+export type FrameCadenceSampleKind = "active" | "idle";
+export type FrameCadenceInterpretation = "insufficient" | "measured-raf" | "harmonic-missed-frame";
 
 export interface RuntimeFrameProfile {
+  /** The observed cadence candidate, even when the conservative fallback wins. */
   measuredRefreshHz: number | null;
   measuredFrameBudgetMs: number | null;
   fallbackRefreshHz: number;
@@ -22,6 +27,10 @@ export interface RuntimeFrameProfile {
   missedFrameThresholdMs: number;
   substantialStallThresholdMs: number;
   sampleCount: number;
+  activeSampleCount: number;
+  idleSampleCount: number;
+  cadenceSampleSource: FrameCadenceSampleKind;
+  cadenceInterpretation: FrameCadenceInterpretation;
   confidence: FrameCadenceConfidence;
   thresholdSource: FrameThresholdSource;
   platform: string;
@@ -38,44 +47,71 @@ export interface EffectiveFrameBudgetOptions {
  * Shared bounded rAF cadence estimator. It accepts only distinct, visible
  * timestamps and ignores outliers, so an active jank episode cannot teach the
  * telemetry that the display is suddenly running at 10 Hz.
+ *
+ * Active callbacks can be delayed by the work being measured. A stable active
+ * 33 ms cadence is therefore ambiguous on a 60 Hz runtime: it may be genuine
+ * 30 Hz or every-other-frame delivery. Idle samples from the lightweight
+ * sampler resolve that ambiguity; until then the 60 Hz fallback remains in
+ * force so missed frames cannot silently become the new baseline.
  */
 export class EffectiveFrameBudget {
-  private readonly samples: number[] = [];
-  private lastRafAt: number | null = null;
-  private acceptedSampleCount = 0;
+  private readonly samplesByKind: Record<FrameCadenceSampleKind, number[]> = { active: [], idle: [] };
+  private readonly acceptedSampleCountByKind: Record<FrameCadenceSampleKind, number> = { active: 0, idle: 0 };
+  private readonly lastRafAtByKind: Record<FrameCadenceSampleKind, number | null> = { active: null, idle: null };
   private measuredFrameBudgetMs: number | null = null;
+  private measuredSampleSource: FrameCadenceSampleKind = "active";
+  private measurementDirty = true;
 
   constructor(private readonly options: EffectiveFrameBudgetOptions = {}) {}
 
-  observeRaf(timestampMs: number, documentHidden = false): void {
+  observeRaf(
+    timestampMs: number,
+    documentHidden = false,
+    sampleKind: FrameCadenceSampleKind = "active"
+  ): void {
     if (!Number.isFinite(timestampMs)) return;
-    const previous = this.lastRafAt;
-    this.lastRafAt = timestampMs;
-    if (documentHidden || previous === null) return;
+    if (documentHidden) {
+      this.lastRafAtByKind[sampleKind] = null;
+      return;
+    }
+    const previous = this.lastRafAtByKind[sampleKind];
+    this.lastRafAtByKind[sampleKind] = timestampMs;
+    if (previous === null) return;
     const intervalMs = timestampMs - previous;
     // Multiple callbacks from the same animation frame share a timestamp.
     if (intervalMs <= 0 || intervalMs < MIN_CLEAN_FRAME_INTERVAL_MS || intervalMs > MAX_CLEAN_FRAME_INTERVAL_MS) return;
-    if (this.samples.length < FRAME_PROFILE_SAMPLE_LIMIT) this.samples.push(intervalMs);
-    else this.samples.shift(), this.samples.push(intervalMs);
-    this.acceptedSampleCount += 1;
-    // Sorting a maximum of 48 values once per eight frames is deliberately
-    // cheaper than doing percentile work on every input or rAF callback.
-    if (this.samples.length >= FRAME_PROFILE_MIN_SAMPLES
-      && (this.acceptedSampleCount === FRAME_PROFILE_MIN_SAMPLES || this.acceptedSampleCount % 8 === 0)) {
-      this.measuredFrameBudgetMs = roundMetric(percentile([...this.samples].sort((a, b) => a - b), 0.5));
+    const samples = this.samplesByKind[sampleKind];
+    if (samples.length < FRAME_PROFILE_SAMPLE_LIMIT) samples.push(intervalMs);
+    else samples.shift(), samples.push(intervalMs);
+    this.acceptedSampleCountByKind[sampleKind] += 1;
+    const selectedSource = this.selectedSampleSource();
+    if (selectedSource !== this.measuredSampleSource
+      || this.acceptedSampleCountByKind[selectedSource] === FRAME_PROFILE_MIN_SAMPLES
+      || this.acceptedSampleCountByKind[selectedSource] % 8 === 0) {
+      this.measurementDirty = true;
     }
   }
 
   snapshot(): RuntimeFrameProfile {
     const fallbackRefreshHz = Math.max(1, this.options.fallbackRefreshHz ?? DEFAULT_FRAME_FALLBACK_HZ);
     const fallbackFrameBudgetMs = 1000 / fallbackRefreshHz;
-    const sampleCount = this.samples.length;
+    const selectedSource = this.selectedSampleSource();
+    const samples = this.samplesByKind[selectedSource];
+    this.refreshEstimate(selectedSource, samples);
+    const sampleCount = samples.length;
     const confidence: FrameCadenceConfidence = sampleCount < FRAME_PROFILE_MIN_SAMPLES
       ? "insufficient"
       : sampleCount < FRAME_PROFILE_STABLE_SAMPLES
         ? "low"
         : "stable";
-    const thresholdSource: FrameThresholdSource = confidence === "stable" && this.measuredFrameBudgetMs !== null
+    const harmonicMissedFrame = confidence === "stable"
+      && this.measuredFrameBudgetMs !== null
+      && selectedSource === "active"
+      && this.measuredFrameBudgetMs / fallbackFrameBudgetMs >= HARMONIC_MIN_RATIO
+      && this.measuredFrameBudgetMs / fallbackFrameBudgetMs <= HARMONIC_MAX_RATIO;
+    const thresholdSource: FrameThresholdSource = confidence === "stable"
+      && this.measuredFrameBudgetMs !== null
+      && !harmonicMissedFrame
       ? "measured-raf"
       : "platform-fallback";
     const frameBudgetMs = thresholdSource === "measured-raf"
@@ -91,11 +127,30 @@ export class EffectiveFrameBudget {
       missedFrameThresholdMs: roundMetric(frameBudgetMs * 2),
       substantialStallThresholdMs: roundMetric(frameBudgetMs * 3),
       sampleCount,
+      activeSampleCount: this.samplesByKind.active.length,
+      idleSampleCount: this.samplesByKind.idle.length,
+      cadenceSampleSource: selectedSource,
+      cadenceInterpretation: this.measuredFrameBudgetMs === null || confidence === "insufficient"
+        ? "insufficient"
+        : harmonicMissedFrame
+          ? "harmonic-missed-frame"
+          : "measured-raf",
       confidence,
       thresholdSource,
       platform: this.options.platform ?? "unknown",
       runtime: this.options.runtime ?? "unknown"
     };
+  }
+
+  private selectedSampleSource(): FrameCadenceSampleKind {
+    return this.samplesByKind.idle.length >= FRAME_PROFILE_MIN_SAMPLES ? "idle" : "active";
+  }
+
+  private refreshEstimate(source: FrameCadenceSampleKind, samples: readonly number[]): void {
+    if (!this.measurementDirty || samples.length < FRAME_PROFILE_MIN_SAMPLES) return;
+    this.measuredFrameBudgetMs = roundMetric(percentile([...samples].sort((a, b) => a - b), 0.5));
+    this.measuredSampleSource = source;
+    this.measurementDirty = false;
   }
 }
 

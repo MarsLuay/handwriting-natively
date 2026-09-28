@@ -41,6 +41,56 @@ describe("bounded performance metrics", () => {
     });
   });
 
+  it("does not promote active every-other-frame delivery to a 30Hz baseline", () => {
+    const budget = new EffectiveFrameBudget({ fallbackRefreshHz: 60, platform: "ipad", runtime: "wkwebview" });
+    budget.observeRaf(0, false, "active");
+    for (let index = 1; index <= 24; index += 1) budget.observeRaf(index * 33.33, false, "active");
+
+    expect(budget.snapshot()).toMatchObject({
+      measuredRefreshHz: 30,
+      measuredFrameBudgetMs: 33.33,
+      frameBudgetMs: 16.67,
+      thresholdSource: "platform-fallback",
+      cadenceInterpretation: "harmonic-missed-frame",
+      cadenceSampleSource: "active",
+      activeSampleCount: 24,
+      idleSampleCount: 0
+    });
+  });
+
+  it("accepts a stable 30Hz cadence from the idle sampling window", () => {
+    const budget = new EffectiveFrameBudget({ fallbackRefreshHz: 60, platform: "low-refresh", runtime: "webview" });
+    budget.observeRaf(0, false, "idle");
+    for (let index = 1; index <= 24; index += 1) budget.observeRaf(index * 33.33, false, "idle");
+
+    expect(budget.snapshot()).toMatchObject({
+      measuredRefreshHz: 30,
+      measuredFrameBudgetMs: 33.33,
+      frameBudgetMs: 33.33,
+      thresholdSource: "measured-raf",
+      cadenceInterpretation: "measured-raf",
+      cadenceSampleSource: "idle",
+      activeSampleCount: 0,
+      idleSampleCount: 24
+    });
+  });
+
+  it("lets idle evidence recover the 60Hz baseline after active frame misses", () => {
+    const budget = new EffectiveFrameBudget({ fallbackRefreshHz: 60 });
+    budget.observeRaf(0, false, "active");
+    for (let index = 1; index <= 24; index += 1) budget.observeRaf(index * 33.33, false, "active");
+    budget.observeRaf(0, false, "idle");
+    for (let index = 1; index <= 24; index += 1) budget.observeRaf(index * 16.67, false, "idle");
+
+    expect(budget.snapshot()).toMatchObject({
+      measuredRefreshHz: 60,
+      measuredFrameBudgetMs: 16.67,
+      frameBudgetMs: 16.67,
+      thresholdSource: "measured-raf",
+      cadenceSampleSource: "idle"
+    });
+  });
+
   it("uses the fallback until enough clean rAF samples establish cadence", () => {
     const budget = new EffectiveFrameBudget({ fallbackRefreshHz: 60, platform: "desktop", runtime: "electron" });
     budget.observeRaf(0);
