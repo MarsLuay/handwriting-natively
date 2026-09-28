@@ -1329,7 +1329,7 @@ export default class NativePdfInkPlugin extends Plugin {
       onPageLifecycleChange: (change) => getSession()?.onPageLifecycleChange(change),
       onZoomChange: (change) => getSession()?.onZoomChange(change),
       onViewStateChange: (state, source) => getSession()?.onViewStateChange(state, source),
-      onPageContentMutation: (recordCount) => getSession()?.onPdfPageContentMutation(recordCount),
+      onPageContentMutationTrace: (change) => getSession()?.onPdfPageContentMutation(change),
       onCompatibilityWarning: (message) => {
         this.vaultDebugLog.write("warn", "compatibility", { message });
       },

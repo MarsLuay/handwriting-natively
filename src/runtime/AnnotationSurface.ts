@@ -70,6 +70,7 @@ export function annotationPageMountMatches(current: AnnotationPageInfo, expected
 export interface AnnotationPageLifecycleChange {
   kind: "mount" | "unmount" | "replace" | "render" | "reload" | "viewer-replaced";
   viewerGeneration: number;
+  signalAt?: number;
   pageNumbers?: number[];
   mountGenerations?: Record<string, number>;
 }
@@ -81,12 +82,23 @@ export interface AnnotationZoomChange {
   viewerGeneration: number;
 }
 
+/** Coalesced PDF.js content replacement evidence from one observer frame. */
+export interface AnnotationPageContentMutation {
+  recordCount: number;
+  pageNumbers: number[];
+  viewerGeneration: number;
+  mountGenerations: Record<string, number>;
+  firstSignalAt: number;
+  lastSignalAt: number;
+}
+
 export interface AnnotationSurfaceCallbacks {
   onViewStateChange?(state: AnnotationViewState, source: ViewStateSource): void;
   onPagesChanged?(reason: string): void;
   onPageLifecycleChange?(change: AnnotationPageLifecycleChange): void;
   onZoomChange?(change: AnnotationZoomChange): void;
   onPageContentMutation?(recordCount: number): void;
+  onPageContentMutationTrace?(change: AnnotationPageContentMutation): void;
   onCompatibilityWarning?(message: string): void;
   onDebugLog?(level: VaultLogLevel, event: string, payload?: Record<string, unknown>): void;
 }
