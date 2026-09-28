@@ -17,6 +17,7 @@ Automated compatibility evidence covers the adapter boundary and explicit host-s
 - Annotation edits do not modify source PDFs. Add/Delete/Import/Scan page actions intentionally rewrite the open PDF and remap sidecar/recovery data; export remains a separate-copy workflow. Reorder/duplicate and persistent page UUIDs are not yet supported.
 - Pen, Pencil, and Highlighter settings are independent local preferences and do not change saved annotation data; device-specific toolbar sizing still needs the release matrix.
 - Static PNG and JPEG/JPG image annotation uses the shared one-page surface and sidecar; source images remain read-only, browser-native EXIF orientation is not applied a second time, and the More menu exports a bounded flattened copy in the source PNG/JPEG format. PNG alpha is preserved; JPEG uses an opaque background. WebP, HEIC/HEIF, GIF, SVG, embedded images, and live Obsidian image-view/device coverage remain unsupported manual evidence.
+- Markdown Reading-view support has only a non-registered `MarkdownViewAdapter` scaffold. It intentionally does not attach, add a toolbar, add a setting, or intercept source/Live Preview editors until their lifecycle and native text-selection/input policy are designed.
 
 Remaining manual compatibility evidence:
 
