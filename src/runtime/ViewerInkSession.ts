@@ -42,6 +42,7 @@ import {
 } from "./InkVisibility";
 import { deferredRenderDisposition } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRoute, type PointerRouterHandoff } from "../input/PointerRouter";
+import { GestureOwnership } from "../input/GestureOwnership";
 import { PostUiInputProbe, POST_UI_INPUT_PHASE_THRESHOLD_MS, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type DocumentInputOwnershipHandle } from "../input/DocumentInputOwnership";
 import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
@@ -1133,6 +1134,8 @@ export class ViewerInkSession {
   private readonly logger: SessionLogger;
   private readonly ipadInputTrace: IpadPointerTouchTrace | null;
   private readonly viewerMousePan: ViewerMousePan;
+  /** Shared contact owner for document pan and every page router. */
+  private readonly gestureOwnership = new GestureOwnership();
   private readonly addPageControl: AddPageControl | null;
   private readonly thumbnailSidebarActions: PdfThumbnailSidebarActions | null;
   private pageMutationInFlight = false;
@@ -1419,7 +1422,7 @@ export class ViewerInkSession {
           ...details
         });
       }
-    });
+    }, this.gestureOwnership, false);
     this.addPageControl = options.onInsertPage
       ? new AddPageControl({
         enabled: () => !this.destroyed && typeof this.options.onInsertPage === "function",
@@ -1537,6 +1540,7 @@ export class ViewerInkSession {
       this.clearTouchDrawPolicy(surface.page.element);
       this.releaseInputOwner(surface.page.element);
     }
+    this.gestureOwnership.replaceGeneration();
     this.ownedInputPages.clear();
     this.uiShellMutationObserver?.disconnect();
     this.uiShellMutationObserver = null;
@@ -8824,7 +8828,7 @@ export class ViewerInkSession {
           ...details
         });
       }
-    });
+    }, undefined, this.gestureOwnership, false);
     this.lastRouterBindAt = Date.now();
     if (surface.pendingRouterHandoff) {
       const handoff = surface.pendingRouterHandoff;
