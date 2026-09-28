@@ -771,6 +771,8 @@ interface PageSurface {
   inkLayerBackingScale: number | null;
   /** True if inkLayer was warmed by zoom-burst canvas capture (raster, not canonical). */
   inkLayerBurstCapture: boolean;
+  /** Exact InkSession page revision represented by inkLayer, or null when unknown. */
+  inkLayerRevision: number | null;
   /** Off-viewport page skipped a canonical paint and must redraw before display. */
   viewportCullPending: boolean;
   /** Neighbor zoom settle used blit-stretch / lower backing; needs idle HQ upgrade. */
@@ -5198,6 +5200,7 @@ export class ViewerInkSession {
       surface.inkLayerValid = false;
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = false;
+      surface.inkLayerRevision = null;
       const painted = this.renderPage(pageNumber, stats, "zoom-handoff-final");
       this.logZoomInkLayout(surface, "handoff-final");
       if (painted) stats.pagesRepainted += 1;
@@ -5829,6 +5832,9 @@ export class ViewerInkSession {
    * progressively slower as the page accumulated ink.
    */
   private appendCommittedStroke(surface: PageSurface, stroke: InkStroke): boolean {
+    const pageRevision = this.ink.pageRevision(surface.page.pageNumber);
+    const expectedLayerRevision = pageRevision - 1;
+    const cacheRevisionMatches = surface.inkLayerRevision === expectedLayerRevision;
     if (
       this.zoomCompositing
       || !surface.inkLayerValid
@@ -5841,6 +5847,23 @@ export class ViewerInkSession {
       || surface.wetPreviewActive
       || surface.pendingLivePaint !== null
     ) return false;
+    if (!cacheRevisionMatches) {
+      this.logger.renderProfile({
+        page: surface.page.pageNumber,
+        operation: "stroke-append-rejected",
+        reason: "cache-revision-mismatch",
+        durationMs: 0,
+        strokeId: stroke.id,
+        pageRevision,
+        expectedLayerRevision,
+        cachedLayerRevision: surface.inkLayerRevision,
+        inkLayerValid: surface.inkLayerValid,
+        inkLayerBurstCapture: surface.inkLayerBurstCapture,
+        committedCanvasWetHidden: surface.canvas.classList.contains("is-wet-hidden"),
+        wetPreviewActive: surface.wetPreviewActive
+      });
+      return false;
+    }
 
     this.syncOverlayLayout(surface);
     const layout = this.pageLayout(surface);
@@ -5856,11 +5879,42 @@ export class ViewerInkSession {
       || Math.abs(surface.inkLayerBackingScale - backingScale) >= 1e-6
     ) return false;
 
+    const previousStroke = this.ink.page(surface.page.pageNumber).at(-2);
+    const beforeEvidence = previousStroke
+      ? this.strokeCachePixelEvidence(surface, previousStroke)
+      : null;
+    if (previousStroke && beforeEvidence) {
+      this.recordStrokeCacheHandoff(surface, stroke, "before", pageRevision, expectedLayerRevision, beforeEvidence);
+    }
+
     const startedAt = performance.now();
     surface.paintGeneration = ++this.nextPaintGeneration;
     this.paintCommittedStrokes(surface, surface.inkLayerContext, [stroke], undefined, "full");
     surface.inkLayerBackingScale = backingScale;
+    surface.inkLayerRevision = pageRevision;
     this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
+    if (previousStroke && beforeEvidence) {
+      const afterEvidence = this.strokeCachePixelEvidence(surface, previousStroke);
+      this.recordStrokeCacheHandoff(surface, stroke, "after", pageRevision, expectedLayerRevision, afterEvidence);
+      if (
+        this.ink.page(surface.page.pageNumber).some((candidate) => candidate.id === previousStroke.id)
+        && beforeEvidence.canvas.available
+        && beforeEvidence.canvas.nonTransparentPixels > 0
+        && afterEvidence.canvas.available
+        && afterEvidence.canvas.nonTransparentPixels === 0
+      ) {
+        this.logger.strokeLifecycle("stroke-cache-anomaly", {
+          page: surface.page.pageNumber,
+          priorStrokeId: previousStroke.id,
+          triggeringStrokeId: stroke.id,
+          pageRevision,
+          cachedLayerRevision: surface.inkLayerRevision,
+          canvasGeneration: surface.canvasGeneration,
+          paintGeneration: surface.paintGeneration,
+          reason: "model-present-prior-stroke-pixel-absent-after-append"
+        });
+      }
+    }
     this.clearLiveDrawPreview(surface);
     this.paintLaserTrails(surface, surface.page.pageNumber);
     surface.viewportCullPending = false;
@@ -5890,6 +5944,8 @@ export class ViewerInkSession {
       durationMs,
       strokeCount: 1,
       pageStrokeCount: this.ink.page(surface.page.pageNumber).length,
+      pageRevision,
+      cachedLayerRevision: surface.inkLayerRevision,
       appendedStrokeCount: 1,
       incremental: true,
       canvasResized: false,
@@ -8109,6 +8165,7 @@ export class ViewerInkSession {
       inkLayerValid: false,
       inkLayerBackingScale: null,
       inkLayerBurstCapture: false,
+      inkLayerRevision: null,
       viewportCullPending: false,
       settleUpgradePending: false,
       router: null,
@@ -9619,6 +9676,64 @@ export class ViewerInkSession {
     }
   }
 
+  private strokeCachePixelEvidence(surface: PageSurface, stroke: InkStroke): {
+    inkLayer: PixelEvidenceSample;
+    canvas: PixelEvidenceSample;
+  } {
+    const unavailable = (reason: string): PixelEvidenceSample => ({
+      available: false,
+      pixelCount: 0,
+      nonTransparentPixels: 0,
+      alphaSum: 0,
+      reason
+    });
+    if (!this.logger.isEnabled()) {
+      return { inkLayer: unavailable("diagnostics-disabled"), canvas: unavailable("diagnostics-disabled") };
+    }
+    const canvasRegion = this.pixelEvidenceRegion(surface, stroke, surface.canvas);
+    const canvas = this.readPixelEvidence(surface.context, surface.canvas, canvasRegion);
+    const inkLayer = surface.inkLayer && surface.inkLayerContext
+      ? this.readPixelEvidence(
+        surface.inkLayerContext,
+        surface.inkLayer,
+        this.pixelEvidenceRegion(surface, stroke, surface.inkLayer)
+      )
+      : unavailable("ink-layer-unavailable");
+    return { inkLayer, canvas };
+  }
+
+  private recordStrokeCacheHandoff(
+    surface: PageSurface,
+    stroke: InkStroke,
+    phase: "before" | "after",
+    pageRevision: number,
+    expectedLayerRevision: number,
+    evidence: { inkLayer: PixelEvidenceSample; canvas: PixelEvidenceSample }
+  ): void {
+    if (!this.logger.isEnabled()) return;
+    const pageStrokes = this.ink.page(surface.page.pageNumber);
+    const previous = pageStrokes.slice(Math.max(0, pageStrokes.length - 3), -1);
+    this.logger.strokeLifecycle("stroke-cache-handoff", {
+      phase,
+      page: surface.page.pageNumber,
+      strokeId: stroke.id,
+      previousStrokeIds: previous.map((candidate) => candidate.id),
+      previousModelPresent: previous.map((candidate) => this.ink.page(surface.page.pageNumber).some((item) => item.id === candidate.id)),
+      pageRevision,
+      expectedLayerRevision,
+      cachedLayerRevision: surface.inkLayerRevision,
+      inkLayerValid: surface.inkLayerValid,
+      inkLayerBurstCapture: surface.inkLayerBurstCapture,
+      canvasGeneration: surface.canvasGeneration,
+      paintGeneration: surface.paintGeneration,
+      committedCanvasWetHidden: surface.canvas.classList.contains("is-wet-hidden"),
+      wetPreviewActive: surface.wetPreviewActive,
+      inkLayerPixelEvidence: evidence.inkLayer.nonTransparentPixels,
+      committedCanvasPixelEvidence: evidence.canvas.nonTransparentPixels,
+      pixelEvidenceAvailable: evidence.inkLayer.available && evidence.canvas.available
+    });
+  }
+
   private pixelEvidenceDetails(
     stroke: InkStroke,
     surface: PageSurface,
@@ -10243,6 +10358,7 @@ export class ViewerInkSession {
     surface.inkLayer = null;
     surface.inkLayerContext = null;
     surface.inkLayerValid = false;
+    surface.inkLayerRevision = null;
     surface.liveEraserPaintedPoints = 0;
     surface.wetDamage.clear();
   }
@@ -10251,6 +10367,7 @@ export class ViewerInkSession {
   private endWetPreview(surface: PageSurface): void {
     if (!surface.wetPreviewActive) {
       surface.wetDamage.clear();
+      surface.canvas.classList.remove("is-wet-hidden");
       return;
     }
     this.wetRenderer.end(surface.draftCanvas);
@@ -12356,6 +12473,7 @@ export class ViewerInkSession {
     surface.inkLayerValid = false;
     surface.inkLayerBackingScale = null;
     surface.inkLayerBurstCapture = false;
+    surface.inkLayerRevision = null;
     this.renderEpoch += 1;
   }
 
@@ -12374,6 +12492,7 @@ export class ViewerInkSession {
       surface.inkLayerContext = surface.inkLayer.getContext("2d");
       if (!surface.inkLayerContext) throw new Error("Canvas 2D rendering is unavailable");
       surface.inkLayerValid = false;
+      surface.inkLayerRevision = null;
     }
     if (surface.inkLayer.width !== pixelWidth || surface.inkLayer.height !== pixelHeight) {
       surface.inkLayer.width = pixelWidth;
@@ -12381,6 +12500,7 @@ export class ViewerInkSession {
       surface.inkLayerValid = false;
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = false;
+      surface.inkLayerRevision = null;
     }
     surface.inkLayerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
     return surface.inkLayerContext;
@@ -12403,6 +12523,7 @@ export class ViewerInkSession {
     if (this.zoomProfile) this.zoomProfile.bitmapBlits += 1;
     layerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
     surface.inkLayerValid = true;
+    surface.inkLayerRevision = this.ink.pageRevision(surface.page.pageNumber);
     // Raster warm — must not satisfy blit-only settle (needs vector restamp).
     surface.inkLayerBurstCapture = true;
     surface.inkLayerBackingScale = null;
@@ -12655,6 +12776,7 @@ export class ViewerInkSession {
       surface.inkLayerValid = false;
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = false;
+      surface.inkLayerRevision = null;
       if (stats) stats.canvasesResized += 1;
     }
     surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
@@ -12685,6 +12807,7 @@ export class ViewerInkSession {
       surface.inkLayerValid = false;
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = true;
+      surface.inkLayerRevision = null;
       surface.settleUpgradePending = true;
       this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
       surface.viewportCullPending = false;
@@ -12727,6 +12850,7 @@ export class ViewerInkSession {
         surface.inkLayerValid = true;
         surface.inkLayerBackingScale = backingScale;
         surface.inkLayerBurstCapture = false;
+        surface.inkLayerRevision = this.ink.pageRevision(pageNumber);
         if (canonicalZoomSettle) {
           this.logZoomInkRenderer(pageNumber, "settle-canonical", "canonical-pdf-space", visibleStrokes);
         }
@@ -12736,6 +12860,7 @@ export class ViewerInkSession {
       surface.inkLayerValid = false;
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = false;
+      surface.inkLayerRevision = null;
       surface.context.clearRect(0, 0, width, height);
       this.paintCommittedStrokes(surface, surface.context, visibleStrokes, stats, "full");
       if (canonicalZoomSettle) {
@@ -12809,6 +12934,10 @@ export class ViewerInkSession {
       totalMs: renderDurationMs,
       maxDurationMs: renderDurationMs,
       durationMs: renderDurationMs,
+      pageRevision: this.ink.pageRevision(pageNumber),
+      cachedLayerRevision: surface.inkLayerRevision,
+      committedCanvasWetHidden: surface.canvas.classList.contains("is-wet-hidden"),
+      wetPreviewActive: surface.wetPreviewActive,
       strokeCount: visibleStrokes.length,
       canvasResized: needsResize,
       canvasResizeCount: needsResize ? 1 : 0,
