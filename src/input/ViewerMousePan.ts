@@ -1,6 +1,6 @@
 import { describeTarget } from "../dom/describeElement";
 import { scrollPdfByDetailed, describeScrollElement } from "../integration/PdfScrollRoot";
-import { ActiveTouches } from "./ActiveTouches";
+import { GestureOwnership } from "./GestureOwnership";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
 import { isAnnotationChromeTarget, safeReleasePointerCapture, safeSetPointerCapture } from "./PointerRouter";
 
@@ -52,13 +52,18 @@ export interface ViewerMousePanCallbacks {
 
 export class ViewerMousePan {
   private readonly panning = new Map<number, PanGesture>();
-  private readonly activeTouches = new ActiveTouches();
   private readonly abort = new AbortController();
+  private readonly ownership: GestureOwnership;
+  private readonly resetOwnershipOnDestroy: boolean;
 
   constructor(
     private readonly listenerRoot: Document | HTMLElement,
-    private readonly callbacks: ViewerMousePanCallbacks
+    private readonly callbacks: ViewerMousePanCallbacks,
+    ownership?: GestureOwnership,
+    resetOwnershipOnDestroy = true
   ) {
+    this.ownership = ownership ?? new GestureOwnership();
+    this.resetOwnershipOnDestroy = resetOwnershipOnDestroy;
     const options = { capture: true, signal: this.abort.signal };
     const onDown = (event: Event): void => this.onDown(event as PointerEvent);
     const onMove = (event: Event): void => this.onMove(event as PointerEvent);
@@ -75,7 +80,7 @@ export class ViewerMousePan {
     // claimed mouse/touch capture before dropping the bounded gesture state.
     for (const [pointerId, pan] of this.panning) this.releaseClaim(pan, pointerId);
     this.panning.clear();
-    this.activeTouches.clear();
+    if (this.resetOwnershipOnDestroy) this.ownership.replaceGeneration();
     this.abort.abort();
     this.captureHost().classList.remove("native-pdf-handwriting-panning");
   }
@@ -127,14 +132,21 @@ export class ViewerMousePan {
     const finger = isFingerPanPointer(event);
     const tip = isDragPanPointer(event);
 
-    if (event.pointerType === "touch") {
-      this.activeTouches.add(event);
+    if (event.pointerType === "touch" && inBoundary) {
+      const decision = this.ownership.pointerDown({
+        pointerId: event.pointerId,
+        pointerType: "touch",
+        button: event.button,
+        buttons: event.buttons,
+        target: inBoundary ? "page" : "ui"
+      });
+      const touchCount = decision.state.activeTouchIds.size;
       // Second finger → release one-finger pan so native pinch/zoom can run.
-      if (this.activeTouches.size >= 2) {
+      if (touchCount >= 2) {
         this.abortTouchPans(event, "multi-touch");
         this.callbacks.onPan?.("skip", event, {
           reason: "multi-touch",
-          touches: this.activeTouches.size,
+          touches: touchCount,
           target: describeTarget(event.target)
         });
         return;
@@ -206,6 +218,19 @@ export class ViewerMousePan {
       return;
     }
 
+    const ownership = this.ownership.pointerDown({
+      pointerId: event.pointerId,
+      pointerType: "mouse",
+      button: event.button,
+      buttons: event.buttons,
+      target: "page",
+      mouseIntent: "pan"
+    });
+    if (ownership.state.owner !== "mouse-pan" || ownership.state.activeMousePointerId !== event.pointerId) {
+      this.callbacks.onPan?.("skip", event, { reason: "gesture-owned", target: describeTarget(event.target) });
+      return;
+    }
+
     const scrollRoot = this.callbacks.scrollRoot();
     const captureTarget = event.target instanceof Element ? event.target : this.captureHost();
     this.panning.set(event.pointerId, {
@@ -238,12 +263,43 @@ export class ViewerMousePan {
   private readonly onMove = (event: PointerEvent): void => {
     const pan = this.panning.get(event.pointerId);
     if (!pan) return;
+    this.ownership.pointerMove({
+      pointerId: event.pointerId,
+      pointerType: pan.pointerType === "touch" ? "touch" : "mouse",
+      button: event.button,
+      buttons: event.buttons
+    });
     this.updatePan(event, pan);
   };
 
   private readonly onEnd = (event: PointerEvent): void => {
-    if (event.pointerType === "touch") this.activeTouches.delete(event);
     const pan = this.panning.get(event.pointerId);
+    const phase = event.type === "pointercancel"
+      ? "cancel"
+      : event.type === "lostpointercapture"
+        ? "lost"
+        : "up";
+    if (event.pointerType === "touch") {
+      const contact = {
+        pointerId: event.pointerId,
+        pointerType: "touch",
+        button: event.button,
+        buttons: event.buttons
+      } as const;
+      if (phase === "cancel") this.ownership.pointerCancel(contact);
+      else if (phase === "lost") this.ownership.lostCapture(contact);
+      else this.ownership.pointerUp(contact);
+    } else if (pan) {
+      const contact = {
+        pointerId: event.pointerId,
+        pointerType: "mouse",
+        button: event.button,
+        buttons: event.buttons
+      } as const;
+      if (phase === "cancel") this.ownership.pointerCancel(contact);
+      else if (phase === "lost") this.ownership.lostCapture(contact);
+      else this.ownership.pointerUp(contact);
+    }
     if (!pan) return;
     if (pan.active) {
       event.preventDefault();
@@ -281,6 +337,12 @@ export class ViewerMousePan {
       // Fingers (when enabled): free drag.
       if (pan.pointerType !== "touch" && Math.abs(dx) > Math.max(12, Math.abs(dy) * 2)) {
         this.callbacks.onPan?.("abort", event, { reason: "horizontal-dominant", dx, dy });
+        this.ownership.pointerCancel({
+          pointerId: event.pointerId,
+          pointerType: "mouse",
+          button: event.button,
+          buttons: event.buttons
+        });
         this.releaseClaim(pan, event.pointerId);
         this.panning.delete(event.pointerId);
         return;
