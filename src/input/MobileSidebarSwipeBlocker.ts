@@ -2,6 +2,9 @@ export type SidebarSwipeDirection = "left" | "right";
 
 const HORIZONTAL_DOMINANCE_RATIO = 3;
 const MIN_HORIZONTAL_DISTANCE_PX = 10;
+const SEARCH_BAR_TOP_EDGE_PX = 48;
+const SEARCH_BAR_VERTICAL_DOMINANCE_RATIO = 3;
+const MIN_VERTICAL_DISTANCE_PX = 10;
 
 interface TouchCandidate {
   identifier: number;
@@ -28,6 +31,20 @@ export function classifySidebarSwipe(
   return deltaX > 0 ? "left" : "right";
 }
 
+/** Return true for the downward top-edge gesture Obsidian uses to reveal search. */
+export function classifySearchBarSwipe(
+  startX: number,
+  startY: number,
+  currentX: number,
+  currentY: number
+): boolean {
+  const deltaX = currentX - startX;
+  const deltaY = currentY - startY;
+  return startY <= SEARCH_BAR_TOP_EDGE_PX
+    && deltaY > MIN_VERTICAL_DISTANCE_PX
+    && deltaY > Math.abs(deltaX) * SEARCH_BAR_VERTICAL_DOMINANCE_RATIO;
+}
+
 function sidebarIsOpen(ownerDocument: Document, direction: SidebarSwipeDirection): boolean {
   const body = ownerDocument.body;
   if (!body) return false;
@@ -38,14 +55,16 @@ function sidebarIsOpen(ownerDocument: Document, direction: SidebarSwipeDirection
 }
 
 /**
- * Optionally prevents Obsidian's mobile one-finger sidebar swipe gesture.
+ * Optionally prevents Obsidian's mobile one-finger sidebar and search-bar
+ * swipe gestures.
  *
  * This deliberately listens only to TouchEvents, requires one contact, and
- * waits for a strongly horizontal movement. Pointer events from Apple Pencil
+ * waits for a strongly directional movement. Pointer events from Apple Pencil
  * are tracked so their companion TouchEvents never become swipe candidates.
  */
 export class MobileSidebarSwipeBlocker {
-  private enabled = false;
+  private sidebarEnabled = false;
+  private searchBarEnabled = false;
   private candidate: TouchCandidate | null = null;
   private readonly activePenPointers = new Set<number>();
   private readonly listenerOptions: AddEventListenerOptions = { capture: true };
@@ -53,11 +72,12 @@ export class MobileSidebarSwipeBlocker {
 
   constructor(private readonly ownerDocument: Document) {}
 
-  setEnabled(enabled: boolean): void {
-    if (this.enabled === enabled) return;
+  setEnabled(sidebarEnabled: boolean, searchBarEnabled = false): void {
+    if (this.sidebarEnabled === sidebarEnabled && this.searchBarEnabled === searchBarEnabled) return;
     this.removeListeners();
-    this.enabled = enabled;
-    if (!enabled) return;
+    this.sidebarEnabled = sidebarEnabled;
+    this.searchBarEnabled = searchBarEnabled;
+    if (!sidebarEnabled && !searchBarEnabled) return;
     this.ownerDocument.addEventListener("touchstart", this.handleTouchStart, this.listenerOptions);
     this.ownerDocument.addEventListener("touchmove", this.handleTouchMove, this.moveListenerOptions);
     this.ownerDocument.addEventListener("touchend", this.handleTouchEnd, this.listenerOptions);
@@ -70,7 +90,8 @@ export class MobileSidebarSwipeBlocker {
 
   destroy(): void {
     this.removeListeners();
-    this.enabled = false;
+    this.sidebarEnabled = false;
+    this.searchBarEnabled = false;
   }
 
   private readonly handleTouchStart = (event: TouchEvent): void => {
@@ -100,7 +121,12 @@ export class MobileSidebarSwipeBlocker {
       return;
     }
     const direction = classifySidebarSwipe(candidate.startX, candidate.startY, touch.clientX, touch.clientY);
-    if (!direction || sidebarIsOpen(this.ownerDocument, direction)) return;
+    const blocksSidebar = this.sidebarEnabled
+      && direction !== null
+      && !sidebarIsOpen(this.ownerDocument, direction);
+    const blocksSearchBar = this.searchBarEnabled
+      && classifySearchBarSwipe(candidate.startX, candidate.startY, touch.clientX, touch.clientY);
+    if (!blocksSidebar && !blocksSearchBar) return;
     if (!event.cancelable) return;
     event.preventDefault();
     event.stopPropagation();

@@ -297,6 +297,17 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             }
           },
           {
+            name: "Disable one-finger search bar swipe",
+            desc: "Prevent a one-finger downward swipe from the top edge on mobile/iPad from opening Obsidian's search bar. Off by default; normal page scrolling remains native.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.disableSearchBarSwipe).onChange(async (value) => {
+                  await this.persistPatch({ disableSearchBarSwipe: value });
+                })
+              );
+            }
+          },
+          {
             name: "Ink toolbar placement",
             desc: "Put the ink controls on the PDF toolbar, or as a left/right sidebar beside the pages. On mobile, PDF toolbar placement becomes the left sidebar automatically.",
             render: (setting: Setting) => {

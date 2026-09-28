@@ -103,10 +103,13 @@ describe("safe defaults", () => {
     });
   });
 
-  it("keeps one-finger sidebar swipe blocking opt-in and migratable", () => {
+  it("keeps one-finger sidebar and search-bar swipe blocking opt-in and migratable", () => {
     expect(DEFAULT_SETTINGS.disableSidebarSwipe).toBe(false);
+    expect(DEFAULT_SETTINGS.disableSearchBarSwipe).toBe(false);
     expect(mergeSettings({ disableSidebarSwipe: true }).disableSidebarSwipe).toBe(true);
     expect(mergeSettings({ disableSidebarSwipe: false }).disableSidebarSwipe).toBe(false);
+    expect(mergeSettings({ disableSearchBarSwipe: true }).disableSearchBarSwipe).toBe(true);
+    expect(mergeSettings({ disableSearchBarSwipe: false }).disableSearchBarSwipe).toBe(false);
   });
 
   it("enables autosave", () => {
