@@ -31,7 +31,6 @@ import {
   type StylusIdentity
 } from "./PostZoomInputTrace";
 import { PostZoomDurabilityTrace } from "./PostZoomDurabilityTrace";
-import { SlowSpanTrace } from "./SlowSpanTrace";
 import {
   inkVisibilityCause,
   inkVisibilityFlash,
@@ -111,6 +110,8 @@ import type { DebugState } from "../ui/DebugPanel";
 import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
 import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../logging/SessionLogger";
 import { BoundedTiming, FRAME_MS_120, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
+import { RuntimeFrameProfile, type RuntimeFrameProfileSnapshot } from "../logging/RuntimeFrameProfile";
+import { SlowSpanTrace, SLOW_SPAN_SYNC_MS } from "./SlowSpanTrace";
 import { ZoomFrameDiagnostics, type FrameAttributionSummary } from "./ZoomFrameDiagnostics";
 import type { VaultLogSink } from "../logging/VaultLogSink";
 import type { AnnotationViewState } from "./AnnotationSurface";
@@ -465,6 +466,13 @@ export interface AddPageMutationRestoreState {
   beforeOverlayElements?: readonly HTMLElement[];
 }
 
+export interface ViewerRuntimePlatform {
+  mobile: boolean;
+  phone: boolean;
+  platform?: string;
+  runtime?: string;
+}
+
 export interface ViewerInkSessionOptions {
   adapter: AnnotationSurface;
   documentPath: string;
@@ -529,7 +537,7 @@ export interface ViewerInkSessionOptions {
   claimPersistEpoch?: (documentId: string) => number;
   livePersistEpoch?: (documentId: string) => number;
   /** Host runtime flags — avoid importing `obsidian` here so unit tests stay portable. */
-  runtimePlatform?: () => { mobile: boolean; phone: boolean };
+  runtimePlatform?: () => ViewerRuntimePlatform;
 }
 
 interface LaserTrail {
@@ -974,7 +982,11 @@ export class ViewerInkSession {
   private readonly postZoomTrace = new PostZoomInputTrace();
   private readonly postZoomDurability = new PostZoomDurabilityTrace();
   private readonly slowSpans = new SlowSpanTrace();
-  private readonly zoomFrameDiagnostics = new ZoomFrameDiagnostics();
+  private readonly runtimeFrameProfile: RuntimeFrameProfile;
+  private readonly zoomFrameDiagnostics: ZoomFrameDiagnostics;
+  private frameProfileRaf: number | null = null;
+  private frameProfileTimer: number | null = null;
+  private frameProfileWindowRemaining = 0;
   private lastZoomFrameAttributionSummary: FrameAttributionSummary | null = null;
   private readonly openInkStrokeGeometry = new Map<number, OpenInkStrokeGeometry>();
   private readonly recentInkStrokeGeometry: InkStrokeGeometryRecord[] = [];
@@ -1130,6 +1142,12 @@ export class ViewerInkSession {
   private static readonly PAGE_MUTATION_SHIELD_RENDER_QUIET_MS = 120;
 
   private constructor(private readonly options: ViewerInkSessionOptions) {
+    const runtime = options.runtimePlatform?.() ?? { mobile: false, phone: false };
+    this.runtimeFrameProfile = new RuntimeFrameProfile({
+      platform: runtime.platform ?? (runtime.mobile ? "mobile" : "desktop"),
+      runtime: runtime.runtime ?? "unknown"
+    });
+    this.zoomFrameDiagnostics = new ZoomFrameDiagnostics(undefined, this.runtimeFrameProfile);
     this.previousViewerElementDebugId = options.restoredAddPageMutation?.viewerElementDebugIdBefore ?? null;
     this.lastAddPageOperationId = options.restoredAddPageMutation?.operationId ?? null;
     const identityInput: DocumentIdentityInput = {
@@ -1404,6 +1422,7 @@ export class ViewerInkSession {
       }
     }) : null;
     this.installPointerProbe(adapter);
+    this.startRuntimeFrameSampling();
   }
 
   private installPointerProbe(adapter: ViewerInkSessionOptions["adapter"]): void {
@@ -3087,7 +3106,7 @@ export class ViewerInkSession {
       scaleDeltas: new BoundedTiming(0),
       lastScaleAt: null,
       lastScale: scaleStart,
-      frameIntervals: new BoundedTiming(),
+      frameIntervals: new BoundedTiming(() => this.runtimeFrameProfile.thresholds()),
       frameCount: 0,
       lastFrameAt: null,
       worstFrameOffsetMs: null,
@@ -3284,7 +3303,7 @@ export class ViewerInkSession {
         }
       });
       if (frameGap) this.logger.perfUnattributedFrameGap({ ...frameGap });
-      if (pluginWorkMs >= FRAME_MS_120) {
+      if (pluginWorkMs >= SLOW_SPAN_SYNC_MS) {
         this.logger.zoomLongFrame({
           zoomBurstId: this.postZoomTrace.currentBurstId(),
           frameDeltaMs: this.zoomProfile?.lastFrameAt == null ? null : roundMs(pluginWorkMs),
@@ -3376,6 +3395,7 @@ export class ViewerInkSession {
     this.stopZoomLongTaskObserver();
     const frameAttributionSummary = this.zoomFrameDiagnostics.summary();
     this.lastZoomFrameAttributionSummary = frameAttributionSummary;
+    const runtimeFrameProfile = this.runtimeFrameProfile.snapshot();
     const scaleIntervals = profile.scaleIntervals.summary();
     const scaleDeltas = profile.scaleDeltas.summary();
     const frameIntervals = profile.frameIntervals.summary();
@@ -3419,6 +3439,10 @@ export class ViewerInkSession {
       droppedFrames: frameIntervals.droppedFrameEstimate,
       worstFrameOffsetMs: profile.worstFrameOffsetMs,
       frameIntervalHistogram: frameIntervals.histogram,
+      frameProfile: runtimeFrameProfile,
+      frameBudgetMs: runtimeFrameProfile.frameBudgetMs,
+      lateFrameThresholdMs: runtimeFrameProfile.lateFrameThresholdMs,
+      frameThresholdSource: runtimeFrameProfile.thresholdSource,
       longestLongTaskMs: roundMetric(profile.longTaskMaxMs),
       pdfGeometrySamples: profile.lastPdfGeometry ? profile.frameCount : 0,
       maxPdfGeometryDeltaPx: roundMetric(profile.maxPdfGeometryDeltaPx),
@@ -3491,8 +3515,8 @@ export class ViewerInkSession {
   }
 
   /**
-   * A 120Hz frame is 8.3ms. Copy Logs keeps the last three finished gestures.
-   * A slow span is recorded when frame p95 misses that frame.
+   * Copy Logs keeps the last three finished gestures. Frame-gap warnings use
+   * the shared runtime profile; synchronous work remains on the fixed 8ms gate.
    */
   private rememberZoomGesturePerformance(metrics: {
     durationMs: number;
@@ -3511,6 +3535,10 @@ export class ViewerInkSession {
     longestLongTaskMs: number;
     maxPdfInkMismatchPx: number;
     frameIntervalHistogram: Record<string, number>;
+    frameProfile: RuntimeFrameProfileSnapshot;
+    frameBudgetMs: number;
+    lateFrameThresholdMs: number;
+    frameThresholdSource: string;
   }): void {
     const summary = {
       zoomBurstId: this.zoomCorrelationId,
@@ -3529,11 +3557,15 @@ export class ViewerInkSession {
       droppedFrameEstimate: metrics.droppedFrameEstimate,
       longestLongTaskMs: metrics.longestLongTaskMs,
       maxPdfInkMismatchPx: metrics.maxPdfInkMismatchPx,
-      frameIntervalHistogram: metrics.frameIntervalHistogram
+      frameIntervalHistogram: metrics.frameIntervalHistogram,
+      frameProfile: metrics.frameProfile,
+      frameBudgetMs: metrics.frameBudgetMs,
+      lateFrameThresholdMs: metrics.lateFrameThresholdMs,
+      frameThresholdSource: metrics.frameThresholdSource
     };
     this.recentZoomGesturePerformance.push(summary);
     if (this.recentZoomGesturePerformance.length > 3) this.recentZoomGesturePerformance.shift();
-    if (metrics.p95FrameDeltaMs < FRAME_MS_120 && metrics.longestLongTaskMs < 8) return;
+    if (metrics.p95FrameDeltaMs <= metrics.lateFrameThresholdMs && metrics.longestLongTaskMs < SLOW_SPAN_SYNC_MS) return;
     const span = this.slowSpans.record({
       kind: "sync",
       category: "zoom",
@@ -3541,8 +3573,9 @@ export class ViewerInkSession {
       durationMs: Math.max(metrics.p95FrameDeltaMs, metrics.longestLongTaskMs),
       activeWorkMs: metrics.longestLongTaskMs,
       waitMs: 0,
-      reason: metrics.p95FrameDeltaMs >= FRAME_MS_120 ? "frame-gap" : "long-task",
-      zoomBurstId: this.zoomCorrelationId
+      reason: metrics.p95FrameDeltaMs > metrics.lateFrameThresholdMs ? "frame-gap" : "long-task",
+      zoomBurstId: this.zoomCorrelationId,
+      ...(metrics.p95FrameDeltaMs > metrics.lateFrameThresholdMs ? { thresholdMs: metrics.lateFrameThresholdMs } : {})
     });
     if (span) this.logger.perfSlowSpan({ ...span });
   }
@@ -4493,7 +4526,7 @@ export class ViewerInkSession {
     this.ensureSelectionToolbar();
     this.refreshSurfaceCursors();
     const view = this.options.adapter.getViewState();
-    if (durationMs >= FRAME_MS_120 && this.isZoomHandoffActive()) {
+    if (durationMs >= SLOW_SPAN_SYNC_MS && this.isZoomHandoffActive()) {
       this.logger.zoomFlashProxy("paint-duration-spike", {
         reason: burst?.reason ?? this.zoomBurstReason,
         durationMs,
@@ -4508,6 +4541,7 @@ export class ViewerInkSession {
     this.logger.zoomRepaint({
       reason: burst?.reason ?? this.zoomBurstReason,
       durationMs,
+      frameBudgetMs: this.runtimeFrameProfile.snapshot().frameBudgetMs,
       pagesRepainted: stats.pagesRepainted,
       canvasesResized: stats.canvasesResized,
       strokesRedrawn: stats.strokesRedrawn,
@@ -5086,7 +5120,7 @@ export class ViewerInkSession {
     this.refreshSurfaceCursors();
     const view = this.options.adapter.getViewState();
     const durationMs = roundMs(performance.now() - started);
-    if (durationMs >= FRAME_MS_120 && this.isZoomHandoffActive()) {
+    if (durationMs >= SLOW_SPAN_SYNC_MS && this.isZoomHandoffActive()) {
       this.logger.zoomFlashProxy("paint-duration-spike", {
         reason,
         durationMs,
@@ -5100,6 +5134,7 @@ export class ViewerInkSession {
     this.logger.zoomRepaint({
       reason,
       durationMs,
+      frameBudgetMs: this.runtimeFrameProfile.snapshot().frameBudgetMs,
       pagesRepainted: stats.pagesRepainted,
       canvasesResized: stats.canvasesResized,
       strokesRedrawn: stats.strokesRedrawn,
@@ -5129,8 +5164,53 @@ export class ViewerInkSession {
     }
   }
 
-  private runtimePlatform(): { mobile: boolean; phone: boolean } {
+  private runtimePlatform(): ViewerRuntimePlatform {
     return this.options.runtimePlatform?.() ?? { mobile: false, phone: false };
+  }
+
+  private startRuntimeFrameSampling(): void {
+    // Production supplies the runtime callback; unit-test sessions can feed
+    // explicit rAF timestamps without starting a background sampling window.
+    if (!this.options.runtimePlatform) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view?.requestAnimationFrame || this.frameProfileRaf !== null || this.frameProfileTimer !== null) return;
+    const scheduleWindow = (): void => {
+      if (this.destroyed) return;
+      this.frameProfileWindowRemaining = 64;
+      const sample = (timestamp: number): void => {
+        this.frameProfileRaf = null;
+        if (this.destroyed) return;
+        const documentHidden = this.options.adapter.host.ownerDocument.hidden;
+        this.runtimeFrameProfile.observeRaf(timestamp, { documentHidden });
+        if (documentHidden) {
+          this.runtimeFrameProfile.resetRafSequence();
+          this.frameProfileTimer = view.setTimeout(scheduleWindow, 1_000);
+          return;
+        }
+        this.frameProfileWindowRemaining -= 1;
+        if (this.frameProfileWindowRemaining > 0) {
+          this.frameProfileRaf = view.requestAnimationFrame(sample);
+        } else {
+          this.frameProfileTimer = view.setTimeout(scheduleWindow, 15_000);
+        }
+      };
+      this.frameProfileRaf = view.requestAnimationFrame(sample);
+    };
+    scheduleWindow();
+  }
+
+  private stopRuntimeFrameSampling(): void {
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (this.frameProfileRaf !== null) {
+      view?.cancelAnimationFrame(this.frameProfileRaf);
+      this.frameProfileRaf = null;
+    }
+    if (this.frameProfileTimer !== null) {
+      view?.clearTimeout(this.frameProfileTimer);
+      this.frameProfileTimer = null;
+    }
+    this.frameProfileWindowRemaining = 0;
+    this.runtimeFrameProfile.resetRafSequence();
   }
 
   static async create(options: ViewerInkSessionOptions): Promise<ViewerInkSession> {
@@ -6077,6 +6157,7 @@ export class ViewerInkSession {
       physicalContactHotPath: physicalContactHotPathStats(),
       performanceSlowSpanSummary: this.slowSpans.summary(),
       slowInkStrokeSummary: this.slowSpans.slowInkStrokeSummary(),
+      frameTiming: this.runtimeFrameProfile.snapshot(),
       frameAttributionSummary: this.lastZoomFrameAttributionSummary ?? this.zoomFrameDiagnostics.summary(),
       lastZoomGesturePerformance: this.recentZoomGesturePerformance.map((entry) => ({ ...entry })),
       lastInkStrokeGeometry: this.recentInkStrokeGeometry.slice(),
@@ -7481,6 +7562,7 @@ export class ViewerInkSession {
 
   async destroy(options: { silent?: boolean; alreadyPersisted?: boolean } = {}): Promise<boolean> {
     if (this.destroyed) return true;
+    this.stopRuntimeFrameSampling();
     // Remove document-level probes before any persistence/close await so a
     // registry removal cannot leave a stale session observing the next event.
     this.revokeDocumentInputOwnership("released");
@@ -8943,7 +9025,7 @@ export class ViewerInkSession {
       pointerEvents: sampleCount,
       renderUpdates: 0,
       inputToRender: new BoundedTiming(),
-      frameIntervals: new BoundedTiming(),
+      frameIntervals: new BoundedTiming(() => this.runtimeFrameProfile.thresholds()),
       renderTotalMs: 0,
       maxPluginCallbackMs: 0,
       lastRenderAt: null,
@@ -9000,7 +9082,7 @@ export class ViewerInkSession {
         pointerType: event.pointerType || "unknown",
         pointerMoves: 0,
         refreshes: 0,
-        frameIntervals: new BoundedTiming(),
+        frameIntervals: new BoundedTiming(() => this.runtimeFrameProfile.thresholds()),
         lastMoveAt: null,
         maxPluginCallbackMs: 0,
         maxScrollDeltaPx: 0,
@@ -9560,6 +9642,7 @@ export class ViewerInkSession {
     if (!profile) return;
     const input = profile.inputToRender.summary();
     const frames = profile.frameIntervals.summary();
+    const runtimeFrameProfile = this.runtimeFrameProfile.snapshot();
     const completedAt = performance.now();
     const pointerDownToStrokeStartMs = Math.max(0, profile.startedAt - profile.pointerDownAt);
     const strokeStartToFirstCanvasCommitMs = profile.firstCanvasCommitAt === null
@@ -9593,6 +9676,9 @@ export class ViewerInkSession {
         longestLongTaskMs: profile.longTaskMaxMs,
         p95FrameMs: frames.p95Ms,
         maxFrameMs: frames.maxMs,
+        frameBudgetMs: runtimeFrameProfile.frameBudgetMs,
+        lateFrameThresholdMs: runtimeFrameProfile.lateFrameThresholdMs,
+        frameThresholdSource: runtimeFrameProfile.thresholdSource,
         pointerUpToCommitMs
       })
       : null;
@@ -9623,6 +9709,10 @@ export class ViewerInkSession {
       lateFrameCount: frames.lateFrameCount,
       droppedFrameEstimate: frames.droppedFrameEstimate,
       frameIntervalHistogram: frames.histogram,
+      frameProfile: runtimeFrameProfile,
+      frameBudgetMs: runtimeFrameProfile.frameBudgetMs,
+      lateFrameThresholdMs: runtimeFrameProfile.lateFrameThresholdMs,
+      frameThresholdSource: runtimeFrameProfile.thresholdSource,
       renderTotalMs: roundMetric(profile.renderTotalMs),
       maxPluginCallbackMs: roundMetric(profile.maxPluginCallbackMs),
       longestLongTaskMs: roundMetric(profile.longTaskMaxMs),
@@ -12337,7 +12427,7 @@ export class ViewerInkSession {
     }
     this.paintLaserTrails(surface, pageNumber);
     const durationMs = performance.now() - startedAt;
-    if (durationMs >= FRAME_MS_120) {
+    if (durationMs >= SLOW_SPAN_SYNC_MS) {
       this.logger.laserRepaintSlow(pageNumber, durationMs, laserDraftPoints.length, this.laserTrails.length);
     }
   }

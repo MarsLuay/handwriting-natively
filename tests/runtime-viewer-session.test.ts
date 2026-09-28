@@ -1962,6 +1962,13 @@ describe("viewer runtime tracer", () => {
       byStage: expect.any(Object),
       worstStrokes: expect.any(Array)
     });
+    expect(copiedTrace?.payload.frameTiming).toMatchObject({
+      measuredRefreshHz: null,
+      frameBudgetMs: 16.67,
+      confidence: "insufficient",
+      thresholdSource: "platform-fallback",
+      sampleCount: 0
+    });
     await session.destroy();
   });
 
