@@ -297,12 +297,12 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             }
           },
           {
-            name: "Disable one-finger search bar swipe",
-            desc: "Prevent a one-finger downward swipe from the top edge on mobile/iPad from opening Obsidian's search bar. Off by default; normal page scrolling remains native.",
+            name: "Disable one-finger command palette swipe",
+            desc: "Prevent a one-finger downward swipe from the top edge on mobile/iPad from opening Obsidian's command palette. Off by default; normal page scrolling remains native.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.disableSearchBarSwipe).onChange(async (value) => {
-                  await this.persistPatch({ disableSearchBarSwipe: value });
+                toggle.setValue(this.host.inkSettings.disableCommandPaletteSwipe).onChange(async (value) => {
+                  await this.persistPatch({ disableCommandPaletteSwipe: value });
                 })
               );
             }

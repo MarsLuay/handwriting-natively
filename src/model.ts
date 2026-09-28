@@ -207,8 +207,8 @@ export interface PluginSettings {
   hideStylusAnnotationLabel: boolean;
   /** Mobile-only opt-in to suppress Obsidian's one-finger sidebar swipe. */
   disableSidebarSwipe: boolean;
-  /** Mobile-only opt-in to suppress Obsidian's downward search-bar swipe. */
-  disableSearchBarSwipe: boolean;
+  /** Mobile-only opt-in to suppress Obsidian's downward command-palette swipe. */
+  disableCommandPaletteSwipe: boolean;
   toolbarPlacement: ToolbarPlacement;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
@@ -307,7 +307,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   boostedPdfZoom: false,
   hideStylusAnnotationLabel: false,
   disableSidebarSwipe: false,
-  disableSearchBarSwipe: false,
+  disableCommandPaletteSwipe: false,
   toolbarPlacement: "main",
   vaultDebugLog: false,
   vaultDebugLogPath,
@@ -338,6 +338,8 @@ export function mergeSettings(
 ): PluginSettings {
   const defaults = createDefaultSettings(configDir);
   const raw = { ...(saved ?? {}) } as Record<string, unknown>;
+  const legacyDisableSearchBarSwipe = raw.disableSearchBarSwipe === true;
+  delete raw.disableSearchBarSwipe;
   for (const key of LEGACY_SETTING_KEYS) delete raw[key];
   const cleaned = raw as Partial<PluginSettings>;
   const lassoRaw = { ...defaults.toolPreferences.lasso, ...cleaned.toolPreferences?.lasso } as {
@@ -396,7 +398,8 @@ export function mergeSettings(
     boostedPdfZoom: cleaned.boostedPdfZoom === true,
     hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,
     disableSidebarSwipe: cleaned.disableSidebarSwipe === true,
-    disableSearchBarSwipe: cleaned.disableSearchBarSwipe === true,
+    disableCommandPaletteSwipe: cleaned.disableCommandPaletteSwipe === true
+      || (cleaned.disableCommandPaletteSwipe === undefined && legacyDisableSearchBarSwipe),
     pressureProfile: pressureProfile === "pen" || pressureProfile === "mouse" || pressureProfile === "auto"
       ? pressureProfile
       : defaults.pressureProfile,

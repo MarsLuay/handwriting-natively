@@ -832,7 +832,7 @@ export default class NativePdfInkPlugin extends Plugin {
   private updateSidebarSwipeBlocker(): void {
     this.sidebarSwipeBlocker?.setEnabled(
       Platform.isMobile && this.inkSettings.disableSidebarSwipe,
-      Platform.isMobile && this.inkSettings.disableSearchBarSwipe
+      Platform.isMobile && this.inkSettings.disableCommandPaletteSwipe
     );
   }
 
