@@ -42,6 +42,7 @@ import {
 } from "./InkVisibility";
 import { deferredRenderDisposition } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRoute, type PointerRouterHandoff } from "../input/PointerRouter";
+import { detectPointerInputCapabilities } from "../input/PointerInputCapabilities";
 import { GestureOwnership } from "../input/GestureOwnership";
 import { PostUiInputProbe, POST_UI_INPUT_PHASE_THRESHOLD_MS, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type DocumentInputOwnershipHandle } from "../input/DocumentInputOwnership";
@@ -8480,6 +8481,7 @@ export class ViewerInkSession {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
       canAnnotatePointer: (event) => this.canAnnotateSurface(surface, event),
+      pointerInputCapabilities: () => detectPointerInputCapabilities(surface.page.element),
       mouseAnnotationEnabled: (button = 0) => this.mouseButtonEnabled(button),
       rightMouseEraserEnabled: () => this.mouseRightDragEnabled(),
       onStylusEraserStart: () => {
