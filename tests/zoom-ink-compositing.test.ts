@@ -458,6 +458,7 @@ describe("zoom ink compositing", () => {
     vi.useFakeTimers();
     adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
     session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(16);
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
 
     // Exercise the same handoff boundary used by the scheduled release while
@@ -508,6 +509,10 @@ describe("zoom ink compositing", () => {
         event: "ink-visibility-flash",
         phase: "post-composite-release-frame-1",
         cause: "canvas-cleared",
+        compositingClassPresent: false,
+        canonicalPaintComplete: true,
+        pixelProbeRan: true,
+        pixelProbeNonTransparentSamples: 0,
         previousPhasePixelProbeHasInk: true
       })
     ]);
