@@ -582,6 +582,9 @@ export class PointerRouter {
     // Companion touchstart arrives ~0–4ms after pen down — reconcile only when stale.
     this.palmPolicy.reconcileStalePenOnTouch();
     if (!this.palmPolicy.hasActivePen()) return;
+    // A native pinch already owns two fingers; a Pencil transition must not
+    // cancel that browser gesture through the companion Touch stream.
+    if (this.touchCount() >= 2) return;
     if (!event.cancelable) return;
     event.preventDefault();
     event.stopPropagation();
@@ -657,7 +660,8 @@ export class PointerRouter {
 
   /** Pen or a vertical axis lock wins. Otherwise the manipulation machine owns touch-action. */
   private syncTouchActionMode(): void {
-    const mode = this.palmPolicy.hasActivePen() || this.touchAxis?.lock === "vertical"
+    const nativeTouchGesture = this.touchCount() > 0;
+    const mode = (this.palmPolicy.hasActivePen() && !nativeTouchGesture) || this.touchAxis?.lock === "vertical"
       ? "none"
       : this.manipulation.touchAction();
     this.element.classList.toggle("native-pdf-handwriting-touch-none", mode === "none");
