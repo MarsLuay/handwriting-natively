@@ -24,6 +24,12 @@ device model, Pencil generation, display scale, orientation, and refresh-rate
 setting. Keep the report attached to the issue or release record before
 removing or weakening any compatibility fallback.
 
+For the repeatable pinch/zoom workload, page-count matrix, 60 Hz/ProMotion
+comparison, and visual-alignment checks, use
+[`ipad-zoom-benchmark.md`](ipad-zoom-benchmark.md). This harness supplies the
+passive input evidence required by that protocol; it does not replace the
+zoom profile or visual checklist.
+
 Run each row from a clean PDF session. Do not use the harness to draw, pan,
 zoom, or cancel a gesture; it is an observer only.
 
