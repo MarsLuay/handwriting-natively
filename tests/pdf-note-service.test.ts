@@ -205,6 +205,19 @@ describe("PDF note service", () => {
     expect(await getPdfPageCount(destination)).toBe(2);
   });
 
+  it("supports inserting imported pages at the beginning", async () => {
+    const destination = await createPdf([[400, 600], [800, 900]]);
+    const source = await createPdf([[300, 500]]);
+    const result = await importPdfPages(destination, source, 0, [1]);
+
+    expect(result.pageNumber).toBe(1);
+    expect((await PDFDocument.load(result.bytes)).getPages().map((page) => page.getSize())).toEqual([
+      { width: 300, height: 500 },
+      { width: 400, height: 600 },
+      { width: 800, height: 900 }
+    ]);
+  });
+
   it("imports all source pages and rejects invalid or encrypted sources before mutation", async () => {
     const destination = await createPdf([[400, 600]]);
     const source = await createPdf([[500, 700], [600, 800], [700, 900]]);

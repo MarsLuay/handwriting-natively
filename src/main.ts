@@ -43,7 +43,13 @@ import {
   type ImportedPdfPages
 } from "./pdf/PdfNoteService";
 import { writePdfAndAnnotationStoresAtomic } from "./pdf/PdfPageMutation";
-import { isExternalPdfImport, PdfImportFilePicker, PdfPageSelectionModal, type PdfImportSource } from "./ui/PdfPageImport";
+import {
+  isExternalPdfImport,
+  PdfImportFilePicker,
+  PdfImportOptionsModal,
+  type PdfImportOptions,
+  type PdfImportSource
+} from "./ui/PdfPageImport";
 import { mergeSettings, NativePdfInkSettingTab, type CopiedLogDiagnostics } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
 import { createDocumentIdentity, hashDocumentContent } from "./storage/DocumentIdentity";
@@ -1433,31 +1439,38 @@ export default class NativePdfInkPlugin extends Plugin {
     });
     if (!source) return null;
 
+    const sourceName = isExternalPdfImport(source) ? source.name : source.path;
     const sourceBytes = isExternalPdfImport(source)
       ? source.bytes.slice()
       : new Uint8Array(await this.app.vault.readBinary(source));
     const sourcePageCount = await getPdfPageCount(sourceBytes);
     if (sourcePageCount < 1) throw new Error("The selected PDF has no pages.");
 
-    let pageNumbers: number[] | null;
-    if (sourcePageCount === 1) {
-      pageNumbers = [1];
-    } else {
-      pageNumbers = await new Promise<number[] | null>((resolve) => {
-        new PdfPageSelectionModal(
-          this.app,
+    // Read only enough of the destination to populate safe location bounds. The
+    // bytes used for the actual mutation are read again after the modal closes.
+    const destinationPreview = new Uint8Array(await this.app.vault.readBinary(destination));
+    const destinationPageCount = await getPdfPageCount(destinationPreview);
+    if (destinationPageCount < 1) throw new Error("The destination PDF has no pages.");
+    const options = await new Promise<PdfImportOptions | null>((resolve) => {
+      new PdfImportOptionsModal(
+        this.app,
+        {
           sourcePageCount,
-          (selected) => resolve(selected),
-          () => resolve(null)
-        ).open();
-      });
-    }
-    if (!pageNumbers) return null;
+          destinationPageCount,
+          currentPage: afterPage,
+          sourceName,
+          destinationName: destination.path
+        },
+        resolve,
+        () => resolve(null)
+      ).open();
+    });
+    if (!options) return null;
 
     // Re-read destination after selection so a concurrent edit is not overwritten
     // with a stale snapshot, and so self-import uses an independent byte copy.
     const destinationBytes = new Uint8Array(await this.app.vault.readBinary(destination));
-    return importPdfPages(destinationBytes, sourceBytes, afterPage, pageNumbers);
+    return importPdfPages(destinationBytes, sourceBytes, options.afterPage, options.pageNumbers);
   }
 
   private async openPdfInNewTab(file: TFile): Promise<void> {
