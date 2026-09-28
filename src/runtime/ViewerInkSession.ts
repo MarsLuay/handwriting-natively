@@ -1117,6 +1117,10 @@ export class ViewerInkSession {
   private static readonly MAX_LASER_DRAFT_POINTS = 1024;
   private lastZoomSignalAt = 0;
   private zoomCompositing = false;
+  /** Number of pages admitted to the active pinch working set. */
+  private zoomActivePageCount = 0;
+  /** Page numbers touched by the most recent active-pinch layout pass. */
+  private zoomWorkingPageNumbers = new Set<number>();
   /** Visible pages still needing settle paint (one page per rAF). */
   private zoomSettleQueue: Array<{ page: number; tier: "focus" | "neighbor" }> = [];
   private zoomSettleSliceFrame: number | null = null;
@@ -3632,8 +3636,8 @@ export class ViewerInkSession {
         || this.zoomCompositeReleaseTimer !== null
         || this.zoomCompositeReleaseFrame !== null,
       nativeMutationCount: this.zoomNativeContentMutations,
-      visiblePages: this.surfaces.size,
-      overlaysTouched: this.zoomCompositing ? this.surfaces.size : 0,
+      visiblePages: this.zoomActivePageCount,
+      overlaysTouched: this.zoomCompositing ? this.zoomActivePageCount : 0,
       totalPluginWorkMs
     };
     if (flushOnly) this.zoomPipelineTrace.flushFrame(frame);
@@ -3644,7 +3648,9 @@ export class ViewerInkSession {
     const profile = this.zoomProfile;
     if (!profile || !this.logger.isEnabled()) return;
     const now = performance.now();
-    for (const surface of this.surfaces.values()) {
+    for (const pageNumber of this.zoomWorkingPageNumbers) {
+      const surface = this.surfaces.get(pageNumber);
+      if (!surface) continue;
       const pdf = pdfRenderCanvas(surface.page.element)?.getBoundingClientRect();
       const ink = surface.overlay.getBoundingClientRect();
       if (!pdf) continue;
@@ -4748,13 +4754,17 @@ export class ViewerInkSession {
 
   /**
    * Pin the adapter's current page (else largest visible intersection) for sync HQ.
-   * Remaining surfaces settle as cheap neighbors under the CSS mask.
+   * Remaining pages in the visible working set settle as cheap neighbors under
+   * the CSS mask; farther pages stay deferred for idle viewport work.
    */
   private zoomSettlePageOrder(): { focus: number | null; neighbors: number[] } {
     const currentPage = this.options.adapter.getViewState().pageNumber;
-    const view = this.options.adapter.host.getBoundingClientRect();
-    const ranked = [...this.surfaces.entries()].map(([pageNumber, surface]) => ({
-      pageNumber,
+    const view = this.options.adapter.root.getBoundingClientRect();
+    const working = this.zoomWorkingSurfaces(view);
+    this.zoomActivePageCount = working.length;
+    this.zoomWorkingPageNumbers = new Set(working.map((surface) => surface.page.pageNumber));
+    const ranked = working.map((surface) => ({
+      pageNumber: surface.page.pageNumber,
       area: this.surfaceViewportIntersectionArea(surface, view)
     }));
     ranked.sort((a, b) => b.area - a.area);
@@ -4993,13 +5003,12 @@ export class ViewerInkSession {
     this.zoomHandoffNeedsFinalRebase = false;
     this.zoomCompositing = true;
     const started = performance.now();
-    for (const surface of this.surfaces.values()) {
-      this.captureInkLayerFromCanvas(surface);
-      surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
-    }
+    // The layout pass admits only the current visible working set. Pages that
+    // stay outside the validated idle margin remain deferred for the existing
+    // post-handoff viewport painter.
     this.syncZoomOverlayLayouts();
     this.recordZoomProfileTask(started, "compositor");
-    this.logger.zoomComposite("begin", { pages: this.surfaces.size });
+    this.logger.zoomComposite("begin", { pages: this.zoomActivePageCount });
   }
 
   private endZoomCompositing(): void {
@@ -5591,10 +5600,13 @@ export class ViewerInkSession {
     const byNumber = new Map(pages.map((page) => [page.pageNumber, page]));
     phaseDurations["page-snapshot"] = performance.now() - snapshotStartedAt;
     const active: PageSurface[] = [];
+    const rootRect = this.options.adapter.root.getBoundingClientRect();
+    const working = this.zoomWorkingSurfaces(rootRect, byNumber);
     // Reconcile page nodes and routers before taking geometry reads. Reattach
     // used to read and write one page at a time, forcing layout between pages.
     const reconcileStartedAt = performance.now();
-    for (const [pageNumber, surface] of this.surfaces) {
+    for (const surface of working) {
+      const pageNumber = surface.page.pageNumber;
       const current = byNumber.get(pageNumber);
       if (!current) continue;
       if (!this.reattachSurface(surface, current, false)) {
@@ -5607,9 +5619,17 @@ export class ViewerInkSession {
         }
       }
       this.ensurePageRouter(surface);
+      // A page can enter the working set after the pinch starts. Warm its
+      // committed bitmap before applying the compositor class so it follows
+      // the same handoff as pages visible at pinch start.
+      if (!surface.overlay.classList.contains("native-pdf-handwriting-zoom-compositing")) {
+        this.captureInkLayerFromCanvas(surface);
+      }
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
       active.push(surface);
     }
+    this.zoomActivePageCount = active.length;
+    this.zoomWorkingPageNumbers = new Set(active.map((surface) => surface.page.pageNumber));
     phaseDurations["surface-reconcile"] = performance.now() - reconcileStartedAt;
 
     // Read every page layout first, then apply all overlay/text writes using
@@ -5670,7 +5690,11 @@ export class ViewerInkSession {
       skippedBlitOnly: 0
     };
     const pages = new Map(this.options.adapter.pages().map((page) => [page.pageNumber, page]));
-    for (const [pageNumber, surface] of this.surfaces) {
+    const working = this.zoomWorkingSurfaces(undefined, pages);
+    this.zoomActivePageCount = working.length;
+    this.zoomWorkingPageNumbers = new Set(working.map((surface) => surface.page.pageNumber));
+    for (const surface of working) {
+      const pageNumber = surface.page.pageNumber;
       const current = pages.get(pageNumber);
       if (!current) {
         stats.skippedDisconnected += 1;
@@ -13746,6 +13770,43 @@ export class ViewerInkSession {
     if (includeActivePreview && (surface.builder || surface.editPath.length > 0)) return false;
     if (this.selectionPage === surface.page.pageNumber) return false;
     return !this.surfaceNearViewport(surface, marginMode, rootRect);
+  }
+
+  /**
+   * Pages eligible for active pinch work: the current viewport plus the
+   * existing idle-margin policy. Page replacement recovery, selection chrome,
+   * and live input remain explicit safety exceptions; all other pages are
+   * deferred to the post-handoff viewport painter.
+   */
+  private zoomWorkingSurfaces(
+    rootRect?: DOMRect,
+    pages?: ReadonlyMap<number, AnnotationPageInfo>
+  ): PageSurface[] {
+    const root = rootRect ?? this.options.adapter.root.getBoundingClientRect();
+    const currentPage = this.options.adapter.getViewState().pageNumber;
+    const working: PageSurface[] = [];
+    for (const surface of this.surfaces.values()) {
+      const livePage = pages?.get(surface.page.pageNumber);
+      const needsRecovery = Boolean(
+        livePage?.element.isConnected
+        && (
+          surface.page.element !== livePage.element
+          || !surface.overlay.isConnected
+          || !livePage.element.contains(surface.overlay)
+        )
+      );
+      const nearViewport = surface.overlay.isConnected
+        && surface.page.element.isConnected
+        && this.surfaceNearViewport(surface, "idle", root);
+      const admitted = surface.page.pageNumber === currentPage
+        || this.selectionPage === surface.page.pageNumber
+        || this.surfaceHasLiveInkInput(surface)
+        || needsRecovery
+        || nearViewport;
+      if (admitted) working.push(surface);
+      else surface.viewportCullPending = true;
+    }
+    return working;
   }
 
   /**
