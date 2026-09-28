@@ -1,6 +1,7 @@
 import { describeTarget } from "../dom/describeElement";
 import { scrollPdfByDetailed, describeScrollElement } from "../integration/PdfScrollRoot";
 import { GestureOwnership } from "./GestureOwnership";
+import { classifyInputTarget } from "./InputTargetClassification";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
 import { isAnnotationChromeTarget, safeReleasePointerCapture, safeSetPointerCapture } from "./PointerRouter";
 
@@ -129,6 +130,16 @@ export class ViewerMousePan {
 
   private readonly onDown = (event: PointerEvent): void => {
     const inBoundary = this.within(event);
+    const targetClass = classifyInputTarget(event.target);
+    if (targetClass.targetClass !== "page") {
+      this.callbacks.onPan?.("skip", event, {
+        reason: "ui-target",
+        targetClass: targetClass.targetClass,
+        targetReason: targetClass.reason,
+        target: describeTarget(event.target)
+      });
+      return;
+    }
     const finger = isFingerPanPointer(event);
     const tip = isDragPanPointer(event);
 

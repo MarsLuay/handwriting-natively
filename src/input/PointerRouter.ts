@@ -1,6 +1,7 @@
 import { appendToBodyOr, createDetachedSpan } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
 import { isInkDrawTool, type ToolId } from "../model";
+import { classifyInputTarget, isUiInputTarget } from "./InputTargetClassification";
 import { PalmRejectionPolicy, type PenStateResetReason } from "./PalmRejectionPolicy";
 import { PointerCapabilities, type PointerSample } from "./PointerCapabilities";
 import { isTipContact, remapMouseTipSamples } from "./PenPresence";
@@ -388,7 +389,8 @@ export class PointerRouter {
       this.callbacks.onPointerRejected?.("inactive-owner", event, this.generation);
       return "ignored";
     }
-    if (isAnnotationChromeTarget(event.target)) {
+    const targetClass = classifyInputTarget(event.target);
+    if (targetClass.targetClass !== "page") {
       this.callbacks.onPointerRejected?.("annotation-chrome", event, this.generation);
       return "native";
     }
@@ -528,6 +530,7 @@ export class PointerRouter {
   private recoverMissingPointerDown(event: PointerEvent): boolean {
     if (this.abort.signal.aborted) return false;
     if (this.callbacks.isInputOwnerActive?.() === false) return false;
+    if (isUiInputTarget(event.target)) return false;
     if (!this.callbacks.canAnnotatePointer(event) || !isTipContact(event)) return false;
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
     if (!penLike) return false;
