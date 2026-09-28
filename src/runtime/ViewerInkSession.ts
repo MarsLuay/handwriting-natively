@@ -1002,6 +1002,10 @@ export class ViewerInkSession {
   private readonly slowSpans = new SlowSpanTrace();
   private readonly frameBudget: EffectiveFrameBudget;
   private readonly zoomFrameDiagnostics: ZoomFrameDiagnostics;
+  private frameProfileRaf: number | null = null;
+  private frameProfileTimer: number | null = null;
+  private static readonly FRAME_PROFILE_IDLE_SAMPLE_COUNT = 24;
+  private static readonly FRAME_PROFILE_IDLE_RESAMPLE_MS = 15_000;
   private lastZoomFrameAttributionSummary: FrameAttributionSummary | null = null;
   private readonly openInkStrokeGeometry = new Map<number, OpenInkStrokeGeometry>();
   private readonly recentInkStrokeGeometry: InkStrokeGeometryRecord[] = [];
@@ -1438,6 +1442,7 @@ export class ViewerInkSession {
       }
     }) : null;
     this.installPointerProbe(adapter);
+    this.startFrameProfileSampling();
   }
 
   private installPointerProbe(adapter: ViewerInkSessionOptions["adapter"]): void {
@@ -5324,6 +5329,56 @@ export class ViewerInkSession {
     };
   }
 
+  /**
+   * A short, low-work idle rAF window distinguishes genuine 30 Hz delivery
+   * from active-work frames that consistently miss every other 60 Hz frame.
+   * It is deliberately sparse and never logs or performs layout.
+   */
+  private startFrameProfileSampling(): void {
+    if (!this.options.runtimePlatform) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view || typeof view.requestAnimationFrame !== "function") return;
+    const scheduleWindow = (): void => {
+      if (this.destroyed) return;
+      const document = this.options.adapter.host.ownerDocument;
+      if (document.hidden) {
+        this.frameProfileTimer = view.setTimeout(scheduleWindow, 1_000);
+        return;
+      }
+      let remaining = ViewerInkSession.FRAME_PROFILE_IDLE_SAMPLE_COUNT;
+      const sample = (timestamp: number): void => {
+        this.frameProfileRaf = null;
+        if (this.destroyed) return;
+        const hidden = this.options.adapter.host.ownerDocument.hidden;
+        this.frameBudget.observeRaf(timestamp, hidden, "idle");
+        if (hidden) {
+          this.frameProfileTimer = view.setTimeout(scheduleWindow, 1_000);
+          return;
+        }
+        remaining -= 1;
+        if (remaining > 0) {
+          this.frameProfileRaf = view.requestAnimationFrame(sample);
+        } else {
+          this.frameProfileTimer = view.setTimeout(scheduleWindow, ViewerInkSession.FRAME_PROFILE_IDLE_RESAMPLE_MS);
+        }
+      };
+      this.frameProfileRaf = view.requestAnimationFrame(sample);
+    };
+    scheduleWindow();
+  }
+
+  private stopFrameProfileSampling(): void {
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (this.frameProfileRaf !== null) {
+      view?.cancelAnimationFrame(this.frameProfileRaf);
+      this.frameProfileRaf = null;
+    }
+    if (this.frameProfileTimer !== null) {
+      view?.clearTimeout(this.frameProfileTimer);
+      this.frameProfileTimer = null;
+    }
+  }
+
   private runtimePlatform(): { mobile: boolean; phone: boolean } {
     return this.options.runtimePlatform?.() ?? { mobile: false, phone: false };
   }
@@ -7681,6 +7736,7 @@ export class ViewerInkSession {
 
   async destroy(options: { silent?: boolean; alreadyPersisted?: boolean } = {}): Promise<boolean> {
     if (this.destroyed) return true;
+    this.stopFrameProfileSampling();
     // Remove document-level probes before any persistence/close await so a
     // registry removal cannot leave a stale session observing the next event.
     this.revokeDocumentInputOwnership("released");
