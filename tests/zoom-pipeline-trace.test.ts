@@ -18,6 +18,11 @@ describe("ZoomPipelineTrace", () => {
       pendingRaf: true,
       pendingSettle: true,
       nativeMutationCount: 2,
+      inputPending: true,
+      activeAnnotationGesture: true,
+      activePinchPointers: 1,
+      activePinchTouches: 1,
+      activeTouchPointerCount: 1,
       visiblePages: 3,
       overlaysTouched: 3,
       totalPluginWorkMs: 7
@@ -34,6 +39,11 @@ describe("ZoomPipelineTrace", () => {
         "overlay-layout": { count: 2, totalMs: 5, maxMs: 5 },
         "dom-read": { count: 1, totalMs: 2, maxMs: 2 }
       },
+      inputPending: true,
+      activeAnnotationGesture: true,
+      activePinchPointers: 1,
+      activePinchTouches: 1,
+      activeTouchPointerCount: 1,
       duplicateWork: { "overlay-layout": 1 }
     });
     expect(trace.finish()).toMatchObject({
