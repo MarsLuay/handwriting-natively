@@ -16,13 +16,25 @@ function touchEvent(type: "touchstart" | "touchmove" | "touchend", touches: Touc
   return event;
 }
 
-function penEvent(type: "pointerdown" | "pointerup", pointerId: number): Event {
-  const event = new Event(type, { bubbles: true, cancelable: true });
+function pointerEvent(
+  type: "pointerdown" | "pointermove" | "pointerup",
+  pointerId: number,
+  clientX: number,
+  clientY: number,
+  pointerType = "touch"
+): Event {
+  const event = new Event(type, { bubbles: true, cancelable: type === "pointermove" });
   Object.defineProperties(event, {
+    clientX: { configurable: true, value: clientX },
+    clientY: { configurable: true, value: clientY },
     pointerId: { configurable: true, value: pointerId },
-    pointerType: { configurable: true, value: "pen" }
+    pointerType: { configurable: true, value: pointerType }
   });
   return event;
+}
+
+function penEvent(type: "pointerdown" | "pointerup", pointerId: number): Event {
+  return pointerEvent(type, pointerId, 0, 0, "pen");
 }
 
 afterEach(() => {
@@ -68,6 +80,25 @@ describe("MobileSidebarSwipeBlocker", () => {
     const allowedMove = touchEvent("touchmove", [touch(2, 840, 108)]);
     document.dispatchEvent(allowedMove);
     expect(allowedMove.defaultPrevented).toBe(false);
+    blocker.destroy();
+  });
+
+  it("blocks pointer-routed edge swipes before later same-target listeners", () => {
+    const blocker = new MobileSidebarSwipeBlocker(document);
+    blocker.setEnabled(true);
+    let laterListenerRan = false;
+    const laterListener = (): void => {
+      laterListenerRan = true;
+    };
+    document.addEventListener("pointermove", laterListener);
+
+    document.dispatchEvent(pointerEvent("pointerdown", 1, 2, 100));
+    const move = pointerEvent("pointermove", 1, 60, 108);
+    document.dispatchEvent(move);
+
+    expect(move.defaultPrevented).toBe(true);
+    expect(laterListenerRan).toBe(false);
+    document.removeEventListener("pointermove", laterListener);
     blocker.destroy();
   });
 
