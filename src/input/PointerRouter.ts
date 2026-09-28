@@ -101,6 +101,8 @@ export interface PointerRouterCallbacks {
   projectCursor?(clientX: number, clientY: number): { x: number; y: number } | null;
   onStart?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
   onMove?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
+  /** Ephemeral predicted pen samples; never part of the canonical move stream. */
+  onPredictedMove?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
   onEnd?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
   onCancel?(route: "draw" | "edit" | "text", event: PointerEvent): void;
   onRoute?(route: PointerRoute, event: PointerEvent): void;
@@ -851,8 +853,10 @@ export class PointerRouter {
     const route = this.routed.get(event.pointerId);
     if (!route) return;
     if (phase === "pointercancel") {
+      this.callbacks.onPredictedMove?.([], route, event);
       this.callbacks.onCancel?.(route, event);
     } else {
+      this.callbacks.onPredictedMove?.([], route, event);
       this.callbacks.onEnd?.(this.inkSamples(event), route, event);
     }
     safeReleasePointerCapture(this.element, event.pointerId);
@@ -933,9 +937,16 @@ export class PointerRouter {
       const samples = this.inkSamples(event, {
         skipPenHover: route === "draw" || route === "edit"
       });
-      if (samples.length === 0) return;
+      const predicted = route === "draw" && event.pointerType === "pen"
+        ? PointerCapabilities.predictedSamples(event)
+        : [];
+      if (samples.length === 0) {
+        this.callbacks.onPredictedMove?.(predicted, route, event);
+        return;
+      }
       this.consumedStrokeEvents.add(event);
       this.callbacks.onMove?.(samples, route, event);
+      this.callbacks.onPredictedMove?.(predicted, route, event);
       if (!(route === "text" && event.pointerType === "touch")) {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -951,6 +962,7 @@ export class PointerRouter {
     this.paintCustomCursorsNow(event);
     const route = this.routed.get(event.pointerId);
     if (route) {
+      this.callbacks.onPredictedMove?.([], route, event);
       this.callbacks.onEnd?.(this.inkSamples(event), route, event);
       if (!(route === "text" && event.pointerType === "touch")) {
         event.preventDefault();
@@ -979,6 +991,7 @@ export class PointerRouter {
     if (route) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      this.callbacks.onPredictedMove?.([], route, event);
       this.callbacks.onCancel?.(route, event);
       safeReleasePointerCapture(this.element, event.pointerId);
       this.routed.delete(event.pointerId);

@@ -9,6 +9,12 @@ export const PEN_HOVER_PRESSURE_EPSILON = 0.01;
  */
 export const USE_COALESCED_POINTER_SAMPLES = false;
 
+/** Keep high-rate browser batches bounded before they reach the ink renderer. */
+export const MAX_POINTER_BATCH_SAMPLES = 64;
+
+/** Predicted samples are optional browser preview data, never canonical input. */
+export const MAX_PREDICTED_POINTER_SAMPLES = 24;
+
 /** iOS pointercancel / lostpointercapture often report (0, 0) instead of the pen. */
 export function isSyntheticPointerOrigin(sample: { clientX: number; clientY: number }): boolean {
   return Math.max(Math.abs(sample.clientX), Math.abs(sample.clientY)) <= 1;
@@ -84,7 +90,9 @@ export class PointerCapabilities {
         // Browsers normally expose coalesced samples in time order. Avoid a
         // per-pointermove sort on the hot path, but retain the old ordering
         // guarantee for hosts that provide an out-of-order batch.
-        rawEvents = [...coalesced];
+        rawEvents = coalesced.length > MAX_POINTER_BATCH_SAMPLES
+          ? coalesced.slice(-MAX_POINTER_BATCH_SAMPLES)
+          : [...coalesced];
         let ordered = true;
         for (let index = 1; index < rawEvents.length; index += 1) {
           if (rawEvents[index]!.timeStamp < rawEvents[index - 1]!.timeStamp) {
@@ -96,7 +104,11 @@ export class PointerCapabilities {
         const tail = rawEvents[rawEvents.length - 1]!;
         const dx = event.clientX - tail.clientX;
         const dy = event.clientY - tail.clientY;
-        if (dx * dx + dy * dy > 0.01) rawEvents = [...rawEvents, event];
+        const timeChanged = event.timeStamp > tail.timeStamp;
+        const pressureChanged = event.pressure !== tail.pressure;
+        if (dx * dx + dy * dy > 0.01 || timeChanged || pressureChanged) {
+          rawEvents = [...rawEvents, event];
+        }
       }
     }
     const raw = rawEvents.map((sample) => this.sample(sample));
@@ -105,6 +117,41 @@ export class PointerCapabilities {
       : raw;
     if (!options.skipPenHover) return kept;
     return kept.filter((sample) => !this.isPenHoverSample(sample));
+  }
+
+  /**
+   * Read browser predictions for a pen move without ever mixing them into
+   * {@link samples}. Callers must render this result ephemerally and discard it
+   * before pointerup, pointercancel, or lostpointercapture.
+   */
+  static predictedSamples(event: PointerEvent): PointerSample[] {
+    if (event.pointerType !== "pen" || event.type !== "pointermove") return [];
+    const getPredicted = (event as PointerEvent & {
+      getPredictedEvents?: () => PointerEvent[];
+    }).getPredictedEvents;
+    if (typeof getPredicted !== "function") return [];
+    let predicted: PointerEvent[];
+    try {
+      predicted = getPredicted.call(event);
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(predicted) || predicted.length === 0) return [];
+    const bounded = predicted.length > MAX_PREDICTED_POINTER_SAMPLES
+      ? predicted.slice(0, MAX_PREDICTED_POINTER_SAMPLES)
+      : predicted;
+    const samples = bounded.map((sample) => this.sample(sample));
+    const ordered: PointerSample[] = [];
+    for (const sample of samples) {
+      const previous = ordered.at(-1);
+      if (previous
+        && previous.pointerId === sample.pointerId
+        && previous.timeStamp === sample.timeStamp
+        && previous.clientX === sample.clientX
+        && previous.clientY === sample.clientY) continue;
+      ordered.push(sample);
+    }
+    return ordered;
   }
 
   static hasTilt(event: PointerEvent): boolean {
