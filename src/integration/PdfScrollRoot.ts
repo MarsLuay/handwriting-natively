@@ -10,7 +10,7 @@ const OBSIDIAN_SCROLL_SELECTORS = [
 const INNER_VIEWER_CLASSES = new Set(["pdfViewer", "pdf-viewer"]);
 const resolvedScrollRoots = new WeakMap<HTMLElement, {
   host: HTMLElement | undefined;
-  privateViewer: PdfJsViewerLike | undefined;
+  privateViewerContainer: HTMLElement | null;
   root: HTMLElement;
 }>();
 
@@ -28,9 +28,13 @@ export function resolvePdfScrollRoot(
   viewerHost?: HTMLElement
 ): HTMLElement {
   const cached = resolvedScrollRoots.get(viewerRoot);
-  if (cached && cached.host === viewerHost && cached.privateViewer === privateViewer && cached.root.isConnected) return cached.root;
+  const privateViewerContainer = isHTMLElement(privateViewer?.container) ? privateViewer.container : null;
+  if (cached
+    && cached.host === viewerHost
+    && cached.privateViewerContainer === privateViewerContainer
+    && cached.root.isConnected) return cached.root;
   const root = resolvePdfScrollRootUncached(viewerRoot, privateViewer, viewerHost);
-  if (root.isConnected) resolvedScrollRoots.set(viewerRoot, { host: viewerHost, privateViewer, root });
+  if (root.isConnected) resolvedScrollRoots.set(viewerRoot, { host: viewerHost, privateViewerContainer, root });
   return root;
 }
 

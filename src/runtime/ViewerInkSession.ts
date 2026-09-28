@@ -1477,8 +1477,6 @@ export class ViewerInkSession {
       reason,
       registrationSource: this.documentInputRegistrationSource
     });
-    this.physicalContactCollectorLease?.release();
-    this.physicalContactCollectorLease = null;
     this.pointerProbeAbort.abort();
     this.viewerMousePan.destroy();
     for (const surface of this.surfaces.values()) {
@@ -7596,6 +7594,8 @@ export class ViewerInkSession {
     // Remove document-level probes before any persistence/close await so a
     // registry removal cannot leave a stale session observing the next event.
     this.revokeDocumentInputOwnership("released");
+    this.physicalContactCollectorLease?.release();
+    this.physicalContactCollectorLease = null;
     this.syncEffectiveDrawState(options.silent ? "session-destroy" : "plugin-unload", "lifecycle");
     this.finishPanPerformance(options.silent ? "session-destroy" : "plugin-unload");
     this.releasePageMutationShield("session-destroy");

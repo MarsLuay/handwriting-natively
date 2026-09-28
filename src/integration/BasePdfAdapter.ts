@@ -508,6 +508,13 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     }
     if (follow) {
       this.sidebarFollowTrigger = trigger;
+      // A materially different resize supersedes the previous follow-frame
+      // appointment. Tiny ResizeObserver churn remains gated above, while a
+      // real edge change gets an immediate compositor appointment.
+      if (trigger === "resize" && this.sidebarFollowFrame !== null) {
+        this.host.ownerDocument.defaultView?.cancelAnimationFrame(this.sidebarFollowFrame);
+        this.sidebarFollowFrame = null;
+      }
       const view = this.host.ownerDocument.defaultView;
       const now = view?.performance.now() ?? Date.now();
       this.sidebarFollowUntil = Math.max(
