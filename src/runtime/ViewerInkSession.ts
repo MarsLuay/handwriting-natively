@@ -8277,6 +8277,17 @@ export class ViewerInkSession {
       onTouchStart: (event) => {
         this.notePointerTypeOrigin(event, "page-touch-router", "capture");
       },
+      onTouchPointerDown: (event) => {
+        const editor = this.activeTextEditor;
+        const target = event.target;
+        if (!editor || (target instanceof Node && editor.element.contains(target))) return;
+        this.logText(editor.surface, "outside-touch-close", {
+          annotationId: editor.draft.id,
+          existing: Boolean(editor.existing),
+          pointerId: event.pointerId
+        });
+        this.commitActiveTextEditor("outside-touch");
+      },
       onRouterReceived: (event, generation) => {
         this.postZoomRouterByPointer.set(event.pointerId, {
           received: true,

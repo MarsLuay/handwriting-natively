@@ -2246,6 +2246,59 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("dismisses an active text editor on an outside touch without creating a second box", async () => {
+    const files = new MemoryFiles();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "text";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/touch-text.pdf",
+      settings,
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      texts: { all(): PdfTextAnnotation[] };
+    };
+
+    try {
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 120));
+      expect(adapter.pageElement.querySelector(".native-pdf-handwriting-text-input")).not.toBeNull();
+
+      const emptyTouch = pointer("pointerdown", 240, 300, { pointerType: "touch", pointerId: 21 });
+      adapter.pageElement.dispatchEvent(emptyTouch);
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 240, 300, { pointerType: "touch", pointerId: 21 }));
+      expect(emptyTouch.defaultPrevented).toBe(false);
+      expect(adapter.pageElement.querySelectorAll(".native-pdf-handwriting-text-input")).toHaveLength(0);
+      expect(adapter.pageElement.querySelectorAll(".native-pdf-handwriting-text-box")).toHaveLength(0);
+      expect(internal.texts.all()).toHaveLength(0);
+
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 120));
+      const editor = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-input");
+      expect(editor).not.toBeNull();
+      editor!.textContent = "Keep this annotation";
+      editor!.dispatchEvent(new Event("input", { bubbles: true }));
+
+      const nonEmptyTouch = pointer("pointerdown", 360, 420, { pointerType: "touch", pointerId: 22 });
+      adapter.pageElement.dispatchEvent(nonEmptyTouch);
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 360, 420, { pointerType: "touch", pointerId: 22 }));
+      expect(nonEmptyTouch.defaultPrevented).toBe(false);
+      expect(adapter.pageElement.querySelectorAll(".native-pdf-handwriting-text-input")).toHaveLength(0);
+      expect(adapter.pageElement.querySelectorAll(".native-pdf-handwriting-text-box")).toHaveLength(1);
+      expect(adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box")?.textContent).toContain("Keep this annotation");
+      expect(internal.texts.all().map((annotation) => annotation.text)).toEqual(["Keep this annotation"]);
+    } finally {
+      await session.destroy();
+    }
+  });
+
   it("updates an active text font size without a redundant session refresh", async () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.toolPreferences.activeTool = "text";
