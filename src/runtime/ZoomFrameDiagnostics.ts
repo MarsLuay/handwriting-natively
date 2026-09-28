@@ -1,5 +1,8 @@
 /** Bounded, opt-in diagnostics for zoom frame gaps. No probe is armed until a zoom burst starts. */
 
+import { EffectiveFrameBudget, type RuntimeFrameProfile } from "../logging/PerformanceMetrics";
+
+/** Strict synchronous plugin-work budget; presentation cadence is runtime-measured. */
 export const ZOOM_FRAME_SLOW_MS = 8;
 const MAX_FRAMES = 32;
 const MAX_WORST_FRAMES = 10;
@@ -74,6 +77,7 @@ export interface ZoomFrameRecord {
   visualViewportScale: number | null;
   devicePixelRatio: number | null;
   attribution: FrameAttribution;
+  frameTiming: RuntimeFrameProfile;
 }
 
 export interface FrameAttributionSummary {
@@ -89,6 +93,7 @@ export interface FrameAttributionSummary {
   unattributedFrameCount: number;
   worstFrames: ZoomFrameRecord[];
   capabilities: PerformanceObserverCapability;
+  frameTiming: RuntimeFrameProfile;
 }
 
 interface Clock {
@@ -165,7 +170,10 @@ export class ZoomFrameDiagnostics {
   private pluginWorkTotalMs = 0;
   private pdfCallbackWorkTotalMs = 0;
 
-  constructor(clock: Clock = defaultClock) {
+  constructor(
+    clock: Clock = defaultClock,
+    private readonly frameBudget = new EffectiveFrameBudget()
+  ) {
     this.clock = clock;
     this.capability = performanceObserverCapability();
   }
@@ -237,6 +245,8 @@ export class ZoomFrameDiagnostics {
     };
   }): ZoomFrameRecord | null {
     if (!this.active) return null;
+    this.frameBudget.observeRaf(input.callbackAt, input.context?.documentHidden === true);
+    const frameTiming = this.frameBudget.snapshot();
     const rafRequestToCallbackMs = Math.max(0, input.callbackAt - input.requestedAt);
     const frameDeltaMs = this.previousRafCallbackAt === null
       ? 0
@@ -247,10 +257,17 @@ export class ZoomFrameDiagnostics {
     this.pluginWorkTotalMs += Math.max(0, input.pluginWorkMs);
     this.pdfCallbackWorkTotalMs = 0;
     this.previousRafCallbackAt = input.callbackAt;
-    if (frameDeltaMs < ZOOM_FRAME_SLOW_MS) return null;
+    if (frameDeltaMs < frameTiming.lateFrameThresholdMs) return null;
 
     const measuredPluginWorkMs = Math.max(0, input.pluginWorkMs);
-    const attribution = this.attribute({ frameDeltaMs, rafRequestToCallbackMs, eventLoopDelayMs, measuredPluginWorkMs, pdfCallbackWorkMs });
+    const attribution = this.attribute({
+      frameDeltaMs,
+      rafRequestToCallbackMs,
+      eventLoopDelayMs,
+      measuredPluginWorkMs,
+      pdfCallbackWorkMs,
+      lateFrameThresholdMs: frameTiming.lateFrameThresholdMs
+    });
     const record: ZoomFrameRecord = {
       event: "perf-unattributed-frame-gap",
       zoomBurstId: this.zoomBurstId,
@@ -273,7 +290,8 @@ export class ZoomFrameDiagnostics {
       documentHidden: input.context?.documentHidden ?? null,
       visualViewportScale: input.context?.visualViewportScale ?? null,
       devicePixelRatio: input.context?.devicePixelRatio ?? null,
-      attribution
+      attribution,
+      frameTiming
     };
     this.frameGaps.push(record.frameDeltaMs);
     if (this.frameGaps.length > MAX_FRAMES) this.frameGaps.shift();
@@ -331,7 +349,8 @@ export class ZoomFrameDiagnostics {
         observerSignals: { ...frame.observerSignals },
         knownOperations: { ...frame.knownOperations }
       })),
-      capabilities: { ...current.capabilities, supportedEntryTypes: [...current.capabilities.supportedEntryTypes] }
+      capabilities: { ...current.capabilities, supportedEntryTypes: [...current.capabilities.supportedEntryTypes] },
+      frameTiming: { ...current.frameTiming }
     };
   }
 
@@ -359,7 +378,8 @@ export class ZoomFrameDiagnostics {
       knownOperations: Object.fromEntries([...this.knownOperations.entries()].map(([name, value]) => [name, { ...value }])),
       unattributedFrameCount: this.frames.filter((frame) => frame.attribution !== "plugin-work" && frame.attribution !== "pdf-render-burst" && frame.attribution !== "event-loop-starvation").length,
       worstFrames: this.worst.map((frame) => ({ ...frame, pdfSignals: { ...frame.pdfSignals }, observerSignals: { ...frame.observerSignals }, knownOperations: { ...frame.knownOperations } })),
-      capabilities: { ...this.capability, supportedEntryTypes: [...this.capability.supportedEntryTypes] }
+      capabilities: { ...this.capability, supportedEntryTypes: [...this.capability.supportedEntryTypes] },
+      frameTiming: this.frameBudget.snapshot()
     };
   }
 
@@ -369,11 +389,12 @@ export class ZoomFrameDiagnostics {
     eventLoopDelayMs: number;
     measuredPluginWorkMs: number;
     pdfCallbackWorkMs: number;
+    lateFrameThresholdMs: number;
   }): FrameAttribution {
     if (input.measuredPluginWorkMs >= ZOOM_FRAME_SLOW_MS && input.measuredPluginWorkMs >= input.frameDeltaMs * 0.5) return "plugin-work";
     if (input.eventLoopDelayMs >= ZOOM_FRAME_SLOW_MS && input.eventLoopDelayMs >= input.frameDeltaMs * 0.5) return "event-loop-starvation";
     if (input.pdfCallbackWorkMs >= ZOOM_FRAME_SLOW_MS && input.pdfCallbackWorkMs >= input.frameDeltaMs * 0.5) return "pdf-render-burst";
-    if (input.rafRequestToCallbackMs >= ZOOM_FRAME_SLOW_MS) return "raf/compositor-delay";
+    if (input.rafRequestToCallbackMs >= input.lateFrameThresholdMs) return "raf/compositor-delay";
     if (!this.capability.longtaskSupported && input.measuredPluginWorkMs < ZOOM_FRAME_SLOW_MS) return "unsupported-longtask-observer";
     return "unknown";
   }

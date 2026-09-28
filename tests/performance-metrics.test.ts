@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BoundedTiming,
+  EffectiveFrameBudget,
   buildScaleDeltaHistogram,
   buildTimingHistogram,
   FRAME_MS_120,
@@ -9,6 +10,55 @@ import {
 } from "../src/logging/PerformanceMetrics";
 
 describe("bounded performance metrics", () => {
+  it("measures clean rAF cadence without learning a jank episode", () => {
+    const budget = new EffectiveFrameBudget({ platform: "ipad", runtime: "wkwebview" });
+    let timestamp = 0;
+    budget.observeRaf(timestamp);
+    for (let index = 0; index < 24; index += 1) {
+      timestamp += 16.67;
+      budget.observeRaf(timestamp);
+    }
+    const stable = budget.snapshot();
+    expect(stable).toMatchObject({
+      measuredRefreshHz: 60,
+      measuredFrameBudgetMs: 16.67,
+      sampleCount: 24,
+      confidence: "stable",
+      thresholdSource: "measured-raf",
+      lateFrameThresholdMs: 25.01,
+      platform: "ipad",
+      runtime: "wkwebview"
+    });
+
+    for (let index = 0; index < 4; index += 1) {
+      timestamp += 447;
+      budget.observeRaf(timestamp);
+    }
+    expect(budget.snapshot()).toMatchObject({
+      measuredRefreshHz: 60,
+      sampleCount: 24,
+      thresholdSource: "measured-raf"
+    });
+  });
+
+  it("uses the fallback until enough clean rAF samples establish cadence", () => {
+    const budget = new EffectiveFrameBudget({ fallbackRefreshHz: 60, platform: "desktop", runtime: "electron" });
+    budget.observeRaf(0);
+    for (let index = 1; index <= 12; index += 1) budget.observeRaf(index * 8.33);
+    expect(budget.snapshot()).toMatchObject({
+      measuredRefreshHz: 120,
+      confidence: "low",
+      thresholdSource: "platform-fallback",
+      frameBudgetMs: 16.67
+    });
+    for (let index = 13; index <= 24; index += 1) budget.observeRaf(index * 8.33);
+    expect(budget.snapshot()).toMatchObject({
+      confidence: "stable",
+      thresholdSource: "measured-raf",
+      frameBudgetMs: 8.33
+    });
+  });
+
   it("distinguishes a smooth 120Hz trace from a stalled trace", () => {
     const smooth = new BoundedTiming();
     const stalled = new BoundedTiming();
