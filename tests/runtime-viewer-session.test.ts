@@ -965,6 +965,10 @@ describe("viewer runtime tracer", () => {
 
     try {
       const replacement = adapter.replacePageElementKeepingOldPageConnected();
+      const wrapper = document.createElement("div");
+      wrapper.className = "native-pdf-handwriting-chrome is-toolbar-left";
+      adapter.root.replaceChild(wrapper, replacement);
+      wrapper.append(replacement);
       const current = adapter.pages()[0]!;
       const surface = internal.surfaces.get(1)!;
 
@@ -1523,6 +1527,45 @@ describe("viewer runtime tracer", () => {
       if (originalElementsFromPoint) document.elementsFromPoint = originalElementsFromPoint;
       else delete (document as Partial<Document>).elementsFromPoint;
       outside.remove();
+      await session.destroy();
+    }
+  });
+
+  it("records an explicit reason when document fallback skips a plugin control", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+    const toolbar = document.createElement("div");
+    toolbar.className = "native-pdf-handwriting-toolbar";
+    adapter.host.append(toolbar);
+    try {
+      const down = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 286 });
+      toolbar.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(false);
+      expect(logs.filter(({ event, payload }) => event === "page router"
+        && payload.phase === "skip"
+        && payload.reason === "input-chrome")).toHaveLength(2);
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: "page router",
+        payload: expect.objectContaining({ reason: "input-chrome", via: "capture" })
+      }));
+    } finally {
+      toolbar.remove();
       await session.destroy();
     }
   });
