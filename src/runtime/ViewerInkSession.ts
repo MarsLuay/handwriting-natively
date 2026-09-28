@@ -115,6 +115,7 @@ import { DropdownController } from "../ui/DropdownController";
 import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../logging/SessionLogger";
 import { BoundedTiming, EffectiveFrameBudget, type RuntimeFrameProfile, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
 import { ZoomFrameDiagnostics, type FrameAttributionSummary } from "./ZoomFrameDiagnostics";
+import { ZoomPipelineTrace, type ZoomPipelineSummary } from "./ZoomPipelineTrace";
 import type { VaultLogSink } from "../logging/VaultLogSink";
 import type { AnnotationViewState } from "./AnnotationSurface";
 import { describeScrollElement, scrollPdfByDetailed } from "../integration/PdfScrollRoot";
@@ -1030,11 +1031,13 @@ export class ViewerInkSession {
   private readonly slowSpans = new SlowSpanTrace();
   private readonly frameBudget: EffectiveFrameBudget;
   private readonly zoomFrameDiagnostics: ZoomFrameDiagnostics;
+  private readonly zoomPipelineTrace: ZoomPipelineTrace;
   private frameProfileRaf: number | null = null;
   private frameProfileTimer: number | null = null;
   private static readonly FRAME_PROFILE_IDLE_SAMPLE_COUNT = 24;
   private static readonly FRAME_PROFILE_IDLE_RESAMPLE_MS = 15_000;
   private lastZoomFrameAttributionSummary: FrameAttributionSummary | null = null;
+  private lastZoomPipelineSummary: ZoomPipelineSummary | null = null;
   private readonly openInkStrokeGeometry = new Map<number, OpenInkStrokeGeometry>();
   private readonly recentInkStrokeGeometry: InkStrokeGeometryRecord[] = [];
   private settleWaitStartedAt = 0;
@@ -1213,6 +1216,7 @@ export class ViewerInkSession {
     this.ipadInputTrace?.start(options.debugEnabled?.() === true);
     this.frameBudget = new EffectiveFrameBudget(this.frameTimingEnvironment());
     this.zoomFrameDiagnostics = new ZoomFrameDiagnostics(undefined, this.frameBudget);
+    this.zoomPipelineTrace = new ZoomPipelineTrace({ enabled: () => this.logger.isEnabled() });
     this.ink = new InkSession([], (event) => this.recordInkLifecycle(event));
     this.textToolActive = options.settings.toolPreferences.activeTool === "text";
     this.lastObservedTool = options.settings.toolPreferences.activeTool;
@@ -1381,6 +1385,8 @@ export class ViewerInkSession {
     this.resizeObserver = typeof ResizeObserver === "undefined"
       ? null
       : new ResizeObserver(() => {
+        this.zoomPipelineTrace.noteEvent("resize-observer");
+        this.zoomPipelineTrace.noteStage("resize-observer", 0, 1, "resize-observer");
         this.zoomFrameDiagnostics.noteObserverSignal("resizeObserver");
         this.handleRootResize();
       });
@@ -3423,15 +3429,18 @@ export class ViewerInkSession {
     if (this.destroyed || !this.zoomCompositing) return;
     if (this.zoomLayoutFrame !== null) {
       if (this.zoomProfile) this.zoomProfile.coalescedVisualUpdates += 1;
+      this.zoomPipelineTrace.noteEvent("visual-update-coalesced");
       return;
     }
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) return;
     if (this.zoomProfile) this.zoomProfile.layoutFramesScheduled += 1;
+    this.zoomPipelineTrace.noteEvent("layout-raf-request");
     const rafRequestedAt = performance.now();
     this.zoomLayoutFrame = view.requestAnimationFrame((timestamp) => {
       this.zoomLayoutFrame = null;
       if (this.destroyed || !this.zoomCompositing) return;
+      this.zoomPipelineTrace.noteEvent("layout-raf");
       this.frameBudget.observeRaf(timestamp, this.options.adapter.host.ownerDocument.hidden);
       const now = performance.now();
       if (this.zoomProfile) {
@@ -3487,6 +3496,29 @@ export class ViewerInkSession {
       }
       this.recordZoomProfileTask(started);
       const pluginWorkMs = performance.now() - started;
+      this.zoomPipelineTrace.noteStage("overlay-layout", layoutMs, 1, "overlay-layout");
+      this.zoomPipelineTrace.noteStage(
+        "page-maintenance",
+        layoutTiming.phaseDurations["page-snapshot"],
+        1,
+        "page-snapshot"
+      );
+      this.zoomPipelineTrace.noteStage(
+        "router-maintenance",
+        layoutTiming.phaseDurations["surface-reconcile"],
+        1,
+        "surface-reconcile"
+      );
+      this.zoomPipelineTrace.noteStage(
+        "dom-read",
+        layoutTiming.phaseDurations["page-snapshot"] + layoutTiming.phaseDurations["layout-read"] + geometryMs,
+        1,
+        "zoom-dom-read"
+      );
+      this.zoomPipelineTrace.noteStage("dom-write", layoutTiming.phaseDurations["overlay-write"], 1, "zoom-dom-write");
+      this.zoomPipelineTrace.noteStage("text-layout", layoutTiming.phaseDurations["text-layout"], 1, "text-layout");
+      this.zoomPipelineTrace.noteStage("cursor-refresh", layoutTiming.phaseDurations["cursor-refresh"], 1, "cursor-refresh");
+      this.recordZoomPipelineFrame(now, pluginWorkMs);
       this.zoomFrameDiagnostics.notePluginOperation("overlay-layout", layoutMs);
       for (const [phase, durationMs] of Object.entries(layoutTiming.phaseDurations)) {
         this.zoomFrameDiagnostics.notePluginOperation(`overlay-${phase}`, durationMs);
@@ -3516,6 +3548,30 @@ export class ViewerInkSession {
         });
       }
     });
+  }
+
+  private recordZoomPipelineFrame(timestampMs: number, totalPluginWorkMs: number, flushOnly = false): void {
+    const state = this.options.adapter.getViewState();
+    const scroller = this.options.adapter.scrollElement();
+    const runtime = this.frameTimingProfile();
+    const frame = {
+      timestampMs,
+      runtimeBudgetMs: runtime.frameBudgetMs,
+      scale: state.scale,
+      scrollLeft: scroller.scrollLeft,
+      scrollTop: scroller.scrollTop,
+      pendingRaf: this.zoomLayoutFrame !== null || this.zoomSettleSliceFrame !== null,
+      pendingSettle: this.zoomSettleTimer !== null
+        || this.zoomSettleQueue.length > 0
+        || this.zoomCompositeReleaseTimer !== null
+        || this.zoomCompositeReleaseFrame !== null,
+      nativeMutationCount: this.zoomNativeContentMutations,
+      visiblePages: this.surfaces.size,
+      overlaysTouched: this.zoomCompositing ? this.surfaces.size : 0,
+      totalPluginWorkMs
+    };
+    if (flushOnly) this.zoomPipelineTrace.flushFrame(frame);
+    else this.zoomPipelineTrace.recordFrame(frame);
   }
 
   private recordZoomGeometry(): void {
@@ -3594,6 +3650,9 @@ export class ViewerInkSession {
       profile.sidebarFollowSuppressedTriggers = sidebar.sidebarFollowSuppressedTriggers;
     }
     this.stopZoomLongTaskObserver();
+    this.recordZoomPipelineFrame(profileEndedAt, 0, true);
+    const zoomPipelineSummary = this.zoomPipelineTrace.finish(profileEndedAt);
+    this.lastZoomPipelineSummary = zoomPipelineSummary;
     const frameAttributionSummary = this.zoomFrameDiagnostics.summary();
     this.lastZoomFrameAttributionSummary = frameAttributionSummary;
     const scaleIntervals = profile.scaleIntervals.summary();
@@ -3694,7 +3753,8 @@ export class ViewerInkSession {
       sidebarFollowSuppressedTriggers: profile.sidebarFollowSuppressedTriggers,
       frameTiming: this.frameTimingProfile(),
       nativeContentMutations: this.zoomNativeContentMutations,
-      frameAttributionSummary
+      frameAttributionSummary,
+      zoomPipelineSummary
     };
     this.logger.zoomProfile(metrics);
     this.rememberZoomGesturePerformance(metrics);
@@ -3791,6 +3851,7 @@ export class ViewerInkSession {
     // the settle timer is the actual quiet-window boundary.
     if (!this.zoomProfile) {
       this.zoomCorrelationId = this.postZoomTrace.begin();
+      this.zoomPipelineTrace.begin(this.zoomCorrelationId, now);
       if (this.logger.isEnabled()) this.zoomFrameDiagnostics.begin(this.zoomCorrelationId);
       this.postZoomDurability.onZoomBegin(this.zoomCorrelationId);
       const seed = this.pinchCleanup.beginBurst();
@@ -3843,6 +3904,10 @@ export class ViewerInkSession {
       });
     }
     this.zoomTickCount += 1;
+    this.zoomPipelineTrace.noteEvent(`zoom-tick-${reason}`);
+    if (reason.includes("scalechanging")) {
+      this.zoomPipelineTrace.noteStage("scalechanging", 0, 1, "scalechanging");
+    }
     if (this.zoomProfile) this.zoomProfile.compositorTicks += 1;
     if (scale !== undefined && (reason.includes("scalechanging") || reason.includes("data-scale"))) {
       this.recordZoomScale(scale, now);
@@ -4660,7 +4725,9 @@ export class ViewerInkSession {
     }
 
     const item = this.zoomSettleQueue.pop()!;
+    const started = performance.now();
     this.paintOneZoomSettlePage(item.page, item.tier);
+    this.recordZoomPipelineFrame(performance.now(), performance.now() - started);
 
     if (this.zoomSettleQueue.length === 0) {
       this.finishZoomSettleSlices();
@@ -4736,15 +4803,27 @@ export class ViewerInkSession {
         }
       }
     }
+    const durationMs = performance.now() - started;
+    if (paintPath === "canonical-vector") {
+      this.zoomPipelineTrace.noteStage("canonical-paint", durationMs, 1, "canonical-paint");
+    } else if (paintPath === "blit-stretch") {
+      this.zoomPipelineTrace.noteStage("ink-blit", durationMs, 1, "settle-blit");
+    }
+    this.zoomPipelineTrace.noteStage("page-maintenance", durationMs, 1, "settle-page");
+    this.zoomPipelineTrace.noteStage("router-maintenance", 0, 1, "settle-router");
+    const canvasResizeCount = this.zoomSettleStats.canvasesResized - resizedBefore;
+    if (canvasResizeCount > 0) {
+      this.zoomPipelineTrace.noteStage("canvas-resize", 0, canvasResizeCount, "canvas-resize");
+    }
     this.logger.zoomComposite("settle-slice", {
       page: pageNumber,
       tier,
       path: paintPath,
-      durationMs: roundMs(performance.now() - started),
+      durationMs: roundMs(durationMs),
       remaining: this.zoomSettleQueue.length,
       pagesRepainted: this.zoomSettleStats.pagesRepainted,
       strokesRedrawn: this.zoomSettleStats.strokesRedrawn - strokesBefore,
-      canvasesResized: this.zoomSettleStats.canvasesResized - resizedBefore,
+      canvasesResized: canvasResizeCount,
       skippedBlitOnly: this.zoomSettleStats.skippedBlitOnly - blitBefore
     });
     this.recordZoomProfileTask(started);
@@ -4754,8 +4833,12 @@ export class ViewerInkSession {
     const burst = this.zoomSettleBurst;
     const stats = this.zoomSettleStats;
     const durationMs = roundMs(performance.now() - this.zoomSettleSliceStartedAt);
+    const toolbarStartedAt = performance.now();
     this.ensureSelectionToolbar();
+    this.zoomPipelineTrace.noteStage("toolbar-refresh", performance.now() - toolbarStartedAt, 1, "selection-toolbar");
+    const cursorStartedAt = performance.now();
     this.refreshSurfaceCursors();
+    this.zoomPipelineTrace.noteStage("cursor-refresh", performance.now() - cursorStartedAt, 1, "settle-cursor-refresh");
     const view = this.options.adapter.getViewState();
     if (durationMs >= this.frameTimingProfile().lateFrameThresholdMs && this.isZoomHandoffActive()) {
       this.logger.zoomFlashProxy("paint-duration-spike", {
@@ -4913,6 +4996,10 @@ export class ViewerInkSession {
   /** Adapter breadcrumb for the native PDF.js canvas/text layer replacement. */
   onPdfPageContentMutation(recordCount: number): void {
     if (this.destroyed) return;
+    this.zoomPipelineTrace.noteEvent("mutation-observer");
+    this.zoomPipelineTrace.noteStage("mutation-observer", 0, 1, "mutation-observer");
+    this.zoomPipelineTrace.noteStage("pdfjs-callback", 0, 1, "canvas-replacement");
+    this.zoomPipelineTrace.noteStage("page-maintenance", 0, Math.max(1, recordCount), "page-content-mutation");
     this.zoomFrameDiagnostics.noteObserverSignal("mutationObserver");
     this.zoomFrameDiagnostics.notePdfSignal("canvasReplacement");
     for (const surface of this.surfaces.values()) {
@@ -6149,6 +6236,9 @@ export class ViewerInkSession {
       ? this.options.adapter.viewerGeneration
       : change.viewerGeneration;
     if (change.viewerGeneration !== adapterGeneration) return;
+    this.zoomPipelineTrace.noteEvent(`pdfjs-${change.kind}`);
+    this.zoomPipelineTrace.noteStage("pdfjs-callback", 0, 1, `pdfjs-${change.kind}`);
+    this.zoomPipelineTrace.noteStage("page-maintenance", 0, 1, `page-${change.kind}`);
     this.zoomFrameDiagnostics.notePdfSignal(change.kind === "render" ? "pagerendered" : "pagesMutation");
     if (change.kind === "viewer-replaced") {
       this.onPagesChanged("viewer-replaced");
@@ -6162,12 +6252,22 @@ export class ViewerInkSession {
       ? this.options.adapter.viewerGeneration
       : change.viewerGeneration;
     if (change.viewerGeneration !== adapterGeneration) return;
+    if (change.phase !== "settled") {
+      this.zoomPipelineTrace.noteEvent("scalechanging");
+      this.zoomPipelineTrace.noteStage("scalechanging", 0, 1, "scalechanging");
+    }
     const source: ViewStateSource = change.phase === "settled" ? "data-scale" : "scalechanging";
     this.onViewStateChange(this.options.adapter.getViewState(), source);
   }
 
   onViewStateChange(state: AnnotationViewState, source: ViewStateSource): void {
-    if (source === "scalechanging") this.zoomFrameDiagnostics.notePdfSignal("scalechanging");
+    this.zoomPipelineTrace.noteEvent(`view-state-${source}`);
+    this.zoomPipelineTrace.noteStage("view-state", 0, 1, `view-state-${source}`);
+    if (source === "scalechanging") {
+      this.zoomPipelineTrace.noteEvent("scalechanging");
+      this.zoomPipelineTrace.noteStage("scalechanging", 0, 1, "scalechanging");
+      this.zoomFrameDiagnostics.notePdfSignal("scalechanging");
+    }
     this.logger.viewState(state, source);
     if (this.zoomProfile) {
       if (source === "scroll") this.zoomProfile.scrollEvents += 1;
@@ -6512,6 +6612,7 @@ export class ViewerInkSession {
       performanceSlowSpanSummary: this.slowSpans.summary(),
       slowInkStrokeSummary: this.slowSpans.slowInkStrokeSummary(),
       frameAttributionSummary: this.lastZoomFrameAttributionSummary ?? this.zoomFrameDiagnostics.summary(),
+      zoomPipelineSummary: this.lastZoomPipelineSummary ?? this.zoomPipelineTrace.summary(),
       lastZoomGesturePerformance: this.recentZoomGesturePerformance.map((entry) => ({ ...entry })),
       lastInkStrokeGeometry: this.recentInkStrokeGeometry.slice(),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke(),
@@ -12895,6 +12996,7 @@ export class ViewerInkSession {
   private captureInkLayerFromCanvas(surface: PageSurface): void {
     if (surface.inkLayerValid && surface.inkLayer) return;
     if (!surface.canvas.width || !surface.canvas.height) return;
+    const traceStartedAt = this.zoomPipelineTrace.isActive() ? performance.now() : null;
     const layout = this.pageLayout(surface);
     const rect = surface.overlay.getBoundingClientRect();
     const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
@@ -12912,6 +13014,9 @@ export class ViewerInkSession {
     // Raster warm — must not satisfy blit-only settle (needs vector restamp).
     surface.inkLayerBurstCapture = true;
     surface.inkLayerBackingScale = null;
+    if (traceStartedAt !== null) {
+      this.zoomPipelineTrace.noteStage("ink-capture", performance.now() - traceStartedAt, 1, "ink-layer-capture");
+    }
   }
 
   /** Copy committed bitmap before canvas/layer resize clears pixels. */
@@ -12936,12 +13041,16 @@ export class ViewerInkSession {
     backingScale: number
   ): void {
     if (!surface.inkLayer) return;
+    const traceStartedAt = this.zoomPipelineTrace.isActive() ? performance.now() : null;
     if (this.zoomProfile) this.zoomProfile.bitmapBlits += 1;
     surface.context.setTransform(1, 0, 0, 1, 0, 0);
     surface.context.clearRect(0, 0, pixelWidth, pixelHeight);
     surface.context.imageSmoothingEnabled = false;
     surface.context.drawImage(surface.inkLayer, 0, 0);
     surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+    if (traceStartedAt !== null) {
+      this.zoomPipelineTrace.noteStage("ink-blit", performance.now() - traceStartedAt, 1, "ink-layer-blit");
+    }
   }
 
   /** Durable proof that the final zoom surface is canonical, PDF-space ink. */
