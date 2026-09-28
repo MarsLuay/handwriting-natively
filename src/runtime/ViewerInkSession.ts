@@ -8878,7 +8878,10 @@ export class ViewerInkSession {
   ): void {
     if (!this.shouldFallbackRoutePointer(event)) return;
     const targetWithin = within(event.target);
-    if (isInputChromeTarget(event.target)) return;
+    if (isInputChromeTarget(event.target)) {
+      this.logFallbackSkip("input-chrome", event, { via: "capture" });
+      return;
+    }
     if (this.skipOccludedPointer(event, hitTest)) return;
     let hitPage = this.closestPdfPageElement(event.target);
     const penPage = event.pointerType === "pen" && !hitTest.pageOccludedByUi
@@ -9003,7 +9006,10 @@ export class ViewerInkSession {
       if (this.wasDrawPointerHandled(event.pointerId, liveGeneration)) return;
     } else if (this.wasDrawPointerHandled(event.pointerId)) return;
     const targetWithin = within(event.target);
-    if (isInputChromeTarget(event.target)) return;
+    if (isInputChromeTarget(event.target)) {
+      this.logFallbackSkip("input-chrome", event, { via: "bubble" });
+      return;
+    }
     if (this.skipOccludedPointer(event, hitTest)) return;
     let hitPage = this.closestPdfPageElement(event.target);
     const penPage = event.pointerType === "pen" && !hitTest.pageOccludedByUi
