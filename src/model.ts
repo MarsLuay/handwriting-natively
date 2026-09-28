@@ -207,6 +207,8 @@ export interface PluginSettings {
   hideStylusAnnotationLabel: boolean;
   /** Mobile-only opt-in to suppress Obsidian's one-finger sidebar swipe. */
   disableSidebarSwipe: boolean;
+  /** Mobile-only opt-in to suppress Obsidian's downward search-bar swipe. */
+  disableSearchBarSwipe: boolean;
   toolbarPlacement: ToolbarPlacement;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
@@ -305,6 +307,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   boostedPdfZoom: false,
   hideStylusAnnotationLabel: false,
   disableSidebarSwipe: false,
+  disableSearchBarSwipe: false,
   toolbarPlacement: "main",
   vaultDebugLog: false,
   vaultDebugLogPath,
@@ -393,6 +396,7 @@ export function mergeSettings(
     boostedPdfZoom: cleaned.boostedPdfZoom === true,
     hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,
     disableSidebarSwipe: cleaned.disableSidebarSwipe === true,
+    disableSearchBarSwipe: cleaned.disableSearchBarSwipe === true,
     pressureProfile: pressureProfile === "pen" || pressureProfile === "mouse" || pressureProfile === "auto"
       ? pressureProfile
       : defaults.pressureProfile,

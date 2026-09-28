@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  classifySearchBarSwipe,
   classifySidebarSwipe,
   MobileSidebarSwipeBlocker
 } from "../src/input/MobileSidebarSwipeBlocker";
@@ -36,6 +37,13 @@ describe("MobileSidebarSwipeBlocker", () => {
     expect(classifySidebarSwipe(10, 10, 17, 10)).toBeNull();
   });
 
+  it("classifies only a downward top-edge gesture as a search-bar swipe", () => {
+    expect(classifySearchBarSwipe(100, 20, 104, 60)).toBe(true);
+    expect(classifySearchBarSwipe(100, 60, 104, 100)).toBe(false);
+    expect(classifySearchBarSwipe(100, 20, 150, 30)).toBe(false);
+    expect(classifySearchBarSwipe(100, 20, 104, 5)).toBe(false);
+  });
+
   it("blocks a one-finger swipe toward a closed left sidebar", () => {
     const blocker = new MobileSidebarSwipeBlocker(document);
     blocker.setEnabled(true);
@@ -60,6 +68,22 @@ describe("MobileSidebarSwipeBlocker", () => {
     const allowedMove = touchEvent("touchmove", [touch(2, 840, 108)]);
     document.dispatchEvent(allowedMove);
     expect(allowedMove.defaultPrevented).toBe(false);
+    blocker.destroy();
+  });
+
+  it("blocks the opt-in top-edge search-bar swipe without blocking page scrolling", () => {
+    const blocker = new MobileSidebarSwipeBlocker(document);
+    blocker.setEnabled(false, true);
+
+    document.dispatchEvent(touchEvent("touchstart", [touch(1, 100, 20)]));
+    const searchMove = touchEvent("touchmove", [touch(1, 104, 70)]);
+    document.dispatchEvent(searchMove);
+    expect(searchMove.defaultPrevented).toBe(true);
+
+    document.dispatchEvent(touchEvent("touchstart", [touch(2, 100, 100)]));
+    const pageScroll = touchEvent("touchmove", [touch(2, 104, 180)]);
+    document.dispatchEvent(pageScroll);
+    expect(pageScroll.defaultPrevented).toBe(false);
     blocker.destroy();
   });
 
