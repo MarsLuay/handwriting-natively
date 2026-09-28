@@ -1,7 +1,11 @@
 import { createDetachedDiv } from "../vendor/createDetached";
 import { isElement, isHTMLElement } from "../dom/typeGuards";
 import type { ViewStateSource } from "../logging/SessionLogger";
-import type { AnnotationPageLifecycleChange, AnnotationZoomChange } from "../runtime/AnnotationSurface";
+import type {
+  AnnotationPageContentMutation,
+  AnnotationPageLifecycleChange,
+  AnnotationZoomChange
+} from "../runtime/AnnotationSurface";
 import type { ToolbarPlacement } from "../model";
 import type { ObsidianPdfAdapter, PdfAdapterCallbacks, PdfViewState } from "./ObsidianPdfAdapter";
 import { PdfPageLocator, type PdfPageInfo } from "./PdfPageLocator";
@@ -96,6 +100,9 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private static readonly RESIZE_DELTA_GATE_PX = 0.5;
   private pageContentMutationFrame: number | null = null;
   private pendingPageContentMutationRecords = 0;
+  private readonly pendingPageContentMutationPages = new Set<number>();
+  private pendingPageContentMutationFirstSignalAt: number | null = null;
+  private pendingPageContentMutationLastSignalAt: number | null = null;
   private readonly sidebarResizeSnapshots = new WeakMap<Element, { width: number; height: number }>();
 
   protected constructor(
@@ -157,11 +164,16 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     });
     this.callbacks.onPageLifecycleChange?.({
       kind: "viewer-replaced",
-      viewerGeneration: this.currentViewerGeneration
+      viewerGeneration: this.currentViewerGeneration,
+      signalAt: this.now()
     });
   }
 
-  private emitPageLifecycle(kind: AnnotationPageLifecycleChange["kind"], pageNumbers?: number[]): void {
+  private emitPageLifecycle(
+    kind: AnnotationPageLifecycleChange["kind"],
+    pageNumbers?: number[],
+    signalAt = this.now()
+  ): void {
     const pages = this.pages().slice(0, 64);
     const numbers = (pageNumbers ?? pages.map((page) => page.pageNumber)).slice(0, 64);
     const mountGenerations: Record<string, number> = {};
@@ -173,6 +185,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.callbacks.onPageLifecycleChange?.({
       kind,
       viewerGeneration: this.currentViewerGeneration,
+      signalAt,
       pageNumbers: numbers,
       mountGenerations
     });
@@ -892,6 +905,9 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       this.pageContentMutationFrame = null;
     }
     this.pendingPageContentMutationRecords = 0;
+    this.pendingPageContentMutationPages.clear();
+    this.pendingPageContentMutationFirstSignalAt = null;
+    this.pendingPageContentMutationLastSignalAt = null;
     this.sidebarFollowUntil = 0;
     for (const cleanup of this.cleanup.splice(0).reverse()) cleanup();
     for (const element of this.mounted) element.remove();
@@ -903,15 +919,23 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
    * next paint. Reconcile once per display frame so the session does not repeat
    * page scans and router checks for intermediate DOM states.
    */
-  private queuePageContentMutation(recordCount: number): void {
-    if (this.destroyed || !this.callbacks.onPageContentMutation) return;
+  private queuePageContentMutation(recordCount: number, pageNumbers: number[], signalAt = this.now()): void {
+    if (this.destroyed || (!this.callbacks.onPageContentMutation && !this.callbacks.onPageContentMutationTrace)) return;
     this.pendingPageContentMutationRecords += recordCount;
+    for (const pageNumber of pageNumbers) {
+      if (this.pendingPageContentMutationPages.size >= 64) break;
+      if (Number.isFinite(pageNumber) && pageNumber > 0) this.pendingPageContentMutationPages.add(Math.floor(pageNumber));
+    }
+    this.pendingPageContentMutationFirstSignalAt ??= signalAt;
+    this.pendingPageContentMutationLastSignalAt = signalAt;
     if (this.pageContentMutationFrame !== null) return;
     const view = this.host.ownerDocument.defaultView;
     if (!view) {
       const records = this.pendingPageContentMutationRecords;
       this.pendingPageContentMutationRecords = 0;
-      this.callbacks.onPageContentMutation(records);
+      const trace = this.pageContentMutationTrace(records);
+      this.callbacks.onPageContentMutation?.(records);
+      this.callbacks.onPageContentMutationTrace?.(trace);
       return;
     }
     this.pageContentMutationFrame = view.requestAnimationFrame(() => {
@@ -920,13 +944,44 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       const records = this.pendingPageContentMutationRecords;
       this.pendingPageContentMutationRecords = 0;
       if (!records) return;
+      const trace = this.pageContentMutationTrace(records);
       const operation = this.layoutTrace.start("page-content-callback", "mutation");
       try {
         this.callbacks.onPageContentMutation?.(records);
+        this.callbacks.onPageContentMutationTrace?.(trace);
       } finally {
         this.reportLayoutResult(operation.finish());
       }
     });
+  }
+
+  private pageContentMutationTrace(recordCount: number): AnnotationPageContentMutation {
+    const now = this.now();
+    const firstSignalAt = this.pendingPageContentMutationFirstSignalAt ?? now;
+    const lastSignalAt = this.pendingPageContentMutationLastSignalAt ?? firstSignalAt;
+    const pageNumbers = [...this.pendingPageContentMutationPages].sort((left, right) => left - right).slice(0, 64);
+    const pages = this.pages().slice(0, 64);
+    const mountGenerations: Record<string, number> = {};
+    for (const page of pages) {
+      if (pageNumbers.includes(page.pageNumber) && page.mountGeneration !== undefined) {
+        mountGenerations[String(page.pageNumber)] = page.mountGeneration;
+      }
+    }
+    this.pendingPageContentMutationPages.clear();
+    this.pendingPageContentMutationFirstSignalAt = null;
+    this.pendingPageContentMutationLastSignalAt = null;
+    return {
+      recordCount,
+      pageNumbers,
+      viewerGeneration: this.currentViewerGeneration,
+      mountGenerations,
+      firstSignalAt,
+      lastSignalAt
+    };
+  }
+
+  private now(): number {
+    return this.host.ownerDocument.defaultView?.performance.now() ?? Date.now();
   }
 
   private listen(): void {
@@ -950,6 +1005,8 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       let rotationChanged = false;
       let pageStructureRecords = 0;
       let ignoredPageContentRecords = 0;
+      const ignoredPageContentPages = new Set<number>();
+      const mutationAt = this.now();
       for (const record of records) {
         // A PDF.js page may replace all of its inner children, including our
         // overlay, while keeping the outer `.page` node. The removed overlay
@@ -966,6 +1023,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
             pageStructureRecords += 1;
           } else {
             ignoredPageContentRecords += 1;
+            for (const pageNumber of this.pageNumbersForMutation(record)) ignoredPageContentPages.add(pageNumber);
           }
           continue;
         }
@@ -976,7 +1034,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       }
       if (ignoredPageContentRecords) {
         this.logIgnoredPageContentMutations(ignoredPageContentRecords);
-        this.queuePageContentMutation(ignoredPageContentRecords);
+        this.queuePageContentMutation(ignoredPageContentRecords, [...ignoredPageContentPages], mutationAt);
       }
       if (childListChanged) {
         this.logPageStructureMutations(pageStructureRecords, scaleChanged, rotationChanged);
@@ -1033,7 +1091,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
           && typeof (payload as { pageNumber?: unknown }).pageNumber === "number"
           ? (payload as { pageNumber: number }).pageNumber
           : undefined;
-        this.emitPageLifecycle(kind, pageNumber !== undefined ? [pageNumber] : undefined);
+        this.emitPageLifecycle(kind, pageNumber !== undefined ? [pageNumber] : undefined, this.now());
       };
       eventBus?.on?.(event, handler);
       this.registerCleanup(() => eventBus?.off?.(event, handler));
@@ -1047,6 +1105,22 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     }
     if (record.type !== "childList") return false;
     return [...record.addedNodes, ...record.removedNodes].some((node) => !this.isInternalNode(node));
+  }
+
+  private pageNumbersForMutation(record: MutationRecord): number[] {
+    const candidates: Element[] = [];
+    if (isElement(record.target)) candidates.push(record.target);
+    for (const node of [...record.addedNodes, ...record.removedNodes]) {
+      if (isElement(node)) candidates.push(node);
+      else if (isElement(node.parentElement)) candidates.push(node.parentElement);
+    }
+    const pageNumbers = new Set<number>();
+    for (const candidate of candidates) {
+      const page = candidate.closest(PDF_PAGE_SELECTOR);
+      const pageNumber = Number(page?.getAttribute("data-page-number"));
+      if (Number.isFinite(pageNumber) && pageNumber > 0) pageNumbers.add(Math.floor(pageNumber));
+    }
+    return [...pageNumbers].sort((left, right) => left - right).slice(0, 64);
   }
 
   /** Only a page node (or a wrapper containing one) needs overlay reconciliation. */

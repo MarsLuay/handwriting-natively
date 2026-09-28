@@ -3,6 +3,7 @@ import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
 import {
   annotationPageMountMatches,
   annotationPageSafetyReason,
+  type AnnotationPageContentMutation,
   type AnnotationPageLifecycleChange,
   type AnnotationSurface,
   type AnnotationPageInfo,
@@ -116,6 +117,11 @@ import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../lo
 import { BoundedTiming, EffectiveFrameBudget, type RuntimeFrameProfile, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
 import { ZoomFrameDiagnostics, type FrameAttributionSummary } from "./ZoomFrameDiagnostics";
 import { ZoomPipelineTrace, type ZoomPipelineSummary } from "./ZoomPipelineTrace";
+import {
+  ZoomNativeHandoffTrace,
+  type NativeHandoffPhase,
+  type ZoomNativeHandoffSummary
+} from "./ZoomNativeHandoffTrace";
 import type { VaultLogSink } from "../logging/VaultLogSink";
 import type { AnnotationViewState } from "./AnnotationSurface";
 import { describeScrollElement, scrollPdfByDetailed } from "../integration/PdfScrollRoot";
@@ -1032,12 +1038,14 @@ export class ViewerInkSession {
   private readonly frameBudget: EffectiveFrameBudget;
   private readonly zoomFrameDiagnostics: ZoomFrameDiagnostics;
   private readonly zoomPipelineTrace: ZoomPipelineTrace;
+  private readonly zoomNativeHandoffTrace: ZoomNativeHandoffTrace;
   private frameProfileRaf: number | null = null;
   private frameProfileTimer: number | null = null;
   private static readonly FRAME_PROFILE_IDLE_SAMPLE_COUNT = 24;
   private static readonly FRAME_PROFILE_IDLE_RESAMPLE_MS = 15_000;
   private lastZoomFrameAttributionSummary: FrameAttributionSummary | null = null;
   private lastZoomPipelineSummary: ZoomPipelineSummary | null = null;
+  private lastZoomNativeHandoffSummary: ZoomNativeHandoffSummary | null = null;
   private readonly openInkStrokeGeometry = new Map<number, OpenInkStrokeGeometry>();
   private readonly recentInkStrokeGeometry: InkStrokeGeometryRecord[] = [];
   private settleWaitStartedAt = 0;
@@ -1217,6 +1225,7 @@ export class ViewerInkSession {
     this.frameBudget = new EffectiveFrameBudget(this.frameTimingEnvironment());
     this.zoomFrameDiagnostics = new ZoomFrameDiagnostics(undefined, this.frameBudget);
     this.zoomPipelineTrace = new ZoomPipelineTrace({ enabled: () => this.logger.isEnabled() });
+    this.zoomNativeHandoffTrace = new ZoomNativeHandoffTrace();
     this.ink = new InkSession([], (event) => this.recordInkLifecycle(event));
     this.textToolActive = options.settings.toolPreferences.activeTool === "text";
     this.lastObservedTool = options.settings.toolPreferences.activeTool;
@@ -1385,10 +1394,25 @@ export class ViewerInkSession {
     this.resizeObserver = typeof ResizeObserver === "undefined"
       ? null
       : new ResizeObserver(() => {
-        this.zoomPipelineTrace.noteEvent("resize-observer");
-        this.zoomPipelineTrace.noteStage("resize-observer", 0, 1, "resize-observer");
-        this.zoomFrameDiagnostics.noteObserverSignal("resizeObserver");
-        this.handleRootResize();
+        const callbackStartedAt = performance.now();
+        try {
+          this.zoomPipelineTrace.noteEvent("resize-observer");
+          this.zoomPipelineTrace.noteStage("resize-observer", 0, 1, "resize-observer");
+          this.zoomFrameDiagnostics.noteObserverSignal("resizeObserver");
+          this.handleRootResize();
+        } finally {
+          this.zoomNativeHandoffTrace.noteSignal({
+            name: "resizeObserver",
+            signalAt: callbackStartedAt,
+            callbackAt: callbackStartedAt,
+            callbackWorkMs: performance.now() - callbackStartedAt,
+            pageNumbers: this.options.adapter.pages().map((page) => page.pageNumber).slice(0, 64),
+            viewerGeneration: "viewerGeneration" in this.options.adapter
+              ? this.options.adapter.viewerGeneration
+              : undefined,
+            phase: this.nativeHandoffPhase()
+          });
+        }
       });
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
@@ -3754,7 +3778,8 @@ export class ViewerInkSession {
       frameTiming: this.frameTimingProfile(),
       nativeContentMutations: this.zoomNativeContentMutations,
       frameAttributionSummary,
-      zoomPipelineSummary
+      zoomPipelineSummary,
+      zoomNativeHandoffSummary: this.zoomNativeHandoffTrace.summary()
     };
     this.logger.zoomProfile(metrics);
     this.rememberZoomGesturePerformance(metrics);
@@ -3852,7 +3877,10 @@ export class ViewerInkSession {
     if (!this.zoomProfile) {
       this.zoomCorrelationId = this.postZoomTrace.begin();
       this.zoomPipelineTrace.begin(this.zoomCorrelationId, now);
-      if (this.logger.isEnabled()) this.zoomFrameDiagnostics.begin(this.zoomCorrelationId);
+      if (this.logger.isEnabled()) {
+        this.zoomNativeHandoffTrace.begin(this.zoomCorrelationId, now);
+        this.zoomFrameDiagnostics.begin(this.zoomCorrelationId);
+      }
       this.postZoomDurability.onZoomBegin(this.zoomCorrelationId);
       const seed = this.pinchCleanup.beginBurst();
       for (const prune of seed.pruned) this.logger.stalePinchContact({ ...prune });
@@ -4948,6 +4976,17 @@ export class ViewerInkSession {
     return false;
   }
 
+  private finishZoomNativeHandoffTrace(): void {
+    const summary = this.zoomNativeHandoffTrace.finish();
+    if (summary) this.lastZoomNativeHandoffSummary = summary;
+  }
+
+  private nativeHandoffPhase(): NativeHandoffPhase {
+    if (this.zoomCompositing) return "active-pinch";
+    if (this.isZoomHandoffActive()) return "handoff";
+    return "settled";
+  }
+
   private hasZoomCompositingClass(): boolean {
     for (const surface of this.surfaces.values()) {
       if (surface.overlay.classList.contains("native-pdf-handwriting-zoom-compositing")) return true;
@@ -4987,6 +5026,11 @@ export class ViewerInkSession {
         this.zoomCompositeReleaseFrame = view.requestAnimationFrame(() => {
           this.zoomCompositeReleaseFrame = null;
           if (this.destroyed || this.zoomCompositing) return;
+          this.zoomNativeHandoffTrace.noteStableRaf({
+            at: performance.now(),
+            compositorHeld: this.isZoomHandoffActive(),
+            phase: this.nativeHandoffPhase()
+          });
           this.releaseZoomCompositeLayers();
         });
       });
@@ -4994,8 +5038,42 @@ export class ViewerInkSession {
   }
 
   /** Adapter breadcrumb for the native PDF.js canvas/text layer replacement. */
-  onPdfPageContentMutation(recordCount: number): void {
+  onPdfPageContentMutation(change: number | AnnotationPageContentMutation): void {
     if (this.destroyed) return;
+    const callbackStartedAt = performance.now();
+    const recordCount = typeof change === "number" ? change : change.recordCount;
+    const pageNumbers = typeof change === "number"
+      ? this.options.adapter.pages().map((page) => page.pageNumber).slice(0, 64)
+      : change.pageNumbers;
+    const viewerGeneration = typeof change === "number"
+      ? ("viewerGeneration" in this.options.adapter ? this.options.adapter.viewerGeneration : 0)
+      : change.viewerGeneration;
+    const mountGenerations = typeof change === "number" ? {} : change.mountGenerations;
+    const firstSignalAt = typeof change === "number" ? callbackStartedAt : change.firstSignalAt;
+    const lastSignalAt = typeof change === "number" ? callbackStartedAt : change.lastSignalAt;
+    const noteNativeReplacementTrace = (): void => {
+      const callbackWorkMs = performance.now() - callbackStartedAt;
+      this.zoomNativeHandoffTrace.noteSignal({
+        name: "canvasReplacement",
+        signalAt: firstSignalAt,
+        callbackAt: callbackStartedAt,
+        pageNumbers,
+        viewerGeneration,
+        mountGenerations,
+        replacementRecordCount: recordCount,
+        phase: this.nativeHandoffPhase()
+      });
+      this.zoomNativeHandoffTrace.noteSignal({
+        name: "mutationObserver",
+        signalAt: lastSignalAt,
+        callbackAt: callbackStartedAt,
+        callbackWorkMs,
+        pageNumbers,
+        viewerGeneration,
+        mountGenerations,
+        phase: this.nativeHandoffPhase()
+      });
+    };
     this.zoomPipelineTrace.noteEvent("mutation-observer");
     this.zoomPipelineTrace.noteStage("mutation-observer", 0, 1, "mutation-observer");
     this.zoomPipelineTrace.noteStage("pdfjs-callback", 0, 1, "canvas-replacement");
@@ -5075,7 +5153,10 @@ export class ViewerInkSession {
     // A native redraw can remove our overlay even after the compositor's
     // handoff. Recover that rare case without treating every canvas/text-layer
     // update as a page remount (which was the source of zoom flashing).
-    if (!handoffGuard && !reattached) return;
+    if (!handoffGuard && !reattached) {
+      noteNativeReplacementTrace();
+      return;
+    }
     const now = performance.now();
     if (releasePending || settleSlicesPending) {
       this.zoomNativeContentMutations += recordCount;
@@ -5109,6 +5190,7 @@ export class ViewerInkSession {
     }
     // Only arm release after settle slices finished (releasePending from finish).
     if (releasePending && !this.zoomCompositing) this.releaseZoomCompositeAfterNativeRender();
+    noteNativeReplacementTrace();
   }
 
   /**
@@ -5144,6 +5226,11 @@ export class ViewerInkSession {
       if (view) {
         this.zoomCompositeReleaseFrame = view.requestAnimationFrame(() => {
           this.zoomCompositeReleaseFrame = null;
+          this.zoomNativeHandoffTrace.noteStableRaf({
+            at: performance.now(),
+            compositorHeld: this.isZoomHandoffActive(),
+            phase: this.nativeHandoffPhase()
+          });
           this.releaseZoomCompositeLayers();
         });
         return;
@@ -5167,11 +5254,24 @@ export class ViewerInkSession {
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (view) {
       view.requestAnimationFrame(() => {
+        this.zoomNativeHandoffTrace.noteStableRaf({
+          at: performance.now(),
+          compositorHeld: this.isZoomHandoffActive(),
+          phase: this.nativeHandoffPhase()
+        });
         this.recordInkVisibility("post-composite-release-frame-1");
         view.requestAnimationFrame(() => {
+          this.zoomNativeHandoffTrace.noteStableRaf({
+            at: performance.now(),
+            compositorHeld: this.isZoomHandoffActive(),
+            phase: this.nativeHandoffPhase()
+          });
           this.recordInkVisibility("post-composite-release-frame-2");
+          this.finishZoomNativeHandoffTrace();
         });
       });
+    } else {
+      this.finishZoomNativeHandoffTrace();
     }
     const heldAfterSettleMs = this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null;
     this.logger.zoomComposite("release", {
@@ -6236,15 +6336,31 @@ export class ViewerInkSession {
       ? this.options.adapter.viewerGeneration
       : change.viewerGeneration;
     if (change.viewerGeneration !== adapterGeneration) return;
-    this.zoomPipelineTrace.noteEvent(`pdfjs-${change.kind}`);
-    this.zoomPipelineTrace.noteStage("pdfjs-callback", 0, 1, `pdfjs-${change.kind}`);
-    this.zoomPipelineTrace.noteStage("page-maintenance", 0, 1, `page-${change.kind}`);
-    this.zoomFrameDiagnostics.notePdfSignal(change.kind === "render" ? "pagerendered" : "pagesMutation");
-    if (change.kind === "viewer-replaced") {
-      this.onPagesChanged("viewer-replaced");
-      return;
+    const callbackStartedAt = performance.now();
+    try {
+      this.zoomPipelineTrace.noteEvent(`pdfjs-${change.kind}`);
+      this.zoomPipelineTrace.noteStage("pdfjs-callback", 0, 1, `pdfjs-${change.kind}`);
+      this.zoomPipelineTrace.noteStage("page-maintenance", 0, 1, `page-${change.kind}`);
+      this.zoomFrameDiagnostics.notePdfSignal(change.kind === "render" ? "pagerendered" : "pagesMutation");
+      if (change.kind === "viewer-replaced") {
+        this.onPagesChanged("viewer-replaced");
+        return;
+      }
+      this.onPagesChanged(`page-${change.kind}`);
+    } finally {
+      if (change.kind === "render") {
+        this.zoomNativeHandoffTrace.noteSignal({
+          name: "pagerendered",
+          signalAt: change.signalAt ?? callbackStartedAt,
+          callbackAt: callbackStartedAt,
+          callbackWorkMs: performance.now() - callbackStartedAt,
+          pageNumbers: change.pageNumbers,
+          viewerGeneration: change.viewerGeneration,
+          mountGenerations: change.mountGenerations,
+          phase: this.nativeHandoffPhase()
+        });
+      }
     }
-    this.onPagesChanged(`page-${change.kind}`);
   }
 
   onZoomChange(change: AnnotationZoomChange): void {
@@ -6613,6 +6729,7 @@ export class ViewerInkSession {
       slowInkStrokeSummary: this.slowSpans.slowInkStrokeSummary(),
       frameAttributionSummary: this.lastZoomFrameAttributionSummary ?? this.zoomFrameDiagnostics.summary(),
       zoomPipelineSummary: this.lastZoomPipelineSummary ?? this.zoomPipelineTrace.summary(),
+      zoomNativeHandoffSummary: this.lastZoomNativeHandoffSummary ?? this.zoomNativeHandoffTrace.summary(),
       lastZoomGesturePerformance: this.recentZoomGesturePerformance.map((entry) => ({ ...entry })),
       lastInkStrokeGeometry: this.recentInkStrokeGeometry.slice(),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke(),
@@ -8182,6 +8299,7 @@ export class ViewerInkSession {
     this.releaseZoomCompositeLayers();
     this.setAdapterInkZoomBurstActive(false);
     this.finishZoomProfile();
+    this.finishZoomNativeHandoffTrace();
     this.syncAnnotationCursorMode(true);
     this.resizeObserver?.disconnect();
     for (const surface of this.surfaces.values()) {
