@@ -37,7 +37,7 @@ export interface IpadInputTraceEvent {
 }
 
 export interface IpadInputTraceSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 2;
   platform: "ipad";
   active: boolean;
   startedAt: number | null;
@@ -55,6 +55,7 @@ export interface IpadInputTraceSnapshot {
     propagationStoppedObserved: number;
     pointerTouchOverlapEvents: number;
     touchActionValues: string[];
+    touchActionStyleReads: number;
     lifecycleEvents: number;
     scribbleEvents: number;
     lastSequence: number;
@@ -71,6 +72,7 @@ type TraceListener = {
 const MAX_EVENTS = 256;
 const MAX_IDS = 16;
 const MAX_CLASSES = 8;
+const HIGH_FREQUENCY_EVENT_TYPES = new Set(["pointermove", "touchmove"]);
 
 export class IpadPointerTouchTrace {
   private static readonly shared = new WeakMap<Document, { trace: IpadPointerTouchTrace; references: number }>();
@@ -95,6 +97,8 @@ export class IpadPointerTouchTrace {
   private readonly pointerIds = new Set<number>();
   private readonly touchIdentifiers = new Set<number>();
   private readonly touchActionValues = new Set<string>();
+  private readonly touchActionByTarget = new WeakMap<Element, string | null>();
+  private readonly targetSnapshots = new WeakMap<Element, NonNullable<IpadInputTraceEvent["targetClass"]>>();
   private startedAt: number | null = null;
   private stoppedAt: number | null = null;
   private sequence = 0;
@@ -103,6 +107,7 @@ export class IpadPointerTouchTrace {
   private defaultPreventedObserved = 0;
   private propagationStoppedObserved = 0;
   private pointerTouchOverlapEvents = 0;
+  private touchActionStyleReads = 0;
   private lifecycleEvents = 0;
   private scribbleEvents = 0;
   private attached = false;
@@ -116,13 +121,18 @@ export class IpadPointerTouchTrace {
     this.stoppedAt = null;
     const view = this.document.defaultView;
     const pointerEvents = [
-      "pointerover", "pointerenter", "pointerdown", "pointermove", "pointerup",
-      "pointercancel", "pointerout", "pointerleave", "lostpointercapture"
+      "pointerdown", "pointermove", "pointerup", "pointercancel", "lostpointercapture"
     ];
+    const pointerBoundaryEvents = ["pointerover", "pointerenter", "pointerout", "pointerleave"];
     const touchEvents = ["touchstart", "touchmove", "touchend", "touchcancel"];
     const lifecycleEvents = ["visibilitychange", "pagehide", "pageshow", "orientationchange", "resize"];
     const gestureEvents = ["gesturestart", "gesturechange", "gestureend"];
     for (const type of pointerEvents) this.bind(this.document, type, (event) => this.record(event, "pointer"));
+    // Boundary/hover events are frequent and do not affect contact routing.
+    // Keep their counts for diagnosis without allocating a full event snapshot.
+    for (const type of pointerBoundaryEvents) {
+      this.bind(this.document, type, (event) => this.recordPointerBoundary(event));
+    }
     for (const type of touchEvents) this.bind(this.document, type, (event) => this.record(event, "touch"));
     for (const type of ["beforeinput", "input", "compositionstart", "compositionupdate", "compositionend"]) {
       this.bind(this.document, type, (event) => this.record(event, "scribble"));
@@ -156,7 +166,7 @@ export class IpadPointerTouchTrace {
 
   snapshot(): IpadInputTraceSnapshot {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       platform: "ipad",
       active: this.attached,
       startedAt: this.startedAt,
@@ -174,6 +184,7 @@ export class IpadPointerTouchTrace {
         propagationStoppedObserved: this.propagationStoppedObserved,
         pointerTouchOverlapEvents: this.pointerTouchOverlapEvents,
         touchActionValues: [...this.touchActionValues].slice(0, MAX_IDS),
+        touchActionStyleReads: this.touchActionStyleReads,
         lifecycleEvents: this.lifecycleEvents,
         scribbleEvents: this.scribbleEvents,
         lastSequence: this.sequence
@@ -186,6 +197,15 @@ export class IpadPointerTouchTrace {
     const options: AddEventListenerOptions = { capture: true, passive: true };
     target.addEventListener(type, listener, options);
     this.listeners.push({ target, type, listener, options });
+  }
+
+  private recordPointerBoundary(event: Event): void {
+    const pointer = event as PointerEvent;
+    this.sequence += 1;
+    increment(this.eventTypes, event.type);
+    const pointerType = pointer.pointerType || "(empty)";
+    increment(this.pointerTypes, pointerType);
+    if (typeof pointer.pointerId === "number") rememberBoundedId(this.pointerIds, pointer.pointerId);
   }
 
   private record(event: Event, source: IpadInputTraceEvent["source"]): void {
@@ -217,8 +237,9 @@ export class IpadPointerTouchTrace {
         if (event.type === "touchend" || event.type === "touchcancel") this.activeTouchIdentifiers.delete(identifier);
       }
     }
-    const touchAction = target?.ownerDocument.defaultView?.getComputedStyle(target).touchAction ?? null;
+    const touchAction = this.touchActionFor(target, event.type);
     if (touchAction) this.touchActionValues.add(touchAction);
+    const targetClass = target ? this.targetSnapshotFor(target, event.type) : null;
     const pointerCapture = pointerEvent && target instanceof Element
       ? safeHasPointerCapture(target, pointer.pointerId)
       : null;
@@ -244,13 +265,7 @@ export class IpadPointerTouchTrace {
       buttons: pointerEvent ? pointer.buttons : null,
       pressure: pointerEvent ? finite(pointer.pressure) : null,
       pointerCapture,
-      targetClass: target ? {
-        tag: target.tagName.toLowerCase(),
-        id: target.id || null,
-        classes: [...target.classList].slice(0, MAX_CLASSES),
-        role: target.getAttribute("role"),
-        contentEditable: target instanceof HTMLElement && target.isContentEditable
-      } : null,
+      targetClass,
       touchIdentifiers,
       changedTouchIdentifiers,
       activePointerIds: [...this.activePointerIds].slice(0, MAX_IDS),
@@ -263,6 +278,34 @@ export class IpadPointerTouchTrace {
     };
     this.events.push(record);
     if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
+  }
+
+  private touchActionFor(target: Element | null, eventType: string): string | null {
+    if (!target) return null;
+    const hasCached = this.touchActionByTarget.has(target);
+    if (HIGH_FREQUENCY_EVENT_TYPES.has(eventType) && hasCached) {
+      return this.touchActionByTarget.get(target) ?? null;
+    }
+    const touchAction = target.ownerDocument.defaultView?.getComputedStyle(target).touchAction ?? null;
+    this.touchActionByTarget.set(target, touchAction);
+    this.touchActionStyleReads += 1;
+    return touchAction;
+  }
+
+  private targetSnapshotFor(target: Element, eventType: string): NonNullable<IpadInputTraceEvent["targetClass"]> {
+    const hasCached = this.targetSnapshots.has(target);
+    if (HIGH_FREQUENCY_EVENT_TYPES.has(eventType) && hasCached) {
+      return this.targetSnapshots.get(target)!;
+    }
+    const snapshot = {
+      tag: target.tagName.toLowerCase(),
+      id: target.id || null,
+      classes: [...target.classList].slice(0, MAX_CLASSES),
+      role: target.getAttribute("role"),
+      contentEditable: target instanceof HTMLElement && target.isContentEditable
+    };
+    this.targetSnapshots.set(target, snapshot);
+    return snapshot;
   }
 }
 
