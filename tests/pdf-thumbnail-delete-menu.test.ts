@@ -102,6 +102,23 @@ function thumbnailHost(pageNumbers: number[] = [3]): {
   return { host, sidebar, thumbnailView, thumbnail, page, thumbnails };
 }
 
+function dispatchPointer(
+  target: EventTarget,
+  type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | "pointerleave",
+  options: { pointerId?: number; pointerType?: "touch" | "pen" | "mouse"; button?: number; clientX?: number; clientY?: number } = {}
+): PointerEvent {
+  const event = new Event(type, { bubbles: true, cancelable: true }) as PointerEvent;
+  Object.defineProperties(event, {
+    pointerId: { value: options.pointerId ?? 1 },
+    pointerType: { value: options.pointerType ?? "touch" },
+    button: { value: options.button ?? 0 },
+    clientX: { value: options.clientX ?? 20 },
+    clientY: { value: options.clientY ?? 120 }
+  });
+  target.dispatchEvent(event);
+  return event;
+}
+
 describe("PDF thumbnail sidebar actions", () => {
   it("selects an inclusive thumbnail range on Shift-click and resets it on a normal click", () => {
     const { host, thumbnails } = thumbnailHost([3, 4, 5, 6]);
@@ -200,6 +217,70 @@ describe("PDF thumbnail sidebar actions", () => {
       pageNumber: 3,
       candidateSource: "new"
     }));
+    actions.destroy();
+  });
+
+  it("opens the exact touched thumbnail menu after a one-second hold and suppresses duplicates", async () => {
+    vi.useFakeTimers();
+    const { host, thumbnail } = thumbnailHost([3]);
+    thumbnail.addEventListener("contextmenu", (event) => {
+      new Menu()
+        .addItem((item) => item.setTitle("Copy link to page 3").setIcon("link").setWarning(false).onClick(() => undefined))
+        .showAtMouseEvent(event as MouseEvent);
+    });
+    const actions = new PdfThumbnailSidebarActions(host, { onAddPage: vi.fn(), onDeletePage: vi.fn() });
+
+    dispatchPointer(thumbnail, "pointerdown", { pointerType: "touch", pointerId: 41 });
+    vi.advanceTimersByTime(999);
+    expect(nativeMenuState.events).toHaveLength(0);
+    vi.advanceTimersByTime(1);
+    await Promise.resolve();
+    expect(nativeMenuState.events).toHaveLength(1);
+    expect(nativeMenuState.events[0]?.clientY).toBe(120);
+
+    const duplicate = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 120 });
+    thumbnail.dispatchEvent(duplicate);
+    expect(duplicate.defaultPrevented).toBe(true);
+    expect(nativeMenuState.events).toHaveLength(1);
+    actions.destroy();
+  });
+
+  it("opens the exact stylus-held thumbnail menu", async () => {
+    vi.useFakeTimers();
+    const { host, thumbnails } = thumbnailHost([3, 7]);
+    thumbnails[1]!.addEventListener("contextmenu", (event) => {
+      new Menu()
+        .addItem((item) => item.setTitle("Copy link to page 7").setIcon("link").setWarning(false).onClick(() => undefined))
+        .showAtMouseEvent(event as MouseEvent);
+    });
+    const actions = new PdfThumbnailSidebarActions(host, { onAddPage: vi.fn(), onDeletePage: vi.fn() });
+
+    dispatchPointer(thumbnails[1]!, "pointerdown", { pointerType: "pen", pointerId: 42 });
+    vi.advanceTimersByTime(1_000);
+    await Promise.resolve();
+    expect(nativeMenuState.events).toHaveLength(1);
+    expect(nativeMenuState.events[0]?.target).toBe(thumbnails[1]);
+    expect(document.querySelector<HTMLElement>("[data-native-pdf-handwriting-menu-action='delete']")?.dataset.nativePdfHandwritingPageNumber)
+      .toBe("7");
+    actions.destroy();
+  });
+
+  it("cancels a thumbnail hold on early release or scrolling movement", () => {
+    vi.useFakeTimers();
+    const { host, thumbnail } = thumbnailHost([3]);
+    const actions = new PdfThumbnailSidebarActions(host, { onAddPage: vi.fn(), onDeletePage: vi.fn() });
+
+    dispatchPointer(thumbnail, "pointerdown", { pointerType: "touch", pointerId: 43 });
+    vi.advanceTimersByTime(500);
+    dispatchPointer(thumbnail, "pointerup", { pointerType: "touch", pointerId: 43 });
+    vi.advanceTimersByTime(600);
+    expect(nativeMenuState.events).toHaveLength(0);
+
+    dispatchPointer(thumbnail, "pointerdown", { pointerType: "touch", pointerId: 44 });
+    vi.advanceTimersByTime(500);
+    dispatchPointer(thumbnail, "pointermove", { pointerType: "touch", pointerId: 44, clientX: 40 });
+    vi.advanceTimersByTime(600);
+    expect(nativeMenuState.events).toHaveLength(0);
     actions.destroy();
   });
 
