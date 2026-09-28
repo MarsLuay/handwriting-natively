@@ -923,6 +923,28 @@
   object-fit: contain;
   width: 100%;
 }
+.native-pdf-handwriting-scan-outline {
+  height: 100%;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  position: absolute;
+  width: 100%;
+  z-index: 2;
+}
+.native-pdf-handwriting-scan-outline polygon {
+  fill: none;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.native-pdf-handwriting-scan-outline-shadow {
+  stroke: #000;
+  stroke-width: 4px;
+}
+.native-pdf-handwriting-scan-outline-line {
+  stroke: #fff;
+  stroke-width: 2px;
+}
 .native-pdf-handwriting-scan-corner {
   background: var(--interactive-accent, #2563eb);
   border: 2px solid #fff;
@@ -935,6 +957,7 @@
   touch-action: none;
   transform: translate(-50%, -50%);
   width: 28px;
+  z-index: 3;
 }
 .native-pdf-handwriting-scan-corner:active { cursor: grabbing; }
 .native-pdf-handwriting-scan-controls {

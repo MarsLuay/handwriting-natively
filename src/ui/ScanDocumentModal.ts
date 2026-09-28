@@ -34,6 +34,7 @@ export class ScanDocumentModal extends Modal {
   private currentRotation = 0;
   private completedPages: ScanDocumentPage[] = [];
   private preview: HTMLElement | null = null;
+  private cropOutline: { shadow: SVGPolygonElement; line: SVGPolygonElement } | null = null;
   private reviewBody: HTMLElement | null = null;
   private draggingCorner: Corner | null = null;
   private settled = false;
@@ -72,6 +73,7 @@ export class ScanDocumentModal extends Modal {
     this.clearCurrentImage();
     this.captureInput = null;
     this.preview = null;
+    this.cropOutline = null;
     this.reviewBody = null;
     this.contentEl.replaceChildren();
   }
@@ -161,6 +163,9 @@ export class ScanDocumentModal extends Modal {
     body.createEl("p", { text: "Review the detected page boundary. Drag the corners to correct the perspective crop." });
     this.preview = body.createDiv({ cls: "native-pdf-handwriting-scan-preview" });
     this.preview.append(image);
+    const outline = this.createCropOutline();
+    this.preview.append(outline.svg);
+    this.cropOutline = { shadow: outline.shadow, line: outline.line };
     this.preview.addEventListener("pointermove", (event) => this.moveCorner(event), { signal: this.abort.signal });
     this.preview.addEventListener("pointerup", () => { this.draggingCorner = null; }, { signal: this.abort.signal });
     this.preview.addEventListener("pointercancel", () => { this.draggingCorner = null; }, { signal: this.abort.signal });
@@ -216,6 +221,12 @@ export class ScanDocumentModal extends Modal {
   private positionCorners(): void {
     const preview = this.preview;
     if (!preview) return;
+    const points = CORNERS.map((corner) => {
+      const point = this.currentQuad[corner];
+      return `${point.x * 100},${point.y * 100}`;
+    }).join(" ");
+    this.cropOutline?.shadow.setAttribute("points", points);
+    this.cropOutline?.line.setAttribute("points", points);
     for (const corner of CORNERS) {
       const handle = preview.querySelector<HTMLElement>(`[data-corner="${corner}"]`);
       const point = this.currentQuad[corner];
@@ -224,6 +235,26 @@ export class ScanDocumentModal extends Modal {
         handle.style.top = `${point.y * 100}%`;
       }
     }
+  }
+
+  private createCropOutline(): {
+    svg: SVGSVGElement;
+    shadow: SVGPolygonElement;
+    line: SVGPolygonElement;
+  } {
+    const namespace = "http://www.w3.org/2000/svg";
+    const svg = this.ownerDocument.createElementNS(namespace, "svg");
+    svg.classList.add("native-pdf-handwriting-scan-outline");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    const shadow = this.ownerDocument.createElementNS(namespace, "polygon");
+    shadow.classList.add("native-pdf-handwriting-scan-outline-shadow");
+    const line = this.ownerDocument.createElementNS(namespace, "polygon");
+    line.classList.add("native-pdf-handwriting-scan-outline-line");
+    svg.append(shadow, line);
+    return { svg, shadow, line };
   }
 
   private async processCurrentPage(): Promise<ScanDocumentPage> {
@@ -276,6 +307,7 @@ export class ScanDocumentModal extends Modal {
     this.currentObjectUrl = null;
     this.currentImage?.remove();
     this.currentImage = null;
+    this.cropOutline = null;
     this.draggingCorner = null;
   }
 }
