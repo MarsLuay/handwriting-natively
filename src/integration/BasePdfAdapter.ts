@@ -28,6 +28,7 @@ import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import { PDF_PAGE_SELECTOR } from "./pdfPageSelectors";
 import { installPdfZoomBoost, type PdfZoomBoostHandle } from "./PdfZoomBoost";
 import { getDebugNodeId } from "../dom/debugNodeId";
+import { LayoutWorkTrace, type LayoutOperationResult } from "../runtime/LayoutWorkTrace";
 
 export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   abstract readonly kind: "direct" | "embedded";
@@ -38,6 +39,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private readonly cleanup: Array<() => void> = [];
   private readonly mounted = new Set<HTMLElement>();
   private readonly callbacks: PdfAdapterCallbacks;
+  private readonly layoutTrace: LayoutWorkTrace;
   private zoomBoost: PdfZoomBoostHandle | null = null;
   private destroyed = false;
   private viewerReplacementNotified = false;
@@ -91,6 +93,10 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   /** Keep observer diagnostics useful without writing one entry for every PDF.js paint frame. */
   private static readonly PAGE_CONTENT_MUTATION_LOG_INTERVAL_MS = 250;
   private static readonly PAGE_STRUCTURE_LOG_INTERVAL_MS = 250;
+  private static readonly RESIZE_DELTA_GATE_PX = 0.5;
+  private pageContentMutationFrame: number | null = null;
+  private pendingPageContentMutationRecords = 0;
+  private readonly sidebarResizeSnapshots = new WeakMap<Element, { width: number; height: number }>();
 
   protected constructor(
     protected readonly compatibility: CompatibilityResult,
@@ -100,6 +106,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.host = host;
     this.root = compatibility.viewerRoot!;
     this.callbacks = callbacks;
+    this.layoutTrace = new LayoutWorkTrace({ enabled: () => Boolean(this.callbacks.onDebugLog) });
     this.locator = new PdfPageLocator(this.root, compatibility.privateViewer);
     this.registerCleanup(() => this.zoomBoost?.destroy());
     this.registerCleanup(() => {
@@ -614,11 +621,18 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     trigger = "sync",
     followFrame?: number
   ): PdfSidebarOffsetDiag | null {
-    const chrome = this.host.querySelector(".native-pdf-handwriting-chrome");
-    if (!isHTMLElement(chrome)) return null;
-    const diag = syncLeftChromeWithPdfSidebar(chrome, this.pdfLayoutScope());
-    this.noteSidebarRailDiag(diag, trigger, followFrame);
-    return diag;
+    const operation = this.layoutTrace.start("sidebar-rail-sync", trigger);
+    try {
+      const chrome = this.host.querySelector(".native-pdf-handwriting-chrome");
+      if (!isHTMLElement(chrome)) return null;
+      const diag = operation.phase("geometry-and-offset", () =>
+        syncLeftChromeWithPdfSidebar(chrome, this.pdfLayoutScope())
+      );
+      operation.phase("diagnostic-sample", () => this.noteSidebarRailDiag(diag, trigger, followFrame));
+      return diag;
+    } finally {
+      this.reportLayoutResult(operation.finish());
+    }
   }
 
   private noteSidebarRailDiag(
@@ -744,12 +758,17 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     if (classHosts.length > 0) {
       const watched = new Set(classHosts);
       const observer = new MutationObserver((records) => {
-        if (!records.some((record) => isHTMLElement(record.target) && watched.has(record.target))) {
-          return;
+        const operation = this.layoutTrace.start("sidebar-observer", "mutation");
+        try {
+          if (!records.some((record) => isHTMLElement(record.target) && watched.has(record.target))) {
+            return;
+          }
+          onLayout(
+            mutationTogglesPdfSidebarOpen(records) ? "mutation-sidebar-open" : "mutation"
+          );
+        } finally {
+          this.reportLayoutResult(operation.finish());
         }
-        onLayout(
-          mutationTogglesPdfSidebarOpen(records) ? "mutation-sidebar-open" : "mutation"
-        );
       });
       for (const host of new Set(classHosts)) {
         observer.observe(host, {
@@ -761,7 +780,29 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       this.registerCleanup(() => observer.disconnect());
     }
     if (typeof ResizeObserver !== "undefined") {
-      const resize = new ResizeObserver(() => onLayout("resize"));
+      const resize = new ResizeObserver((entries) => {
+        let changed = false;
+        for (const entry of entries) {
+          const next = {
+            width: entry.contentRect.width,
+            height: entry.contentRect.height
+          };
+          const previous = this.sidebarResizeSnapshots.get(entry.target);
+          this.sidebarResizeSnapshots.set(entry.target, next);
+          if (!previous
+            || Math.abs(next.width - previous.width) >= BasePdfAdapter.RESIZE_DELTA_GATE_PX
+            || Math.abs(next.height - previous.height) >= BasePdfAdapter.RESIZE_DELTA_GATE_PX) {
+            changed = true;
+          }
+        }
+        if (!changed) return;
+        const operation = this.layoutTrace.start("sidebar-observer", "resize");
+        try {
+          onLayout("resize");
+        } finally {
+          this.reportLayoutResult(operation.finish());
+        }
+      });
       if (sidebar) resize.observe(sidebar);
       const chromeEl = this.host.querySelector(".native-pdf-handwriting-chrome");
       if (isHTMLElement(chromeEl)) resize.observe(chromeEl);
@@ -839,10 +880,46 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       this.host.ownerDocument.defaultView?.cancelAnimationFrame(this.sidebarFollowFrame);
       this.sidebarFollowFrame = null;
     }
+    if (this.pageContentMutationFrame !== null) {
+      this.host.ownerDocument.defaultView?.cancelAnimationFrame(this.pageContentMutationFrame);
+      this.pageContentMutationFrame = null;
+    }
+    this.pendingPageContentMutationRecords = 0;
     this.sidebarFollowUntil = 0;
     for (const cleanup of this.cleanup.splice(0).reverse()) cleanup();
     for (const element of this.mounted) element.remove();
     this.mounted.clear();
+  }
+
+  /**
+   * PDF.js can replace a canvas wrapper in several mutation batches before the
+   * next paint. Reconcile once per display frame so the session does not repeat
+   * page scans and router checks for intermediate DOM states.
+   */
+  private queuePageContentMutation(recordCount: number): void {
+    if (this.destroyed || !this.callbacks.onPageContentMutation) return;
+    this.pendingPageContentMutationRecords += recordCount;
+    if (this.pageContentMutationFrame !== null) return;
+    const view = this.host.ownerDocument.defaultView;
+    if (!view) {
+      const records = this.pendingPageContentMutationRecords;
+      this.pendingPageContentMutationRecords = 0;
+      this.callbacks.onPageContentMutation(records);
+      return;
+    }
+    this.pageContentMutationFrame = view.requestAnimationFrame(() => {
+      this.pageContentMutationFrame = null;
+      if (this.destroyed) return;
+      const records = this.pendingPageContentMutationRecords;
+      this.pendingPageContentMutationRecords = 0;
+      if (!records) return;
+      const operation = this.layoutTrace.start("page-content-callback", "mutation");
+      try {
+        this.callbacks.onPageContentMutation?.(records);
+      } finally {
+        this.reportLayoutResult(operation.finish());
+      }
+    });
   }
 
   private listen(): void {
@@ -858,8 +935,10 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.registerCleanup(() => scroller.removeEventListener("scroll", onScroll));
 
     const observer = new MutationObserver((records) => {
-      if (!isBoundGenerationCurrent()) return;
-      let childListChanged = false;
+      const operation = this.layoutTrace.start("page-observer", "mutation");
+      try {
+        if (!isBoundGenerationCurrent()) return;
+        let childListChanged = false;
       let scaleChanged = false;
       let rotationChanged = false;
       let pageStructureRecords = 0;
@@ -890,7 +969,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       }
       if (ignoredPageContentRecords) {
         this.logIgnoredPageContentMutations(ignoredPageContentRecords);
-        this.callbacks.onPageContentMutation?.(ignoredPageContentRecords);
+        this.queuePageContentMutation(ignoredPageContentRecords);
       }
       if (childListChanged) {
         this.logPageStructureMutations(pageStructureRecords, scaleChanged, rotationChanged);
@@ -905,7 +984,10 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
         notify("data-scale");
         this.noteZoomChange("mutation-fallback", boundGeneration);
       }
-      else if (rotationChanged) notify("rotationchanging");
+        else if (rotationChanged) notify("rotationchanging");
+      } finally {
+        this.reportLayoutResult(operation.finish());
+      }
     });
     observer.observe(this.root, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-page-number", "data-rotation", "data-scale"] });
     this.registerCleanup(() => observer.disconnect());
@@ -1014,6 +1096,11 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     });
     this.ignoredPageContentMutations = 0;
     this.lastIgnoredPageContentLogAt = now;
+  }
+
+  private reportLayoutResult(result: LayoutOperationResult | null): void {
+    if (!result?.slowEvent) return;
+    this.callbacks.onDebugLog?.("warn", "pdf layout slow", result.slowEvent as unknown as Record<string, unknown>);
   }
 
   private logAdapterEvent(level: "info" | "warn", event: string, payload: Record<string, unknown>): void {

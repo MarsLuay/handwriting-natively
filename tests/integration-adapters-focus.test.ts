@@ -400,6 +400,75 @@ describe("PDF adapters", () => {
     adapter.destroy();
   });
 
+  it("coalesces page-content mutation batches until the next frame", async () => {
+    const host = compatibleHost();
+    const pageContentMutations = vi.fn();
+    const adapter = await NativePdfViewAdapter.attach(host, { onPageContentMutation: pageContentMutations });
+    const page = host.querySelector(".page") as HTMLElement;
+
+    page.querySelector("canvas")?.remove();
+    await Promise.resolve();
+    page.append(document.createElement("canvas"));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    expect(pageContentMutations).toHaveBeenCalledOnce();
+    expect(pageContentMutations.mock.calls[0]?.[0]).toBe(2);
+    adapter.destroy();
+  });
+
+  it("gates subpixel sidebar resize notifications", async () => {
+    type ResizeCallback = (entries: Array<{ target: Element; contentRect: DOMRectReadOnly }>) => void;
+    class FakeResizeObserver {
+      static readonly instances: FakeResizeObserver[] = [];
+      private readonly target = document.createElement("div");
+      constructor(private readonly callback: ResizeCallback) {
+        FakeResizeObserver.instances.push(this);
+      }
+      observe(): void {}
+      disconnect(): void {}
+      trigger(width: number, height: number): void {
+        this.callback([{
+          target: this.target,
+          contentRect: { width, height } as DOMRectReadOnly
+        }]);
+      }
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const raf = vi.spyOn(window, "requestAnimationFrame");
+    const host = document.createElement("div");
+    host.className = "workspace-leaf";
+    const toolbarHost = document.createElement("div");
+    toolbarHost.className = "pdf-toolbar";
+    const scroll = document.createElement("div");
+    scroll.className = "pdf-viewer-scroll-container";
+    Object.defineProperty(scroll, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(scroll, "clientHeight", { value: 600, configurable: true });
+    scroll.append(pdfViewer());
+    host.append(toolbarHost, scroll);
+    document.body.append(host);
+
+    const adapter = await NativePdfViewAdapter.attach(host);
+    const toolbar = document.createElement("div");
+    adapter.mountToolbar(toolbar, "left");
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const observer = FakeResizeObserver.instances.at(-1);
+    expect(observer).toBeDefined();
+    const settledFrames = raf.mock.calls.length;
+
+    observer?.trigger(100, 100);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const changedFrames = raf.mock.calls.length;
+    observer?.trigger(100.25, 100.25);
+    expect(raf.mock.calls.length).toBe(changedFrames);
+    observer?.trigger(100.75, 100.75);
+    expect(raf.mock.calls.length).toBe(changedFrames + 1);
+    expect(changedFrames).toBeGreaterThan(settledFrames);
+
+    adapter.destroy();
+    raf.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
   it("pins right sidebar with chrome grid class even when remounting", async () => {
     const host = document.createElement("div");
     host.className = "workspace-leaf";

@@ -895,6 +895,14 @@ export class SessionLogger {
     }, true);
   }
 
+  /** Threshold-gated layout evidence; callers retain and deduplicate the slow samples. */
+  layoutSlow(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "layout slow", {
+      document: this.documentPath,
+      ...details
+    });
+  }
+
   perfSlowInteraction(details: Record<string, unknown> = {}): void {
     this.emit("info", "perf-slow-interaction", {
       document: this.documentPath,
