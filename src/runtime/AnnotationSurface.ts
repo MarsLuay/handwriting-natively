@@ -2,6 +2,9 @@ import type { VaultLogLevel } from "../logging/VaultLogSink";
 import type { ViewStateSource } from "../logging/SessionLogger";
 import type { ToolbarPlacement } from "../model";
 
+/** Stable content family used by future surface activation and adapter routing. */
+export type AnnotationSurfaceType = "pdf" | "image" | "markdown";
+
 /** A logical page exposed by any annotation surface (PDF, image, or test host). */
 export interface AnnotationPageInfo {
   /** Stable logical page number within the current document. */
@@ -112,6 +115,11 @@ export interface AnnotationSurfaceCallbacks {
  */
 export interface AnnotationSurface {
   readonly kind: "direct" | "embedded";
+  /**
+   * Content family independent of the direct/embedded PDF distinction.
+   * Optional so existing test and third-party surfaces remain compatible.
+   */
+  readonly surfaceType?: AnnotationSurfaceType;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
 
