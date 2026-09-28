@@ -1395,7 +1395,7 @@ export default class NativePdfInkPlugin extends Plugin {
       writeSync: createVaultSyncWriter(this.app.vault),
       claimPersistEpoch: (documentId) => this.claimPersistEpoch(documentId),
       livePersistEpoch: (documentId) => this.livePersistEpoch(documentId),
-      runtimePlatform: () => ({ mobile: Platform.isMobile, phone: Platform.isPhone }),
+      runtimePlatform: () => ({ mobile: Platform.isMobile, phone: Platform.isPhone, ipad: Platform.isIosApp && !Platform.isPhone }),
       ...(options.onDetached ? { onDetached: options.onDetached } : {}),
       ...(options.onAddPageMutationStart ? { onAddPageMutationStart: options.onAddPageMutationStart } : {}),
       ...(options.onAddPageMutationResolved ? { onAddPageMutationResolved: options.onAddPageMutationResolved } : {}),
