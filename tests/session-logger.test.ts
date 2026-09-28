@@ -32,6 +32,19 @@ describe("SessionLogger", () => {
     warn.mockRestore();
   });
 
+  it("warns when a committed render exceeds one 120Hz frame", () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const logger = new SessionLogger("Notes/example.pdf");
+
+    logger.renderProfile({ durationMs: FRAME_MS_120 - 0.1, operation: "stroke-append" });
+    logger.renderProfile({ durationMs: FRAME_MS_120 + 0.1, operation: "stroke-append" });
+
+    expect(warn.mock.calls.filter((call) => call[1] === "ink render profile")).toHaveLength(1);
+    debug.mockRestore();
+    warn.mockRestore();
+  });
+
   it("logs draw positions with bounds", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const logger = new SessionLogger("Notes/example.pdf");
