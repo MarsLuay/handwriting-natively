@@ -47,6 +47,11 @@ export interface ZoomPipelineFrame {
   pendingRaf: boolean;
   pendingSettle: boolean;
   nativeMutationCount: number;
+  inputPending: boolean;
+  activeAnnotationGesture: boolean;
+  activePinchPointers: number;
+  activePinchTouches: number;
+  activeTouchPointerCount: number;
   visiblePages: number;
   overlaysTouched: number;
   totalPluginWorkMs: number;
@@ -82,6 +87,11 @@ interface FrameInput {
   pendingRaf: boolean;
   pendingSettle: boolean;
   nativeMutationCount: number;
+  inputPending?: boolean;
+  activeAnnotationGesture?: boolean;
+  activePinchPointers?: number;
+  activePinchTouches?: number;
+  activeTouchPointerCount?: number;
   visiblePages: number;
   overlaysTouched: number;
   totalPluginWorkMs: number;
@@ -229,6 +239,11 @@ export class ZoomPipelineTrace {
       pendingRaf: input.pendingRaf,
       pendingSettle: input.pendingSettle,
       nativeMutationCount: Math.max(0, Math.floor(input.nativeMutationCount)),
+      inputPending: input.inputPending === true,
+      activeAnnotationGesture: input.activeAnnotationGesture === true,
+      activePinchPointers: Math.max(0, Math.floor(input.activePinchPointers ?? 0)),
+      activePinchTouches: Math.max(0, Math.floor(input.activePinchTouches ?? 0)),
+      activeTouchPointerCount: Math.max(0, Math.floor(input.activeTouchPointerCount ?? 0)),
       visiblePages: Math.max(0, Math.floor(input.visiblePages)),
       overlaysTouched: Math.max(0, Math.floor(input.overlaysTouched)),
       totalPluginWorkMs: roundMs(input.totalPluginWorkMs),

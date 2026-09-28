@@ -1060,6 +1060,8 @@ export class ViewerInkSession {
   private zoomBurstWatchdog: number | null = null;
   /** Coalesces repeated native scale signals to one overlay/layout pass per frame. */
   private zoomLayoutFrame: number | null = null;
+  /** Healthy router/cursor maintenance waits for the active contact to terminate. */
+  private zoomMaintenanceDeferredForInput = false;
   /** One-frame geometry cache used to keep zoom reads ahead of DOM writes. */
   private zoomLayoutCache: Map<number, PageCoordinateLayout> | null = null;
   private zoomBurstStartedAt = 0;
@@ -3342,6 +3344,7 @@ export class ViewerInkSession {
 
   /** Close a post-zoom window where the live page no longer matches its router. */
   private rebindStaleZoomRouters(reason: string): void {
+    if (this.deferZoomMaintenanceForInput(`router-rebind:${reason}`)) return;
     const pages = new Map(this.options.adapter.pages().map((page) => [page.pageNumber, page]));
     for (const [pageNumber, surface] of this.surfaces) {
       const current = pages.get(pageNumber);
@@ -3654,6 +3657,7 @@ export class ViewerInkSession {
     const state = this.options.adapter.getViewState();
     const scroller = this.options.adapter.scrollElement();
     const runtime = this.frameTimingProfile();
+    const input = this.zoomInputState();
     const frame = {
       timestampMs,
       runtimeBudgetMs: runtime.frameBudgetMs,
@@ -3666,6 +3670,7 @@ export class ViewerInkSession {
         || this.zoomCompositeReleaseTimer !== null
         || this.zoomCompositeReleaseFrame !== null,
       nativeMutationCount: this.zoomNativeContentMutations,
+      ...input,
       visiblePages: this.zoomActivePageCount,
       overlaysTouched: this.zoomCompositing ? this.zoomActivePageCount : 0,
       totalPluginWorkMs
@@ -4292,7 +4297,61 @@ export class ViewerInkSession {
   private hasActiveAnnotationGesture(): boolean {
     if (this.hasAnyLiveInkInput()) return true;
     if (this.moveDrag || this.textMoveDrag || this.textBoxTransformDrag) return true;
+    if (this.activeTextEditor) return true;
     return false;
+  }
+
+  private zoomInputState(): {
+    inputPending: boolean;
+    activeAnnotationGesture: boolean;
+    activePinchPointers: number;
+    activePinchTouches: number;
+    activeTouchPointerCount: number;
+  } {
+    const activeAnnotationGesture = this.hasActiveAnnotationGesture();
+    const pinch = this.pinchCleanup.activePinchCount();
+    const activeTouchPointerCount = this.pluginTouchPointerIds().length;
+    return {
+      inputPending: activeAnnotationGesture
+        || pinch.pointers > 0
+        || pinch.touches > 0
+        || activeTouchPointerCount > 0,
+      activeAnnotationGesture,
+      activePinchPointers: pinch.pointers,
+      activePinchTouches: pinch.touches,
+      activeTouchPointerCount
+    };
+  }
+
+  private deferZoomMaintenanceForInput(reason: string): boolean {
+    const state = this.zoomInputState();
+    if (!state.inputPending) return false;
+    if (!this.zoomMaintenanceDeferredForInput) {
+      this.logger.zoomComposite("settle-deferred", {
+        reason: "input-pending",
+        maintenance: reason,
+        ...state
+      });
+    }
+    this.zoomMaintenanceDeferredForInput = true;
+    return true;
+  }
+
+  private resumeZoomMaintenanceAfterInput(): void {
+    if (!this.zoomMaintenanceDeferredForInput || this.zoomInputState().inputPending) return;
+    this.zoomMaintenanceDeferredForInput = false;
+    if (this.zoomCompositing) {
+      this.scheduleZoomOverlayLayout();
+      return;
+    }
+    if (
+      this.zoomCompositeSettledAt > 0
+      && this.zoomSettleQueue.length === 0
+      && this.zoomSettleSliceFrame === null
+      && this.isZoomHandoffActive()
+    ) {
+      this.releaseZoomCompositeAfterNativeRender();
+    }
   }
 
   /** Transient pen hit-page class only while a stylus tip is actively routed. */
@@ -4439,6 +4498,7 @@ export class ViewerInkSession {
   }
 
   private scheduleZoomSettleResume(): void {
+    this.resumeZoomMaintenanceAfterInput();
     if (!this.zoomSettlePausedForLiveInk || this.zoomSettleResumeTimer !== null) return;
     this.closeLiveInkOverlap(performance.now());
     this.penLiftedForSettleAt = performance.now();
@@ -4475,6 +4535,7 @@ export class ViewerInkSession {
       return;
     }
     this.armZoomSettleTimer(this.frameTimingProfile().frameBudgetMs, "pinch-terminal");
+    this.resumeZoomMaintenanceAfterInput();
   }
 
   private resumeZoomSettleAfterLiveInk(): void {
@@ -5070,6 +5131,7 @@ export class ViewerInkSession {
     this.zoomNativeContentMutations = 0;
     this.lastZoomNativeContentAt = 0;
     this.zoomHandoffNeedsFinalRebase = false;
+    this.zoomMaintenanceDeferredForInput = false;
     this.zoomCompositing = true;
     const started = performance.now();
     // The layout pass admits only the current visible working set. Pages that
@@ -5762,12 +5824,19 @@ export class ViewerInkSession {
     const working = this.zoomWorkingSurfaces(rootRect, byNumber);
     // Reconcile page nodes and routers before taking geometry reads. Reattach
     // used to read and write one page at a time, forcing layout between pages.
+    const deferHealthyRouterMaintenance = this.deferZoomMaintenanceForInput("router-maintenance");
     const reconcileStartedAt = performance.now();
     for (const surface of working) {
       const pageNumber = surface.page.pageNumber;
       const current = byNumber.get(pageNumber);
       if (!current) continue;
-      if (!this.reattachSurface(surface, current, false)) {
+      const routerHealthy = Boolean(
+        surface.router
+        && surface.router.isAlive()
+        && surface.router.bindsTo(current.element)
+        && !surface.router.isListenerAborted()
+      );
+      if (!this.reattachSurface(surface, current, false, !deferHealthyRouterMaintenance || !routerHealthy)) {
         // Page node replaced while the overlay stayed on the old node — move
         // both overlay and page-bound PointerRouter onto the live page.
         if (current.element.isConnected) {
@@ -5776,7 +5845,7 @@ export class ViewerInkSession {
           continue;
         }
       }
-      this.ensurePageRouter(surface);
+      if (!deferHealthyRouterMaintenance || !routerHealthy) this.ensurePageRouter(surface);
       active.push(surface);
     }
     this.zoomActivePageCount = active.length;
@@ -5820,7 +5889,7 @@ export class ViewerInkSession {
       }
       // Keep the same layout snapshot alive while cursor projection runs so a
       // late cursor refresh cannot resolve page geometry again after writes.
-      if (!this.isZoomGestureActive()) {
+      if (!this.isZoomGestureActive() && !this.deferZoomMaintenanceForInput("cursor-refresh")) {
         const cursorRefreshStartedAt = performance.now();
         this.refreshSurfaceCursors(active);
         phaseDurations["cursor-refresh"] = performance.now() - cursorRefreshStartedAt;
@@ -7344,14 +7413,19 @@ export class ViewerInkSession {
     });
   }
 
-  private reattachSurface(surface: PageSurface, page: AnnotationPageInfo, syncLayout = true): boolean {
+  private reattachSurface(
+    surface: PageSurface,
+    page: AnnotationPageInfo,
+    syncLayout = true,
+    maintainRouter = true
+  ): boolean {
     if (!page.element.isConnected || surface.page.element !== page.element) return false;
     if (surface.overlay.isConnected) {
       if (!page.element.contains(surface.overlay)) return false;
       this.rememberPageMetrics(page);
       this.applyTouchDrawPolicy(page.element);
       if (syncLayout) this.syncOverlayLayout(surface);
-      this.ensurePageRouter(surface);
+      if (maintainRouter) this.ensurePageRouter(surface);
       return true;
     }
     this.ensurePagePositioning(page.element);
@@ -7359,7 +7433,7 @@ export class ViewerInkSession {
     this.rememberPageMetrics(page);
     this.applyTouchDrawPolicy(page.element);
     if (syncLayout) this.syncOverlayLayout(surface);
-    this.ensurePageRouter(surface);
+    if (maintainRouter) this.ensurePageRouter(surface);
     return true;
   }
 
