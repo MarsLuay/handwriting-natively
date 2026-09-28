@@ -2,8 +2,8 @@ export type SidebarSwipeDirection = "left" | "right";
 
 const HORIZONTAL_DOMINANCE_RATIO = 3;
 const MIN_HORIZONTAL_DISTANCE_PX = 10;
-const SEARCH_BAR_TOP_EDGE_PX = 48;
-const SEARCH_BAR_VERTICAL_DOMINANCE_RATIO = 3;
+const COMMAND_PALETTE_TOP_EDGE_PX = 48;
+const COMMAND_PALETTE_VERTICAL_DOMINANCE_RATIO = 3;
 const MIN_VERTICAL_DISTANCE_PX = 10;
 
 interface TouchCandidate {
@@ -31,8 +31,8 @@ export function classifySidebarSwipe(
   return deltaX > 0 ? "left" : "right";
 }
 
-/** Return true for the downward top-edge gesture Obsidian uses to reveal search. */
-export function classifySearchBarSwipe(
+/** Return true for the downward top-edge gesture Obsidian uses to reveal the command palette. */
+export function classifyCommandPaletteSwipe(
   startX: number,
   startY: number,
   currentX: number,
@@ -40,9 +40,9 @@ export function classifySearchBarSwipe(
 ): boolean {
   const deltaX = currentX - startX;
   const deltaY = currentY - startY;
-  return startY <= SEARCH_BAR_TOP_EDGE_PX
+  return startY <= COMMAND_PALETTE_TOP_EDGE_PX
     && deltaY > MIN_VERTICAL_DISTANCE_PX
-    && deltaY > Math.abs(deltaX) * SEARCH_BAR_VERTICAL_DOMINANCE_RATIO;
+    && deltaY > Math.abs(deltaX) * COMMAND_PALETTE_VERTICAL_DOMINANCE_RATIO;
 }
 
 function sidebarIsOpen(ownerDocument: Document, direction: SidebarSwipeDirection): boolean {
@@ -55,7 +55,7 @@ function sidebarIsOpen(ownerDocument: Document, direction: SidebarSwipeDirection
 }
 
 /**
- * Optionally prevents Obsidian's mobile one-finger sidebar and search-bar
+ * Optionally prevents Obsidian's mobile one-finger sidebar and command-palette
  * swipe gestures.
  *
  * This deliberately listens only to TouchEvents, requires one contact, and
@@ -64,7 +64,7 @@ function sidebarIsOpen(ownerDocument: Document, direction: SidebarSwipeDirection
  */
 export class MobileSidebarSwipeBlocker {
   private sidebarEnabled = false;
-  private searchBarEnabled = false;
+  private commandPaletteEnabled = false;
   private candidate: TouchCandidate | null = null;
   private readonly activePenPointers = new Set<number>();
   private readonly listenerOptions: AddEventListenerOptions = { capture: true };
@@ -72,12 +72,12 @@ export class MobileSidebarSwipeBlocker {
 
   constructor(private readonly ownerDocument: Document) {}
 
-  setEnabled(sidebarEnabled: boolean, searchBarEnabled = false): void {
-    if (this.sidebarEnabled === sidebarEnabled && this.searchBarEnabled === searchBarEnabled) return;
+  setEnabled(sidebarEnabled: boolean, commandPaletteEnabled = false): void {
+    if (this.sidebarEnabled === sidebarEnabled && this.commandPaletteEnabled === commandPaletteEnabled) return;
     this.removeListeners();
     this.sidebarEnabled = sidebarEnabled;
-    this.searchBarEnabled = searchBarEnabled;
-    if (!sidebarEnabled && !searchBarEnabled) return;
+    this.commandPaletteEnabled = commandPaletteEnabled;
+    if (!sidebarEnabled && !commandPaletteEnabled) return;
     this.ownerDocument.addEventListener("touchstart", this.handleTouchStart, this.listenerOptions);
     this.ownerDocument.addEventListener("touchmove", this.handleTouchMove, this.moveListenerOptions);
     this.ownerDocument.addEventListener("touchend", this.handleTouchEnd, this.listenerOptions);
@@ -91,7 +91,7 @@ export class MobileSidebarSwipeBlocker {
   destroy(): void {
     this.removeListeners();
     this.sidebarEnabled = false;
-    this.searchBarEnabled = false;
+    this.commandPaletteEnabled = false;
   }
 
   private readonly handleTouchStart = (event: TouchEvent): void => {
@@ -124,9 +124,9 @@ export class MobileSidebarSwipeBlocker {
     const blocksSidebar = this.sidebarEnabled
       && direction !== null
       && !sidebarIsOpen(this.ownerDocument, direction);
-    const blocksSearchBar = this.searchBarEnabled
-      && classifySearchBarSwipe(candidate.startX, candidate.startY, touch.clientX, touch.clientY);
-    if (!blocksSidebar && !blocksSearchBar) return;
+    const blocksCommandPalette = this.commandPaletteEnabled
+      && classifyCommandPaletteSwipe(candidate.startX, candidate.startY, touch.clientX, touch.clientY);
+    if (!blocksSidebar && !blocksCommandPalette) return;
     if (!event.cancelable) return;
     event.preventDefault();
     event.stopPropagation();
