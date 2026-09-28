@@ -230,6 +230,62 @@ describe("SlowSpanTrace", () => {
     expect(missedAt60Hz?.slowStages).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: "stroke-frame-gap", thresholdMs: 25 })
     ]));
+    expect(trace.summary().worstSpans.find((span) => span.stage === "stroke-frame-gap")).toMatchObject({
+      durationMs: 26,
+      thresholdMs: 25,
+      activeWorkMs: null,
+      waitMs: null
+    });
+  });
+
+  it("keeps frame elapsed time separate from measured plugin work and scheduling", () => {
+    const trace = new SlowSpanTrace();
+    trace.recordInkStroke({
+      pointerId: 12,
+      physicalContactId: "contact-frame-semantics",
+      strokeId: "stroke-frame-semantics",
+      correlationId: "contact-frame-semantics",
+      page: 1,
+      tool: "pen",
+      outcome: "pointerup",
+      pointerDownToStrokeStartMs: 1,
+      strokeStartToFirstCanvasCommitMs: 1,
+      totalPointerDownToFirstCanvasCommitMs: 2,
+      maxInputToRenderMs: 1,
+      p95InputToRenderMs: 1,
+      maxPluginCallbackMs: 19,
+      longestLongTaskMs: 1,
+      p95FrameMs: 183,
+      maxFrameMs: 183,
+      frameGapThresholdMs: 25,
+      pointerUpToCommitMs: 1,
+      latency: {
+        schedulingMs: 166,
+        canvasCommitMs: 19
+      }
+    });
+
+    const spans = trace.summary().worstSpans;
+    expect(spans.find((span) => span.stage === "stroke-frame-gap")).toMatchObject({
+      durationMs: 183,
+      activeWorkMs: null,
+      waitMs: null
+    });
+    expect(spans.find((span) => span.stage === "plugin-callback")).toMatchObject({
+      durationMs: 19,
+      activeWorkMs: 19,
+      waitMs: 0
+    });
+    expect(spans.find((span) => span.stage === "canvas-commit")).toMatchObject({
+      durationMs: 19,
+      activeWorkMs: 19,
+      waitMs: 0
+    });
+    expect(spans.find((span) => span.stage === "scheduling")).toMatchObject({
+      durationMs: 166,
+      activeWorkMs: null,
+      waitMs: 166
+    });
   });
 
   it("breaks a slow ink span into thresholded pipeline legs", () => {
