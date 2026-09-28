@@ -41,7 +41,7 @@ import {
   type InkVisibilitySnapshot
 } from "./InkVisibility";
 import { deferredRenderDisposition } from "./renderCachePolicy";
-import { isAnnotationChromeTarget, PointerRouter, type PointerRouterHandoff } from "../input/PointerRouter";
+import { isAnnotationChromeTarget, PointerRouter, type PointerRoute, type PointerRouterHandoff } from "../input/PointerRouter";
 import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type DocumentInputOwnershipHandle } from "../input/DocumentInputOwnership";
 import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
@@ -989,6 +989,8 @@ export class ViewerInkSession {
   private readonly postZoomRouterByPointer = new Map<number, {
     received: boolean;
     rejected: boolean;
+    route: PointerRoute | null;
+    routeReason: string | null;
     captureStale: boolean;
   }>();
   /** Delayed release avoids exposing an ink redraw before PDF.js finishes its own render. */
@@ -2154,7 +2156,8 @@ export class ViewerInkSession {
     routerReceived: boolean;
     routerRejected: boolean;
     routerRejectReason: string | null;
-    route: string | null;
+    route: PointerRoute | null;
+    routeReason: string | null;
     scrollLeftAtStart: number | null;
     scrollTopAtStart: number | null;
     scrollLeftAtEnd: number;
@@ -2191,6 +2194,7 @@ export class ViewerInkSession {
       routerRejected: details.routerRejected,
       routerRejectReason: details.routerRejectReason,
       route: details.route,
+      routeReason: details.routeReason,
       strokeStarted: details.strokeStarted,
       strokeEnded: details.strokeStarted,
       scrollLeftAtStart: details.scrollLeftAtStart,
@@ -2257,7 +2261,15 @@ export class ViewerInkSession {
       }
       return;
     }
-    if ((!overPage || !page) && !retained) return;
+    if ((!overPage || !page) && !retained) {
+      if (record.phase === "terminal") {
+        for (const pointerId of record.contact.pointerIds) {
+          this.postZoomStrokePointers.delete(pointerId);
+          this.postZoomRouterByPointer.delete(pointerId);
+        }
+      }
+      return;
+    }
     const pageNumber = page?.pageNumber ?? (typeof retained?.pageNumber === "number" ? retained.pageNumber : null);
     const surface = pageNumber === null ? undefined : this.surfaces.get(pageNumber);
     const strokeStarted = record.contact.pointerIds.some((pointerId) => this.postZoomStrokePointers.has(pointerId));
@@ -2299,8 +2311,9 @@ export class ViewerInkSession {
       strokeStarted,
       routerReceived: observation.routerReceived,
       routerRejected: observation.routerRejected,
-      routerRejectReason: observation.routerRejected ? "route-rejected" : null,
-      route: observation.routerReceived ? (observation.routerRejected ? "rejected" : "received") : null,
+      routerRejectReason: observation.routerRejected ? (route?.routeReason ?? "route-rejected") : null,
+      route: route?.route ?? null,
+      routeReason: route?.routeReason ?? null,
       scrollLeftAtStart: startLeft,
       scrollTopAtStart: startTop,
       scrollLeftAtEnd: scroll.scrollLeft,
@@ -2332,8 +2345,9 @@ export class ViewerInkSession {
         strokeEnded: strokeStarted,
         routerReceived: observation.routerReceived,
         routerRejected: observation.routerRejected,
-        routerRejectReason: observation.routerRejected ? "route-rejected" : null,
-        route: observation.routerReceived ? (observation.routerRejected ? "rejected" : "received") : null,
+        routerRejectReason: observation.routerRejected ? (route?.routeReason ?? "route-rejected") : null,
+        route: route?.route ?? null,
+        routeReason: route?.routeReason ?? null,
         fallbackConsidered: null,
         fallbackRejectedReason: null,
         pageMountGeneration: surface?.page.mountGeneration ?? retained.pageMountGeneration ?? null,
@@ -2369,6 +2383,10 @@ export class ViewerInkSession {
       }));
       if (regression) this.logger.postZoomStylusIdentityRegression({ ...regression });
     }
+    for (const pointerId of record.contact.pointerIds) {
+      this.postZoomStrokePointers.delete(pointerId);
+      this.postZoomRouterByPointer.delete(pointerId);
+    }
     if (!anomaly) return;
     this.logger.postZoomAnomaly({
       classification: anomaly.classification,
@@ -2378,10 +2396,6 @@ export class ViewerInkSession {
       postZoomContactIndex: anomaly.postZoomContactIndex,
       lifecycle: anomaly.lifecycle
     });
-    for (const pointerId of record.contact.pointerIds) {
-      this.postZoomStrokePointers.delete(pointerId);
-      this.postZoomRouterByPointer.delete(pointerId);
-    }
   }
 
   private handlePhysicalContactEvent(event: PhysicalContactCollectorEvent): void {
@@ -7824,9 +7838,12 @@ export class ViewerInkSession {
           handledPointerGeneration: this.handledDrawPointers.get(event.pointerId) ?? null,
           touchAction: [...surface.page.element.classList].filter((name) => name.startsWith("native-pdf-handwriting-touch-")),
         });
+        const existingRoute = this.postZoomRouterByPointer.get(event.pointerId);
         this.postZoomRouterByPointer.set(event.pointerId, {
-          received: true,
-          rejected: route !== "draw" && route !== "edit" && route !== "text",
+          received: existingRoute?.received ?? true,
+          rejected: existingRoute?.rejected ?? false,
+          route: existingRoute?.route ?? route,
+          routeReason: existingRoute?.routeReason ?? null,
           captureStale: this.handledDrawPointers.get(event.pointerId) !== undefined
             && this.handledDrawPointers.get(event.pointerId) !== surface.router?.generation
         });
@@ -7888,6 +7905,13 @@ export class ViewerInkSession {
         this.notePointerTypeOrigin(event, "page-touch-router", "capture");
       },
       onRouterReceived: (event, generation) => {
+        this.postZoomRouterByPointer.set(event.pointerId, {
+          received: true,
+          rejected: false,
+          route: null,
+          routeReason: null,
+          captureStale: false
+        });
         this.notePointerTypeOrigin(event, "page-pointer-router", "capture");
         this.recordPostUiProbeStage(event, "router-received", {
           page: surface.page.pageNumber,
@@ -7938,6 +7962,14 @@ export class ViewerInkSession {
         }
       },
       onPointerRejected: (reason, event, generation) => {
+        const existing = this.postZoomRouterByPointer.get(event.pointerId);
+        this.postZoomRouterByPointer.set(event.pointerId, {
+          received: existing?.received ?? true,
+          rejected: true,
+          route: reason === "annotation-chrome" ? "native" : "ignored",
+          routeReason: reason,
+          captureStale: existing?.captureStale ?? false
+        });
         this.recordPostUiProbeStage(event, "router-rejected", {
           page: surface.page.pageNumber,
           pageMountGeneration: surface.page.mountGeneration ?? null,
@@ -7999,6 +8031,14 @@ export class ViewerInkSession {
         });
       },
       onRouteDecision: (route, reason, event) => {
+        const existing = this.postZoomRouterByPointer.get(event.pointerId);
+        this.postZoomRouterByPointer.set(event.pointerId, {
+          received: true,
+          rejected: existing?.rejected ?? false,
+          route,
+          routeReason: reason,
+          captureStale: existing?.captureStale ?? false
+        });
         this.recordPostUiProbeStage(event, "route", {
           page: surface.page.pageNumber,
           route,
