@@ -81,9 +81,18 @@ export class PointerCapabilities {
     if (useCoalesced && typeof event.getCoalescedEvents === "function") {
       const coalesced = event.getCoalescedEvents();
       if (coalesced.length > 0) {
-        rawEvents = coalesced.length > 1
-          ? [...coalesced].sort((a, b) => a.timeStamp - b.timeStamp)
-          : [...coalesced];
+        // Browsers normally expose coalesced samples in time order. Avoid a
+        // per-pointermove sort on the hot path, but retain the old ordering
+        // guarantee for hosts that provide an out-of-order batch.
+        rawEvents = [...coalesced];
+        let ordered = true;
+        for (let index = 1; index < rawEvents.length; index += 1) {
+          if (rawEvents[index]!.timeStamp < rawEvents[index - 1]!.timeStamp) {
+            ordered = false;
+            break;
+          }
+        }
+        if (!ordered && rawEvents.length > 1) rawEvents.sort((a, b) => a.timeStamp - b.timeStamp);
         const tail = rawEvents[rawEvents.length - 1]!;
         const dx = event.clientX - tail.clientX;
         const dy = event.clientY - tail.clientY;

@@ -31,7 +31,7 @@ import {
   type StylusIdentity
 } from "./PostZoomInputTrace";
 import { PostZoomDurabilityTrace } from "./PostZoomDurabilityTrace";
-import { SlowSpanTrace } from "./SlowSpanTrace";
+import { SlowSpanTrace, type InkLatencyBreakdown } from "./SlowSpanTrace";
 import {
   inkVisibilityCause,
   inkVisibilityFlash,
@@ -600,6 +600,8 @@ interface StrokePerformanceState {
   physicalContactId: string | null;
   strokeId: string | null;
   firstCanvasCommitAt: number | null;
+  firstInputAt: number | null;
+  modelStartedAt: number | null;
   pointerUpAt: number | null;
   page: number;
   tool: string;
@@ -607,6 +609,12 @@ interface StrokePerformanceState {
   pointerEvents: number;
   renderUpdates: number;
   inputToRender: BoundedTiming;
+  routing: BoundedTiming;
+  geometry: BoundedTiming;
+  model: BoundedTiming;
+  scheduling: BoundedTiming;
+  canvasCommit: BoundedTiming;
+  paintAcknowledgement: BoundedTiming;
   frameIntervals: BoundedTiming;
   renderTotalMs: number;
   maxPluginCallbackMs: number;
@@ -756,6 +764,11 @@ interface PageSurface {
   livePaintFrame: number | null;
   pendingLivePaint: { kind: "draw" | "edit"; syncText: boolean; sampleCount: number; event?: PointerEvent } | null;
   pendingLivePaintAt: number | null;
+  /** Earliest browser input timestamp represented by the pending frame. */
+  pendingLiveInputAt: number | null;
+  /** One post-commit rAF acknowledgement at a time; never one log per sample. */
+  paintAcknowledgementFrame: number | null;
+  paintAcknowledgementCancel: (() => void) | null;
   strokePerformance: StrokePerformanceState | null;
   /** Prefix of editPath already represented by the transient live eraser preview. */
   liveEraserPaintedPoints: number;
@@ -1108,6 +1121,9 @@ export class ViewerInkSession {
   private readonly physicalContactIdsByPointer = new Map<number, string>();
   /** Pointer-down timestamps let completed stroke profiles separate startup from user draw time. */
   private readonly pointerDownPerformanceAt = new Map<number, number>();
+  /** Input/routing timestamps are diagnostic-only and bounded to active pointers. */
+  private readonly pointerInputAt = new Map<number, number>();
+  private readonly pointerRouteReceivedAt = new Map<number, number>();
   /** Dedup document fallback vs page-router handleDown by pointer and router generation. */
   private readonly handledDrawPointers = new Map<number, number>();
   private lastPointerPdf: { x: number; y: number } | undefined;
@@ -1466,6 +1482,8 @@ export class ViewerInkSession {
     this.uiShellMutationObserver = null;
     this.physicalContactIdsByPointer.clear();
     this.pointerDownPerformanceAt.clear();
+    this.pointerInputAt.clear();
+    this.pointerRouteReceivedAt.clear();
     this.clearPostUiProbeTimer();
   }
 
@@ -2550,7 +2568,7 @@ export class ViewerInkSession {
       this.physicalContactIdsByPointer.set(event.pointerId, event.pointerContactId);
     } else if (event.eventType === "pointerup" || event.eventType === "pointercancel") {
       this.physicalContactIdsByPointer.delete(event.pointerId);
-      this.pointerDownPerformanceAt.delete(event.pointerId);
+      this.clearPointerPerformanceTiming(event.pointerId);
     }
   }
 
@@ -5599,7 +5617,9 @@ export class ViewerInkSession {
     surface.viewportCullPending = false;
     surface.settleUpgradePending = false;
     const completedAt = performance.now();
-    this.noteStrokeCanvasCommit(surface, completedAt);
+    const profile = surface.strokePerformance;
+    this.noteStrokeCanvasCommit(surface, completedAt, startedAt);
+    if (profile) this.schedulePaintAcknowledgement(surface, completedAt, profile);
     this.lastPagePaintAt.set(surface.page.pageNumber, { at: completedAt, reason: "history-add-stroke" });
     const durationMs = roundMetric(completedAt - startedAt);
     if (surface.strokePerformance) {
@@ -7064,6 +7084,8 @@ export class ViewerInkSession {
     this.handledDrawPointers.clear();
     this.physicalContactIdsByPointer.clear();
     this.pointerDownPerformanceAt.clear();
+    this.pointerInputAt.clear();
+    this.pointerRouteReceivedAt.clear();
     this.clearPostUiProbeTimer();
     this.uiShellMutationObserver?.disconnect();
     this.uiShellMutationObserver = null;
@@ -7603,6 +7625,8 @@ export class ViewerInkSession {
     this.handledDrawPointers.clear();
     this.physicalContactIdsByPointer.clear();
     this.pointerDownPerformanceAt.clear();
+    this.pointerInputAt.clear();
+    this.pointerRouteReceivedAt.clear();
     this.clearPostUiProbeTimer();
     this.uiShellSnapshots.clear();
     this.uiShellMutationObserver?.disconnect();
@@ -7821,6 +7845,9 @@ export class ViewerInkSession {
       livePaintFrame: null,
       pendingLivePaint: null,
       pendingLivePaintAt: null,
+      pendingLiveInputAt: null,
+      paintAcknowledgementFrame: null,
+      paintAcknowledgementCancel: null,
       strokePerformance: null,
       liveEraserPaintedPoints: 0,
       wetPreviewActive: false,
@@ -7988,7 +8015,7 @@ export class ViewerInkSession {
           route,
           routerGeneration: surface.router?.generation ?? null
         });
-        this.pointerDownPerformanceAt.delete(event.pointerId);
+        this.clearPointerPerformanceTiming(event.pointerId);
       },
       onCancel: (route, event) => {
         this.logger.inputLifecycleEvent("pointer-cancel", {
@@ -8005,7 +8032,7 @@ export class ViewerInkSession {
           route,
           routerGeneration: surface.router?.generation ?? null
         });
-        this.pointerDownPerformanceAt.delete(event.pointerId);
+        this.clearPointerPerformanceTiming(event.pointerId);
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-cancel");
       },
       onTouchStart: (event) => {
@@ -8019,7 +8046,12 @@ export class ViewerInkSession {
           routeReason: null,
           captureStale: false
         });
-        if (event.type === "pointerdown") this.pointerDownPerformanceAt.set(event.pointerId, performance.now());
+        if (event.type === "pointerdown") {
+          const receivedAt = performance.now();
+          this.pointerDownPerformanceAt.set(event.pointerId, receivedAt);
+          this.pointerRouteReceivedAt.set(event.pointerId, receivedAt);
+          this.pointerInputAt.set(event.pointerId, normalizedPointerEventTime(event, receivedAt));
+        }
         this.notePointerTypeOrigin(event, "page-pointer-router", "capture");
         this.recordPostUiProbeStage(event, "router-received", {
           page: surface.page.pageNumber,
@@ -8922,12 +8954,20 @@ export class ViewerInkSession {
     this.interactionLongTaskObserver = null;
   }
 
+  private clearPointerPerformanceTiming(pointerId: number): void {
+    this.pointerDownPerformanceAt.delete(pointerId);
+    this.pointerInputAt.delete(pointerId);
+    this.pointerRouteReceivedAt.delete(pointerId);
+  }
+
   private startStrokePerformance(surface: PageSurface, event: PointerEvent, sampleCount: number): void {
     if (!this.logger.isEnabled()) {
       surface.strokePerformance = null;
       return;
     }
     const startedAt = performance.now();
+    const routeReceivedAt = this.pointerRouteReceivedAt.get(event.pointerId) ?? startedAt;
+    const inputAt = this.pointerInputAt.get(event.pointerId) ?? routeReceivedAt;
     this.startInteractionLongTaskObserver();
     surface.strokePerformance = {
       startedAt,
@@ -8936,6 +8976,8 @@ export class ViewerInkSession {
       physicalContactId: this.physicalContactIdsByPointer.get(event.pointerId) ?? null,
       strokeId: null,
       firstCanvasCommitAt: null,
+      firstInputAt: inputAt,
+      modelStartedAt: null,
       pointerUpAt: null,
       page: surface.page.pageNumber,
       tool: this.activeTool(),
@@ -8943,6 +8985,12 @@ export class ViewerInkSession {
       pointerEvents: sampleCount,
       renderUpdates: 0,
       inputToRender: new BoundedTiming(),
+      routing: new BoundedTiming(),
+      geometry: new BoundedTiming(),
+      model: new BoundedTiming(),
+      scheduling: new BoundedTiming(),
+      canvasCommit: new BoundedTiming(),
+      paintAcknowledgement: new BoundedTiming(),
       frameIntervals: new BoundedTiming(),
       renderTotalMs: 0,
       maxPluginCallbackMs: 0,
@@ -8954,11 +9002,19 @@ export class ViewerInkSession {
       mutationRefreshes: 0,
       hqUpgrades: 0
     };
+    surface.strokePerformance.routing.add(Math.max(0, startedAt - routeReceivedAt));
   }
 
-  private noteStrokeCanvasCommit(surface: PageSurface, at: number): void {
-    if (surface.strokePerformance?.firstCanvasCommitAt === null) {
-      surface.strokePerformance.firstCanvasCommitAt = at;
+  private noteStrokeCanvasCommit(surface: PageSurface, at: number, startedAt?: number): void {
+    const profile = surface.strokePerformance;
+    if (!profile) return;
+    if (profile.firstCanvasCommitAt === null) profile.firstCanvasCommitAt = at;
+    if (startedAt !== undefined) profile.canvasCommit.add(Math.max(0, at - startedAt));
+    // A terminal pointerup can cancel the queued wet frame. Preserve an
+    // end-to-end input sample for that synchronous commit rather than losing
+    // the stroke from the threshold-gated latency trace.
+    if (profile.inputToRender.count === 0 && profile.firstInputAt !== null) {
+      profile.inputToRender.add(Math.max(0, at - profile.firstInputAt));
     }
   }
 
@@ -9057,6 +9113,13 @@ export class ViewerInkSession {
   }
 
   private recordInkLifecycle(event: InkLifecycleEvent): void {
+    if (event.phase === "stroke-model-insert") {
+      const profile = this.surfaces.get(event.stroke.page)?.strokePerformance;
+      if (profile?.strokeId === event.stroke.id && profile.modelStartedAt !== null) {
+        profile.model.add(Math.max(0, performance.now() - profile.modelStartedAt));
+        profile.modelStartedAt = null;
+      }
+    }
     const penContactId = this.strokePenContactIds.get(event.stroke.id) ?? null;
     this.logger.strokeLifecycle(event.phase, {
       strokeId: event.stroke.id,
@@ -9571,6 +9634,15 @@ export class ViewerInkSession {
     const pointerUpToCommitMs = profile.pointerUpAt === null
       ? null
       : Math.max(0, completedAt - profile.pointerUpAt);
+    const latency: InkLatencyBreakdown = {
+      inputMs: input.count ? roundMetric(input.maxMs) : null,
+      routingMs: profile.routing.count ? roundMetric(profile.routing.maxMs) : null,
+      geometryMs: profile.geometry.count ? roundMetric(profile.geometry.maxMs) : null,
+      modelMs: profile.model.count ? roundMetric(profile.model.maxMs) : null,
+      schedulingMs: profile.scheduling.count ? roundMetric(profile.scheduling.maxMs) : null,
+      canvasCommitMs: profile.canvasCommit.count ? roundMetric(profile.canvasCommit.maxMs) : null,
+      paintAcknowledgementMs: profile.paintAcknowledgement.count ? roundMetric(profile.paintAcknowledgement.maxMs) : null
+    };
     const committedStrokeId = outcome === "pointercancel" ? null : profile.strokeId;
     const correlationId = profile.physicalContactId
       ?? committedStrokeId
@@ -9593,7 +9665,8 @@ export class ViewerInkSession {
         longestLongTaskMs: profile.longTaskMaxMs,
         p95FrameMs: frames.p95Ms,
         maxFrameMs: frames.maxMs,
-        pointerUpToCommitMs
+        pointerUpToCommitMs,
+        latency
       })
       : null;
     if (slowStroke) this.logger.perfSlowInteraction({ ...slowStroke });
@@ -9611,6 +9684,7 @@ export class ViewerInkSession {
       strokeStartToFirstCanvasCommitMs: strokeStartToFirstCanvasCommitMs === null ? null : roundMetric(strokeStartToFirstCanvasCommitMs),
       totalPointerDownToFirstCanvasCommitMs: totalPointerDownToFirstCanvasCommitMs === null ? null : roundMetric(totalPointerDownToFirstCanvasCommitMs),
       pointerUpToCommitMs: pointerUpToCommitMs === null ? null : roundMetric(pointerUpToCommitMs),
+      latencyStages: latency,
       pointerEvents: profile.pointerEvents,
       renderUpdates: profile.renderUpdates,
       avgInputToRenderMs: roundMetric(input.averageMs),
@@ -9655,8 +9729,13 @@ export class ViewerInkSession {
       sampleCount: (pending?.sampleCount ?? 0) + sampleCount
     };
     if (kind === "draw" && surface.strokePerformance) {
+      const scheduledAt = performance.now();
       surface.strokePerformance.pointerEvents += sampleCount;
-      surface.pendingLivePaintAt ??= performance.now();
+      surface.pendingLivePaintAt ??= scheduledAt;
+      const inputAt = event ? normalizedPointerEventTime(event, scheduledAt) : scheduledAt;
+      surface.pendingLiveInputAt = surface.pendingLiveInputAt === null
+        ? inputAt
+        : Math.min(surface.pendingLiveInputAt, inputAt);
     }
     surface.pendingLivePaint = pendingEvent ? { ...nextPaint, event: pendingEvent } : nextPaint;
     if (surface.livePaintFrame !== null) return;
@@ -9674,8 +9753,10 @@ export class ViewerInkSession {
   private paintScheduledLiveWork(surface: PageSurface): void {
     const pending = surface.pendingLivePaint;
     const pendingAt = surface.pendingLivePaintAt;
+    const pendingInputAt = surface.pendingLiveInputAt;
     surface.pendingLivePaint = null;
     surface.pendingLivePaintAt = null;
+    surface.pendingLiveInputAt = null;
     if (!pending || this.destroyed) return;
     const startedAt = performance.now();
     let draftPoints: number | undefined;
@@ -9694,7 +9775,13 @@ export class ViewerInkSession {
     else this.renderPage(surface.page.pageNumber, undefined, "live-edit", pending.syncText);
     const completedAt = performance.now();
     if (pending.kind === "draw") {
-      this.noteStrokeCanvasCommit(surface, completedAt);
+      const profile = surface.strokePerformance;
+      if (profile && pendingInputAt !== null) profile.inputToRender.add(Math.max(0, completedAt - pendingInputAt));
+      this.noteStrokeCanvasCommit(surface, completedAt, startedAt);
+      if (profile) {
+        if (pendingAt !== null) profile.scheduling.add(Math.max(0, startedAt - pendingAt));
+        this.schedulePaintAcknowledgement(surface, completedAt, profile);
+      }
       const interaction = this.slowSpans.finishFirstPen(completedAt);
       if (interaction) this.logger.perfSlowInteraction({ ...interaction });
     }
@@ -9704,7 +9791,6 @@ export class ViewerInkSession {
       profile.renderUpdates += 1;
       profile.renderTotalMs += duration;
       profile.maxPluginCallbackMs = Math.max(profile.maxPluginCallbackMs, duration);
-      if (pendingAt !== null) profile.inputToRender.add(Math.max(0, completedAt - pendingAt));
       if (profile.lastRenderAt !== null) profile.frameIntervals.add(Math.max(0, completedAt - profile.lastRenderAt));
       profile.lastRenderAt = completedAt;
     }
@@ -9734,6 +9820,59 @@ export class ViewerInkSession {
     if (pending.event && this.logger.isEnabled()) this.updateDebug(surface, pending.event);
   }
 
+  /**
+   * A rAF after the canvas write is the local paint acknowledgement. It is an
+   * approximation of compositor visibility, intentionally sampled once per
+   * active surface rather than once per pointer sample.
+   */
+  private schedulePaintAcknowledgement(
+    surface: PageSurface,
+    committedAt: number,
+    profile: StrokePerformanceState
+  ): void {
+    if (!this.logger.isEnabled() || surface.paintAcknowledgementFrame !== null) return;
+    const view = surface.overlay.ownerDocument.defaultView;
+    if (!view) return;
+    const strokeId = profile.strokeId;
+    const correlationId = profile.physicalContactId
+      ?? strokeId
+      ?? (profile.pointerId === null ? null : `pointer:${profile.pointerId}`);
+    const acknowledge = (): void => {
+      surface.paintAcknowledgementFrame = null;
+      surface.paintAcknowledgementCancel = null;
+      if (this.destroyed) return;
+      const acknowledgedAt = performance.now();
+      const durationMs = Math.max(0, acknowledgedAt - committedAt);
+      profile.paintAcknowledgement.add(durationMs);
+      const span = this.slowSpans.record({
+        kind: "async",
+        category: "ink-latency",
+        stage: "paint-acknowledgement",
+        durationMs,
+        activeWorkMs: 0,
+        waitMs: durationMs,
+        correlationId,
+        zoomBurstId: this.zoomCorrelationId
+      });
+      if (span) this.logger.perfSlowSpan({ ...span, strokeId });
+    };
+    if (typeof view.requestAnimationFrame === "function") {
+      const frame = view.requestAnimationFrame(acknowledge);
+      surface.paintAcknowledgementFrame = frame;
+      surface.paintAcknowledgementCancel = () => view.cancelAnimationFrame(frame);
+    } else {
+      const timer = view.setTimeout(acknowledge, 0);
+      surface.paintAcknowledgementFrame = timer;
+      surface.paintAcknowledgementCancel = () => view.clearTimeout(timer);
+    }
+  }
+
+  private cancelPaintAcknowledgement(surface: PageSurface): void {
+    surface.paintAcknowledgementCancel?.();
+    surface.paintAcknowledgementCancel = null;
+    surface.paintAcknowledgementFrame = null;
+  }
+
   /** A terminal input event owns the final synchronous paint, never a stale frame callback. */
   private cancelLivePaint(surface: PageSurface): void {
     if (surface.livePaintFrame !== null) {
@@ -9742,6 +9881,7 @@ export class ViewerInkSession {
     }
     surface.pendingLivePaint = null;
     surface.pendingLivePaintAt = null;
+    surface.pendingLiveInputAt = null;
   }
 
   private clearLiveDrawPreview(surface: PageSurface): void {
@@ -9756,6 +9896,7 @@ export class ViewerInkSession {
   /** Drop detached page bitmaps and their scheduled work promptly. */
   private releaseSurfaceBuffers(surface: PageSurface): void {
     this.cancelLivePaint(surface);
+    this.cancelPaintAcknowledgement(surface);
     this.endWetPreview(surface);
     surface.canvas.width = 0;
     surface.canvas.height = 0;
@@ -10276,6 +10417,9 @@ export class ViewerInkSession {
         previewRenderer: "tool-renderer",
         committedRenderer: "tool-renderer"
       });
+      if (surface.strokePerformance?.strokeId === stroke.id) {
+        surface.strokePerformance.modelStartedAt = performance.now();
+      }
       this.executeHistory(new AddStrokeCommand(this.ink, stroke), stroke.page);
       this.logger.strokeLifecycle("stroke-commit", {
         strokeId: stroke.id,
@@ -12202,7 +12346,9 @@ export class ViewerInkSession {
     if (syncText) this.renderTextAnnotations(surface);
     if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
     const renderCompletedAt = performance.now();
-    this.noteStrokeCanvasCommit(surface, renderCompletedAt);
+    const profile = surface.strokePerformance;
+    this.noteStrokeCanvasCommit(surface, renderCompletedAt, paintStarted);
+    if (profile) this.schedulePaintAcknowledgement(surface, renderCompletedAt, profile);
     const renderDurationMs = roundMetric(renderCompletedAt - paintStarted);
     this.logger.renderProfile({
       page: pageNumber,
@@ -12679,6 +12825,7 @@ export class ViewerInkSession {
     simulateMousePressure: boolean,
     pressureConditioner?: PressureConditioner
   ): PagePoint[] {
+    const geometryStartedAt = surface.strokePerformance ? performance.now() : null;
     const overlayRect = surface.overlay.getBoundingClientRect();
     const mapper = this.mapper(surface);
     let previous = pressureConditioner ? surface.pressureLastPagePoint : undefined;
@@ -12699,6 +12846,9 @@ export class ViewerInkSession {
       return { x: point.x, y: point.y, pressure, tiltX: sample.tiltX, tiltY: sample.tiltY, time: sample.timeStamp };
     });
     if (pressureConditioner) surface.pressureLastPagePoint = previous;
+    if (geometryStartedAt !== null && surface.strokePerformance) {
+      surface.strokePerformance.geometry.add(Math.max(0, performance.now() - geometryStartedAt));
+    }
     return points;
   }
 
@@ -13428,6 +13578,21 @@ function pathBoundsWithPadding(points: readonly Pick<PagePoint, "x" | "y">[], pa
     maxX: maxX + safePadding,
     maxY: maxY + safePadding
   };
+}
+
+function normalizedPointerEventTime(event: Pick<PointerEvent, "timeStamp">, receivedAt: number): number {
+  let timestamp = event.timeStamp;
+  if (!Number.isFinite(timestamp)) return receivedAt;
+  // WebKit historically used epoch milliseconds while Chromium uses the
+  // performance time origin. Normalize epoch values before measuring input.
+  if (timestamp > 1_000_000_000_000) {
+    timestamp -= performance.timeOrigin;
+  }
+  // Synthetic/jsdom events commonly use timestamp 1; treating that as a real
+  // page-load event would manufacture a slow span in every test and trace.
+  if (timestamp <= 10 && receivedAt > 100) return receivedAt;
+  if (timestamp < 0 || timestamp > receivedAt + 2 || receivedAt - timestamp > 10_000) return receivedAt;
+  return timestamp;
 }
 
 function roundMs(value: number): number {
