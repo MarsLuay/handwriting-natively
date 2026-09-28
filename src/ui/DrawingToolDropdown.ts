@@ -2,10 +2,8 @@ import { createDetachedEl, createDetachedSpan } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
 import {
   DEFAULT_SETTINGS,
-  DRAWING_TOOLS,
   resolveDrawingTool,
   type DrawingTool,
-  type DrawingPreset,
   type ToolPreferences
 } from "../model";
 import type { DropdownOption } from "./DropdownController";
@@ -22,12 +20,6 @@ const HIGHLIGHTER_WIDTH_LABELS = [
   "Extra Broad",
   "Max"
 ] as const;
-
-const TOOL_LABELS: Record<DrawingTool, string> = {
-  pen: "Pen",
-  pencil: "Pencil",
-  highlighter: "Highlighter"
-};
 
 export function createWidthOptions(
   widths: readonly number[],
@@ -56,26 +48,11 @@ export function createWidthOptions(
 
 export function drawingOptions(
   preferences: ToolPreferences,
-  selectTool: (tool: DrawingTool) => void,
   selectWidth: (width: number) => void,
-  selectPreset?: (preset: DrawingPreset) => void
+  selectedTool: DrawingTool = resolveDrawingTool(preferences.activeTool)
 ): DropdownOption[] {
-  const tool = resolveDrawingTool(preferences.activeTool);
+  const tool = selectedTool;
   const drawing = preferences[tool];
-  const presets: DropdownOption[] = selectPreset
-    ? preferences.presets.map((preset) => ({
-      id: `preset-${preset.id}`,
-      label: `Preset: ${preset.name}`,
-      active: preferences.activePresetId === preset.id,
-      onSelect: () => selectPreset(preset)
-    }))
-    : [];
-  const tools: DropdownOption[] = DRAWING_TOOLS.map((id) => ({
-    id,
-    label: TOOL_LABELS[id],
-    active: tool === id,
-    onSelect: () => selectTool(id)
-  }));
   const widths = tool === "highlighter" ? HIGHLIGHTER_WIDTHS : DRAWING_WIDTHS;
   const labels = tool === "highlighter" ? HIGHLIGHTER_WIDTH_LABELS : WIDTH_LABELS;
   const widthOptions = createWidthOptions(
@@ -90,7 +67,7 @@ export function drawingOptions(
   widthOptions.forEach(opt => {
     opt.id = `width-${opt.id.replace(/^-width-/, "")}`;
   });
-  return [...presets, ...tools, ...widthOptions];
+  return widthOptions;
 }
 
 export function drawingAdvanced(

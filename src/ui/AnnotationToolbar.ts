@@ -1,5 +1,5 @@
-import type { DrawingTool, DrawingPreset, SaveStatus, TextStyle, ToolId, ToolPreferences } from "../model";
-import { isDrawingTool, resolveDrawingTool } from "../model";
+import type { DrawingTool, SaveStatus, TextStyle, ToolId, ToolPreferences } from "../model";
+import { resolveDrawingTool } from "../model";
 import { colorOptions } from "./ColorPicker";
 import { DropdownController, type DropdownOpenOptions, type DropdownOption } from "./DropdownController";
 import { drawingAdvanced, drawingOptions } from "./DrawingToolDropdown";
@@ -62,7 +62,6 @@ export class AnnotationToolbar {
   private readonly abort = new AbortController();
   private readonly buttons = new Map<string, HTMLButtonElement>();
   private readonly controls: HTMLElement;
-  private lastDrawingTool: DrawingTool;
   private autosave: boolean;
 
   constructor(options: AnnotationToolbarOptions) {
@@ -70,7 +69,6 @@ export class AnnotationToolbar {
     this.callbacks = options.callbacks;
     this.preferences = options.preferences;
     this.autosave = options.autosave;
-    this.lastDrawingTool = resolveDrawingTool(options.preferences.activeTool);
     this.dropdown = new DropdownController(this.ownerDocument);
     this.saveStatus = new SaveStatusIndicator(this.ownerDocument);
     this.element = createDetachedDiv(this.ownerDocument);
@@ -81,10 +79,10 @@ export class AnnotationToolbar {
     this.controls = createDetachedDiv(this.ownerDocument);
     this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
-    this.controls.append(this.presetSlots());
+    this.controls.append(this.drawingButton("pen"));
+    this.controls.append(this.drawingButton("pencil"));
+    this.controls.append(this.drawingButton("highlighter"));
     this.controls.append(this.colorButton());
-    this.controls.append(this.groupedTool("drawing", () => this.drawingMenu()));
-    this.controls.append(this.sidebarPresetHost());
     this.controls.append(this.groupedTool("eraser", () => this.eraserMenuOptions()));
     this.controls.append(this.groupedTool("laser", () => this.laserMenuOptions()));
     this.controls.append(this.groupedTool("lasso", () => ({ label: "Lasso options", options: this.lassoMenu() })));
@@ -96,69 +94,6 @@ export class AnnotationToolbar {
     if (!this.autosave && this.callbacks.onSave) this.controls.append(this.actionButton("save", "Save", () => void this.callbacks.onSave?.()));
     this.element.append(this.controls, this.saveStatus.element);
     this.updateButtons();
-  }
-
-  private presetSlots(): HTMLElement {
-    const slots = createDetachedDiv(this.ownerDocument);
-    slots.className = "native-pdf-handwriting-preset-slots";
-    slots.setAttribute("aria-label", "Drawing presets");
-    this.controls.append(slots);
-    return slots;
-  }
-
-  private renderPresetSlots(): void {
-    const slots = this.element.querySelector(".native-pdf-handwriting-preset-slots");
-    if (!(slots instanceof HTMLElement)) return;
-    slots.replaceChildren();
-    const visible = this.preferences.presets.slice(0, 6);
-    slots.hidden = visible.length === 0;
-    for (const preset of visible) {
-      const button = createDetachedEl(this.ownerDocument, "button");
-      button.type = "button";
-      button.className = "native-pdf-handwriting-toolbar-button native-pdf-handwriting-preset-slot";
-      button.dataset.presetId = preset.id;
-      button.textContent = preset.name;
-      button.title = preset.name;
-      button.setAttribute("aria-label", preset.name);
-      const active = this.preferences.activePresetId === preset.id && this.preferences.activeTool === preset.tool;
-      button.setAttribute("aria-pressed", String(active));
-      button.addEventListener("click", () => this.openPresetSettings(preset, button), { signal: this.abort.signal });
-      slots.append(button);
-    }
-  }
-
-  private sidebarPresetHost(): HTMLElement {
-    const host = createDetachedDiv(this.ownerDocument);
-    host.className = "native-pdf-handwriting-sidebar-presets";
-    host.setAttribute("aria-label", "Additional drawing presets");
-    return host;
-  }
-
-  private renderSidebarPresets(): void {
-    const host = this.element.querySelector(".native-pdf-handwriting-sidebar-presets");
-    if (!(host instanceof HTMLElement)) return;
-    host.replaceChildren();
-    // The Pen/drawing button represents the first preset. Additional presets
-    // are always a contiguous sidebar block in saved preset order; legacy
-    // sidebarPresetIds membership is intentionally ignored.
-    for (const preset of this.preferences.presets.slice(1)) {
-      const button = createDetachedEl(this.ownerDocument, "button");
-      button.type = "button";
-      button.className = "native-pdf-handwriting-toolbar-button clickable-icon native-pdf-handwriting-sidebar-preset";
-      button.dataset.sidebarPresetId = preset.id;
-      button.setAttribute("aria-label", preset.name);
-      button.removeAttribute("title");
-      const active = this.preferences.activePresetId === preset.id && this.preferences.activeTool === preset.tool;
-      button.setAttribute("aria-pressed", String(active));
-      setToolbarIcon(button, preset.tool);
-      const swatch = createDetachedEl(this.ownerDocument, "span");
-      swatch.className = "native-pdf-handwriting-color-icon";
-      swatch.setAttribute("aria-hidden", "true");
-      swatch.style.backgroundColor = preset.settings.color;
-      button.append(swatch);
-      button.addEventListener("click", () => this.openPresetSettings(preset, button, `preset-${preset.id}`), { signal: this.abort.signal });
-      host.append(button);
-    }
   }
 
   setAutosave(enabled: boolean): void {
@@ -192,12 +127,21 @@ export class AnnotationToolbar {
     this.element.remove();
   }
 
-  private groupedTool(id: "drawing" | "text" | "eraser" | "lasso" | "laser", menu: () => DropdownOpenOptions): HTMLButtonElement {
-    const main = this.actionButton(id, id, () => {
-      if (id === "drawing") {
-        this.openOriginalPenPreset(main);
-        return;
+  private drawingButton(tool: DrawingTool): HTMLButtonElement {
+    const button = this.actionButton(tool, DRAWING_LABELS[tool], () => {
+      if (this.preferences.activeTool === tool) {
+        this.dropdown.toggle(`drawing-${tool}`, button, this.drawingMenu(tool));
+      } else {
+        this.activate(tool);
       }
+    });
+    button.setAttribute("aria-haspopup", "menu");
+    button.setAttribute("aria-expanded", "false");
+    return button;
+  }
+
+  private groupedTool(id: "text" | "eraser" | "lasso" | "laser", menu: () => DropdownOpenOptions): HTMLButtonElement {
+    const main = this.actionButton(id, id, () => {
       const active = this.preferences.activeTool === id;
       if (active) this.dropdown.toggle(id, main, menu());
       else this.activate(id);
@@ -230,8 +174,10 @@ export class AnnotationToolbar {
   }
 
   private iconFor(id: string): ToolbarIcon {
-    if (id === "drawing") return this.lastDrawingTool;
     switch (id) {
+      case "pen":
+      case "pencil":
+      case "highlighter":
       case "eraser":
       case "lasso":
       case "laser":
@@ -253,135 +199,15 @@ export class AnnotationToolbar {
     return button;
   }
 
-  private drawingMenu(): DropdownOpenOptions {
+  private drawingMenu(tool: DrawingTool): DropdownOpenOptions {
     const content = createDetachedDiv(this.ownerDocument);
-    const options = drawingOptions(this.preferences, (tool) => {
-      this.preferences.activeTool = tool;
-      this.preferences.activePresetId = null;
-      this.lastDrawingTool = tool;
-      this.changed("tool");
-    }, (width) => {
-      const tool = this.lastDrawingTool;
+    const options = drawingOptions(this.preferences, (width) => {
       this.preferences[tool].width = width;
-      this.preferences.activeTool = tool;
-      const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId && preset.tool === tool);
-      if (selected) selected.settings = { ...this.preferences[tool] };
-      else this.preferences.activePresetId = null;
       this.changed();
-    }, (preset) => {
-      this.applyDrawingPreset(preset);
-    });
-    const tools = options.filter((option) => !option.id.startsWith("width-"));
-    const widths = options.filter((option) => option.id.startsWith("width-"));
-    for (const option of tools) content.append(this.inlineOption(option));
-    for (const option of widths) content.append(this.inlineOption(option));
-    content.append(this.presetEditor());
+    }, tool);
+    for (const option of options) content.append(this.inlineOption(option));
     content.append(drawingAdvanced(this.ownerDocument, this.preferences, () => this.changed(), this.abort.signal));
-    return { label: "Drawing options", content };
-  }
-
-  private originalPenPreset(): DrawingPreset | undefined {
-    return this.preferences.presets.find((preset) => preset.id === "black-pen")
-      ?? this.preferences.presets.find((preset) => preset.tool === "pen")
-      ?? this.preferences.presets[0];
-  }
-
-  /** The pen button is the original preset. Added presets open their own settings. */
-  private openOriginalPenPreset(anchor: HTMLElement): void {
-    if (!isDrawingTool(this.preferences.activeTool)) {
-      const current = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
-      const preset = current ?? this.originalPenPreset();
-      this.dropdown.close(false);
-      if (preset) this.applyDrawingPreset(preset);
-      else this.activate(this.lastDrawingTool);
-      return;
-    }
-    this.dropdown.toggle("drawing", anchor, this.drawingMenu());
-  }
-
-  private openPresetSettings(preset: DrawingPreset, anchor: HTMLElement, menuId = "drawing"): void {
-    const active = this.preferences.activePresetId === preset.id && this.preferences.activeTool === preset.tool;
-    if (!active) {
-      this.dropdown.close(false);
-      this.applyDrawingPreset(preset);
-      return;
-    }
-    const live = menuId === "drawing"
-      ? anchor
-      : this.element.querySelector<HTMLElement>(`[data-sidebar-preset-id="${preset.id}"]`)
-        ?? this.element.querySelector<HTMLElement>(`[data-preset-id="${preset.id}"]`)
-        ?? anchor;
-    this.dropdown.toggle(menuId, live, this.drawingMenu());
-  }
-
-  private applyDrawingPreset(preset: DrawingPreset): void {
-    Object.assign(this.preferences[preset.tool], preset.settings);
-    this.preferences.activeTool = preset.tool;
-    this.preferences.activePresetId = preset.id;
-    this.lastDrawingTool = preset.tool;
-    this.changed("tool");
-  }
-
-  private presetEditor(): HTMLElement {
-    const wrapper = createDetachedDiv(this.ownerDocument);
-    wrapper.className = "native-pdf-handwriting-preset-editor";
-    const label = createDetachedEl(this.ownerDocument, "label");
-    label.textContent = "Save current drawing settings as preset";
-    const input = createDetachedEl(this.ownerDocument, "input");
-    input.type = "text";
-    input.maxLength = 80;
-    input.placeholder = `${DRAWING_LABELS[this.lastDrawingTool]} preset`;
-    const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
-    if (selected) input.value = selected.name;
-    const save = createDetachedEl(this.ownerDocument, "button");
-    save.type = "button";
-    save.textContent = "Save";
-    save.addEventListener("click", () => {
-      const tool = this.lastDrawingTool;
-      const name = input.value.trim() || `${DRAWING_LABELS[tool]} preset`;
-      const selected = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
-      if (selected) {
-        selected.name = name;
-        selected.tool = tool;
-        selected.settings = { ...this.preferences[tool] };
-      } else {
-        const idBase = `custom-${Date.now().toString(36)}`;
-        let id = idBase;
-        let suffix = 2;
-        while (this.preferences.presets.some((preset) => preset.id === id)) id = `${idBase}-${suffix++}`;
-        if (this.preferences.presets.length >= 8) {
-          this.preferences.presets.shift();
-        }
-        this.preferences.presets.push({ id, name, tool, settings: { ...this.preferences[tool] } });
-        this.preferences.activePresetId = id;
-      }
-      this.changed();
-    }, { signal: this.abort.signal });
-    label.append(input, save);
-    wrapper.append(label);
-    if (selected) {
-      const remove = createDetachedEl(this.ownerDocument, "button");
-      remove.type = "button";
-      remove.textContent = "Delete selected preset";
-      const lastPreset = this.preferences.presets.length <= 1;
-      remove.disabled = lastPreset;
-      if (lastPreset) {
-        remove.title = "At least one preset is required.";
-        remove.setAttribute("aria-description", "At least one preset is required.");
-      }
-      remove.addEventListener("click", () => {
-        if (this.preferences.presets.length <= 1) return;
-        const index = this.preferences.presets.findIndex((preset) => preset.id === selected.id);
-        if (index < 0) return;
-        const next = this.preferences.presets[index + 1] ?? this.preferences.presets[index - 1];
-        const deletingActive = this.preferences.activePresetId === selected.id;
-        this.preferences.presets.splice(index, 1);
-        if (deletingActive && next) this.applyDrawingPreset(next);
-        else this.changed();
-      }, { signal: this.abort.signal });
-      wrapper.append(remove);
-    }
-    return wrapper;
+    return { label: `${DRAWING_LABELS[tool]} options`, content };
   }
 
   private laserMenuOptions(): DropdownOpenOptions {
@@ -555,7 +381,6 @@ export class AnnotationToolbar {
 
   private activate(tool: ToolId): void {
     this.preferences.activeTool = tool;
-    if (isDrawingTool(tool)) this.lastDrawingTool = tool;
     this.changed("tool");
   }
 
@@ -565,19 +390,16 @@ export class AnnotationToolbar {
   }
 
   private updateButtons(): void {
-    this.renderPresetSlots();
-    this.renderSidebarPresets();
     const active = this.preferences.activeTool;
-    this.presentButton(
-      this.buttons.get("drawing")!,
-      DRAWING_LABELS[this.lastDrawingTool],
-      this.lastDrawingTool
-    );
+    for (const tool of ["pen", "pencil", "highlighter"] as const) {
+      const button = this.buttons.get(tool)!;
+      this.presentButton(button, DRAWING_LABELS[tool], tool);
+      button.setAttribute("aria-pressed", String(active === tool));
+    }
     this.presentButton(this.buttons.get("eraser")!, "Eraser", "eraser");
     this.presentButton(this.buttons.get("laser")!, "Laser pointer", "laser");
     this.presentButton(this.buttons.get("lasso")!, this.preferences.lasso.type === "freeform" ? "Lasso" : "Rectangle", "lasso");
     this.presentButton(this.buttons.get("text")!, "Text", "text");
-    this.buttons.get("drawing")!.setAttribute("aria-pressed", String(isDrawingTool(active)));
     this.buttons.get("eraser")!.setAttribute("aria-pressed", String(active === "eraser"));
     this.buttons.get("laser")!.setAttribute("aria-pressed", String(active === "laser"));
     this.buttons.get("lasso")!.setAttribute("aria-pressed", String(active === "lasso"));

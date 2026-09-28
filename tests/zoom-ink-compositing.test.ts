@@ -1314,8 +1314,7 @@ describe("zoom ink compositing", () => {
     expect(probeSurface(session).inkLayerValid).toBe(true);
 
     // Prefer preference chrome path over selectTool (session attach gates vary in this harness).
-    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
-    document.querySelector<HTMLButtonElement>("[data-option-id='pencil']")?.click();
+    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='pencil']")?.click();
     expect(probeSurface(session).inkLayerValid).toBe(true);
 
     await session.destroy();

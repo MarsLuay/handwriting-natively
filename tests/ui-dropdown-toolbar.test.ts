@@ -81,7 +81,9 @@ describe("AnnotationToolbar", () => {
     document.body.append(toolbar.element);
     expect(toolbar.element.querySelector("[data-control='draw']")).toBeNull();
     expect(toolbar.element.textContent ?? "").not.toMatch(/\bDraw\b/);
-    expect(toolbar.element.querySelector("[data-control='drawing']")).toBeTruthy();
+    expect(toolbar.element.querySelector("[data-control='pen']")).toBeTruthy();
+    expect(toolbar.element.querySelector("[data-control='pencil']")).toBeTruthy();
+    expect(toolbar.element.querySelector("[data-control='highlighter']")).toBeTruthy();
     expect(toolbar.element.querySelector("[data-control='eraser']")).toBeTruthy();
     expect(toolbar.element.querySelector("[data-control='color']")).toBeTruthy();
     toolbar.destroy();
@@ -107,20 +109,18 @@ describe("AnnotationToolbar", () => {
     const toolbar = new AnnotationToolbar({ preferences, autosave: false, callbacks: { onPreferencesChange: changed, onSave: save }, ownerDocument: document });
     document.body.append(toolbar.element);
     expect(toolbar.element.querySelector("[data-control='save']")).not.toBeNull();
-    // Active drawing tool again → open options (no chevron arrow).
-    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
-    document.querySelector<HTMLButtonElement>("[data-option-id='pencil']")?.click();
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='pencil']")?.click();
     expect(preferences.activeTool).toBe("pencil");
-    const drawing = toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']");
-    expect(drawing?.getAttribute("aria-label")).toBe("Pencil");
-    expect(drawing?.classList.contains("clickable-icon")).toBe(true);
-    expect(drawing?.querySelector("svg")).not.toBeNull();
+    const pencil = toolbar.element.querySelector<HTMLButtonElement>("[data-control='pencil']");
+    expect(pencil?.getAttribute("aria-label")).toBe("Pencil");
+    expect(pencil?.classList.contains("clickable-icon")).toBe(true);
+    expect(pencil?.querySelector("svg")).not.toBeNull();
     expect(changed).toHaveBeenCalled();
-    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
-    document.querySelector<HTMLButtonElement>("[data-option-id='highlighter']")?.click();
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='highlighter']")?.click();
     expect(preferences.activeTool).toBe("highlighter");
-    expect(drawing?.getAttribute("aria-label")).toBe("Highlighter");
-    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
+    const highlighter = toolbar.element.querySelector<HTMLButtonElement>("[data-control='highlighter']");
+    expect(highlighter?.getAttribute("aria-label")).toBe("Highlighter");
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='highlighter']")?.click();
     expect(document.querySelector<HTMLButtonElement>("[data-option-id='shape']")).toBeNull();
     const shapeRecognition = document.querySelector<HTMLInputElement>("[data-setting='shape-recognition']");
     expect(shapeRecognition?.checked).toBe(true);
@@ -138,28 +138,7 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
-  it("selects and edits bounded drawing presets without a separate draw mode", () => {
-    const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
-    const changed = vi.fn();
-    const toolbar = new AnnotationToolbar({ preferences, autosave: true, callbacks: { onPreferencesChange: changed }, ownerDocument: document });
-    document.body.append(toolbar.element);
-    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
-    document.querySelector<HTMLButtonElement>("[data-option-id='preset-blue-pen']")?.click();
-    expect(preferences.activePresetId).toBe("blue-pen");
-    expect(preferences.activeTool).toBe("pen");
-    expect(preferences.pen.color).toBe("#2563eb");
-
-    toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
-    const name = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-preset-editor input");
-    if (!name) throw new Error("preset name input missing");
-    name.value = "Meeting pen";
-    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-preset-editor button")?.click();
-    expect(preferences.presets.find((preset) => preset.id === "blue-pen")?.name).toBe("Meeting pen");
-    expect(changed).toHaveBeenCalled();
-    toolbar.destroy();
-  });
-
-  it("orders draw, color, pen, eraser, then laser on the toolbar", () => {
+  it("orders the three drawing tools before shared color and secondary tools", () => {
     const toolbar = new AnnotationToolbar({
       preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
       autosave: true,
@@ -169,9 +148,10 @@ describe("AnnotationToolbar", () => {
     document.body.append(toolbar.element);
     const controls = [...toolbar.element.querySelectorAll<HTMLElement>("[data-control]")];
     const ids = controls.map((el) => el.dataset.control);
-    expect(ids.indexOf("draw")).toBeLessThan(ids.indexOf("color"));
-    expect(ids.indexOf("color")).toBeLessThan(ids.indexOf("drawing"));
-    expect(ids.indexOf("drawing")).toBeLessThan(ids.indexOf("eraser"));
+    expect(ids.indexOf("pen")).toBeLessThan(ids.indexOf("pencil"));
+    expect(ids.indexOf("pencil")).toBeLessThan(ids.indexOf("highlighter"));
+    expect(ids.indexOf("highlighter")).toBeLessThan(ids.indexOf("color"));
+    expect(ids.indexOf("color")).toBeLessThan(ids.indexOf("eraser"));
     expect(ids.indexOf("eraser")).toBeLessThan(ids.indexOf("laser"));
     toolbar.destroy();
   });

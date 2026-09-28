@@ -166,55 +166,6 @@
   touch-action: pan-x;
 }
 
-.native-pdf-handwriting-preset-slots {
-  display: flex;
-  flex: 0 1 auto;
-  gap: 2px;
-  max-width: 46%;
-  min-width: 0;
-  overflow: hidden;
-}
-
-/* Sidebar is icon-only. Name text clips in the narrow rail; keep the name on the button. */
-.native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-preset-slots,
-.native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-preset-slots {
-  display: none;
-}
-
-.native-pdf-handwriting-sidebar-presets {
-  display: none;
-}
-
-.native-pdf-handwriting-toolbar.is-sidebar-left .native-pdf-handwriting-sidebar-presets,
-.native-pdf-handwriting-toolbar.is-sidebar-right .native-pdf-handwriting-sidebar-presets {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.native-pdf-handwriting-sidebar-preset {
-  position: relative;
-}
-
-.native-pdf-handwriting-sidebar-preset .native-pdf-handwriting-color-icon {
-  border-radius: 99px;
-  bottom: 4px;
-  height: 8px;
-  position: absolute;
-  right: 4px;
-  width: 8px;
-}
-
-.native-pdf-handwriting-preset-slot {
-  font-size: 12px;
-  max-width: 7.5rem;
-  overflow: hidden;
-  padding-inline: 8px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  width: auto;
-}
-
 .native-pdf-handwriting-dropdown-option {
   align-items: center;
   background: transparent;
@@ -387,9 +338,6 @@
 }
 .native-pdf-handwriting-advanced { border-top: 1px solid var(--background-modifier-border, #d1d5db); padding: 8px; }
 .native-pdf-handwriting-advanced label { align-items: center; display: flex; gap: 8px; justify-content: space-between; min-height: 36px; }
-.native-pdf-handwriting-preset-editor { border-top: 1px solid var(--background-modifier-border, #d1d5db); display: grid; gap: 6px; margin-top: 8px; padding: 8px; }
-.native-pdf-handwriting-preset-editor label { align-items: center; display: flex; gap: 6px; justify-content: space-between; }
-.native-pdf-handwriting-preset-editor input[type="text"] { flex: 1 1 auto; min-width: 0; }
 /* Collapsible settings: override Obsidian's flex setting-item so <details> is full width. */
 .setting-item.native-pdf-handwriting-settings-details-host {
   align-items: stretch;
