@@ -18,6 +18,7 @@ export type InkLifecycleListener = (event: InkLifecycleEvent) => void;
 export class InkSession {
   private readonly byPage = new Map<number, InkStroke[]>();
   private readonly indexByPage = new Map<number, StrokeSpatialIndex>();
+  private readonly revisionByPage = new Map<number, number>();
   private strokeCount = 0;
 
   constructor(initial: readonly InkStroke[] = [], private readonly onLifecycle?: InkLifecycleListener) {
@@ -29,6 +30,7 @@ export class InkSession {
     this.byPage.set(stroke.page, [...(this.byPage.get(stroke.page) ?? []), stroke]);
     this.index(stroke.page).add(stroke);
     this.strokeCount += 1;
+    this.bumpPageRevision(stroke.page);
     this.onLifecycle?.({
       phase: "stroke-model-insert",
       stroke,
@@ -47,6 +49,7 @@ export class InkSession {
         this.byPage.set(page, strokes);
         this.index(page).remove(id);
         this.strokeCount -= 1;
+        this.bumpPageRevision(page);
         if (removed) {
           this.onLifecycle?.({
             phase: "stroke-model-remove",
@@ -79,6 +82,7 @@ export class InkSession {
     index.clear();
     for (const stroke of next) index.add(stroke);
     this.strokeCount += next.length - previous.length;
+    this.bumpPageRevision(page);
     for (const stroke of previous) {
       if (!nextIds.has(stroke.id)) {
         this.onLifecycle?.({
@@ -105,6 +109,8 @@ export class InkSession {
   }
 
   page(page: number): readonly InkStroke[] { return this.byPage.get(page) ?? []; }
+  /** Monotonic page-local revision for rendered ink cache coherence. */
+  pageRevision(page: number): number { return this.revisionByPage.get(page) ?? 0; }
   /** Paint/hit-test candidates in a page-local PDF-space rectangle. */
   pageIntersecting(page: number, bounds: Bounds): readonly InkStroke[] {
     return this.indexByPage.get(page)?.query(bounds) ?? [];
@@ -119,10 +125,12 @@ export class InkSession {
 
   clear(reason = "clear"): void {
     const previous = this.all();
+    const pages = new Set(previous.map((stroke) => stroke.page));
     const strokeCountBefore = this.strokeCount;
     this.byPage.clear();
     this.indexByPage.clear();
     this.strokeCount = 0;
+    for (const page of pages) this.bumpPageRevision(page);
     for (const stroke of previous) {
       this.onLifecycle?.({
         phase: "stroke-model-remove",
@@ -142,5 +150,9 @@ export class InkSession {
       this.indexByPage.set(page, index);
     }
     return index;
+  }
+
+  private bumpPageRevision(page: number): void {
+    this.revisionByPage.set(page, this.pageRevision(page) + 1);
   }
 }
