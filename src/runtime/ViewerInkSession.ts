@@ -879,6 +879,19 @@ interface NativeHandoffMutationResult {
   reattached: boolean;
 }
 
+interface ZoomReleaseGate {
+  inputTerminalsReady: boolean;
+  inputTerminalTimedOut: boolean;
+  nativeRenderSignalReady: boolean;
+  nativeRenderSignalCount: number;
+  nativeRenderSignalAt: number | null;
+  nativeContentQuiet: boolean;
+  replacementInkReady: boolean;
+  stableRafReady: boolean;
+  timeoutReached: boolean;
+  ready: boolean;
+}
+
 interface ActiveTextEditor {
   surface: PageSurface;
   existing: TextAnnotation | null;
@@ -1097,9 +1110,8 @@ export class ViewerInkSession {
     routeReason: string | null;
     captureStale: boolean;
   }>();
-  /** Delayed release avoids exposing an ink redraw before PDF.js finishes its own render. */
+  /** Bounded release gate timer/frame; native replacement keeps this held. */
   private zoomCompositeReleaseFrame: number | null = null;
-  private inkReleaseHolds = 0;
   private readonly lastInkPixelByPage = new Map<number, boolean>();
   private zoomCompositeReleaseTimer: number | null = null;
   private zoomCompositeSettledAt = 0;
@@ -1170,10 +1182,12 @@ export class ViewerInkSession {
   private static readonly ZOOM_SETTLE_TINY_RELATIVE = 0.015;
   /** Must cover ZOOM_SETTLE_MS so gesture-active / handoff guards hold through coalesce. */
   private static readonly ZOOM_ACTIVE_MS = 600;
-  /** PDF.js usually swaps canvas/text layers hundreds of ms after scalechanging. */
+  /** Fallback deadline when PDF.js gives no replacement/render signal. */
   private static readonly ZOOM_NATIVE_RENDER_GRACE_MS = 500;
   /** Do not release during the tail of a native page-content replacement burst. */
   private static readonly ZOOM_NATIVE_RENDER_QUIET_MS = 120;
+  /** Recheck unresolved release-gate dependencies without a fixed release tail. */
+  private static readonly ZOOM_RELEASE_GATE_RETRY_MS = 32;
   /** Detect back-to-back page paints during handoff (flash proxy). */
   private static readonly FLASH_DOUBLE_PAINT_MS = 50;
   private static readonly PIXEL_EVIDENCE_MAX_EDGE = 192;
@@ -5102,43 +5116,131 @@ export class ViewerInkSession {
 
   /**
    * PDF.js asynchronously replaces its canvas/text layers after scalechanging.
-   * Keep our already-positioned layer over that native transition, then allow
-   * two browser paints only after the native replacement has gone quiet.
+   * Keep our already-positioned layer over that native transition, then release
+   * on the first stable frame whose input, native-content, and ink dependencies
+   * are all satisfied. A bounded retry remains the fallback for missing signals.
    */
-  private releaseZoomCompositeAfterNativeRender(): void {
-    const view = this.options.adapter.host.ownerDocument.defaultView;
-    if (!view) {
-      this.releaseZoomCompositeLayers();
-      return;
+  private zoomReleaseGate(now: number, stableRafReady = false): ZoomReleaseGate {
+    const cleanup = this.pinchCleanup.evaluate(now, PINCH_CLEANUP_MAX_WAIT_MS);
+    const handoff = this.zoomNativeHandoffTrace.summary();
+    const renderSignals = [
+      handoff?.signals.canvasReplacement,
+      handoff?.signals.pagerendered
+    ].filter((signal): signal is NonNullable<typeof signal> => Boolean(signal));
+    const nativeRenderSignalCount = renderSignals.reduce((count, signal) => count + signal.count, 0);
+    const nativeRenderSignalAt = renderSignals.reduce<number | null>(
+      (latest, signal) => signal.lastAt === null ? latest : Math.max(latest ?? signal.lastAt, signal.lastAt),
+      null
+    );
+    const timeoutReached = this.zoomCompositeSettledAt > 0
+      && now - this.zoomCompositeSettledAt >= ViewerInkSession.ZOOM_NATIVE_RENDER_GRACE_MS;
+    const nativeRenderSignalReady = nativeRenderSignalCount > 0 || timeoutReached;
+    const nativeContentQuiet = this.lastZoomNativeContentAt === 0
+      || now - this.lastZoomNativeContentAt >= ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS;
+    const replacementReady = this.replacementInkReady();
+    const inputTerminalsReady = cleanup.quiescent;
+    return {
+      inputTerminalsReady,
+      inputTerminalTimedOut: cleanup.gestureCleanupTimedOut,
+      nativeRenderSignalReady,
+      nativeRenderSignalCount,
+      nativeRenderSignalAt,
+      nativeContentQuiet,
+      replacementInkReady: replacementReady,
+      stableRafReady,
+      timeoutReached,
+      ready: inputTerminalsReady
+        && nativeRenderSignalReady
+        && nativeContentQuiet
+        && replacementReady
+        && stableRafReady
+    };
+  }
+
+  private zoomReleaseGateDelayMs(now: number, gate: ZoomReleaseGate): number {
+    if (gate.ready) return 0;
+    let nextAt = now + ViewerInkSession.ZOOM_RELEASE_GATE_RETRY_MS;
+    if (!gate.nativeRenderSignalReady && this.zoomCompositeSettledAt > 0) {
+      nextAt = Math.min(
+        nextAt,
+        this.zoomCompositeSettledAt + ViewerInkSession.ZOOM_NATIVE_RENDER_GRACE_MS
+      );
     }
+    if (!gate.nativeContentQuiet && this.lastZoomNativeContentAt > 0) {
+      nextAt = Math.min(
+        nextAt,
+        this.lastZoomNativeContentAt + ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS
+      );
+    }
+    return Math.max(0, nextAt - now);
+  }
+
+  private releaseZoomCompositeAfterNativeRender(): void {
+    if (this.destroyed) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
     this.cancelZoomCompositeRelease();
     const now = performance.now();
-    const settledAt = this.zoomCompositeSettledAt || now;
-    const nativeRenderReadyAt = settledAt + ViewerInkSession.ZOOM_NATIVE_RENDER_GRACE_MS;
-    const nativeContentQuietAt = this.lastZoomNativeContentAt > 0
-      ? this.lastZoomNativeContentAt + ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS
-      : nativeRenderReadyAt;
-    const releaseAt = Math.max(nativeRenderReadyAt, nativeContentQuietAt);
-    const delayMs = Math.max(0, releaseAt - now);
+    const gate = this.zoomReleaseGate(now);
+    const delayMs = this.zoomReleaseGateDelayMs(now, gate);
     this.logger.zoomComposite("release-scheduled", {
       pages: this.surfaces.size,
       delayMs: roundMs(delayMs),
       nativeContentMutations: this.zoomNativeContentMutations,
-      sinceSettleMs: roundMs(now - settledAt)
+      sinceSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null,
+      inputTerminalsReady: gate.inputTerminalsReady,
+      inputTerminalTimedOut: gate.inputTerminalTimedOut,
+      nativeRenderSignalReady: gate.nativeRenderSignalReady,
+      nativeRenderSignalCount: gate.nativeRenderSignalCount,
+      nativeRenderSignalAt: gate.nativeRenderSignalAt,
+      nativeContentQuiet: gate.nativeContentQuiet,
+      replacementInkReady: gate.replacementInkReady,
+      stableRafReady: gate.stableRafReady,
+      timeoutReached: gate.timeoutReached,
+      gateReadyBeforeStableRaf: gate.ready
     });
+    if (!view) {
+      this.rebaseZoomAfterNativeRender();
+      const fallbackGate = this.zoomReleaseGate(performance.now(), true);
+      if (fallbackGate.ready) this.releaseZoomCompositeLayers();
+      return;
+    }
     this.zoomCompositeReleaseTimer = window.setTimeout(() => {
       this.zoomCompositeReleaseTimer = null;
+      if (this.destroyed || this.zoomCompositing) return;
       this.zoomCompositeReleaseFrame = view.requestAnimationFrame(() => {
-        this.zoomCompositeReleaseFrame = view.requestAnimationFrame(() => {
-          this.zoomCompositeReleaseFrame = null;
-          if (this.destroyed || this.zoomCompositing) return;
-          this.zoomNativeHandoffTrace.noteStableRaf({
-            at: performance.now(),
-            compositorHeld: this.isZoomHandoffActive(),
-            phase: this.nativeHandoffPhase()
-          });
-          this.releaseZoomCompositeLayers();
+        this.zoomCompositeReleaseFrame = null;
+        if (this.destroyed || this.zoomCompositing) return;
+        this.rebaseZoomAfterNativeRender();
+        const stableAt = performance.now();
+        const stableGate = this.zoomReleaseGate(stableAt, true);
+        this.zoomNativeHandoffTrace.noteStableRaf({
+          at: stableAt,
+          compositorHeld: !stableGate.ready,
+          phase: this.nativeHandoffPhase()
         });
+        this.logger.zoomComposite("release-scheduled", {
+          pages: this.surfaces.size,
+          delayMs: 0,
+          nativeContentMutations: this.zoomNativeContentMutations,
+          sinceSettleMs: this.zoomCompositeSettledAt > 0
+            ? roundMs(stableAt - this.zoomCompositeSettledAt)
+            : null,
+          inputTerminalsReady: stableGate.inputTerminalsReady,
+          inputTerminalTimedOut: stableGate.inputTerminalTimedOut,
+          nativeRenderSignalReady: stableGate.nativeRenderSignalReady,
+          nativeRenderSignalCount: stableGate.nativeRenderSignalCount,
+          nativeRenderSignalAt: stableGate.nativeRenderSignalAt,
+          nativeContentQuiet: stableGate.nativeContentQuiet,
+          replacementInkReady: stableGate.replacementInkReady,
+          stableRafReady: true,
+          timeoutReached: stableGate.timeoutReached,
+          gateReadyBeforeStableRaf: stableGate.ready
+        });
+        if (!stableGate.ready) {
+          this.releaseZoomCompositeAfterNativeRender();
+          return;
+        }
+        this.releaseZoomCompositeLayers();
       });
     }, delayMs);
   }
@@ -5480,37 +5582,37 @@ export class ViewerInkSession {
   }
 
   private releaseZoomCompositeLayers(): void {
+    const nativeContentQuiet = this.lastZoomNativeContentAt === 0
+      || performance.now() - this.lastZoomNativeContentAt >= ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS;
+    if (!nativeContentQuiet && !this.destroyed) {
+      this.logger.zoomComposite("release-scheduled", {
+        pages: this.surfaces.size,
+        delayMs: ViewerInkSession.ZOOM_RELEASE_GATE_RETRY_MS,
+        nativeContentMutations: this.zoomNativeContentMutations,
+        releaseBlocked: "native-content-mutating"
+      });
+      this.releaseZoomCompositeAfterNativeRender();
+      return;
+    }
     this.recordInkVisibility("before-final-canonical");
     this.rebaseZoomAfterNativeRender();
     this.recordInkVisibility("after-final-canonical");
-    if (!this.replacementInkReady() && this.inkReleaseHolds < 2) {
-      this.inkReleaseHolds += 1;
-      const view = this.options.adapter.host.ownerDocument.defaultView;
-      if (view) {
-        this.zoomCompositeReleaseFrame = view.requestAnimationFrame(() => {
-          this.zoomCompositeReleaseFrame = null;
-          this.zoomNativeHandoffTrace.noteStableRaf({
-            at: performance.now(),
-            compositorHeld: this.isZoomHandoffActive(),
-            phase: this.nativeHandoffPhase()
-          });
-          this.releaseZoomCompositeLayers();
-        });
-        return;
-      }
+    if (!this.replacementInkReady() && !this.destroyed) {
+      this.logger.zoomComposite("release-scheduled", {
+        pages: this.surfaces.size,
+        delayMs: ViewerInkSession.ZOOM_RELEASE_GATE_RETRY_MS,
+        nativeContentMutations: this.zoomNativeContentMutations,
+        sinceSettleMs: this.zoomCompositeSettledAt > 0
+          ? roundMs(performance.now() - this.zoomCompositeSettledAt)
+          : null,
+        replacementInkReady: false,
+        releaseBlocked: "replacement-ink-unavailable"
+      });
+      if (this.options.adapter.host.ownerDocument.defaultView) this.releaseZoomCompositeAfterNativeRender();
+      return;
     }
-    this.inkReleaseHolds = 0;
     this.recordInkVisibility("before-composite-release");
     const now = performance.now();
-    if (this.lastZoomNativeContentAt > 0) {
-      const msSinceNative = now - this.lastZoomNativeContentAt;
-      if (msSinceNative < ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS) {
-        this.logger.zoomFlashProxy("release-while-native-mutating", {
-          msSinceNative: roundMs(msSinceNative),
-          nativeContentMutations: this.zoomNativeContentMutations
-        });
-      }
-    }
     for (const surface of this.surfaces.values()) {
       surface.overlay.classList.remove("native-pdf-handwriting-zoom-compositing");
     }
