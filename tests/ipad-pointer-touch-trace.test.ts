@@ -27,6 +27,9 @@ describe("IpadPointerTouchTrace", () => {
     trace.start(true);
 
     target.dispatchEvent(pointerEvent("pointerover"));
+    for (let index = 0; index < 3; index += 1) {
+      target.dispatchEvent(new Event("gesturechange", { bubbles: true, cancelable: true }));
+    }
     for (let index = 0; index < 5; index += 1) {
       target.dispatchEvent(pointerEvent("pointermove", 8, "pen", 0, 0));
     }
@@ -38,11 +41,14 @@ describe("IpadPointerTouchTrace", () => {
     target.dispatchEvent(pointerEvent("pointerleave"));
 
     const snapshot = trace.snapshot();
-    expect(snapshot.schemaVersion).toBe(3);
+    expect(snapshot.schemaVersion).toBe(4);
     expect(snapshot.summary.eventTypes.pointerover).toBe(1);
+    expect(snapshot.summary.eventTypes.gesturechange).toBe(3);
+    expect(snapshot.summary.gestureChangeEvents).toBe(3);
     expect(snapshot.summary.eventTypes.pointermove).toBe(25);
     expect(snapshot.summary.passivePenHoverMoves).toBe(5);
     expect(snapshot.events.some((event) => event.type === "pointerover")).toBe(false);
+    expect(snapshot.events.some((event) => event.type === "gesturechange")).toBe(false);
     expect(snapshot.events.some((event) => event.type === "pointermove")).toBe(true);
     expect(snapshot.events.some((event) => event.pointerType === "pen")).toBe(false);
     expect(snapshot.summary.touchActionStyleReads).toBe(2);
