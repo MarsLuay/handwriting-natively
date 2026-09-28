@@ -1924,6 +1924,47 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("appends repeated pen strokes without repainting the full page", async () => {
+    const adapter = new FakeAdapter();
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: { write: (_level, event, payload = {}) => logs.push({ event, payload }) }
+    });
+
+    for (let index = 0; index < 3; index += 1) {
+      const pointerId = 40 + index;
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", 100 + index * 20, 120, { pointerId }));
+      adapter.pageElement.dispatchEvent(pointer("pointermove", 120 + index * 20, 150, { pointerId }));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 140 + index * 20, 180, { pointerId }));
+    }
+
+    const appended = logs
+      .filter(({ event, payload }) => event === "ink render profile" && payload.operation === "stroke-append")
+      .map(({ payload }) => payload);
+    expect(appended).toHaveLength(3);
+    expect(appended.every((payload) => payload.incremental === true)).toBe(true);
+    expect(appended.map((payload) => payload.pageStrokeCount)).toEqual([1, 2, 3]);
+
+    session.writeCopiedLogUiSnapshot();
+    const copiedTrace = logs.find(({ event }) => event === "last-zoom-trace");
+    expect(copiedTrace?.payload.slowInkStrokeSummary).toMatchObject({
+      totalSlowStrokes: expect.any(Number),
+      byStage: expect.any(Object),
+      worstStrokes: expect.any(Array)
+    });
+    await session.destroy();
+  });
+
   it("uses Cmd or Ctrl as a non-persistent temporary eraser", async () => {
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
