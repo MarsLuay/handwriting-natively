@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../src/model";
 import {
   AutosaveQueue,
+  AUTOSAVE_SLOW_PHASE_MS,
   DEFAULT_AUTOSAVE_DELAY_MS,
   DEFAULT_AUTOSAVE_MAX_RETRIES
 } from "../src/storage/AutosaveQueue";
@@ -40,6 +41,70 @@ describe("autosave", () => {
     expect(write).toHaveBeenCalledOnce();
     expect(write).toHaveBeenCalledWith("doc", "three");
     vi.useRealTimers();
+  });
+
+  it("reports only thresholded scheduler and write phases", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const slowOperations: Array<{ documentId: string; slowPhases: Array<{ phase: string; durationMs: number }> }> = [];
+    const queue = new AutosaveQueue<string>({
+      delayMs: 10,
+      maxDirtyIntervalMs: 1_000,
+      now: () => now,
+      write: async (documentId) => {
+        if (documentId === "slow-write") now += AUTOSAVE_SLOW_PHASE_MS + 25;
+      },
+      onSlowOperation: (operation) => slowOperations.push(operation)
+    });
+
+    queue.schedule("fast", "one");
+    now = 10;
+    await vi.advanceTimersByTimeAsync(10);
+    expect(slowOperations).toEqual([]);
+
+    queue.schedule("late", "two");
+    now += AUTOSAVE_SLOW_PHASE_MS + 25;
+    await vi.advanceTimersByTimeAsync(10);
+
+    queue.schedule("slow-write", "three");
+    await queue.flush("slow-write");
+
+    expect(slowOperations.map(({ documentId }) => documentId)).toEqual(["late", "slow-write"]);
+    expect(slowOperations[0]?.slowPhases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: "timer-lateness", durationMs: AUTOSAVE_SLOW_PHASE_MS + 15 })
+    ]));
+    expect(slowOperations[1]?.slowPhases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: "sidecar-write", durationMs: AUTOSAVE_SLOW_PHASE_MS + 25 })
+    ]));
+    vi.useRealTimers();
+  });
+
+  it("attributes an overlapping flush to the active-write wait", async () => {
+    let now = 0;
+    let release: (() => void) | undefined;
+    const slowOperations: Array<{ slowPhases: Array<{ phase: string; durationMs: number }> }> = [];
+    const queue = new AutosaveQueue<string>({
+      delayMs: 1_000,
+      now: () => now,
+      write: async (_documentId, snapshot) => {
+        if (snapshot === "one") await new Promise<void>((resolve) => { release = resolve; });
+      },
+      onSlowOperation: (operation) => slowOperations.push(operation)
+    });
+
+    queue.schedule("doc", "one");
+    const first = queue.flush("doc");
+    await Promise.resolve();
+    queue.schedule("doc", "two");
+    const waiting = queue.flush("doc");
+    now = AUTOSAVE_SLOW_PHASE_MS + 10;
+    release?.();
+    await Promise.all([first, waiting]);
+
+    expect(slowOperations).toHaveLength(1);
+    expect(slowOperations[0]?.slowPhases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: "wait-for-active-write", durationMs: AUTOSAVE_SLOW_PHASE_MS + 10 })
+    ]));
   });
 
   it("serializes writes per document and flushes edits arriving during a save", async () => {

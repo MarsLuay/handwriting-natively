@@ -895,6 +895,20 @@ export class SessionLogger {
     }, true);
   }
 
+  /** One terminal autosave summary; normal debounce/write operations stay silent. */
+  autosaveSlow(details: Record<string, unknown> = {}): void {
+    const slowPhases = Array.isArray(details.slowPhases) ? details.slowPhases.slice(0, 8) : [];
+    if (slowPhases.length === 0) return;
+    this.emit("warn", "autosave slow", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      event: "autosave-slow",
+      ...details,
+      slowPhases
+    });
+  }
+
   /** Threshold-gated layout evidence; callers retain and deduplicate the slow samples. */
   layoutSlow(details: Record<string, unknown> = {}): void {
     this.emit("warn", "layout slow", {

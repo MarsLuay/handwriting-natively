@@ -642,6 +642,19 @@ interface PanPerformanceState {
   scrollCorrections: number;
 }
 
+interface ZoomOverlayLayoutTiming {
+  totalMs: number;
+  phaseDurations: {
+    "page-snapshot": number;
+    "surface-reconcile": number;
+    "layout-read": number;
+    "overlay-write": number;
+    "text-layout": number;
+    "layout-diagnostic": number;
+    "cursor-refresh": number;
+  };
+}
+
 interface ZoomProfileState {
   startedAt: number;
   gestureEndedAt: number | null;
@@ -1306,7 +1319,8 @@ export class ViewerInkSession {
             error: this.errorMessage(error)
           });
         }
-      }
+      },
+      onSlowOperation: (operation) => this.logger.autosaveSlow({ ...operation })
     });
     this.saveCoordinator = new SaveCoordinator({
       autosave: options.settings.autosave,
@@ -3340,9 +3354,8 @@ export class ViewerInkSession {
         }
         }
       }
-      const layoutStarted = performance.now();
-      this.syncZoomOverlayLayouts();
-      const layoutMs = performance.now() - layoutStarted;
+      const layoutTiming = this.syncZoomOverlayLayouts();
+      const layoutMs = layoutTiming.totalMs;
       const geometryStarted = performance.now();
       this.recordZoomGeometry();
       const geometryMs = performance.now() - geometryStarted;
@@ -3363,6 +3376,9 @@ export class ViewerInkSession {
       this.recordZoomProfileTask(started);
       const pluginWorkMs = performance.now() - started;
       this.zoomFrameDiagnostics.notePluginOperation("overlay-layout", layoutMs);
+      for (const [phase, durationMs] of Object.entries(layoutTiming.phaseDurations)) {
+        this.zoomFrameDiagnostics.notePluginOperation(`overlay-${phase}`, durationMs);
+      }
       this.zoomFrameDiagnostics.notePluginOperation("page-geometry-read", geometryMs);
       const frameGap = this.zoomFrameDiagnostics.recordFrame({
         requestedAt: rafRequestedAt,
@@ -3382,6 +3398,7 @@ export class ViewerInkSession {
           pluginWorkMs: roundMs(pluginWorkMs),
           contributors: {
             syncZoomOverlayLayouts: roundMs(layoutMs),
+            overlayLayoutPhases: layoutTiming.phaseDurations,
             recordZoomGeometry: roundMs(geometryMs)
           }
         });
@@ -5029,13 +5046,26 @@ export class ViewerInkSession {
   }
 
   /** Align overlay boxes during zoom burst without paintCommittedStrokes. */
-  private syncZoomOverlayLayouts(phase: "burst" | "native-content" = "burst"): void {
+  private syncZoomOverlayLayouts(phase: "burst" | "native-content" = "burst"): ZoomOverlayLayoutTiming {
+    const startedAt = performance.now();
+    const phaseDurations: ZoomOverlayLayoutTiming["phaseDurations"] = {
+      "page-snapshot": 0,
+      "surface-reconcile": 0,
+      "layout-read": 0,
+      "overlay-write": 0,
+      "text-layout": 0,
+      "layout-diagnostic": 0,
+      "cursor-refresh": 0
+    };
     if (this.zoomProfile) this.zoomProfile.layoutSyncs += 1;
+    const snapshotStartedAt = performance.now();
     const pages = this.options.adapter.pages();
     const byNumber = new Map(pages.map((page) => [page.pageNumber, page]));
+    phaseDurations["page-snapshot"] = performance.now() - snapshotStartedAt;
     const active: PageSurface[] = [];
     // Reconcile page nodes and routers before taking geometry reads. Reattach
     // used to read and write one page at a time, forcing layout between pages.
+    const reconcileStartedAt = performance.now();
     for (const [pageNumber, surface] of this.surfaces) {
       const current = byNumber.get(pageNumber);
       if (!current) continue;
@@ -5052,19 +5082,28 @@ export class ViewerInkSession {
       surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
       active.push(surface);
     }
+    phaseDurations["surface-reconcile"] = performance.now() - reconcileStartedAt;
 
     // Read every page layout first, then apply all overlay/text writes using
     // that one-frame snapshot. This preserves the existing coordinates while
     // avoiding read-after-write reflows across mounted pages.
+    const layoutReadStartedAt = performance.now();
     const layouts = new Map<number, PageCoordinateLayout>();
     for (const surface of active) layouts.set(surface.page.pageNumber, this.pageLayout(surface));
+    phaseDurations["layout-read"] = performance.now() - layoutReadStartedAt;
     this.zoomLayoutCache = layouts;
     try {
       for (const surface of active) {
         const layout = layouts.get(surface.page.pageNumber);
+        const overlayWriteStartedAt = performance.now();
         this.syncOverlayLayout(surface, layout);
+        phaseDurations["overlay-write"] += performance.now() - overlayWriteStartedAt;
+        const textLayoutStartedAt = performance.now();
         this.syncTextLayoutDuringZoom(surface, layout);
+        phaseDurations["text-layout"] += performance.now() - textLayoutStartedAt;
+        const layoutDiagnosticStartedAt = performance.now();
         this.logZoomInkLayout(surface, phase);
+        phaseDurations["layout-diagnostic"] += performance.now() - layoutDiagnosticStartedAt;
       }
     } finally {
       this.zoomLayoutCache = null;
@@ -5072,7 +5111,17 @@ export class ViewerInkSession {
     // Cursor position is not visible during an active touch pinch and each
     // refresh walks every page router. The settle/handoff refresh restores the
     // affordance without adding work to the gesture frame.
-    if (!this.isZoomGestureActive()) this.refreshSurfaceCursors();
+    if (!this.isZoomGestureActive()) {
+      const cursorRefreshStartedAt = performance.now();
+      this.refreshSurfaceCursors();
+      phaseDurations["cursor-refresh"] = performance.now() - cursorRefreshStartedAt;
+    }
+    return {
+      totalMs: roundMs(performance.now() - startedAt),
+      phaseDurations: Object.fromEntries(
+        Object.entries(phaseDurations).map(([name, durationMs]) => [name, roundMs(durationMs)])
+      ) as ZoomOverlayLayoutTiming["phaseDurations"]
+    };
   }
 
   /**
