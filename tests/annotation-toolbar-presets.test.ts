@@ -3,7 +3,7 @@ import { createDefaultToolPreferences } from "../src/model";
 import { AnnotationToolbar } from "../src/ui/AnnotationToolbar";
 
 describe("AnnotationToolbar presets", () => {
-  it("switches a saved preset in one click without a draw-mode control", () => {
+  it("selects an inactive preset first and opens its settings on the second tap", () => {
     const preferences = createDefaultToolPreferences();
     preferences.activeTool = "lasso";
     preferences.activePresetId = null;
@@ -16,13 +16,58 @@ describe("AnnotationToolbar presets", () => {
     const slots = [...toolbar.element.querySelectorAll<HTMLButtonElement>("[data-preset-id]")];
     expect(slots.map((slot) => slot.dataset.presetId)).toEqual(["black-pen", "blue-pen", "yellow-highlighter"]);
     expect(toolbar.element.textContent?.includes("Draw")).toBe(false);
+
     slots[1]?.click();
     expect(preferences.activeTool).toBe("pen");
     expect(preferences.activePresetId).toBe("blue-pen");
     expect(preferences.pen.color).toBe("#2563eb");
     expect(toolbar.element.querySelector("[data-preset-id='blue-pen']")?.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector(".native-pdf-handwriting-preset-editor input")).toBeNull();
+
+    toolbar.element.querySelector<HTMLButtonElement>("[data-preset-id='blue-pen']")?.click();
     const editor = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-preset-editor input");
     expect(editor?.value).toBe("Blue pen");
+    toolbar.destroy();
+  });
+
+  it("opens the original drawing settings on one tap when drawing is already active", () => {
+    const preferences = createDefaultToolPreferences();
+    const toolbar = new AnnotationToolbar({
+      preferences,
+      autosave: true,
+      callbacks: { onPreferencesChange: () => undefined }
+    });
+    document.body.append(toolbar.element);
+    const drawing = toolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")!;
+
+    drawing.click();
+    expect(toolbar.dropdown.isOpen("drawing")).toBe(true);
+    expect(document.querySelector("[data-option-id='pencil']")).not.toBeNull();
+
+    drawing.click();
+    expect(toolbar.dropdown.isOpen("drawing")).toBe(false);
+    toolbar.destroy();
+  });
+
+  it("does not open a menu while switching between two drawing presets", () => {
+    const preferences = createDefaultToolPreferences();
+    const toolbar = new AnnotationToolbar({
+      preferences,
+      autosave: true,
+      callbacks: { onPreferencesChange: () => undefined }
+    });
+    document.body.append(toolbar.element);
+
+    toolbar.element.querySelector<HTMLButtonElement>("[data-preset-id='blue-pen']")?.click();
+    expect(preferences.activePresetId).toBe("blue-pen");
+    expect(toolbar.dropdown.isOpen()).toBe(false);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-preset-id='yellow-highlighter']")?.click();
+    expect(preferences.activePresetId).toBe("yellow-highlighter");
+    expect(preferences.activeTool).toBe("highlighter");
+    expect(toolbar.dropdown.isOpen()).toBe(false);
+
+    toolbar.element.querySelector<HTMLButtonElement>("[data-preset-id='yellow-highlighter']")?.click();
+    expect(toolbar.dropdown.isOpen("drawing")).toBe(true);
     toolbar.destroy();
   });
 
