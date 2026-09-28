@@ -88,6 +88,33 @@ describe("scan document flow", () => {
     modal.close();
   });
 
+  it("updates the captured preview when Rotate is pressed", () => {
+    const modal = new ScanDocumentModal({} as never, () => undefined);
+    modal.open();
+    const image = document.createElement("img");
+    const internal = modal as unknown as {
+      currentImage: HTMLImageElement | null;
+      renderReview(): void;
+      preview: HTMLElement | null;
+    };
+    internal.currentImage = image;
+    internal.renderReview();
+    const preview = internal.preview!;
+    const rotate = [...preview.parentElement!.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Rotate");
+    expect(rotate).toBeDefined();
+    expect(image.style.transform).toBe("");
+
+    rotate!.click();
+    expect(image.style.transform).toBe("rotate(90deg)");
+    expect(preview.dataset.rotation).toBe("1");
+
+    rotate!.click();
+    expect(image.style.transform).toBe("rotate(180deg)");
+    expect(preview.dataset.rotation).toBe("2");
+    modal.close();
+  });
+
   it("styles crop handles as transparent ring-and-dot controls with a touch-sized hit area", () => {
     const handleRule = styles.match(/\.native-pdf-handwriting-scan-corner \{([\s\S]*?)\n\}/)?.[1] ?? "";
     const ringRule = styles.match(/\.native-pdf-handwriting-scan-corner::before \{([\s\S]*?)\n\}/)?.[1] ?? "";
