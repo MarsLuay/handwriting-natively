@@ -469,7 +469,6 @@ export class PointerRouter {
     if (
       event.pointerType === "touch"
       && (route === "touch-pan" || route === "touch-zoom-pan")
-      && route !== "ignored"
       && this.manipulation.activeTouches < this.touchCount()
     ) {
       this.beginManipulationTouch();

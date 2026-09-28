@@ -72,7 +72,7 @@ Record plugin/Obsidian/runtime metadata, compatibility strategy, and copied boun
 
 ## Toolbar and images (#30, #25)
 
-Drawing presets are persisted, capped, selectable in one action, and editable from the drawing menu. Selecting a preset changes the active tool and settings together, so toolbar state and routed tool state cannot disagree. Stylus-first routing remains the default; mouse behavior remains explicit and touch stays native.
+Pen, Pencil, and Highlighter are persistent first-class drawing tools with independent settings and direct toolbar selection. Their settings are stored through the existing plugin preferences, while stylus-first routing remains the default, mouse behavior remains explicit, and touch stays native.
 
 Image annotation is not implemented as a second renderer. `ImageViewAdapter` supplies the one-page `AnnotationSurface` implementation for static PNG and JPEG/JPG files and reuses page-local ink, input, tools, sidecar identity, recovery, and lifecycle without converting the image to a PDF. The source image is read-only during annotation; browser-native displayed orientation is not transformed a second time, and the shared backing-store budget bounds handwriting canvases. PDF export, PDF.js find, page insertion/deletion, scan actions, and flattened image export remain unavailable on that surface. WebP, HEIC/HEIF, GIF, SVG, and other unsupported image views remain unannotated.
 

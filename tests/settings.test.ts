@@ -138,55 +138,47 @@ describe("safe defaults", () => {
     expect(merged.toolPreferences.highlighter.color).toBe("#facc15");
   });
 
-  it("provides bounded drawing presets and sanitizes saved preset data", () => {
-    expect(DEFAULT_SETTINGS.toolPreferences.presets.length).toBeGreaterThan(1);
-    expect(DEFAULT_SETTINGS.toolPreferences.activePresetId).toBe("black-pen");
+  it("restores all remembered settings for each drawing tool", () => {
+    const saved = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    saved.pen = { ...saved.pen, color: "#123456", width: 2.5, stabilization: "high", tiltSensitivity: true };
+    saved.pencil = { ...saved.pencil, color: "#654321", width: 7, textureStrength: 0.4, simulateMousePressure: false };
+    saved.highlighter = { ...saved.highlighter, color: "#22c55e", width: 24, opacity: 0.2 };
+    const merged = mergeSettings({ toolPreferences: saved });
+    expect(merged.toolPreferences.pen).toEqual(saved.pen);
+    expect(merged.toolPreferences.pencil).toEqual(saved.pencil);
+    expect(merged.toolPreferences.highlighter).toEqual(saved.highlighter);
+  });
+
+  it("migrates old preset styles into independent tool settings and drops legacy keys", () => {
+    expect(DEFAULT_SETTINGS.toolPreferences).not.toHaveProperty("presets");
+    expect(DEFAULT_SETTINGS.toolPreferences).not.toHaveProperty("activePresetId");
     const merged = mergeSettings({
       toolPreferences: {
         presets: [
-          { id: "custom", name: "Blue", tool: "pen", settings: { color: "#2563eb", width: 2 } },
-          { id: "custom", name: "duplicate", tool: "pencil", settings: {} },
-          { id: "bad", name: "Bad", tool: "shape", settings: {} }
+          { id: "custom-pen", name: "Blue", tool: "pen", settings: { color: "#2563eb", width: 2 } },
+          { id: "yellow", name: "Yellow", tool: "highlighter", settings: { width: 24, opacity: 0.2 } }
         ],
-        activePresetId: "custom"
+        activePresetId: "custom-pen",
+        activeTool: "pen"
       } as never
     });
-    expect(merged.toolPreferences.presets).toHaveLength(1);
-    expect(merged.toolPreferences.presets[0]).toMatchObject({ id: "custom", name: "Blue", tool: "pen" });
-    expect(merged.toolPreferences.presets[0]?.settings.width).toBe(2);
-    expect(merged.toolPreferences.activePresetId).toBe("custom");
+    expect(merged.toolPreferences.pen).toMatchObject({ color: "#2563eb", width: 2 });
+    expect(merged.toolPreferences.highlighter).toMatchObject({ width: 24, opacity: 0.2 });
+    expect(merged.toolPreferences).not.toHaveProperty("presets");
+    expect(merged.toolPreferences).not.toHaveProperty("activePresetId");
+    expect(merged.toolPreferences).not.toHaveProperty("sidebarPresetIds");
   });
 
-  it("keeps pinned sidebar presets in order and repairs an empty preset list", () => {
-    expect(DEFAULT_SETTINGS.toolPreferences.sidebarPresetIds).toEqual([]);
-    expect(mergeSettings({}).toolPreferences.presets.map((preset) => preset.id)).toEqual([
-      "black-pen",
-      "blue-pen",
-      "yellow-highlighter"
-    ]);
-    const empty = mergeSettings({ toolPreferences: { presets: [] } as never });
-    expect(empty.toolPreferences.presets).toHaveLength(1);
-    expect(empty.toolPreferences.presets[0]?.id).toBe("black-pen");
-    const pinned = mergeSettings({
+  it("prefers saved per-tool settings over migrated legacy preset values", () => {
+    const merged = mergeSettings({
       toolPreferences: {
-        presets: [
-          { id: "black-pen", name: "Black pen", tool: "pen", settings: { color: "#111827" } },
-          { id: "blue-pen", name: "Blue pen", tool: "pen", settings: { color: "#2563eb" } }
-        ],
-        sidebarPresetIds: ["blue-pen", "blue-pen", "gone", "black-pen"]
+        presets: [{ id: "old", name: "Old", tool: "pen", settings: { color: "#2563eb", width: 2 } }],
+        activePresetId: "old",
+        pen: { color: "#dc2626" }
       } as never
     });
-    expect(pinned.toolPreferences.sidebarPresetIds).toEqual(["blue-pen", "black-pen"]);
-    const deleted = mergeSettings({
-      toolPreferences: {
-        presets: [{ id: "blue-pen", name: "Blue pen", tool: "pen", settings: { color: "#2563eb" } }],
-        sidebarPresetIds: ["black-pen", "blue-pen"],
-        activePresetId: "black-pen"
-      } as never
-    });
-    expect(deleted.toolPreferences.presets.map((preset) => preset.id)).toEqual(["blue-pen"]);
-    expect(deleted.toolPreferences.sidebarPresetIds).toEqual(["blue-pen"]);
-    expect(deleted.toolPreferences.activePresetId).toBe("blue-pen");
+    expect(merged.toolPreferences.pen.color).toBe("#dc2626");
+    expect(merged.toolPreferences.pen.width).toBe(2);
   });
 
   it("merges laser preferences from saved settings", () => {
