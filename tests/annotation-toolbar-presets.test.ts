@@ -70,14 +70,9 @@ describe("AnnotationToolbar presets", () => {
     style.remove();
   });
 
-  it("pins presets under Pen with tool icons and blocks the last deletion", () => {
+  it("automatically shows additional presets in order and ignores legacy pins", () => {
     const preferences = createDefaultToolPreferences();
-    preferences.presets.push({
-      id: "mechanical",
-      name: "Mechanical pencil",
-      tool: "pencil",
-      settings: { ...preferences.pencil, color: "#4b5563" }
-    });
+    preferences.sidebarPresetIds = ["black-pen"];
     const toolbar = new AnnotationToolbar({
       preferences,
       autosave: true,
@@ -98,69 +93,62 @@ describe("AnnotationToolbar presets", () => {
     const host = toolbar.element.querySelector<HTMLElement>(".native-pdf-handwriting-sidebar-presets");
     expect(drawing?.nextElementSibling).toBe(host);
     expect(host?.nextElementSibling).toBe(toolbar.element.querySelector("[data-control='eraser']"));
+    expect([...host!.querySelectorAll<HTMLButtonElement>("[data-sidebar-preset-id]")].map((button) => button.dataset.sidebarPresetId))
+      .toEqual(["blue-pen", "yellow-highlighter"]);
+    expect(host?.querySelector("[data-sidebar-preset-id='black-pen']")).toBeNull();
+    expect(host?.getAttribute("aria-label")).toBe("Additional drawing presets");
+    expect(document.querySelector("[data-action='sidebar-preset']")).toBeNull();
 
-    drawing?.click();
-    const add = [...document.querySelectorAll("button")].find((button) => button.textContent === "Add preset to sidebar");
-    const remove = [...document.querySelectorAll("button")].find((button) => button.textContent === "Delete selected preset");
-    expect(add?.previousElementSibling).toBe(remove);
-    add?.click();
-    expect(preferences.sidebarPresetIds).toEqual(["black-pen"]);
+    const updateButtons = (): void => {
+      (toolbar as unknown as { updateButtons(): void }).updateButtons();
+    };
+    preferences.presets.splice(2, 1);
+    updateButtons();
+    expect([...host!.querySelectorAll<HTMLButtonElement>("[data-sidebar-preset-id]")].map((button) => button.dataset.sidebarPresetId))
+      .toEqual(["blue-pen"]);
 
-    preferences.sidebarPresetIds = ["black-pen", "yellow-highlighter", "mechanical"];
-    toolbar.element.querySelector<HTMLButtonElement>("[data-sidebar-preset-id='black-pen']")?.click();
-    const pins = [...toolbar.element.querySelectorAll<HTMLButtonElement>("[data-sidebar-preset-id]")];
-    expect(pins.map((button) => button.dataset.sidebarPresetId)).toEqual(["black-pen", "yellow-highlighter", "mechanical"]);
-    expect(pins.map((button) => button.querySelector("path")?.getAttribute("d")?.slice(0, 12))).toEqual([
+    preferences.presets.push({
+      id: "mechanical",
+      name: "Mechanical pencil",
+      tool: "pencil",
+      settings: { ...preferences.pencil, color: "#4b5563" }
+    });
+    updateButtons();
+    const additional = [...host!.querySelectorAll<HTMLButtonElement>("[data-sidebar-preset-id]")];
+    expect(additional.map((button) => button.dataset.sidebarPresetId)).toEqual(["blue-pen", "mechanical"]);
+    expect(additional.map((button) => button.querySelector("path")?.getAttribute("d")?.slice(0, 12))).toEqual([
       "M12 19 19 12",
-      "M4 20H20",
       "M4 20 8.5 19"
     ]);
-    expect(pins[0]?.textContent).not.toContain("Black pen");
-    expect(pins[0]?.getAttribute("aria-label")).toBe("Black pen");
-    expect(pins[1]?.getAttribute("aria-label")).toBe("Yellow highlighter");
-    expect(pins[2]?.getAttribute("aria-label")).toBe("Mechanical pencil");
-    expect(getComputedStyle(host!).display).toBe("flex");
+    expect(additional[1]?.getAttribute("aria-label")).toBe("Mechanical pencil");
 
-    pins[0]?.click();
-    expect(preferences.activePresetId).toBe("black-pen");
-    expect(document.querySelector<HTMLInputElement>(".native-pdf-handwriting-preset-editor input")?.value).toBe("Black pen");
-    toolbar.element.querySelector<HTMLButtonElement>("[data-sidebar-preset-id='yellow-highlighter']")?.click();
-    expect(preferences.activePresetId).toBe("yellow-highlighter");
-    expect(document.querySelector<HTMLInputElement>(".native-pdf-handwriting-preset-editor input")?.value).toBe("Yellow highlighter");
-    toolbar.element.querySelector<HTMLButtonElement>("[data-sidebar-preset-id='black-pen']")?.click();
-    expect(preferences.activePresetId).toBe("black-pen");
-    expect(toolbar.element.querySelector("[data-sidebar-preset-id='black-pen']")?.getAttribute("aria-pressed")).toBe("true");
+    preferences.presets.splice(1, 1);
+    updateButtons();
+    expect([...host!.querySelectorAll<HTMLButtonElement>("[data-sidebar-preset-id]")].map((button) => button.dataset.sidebarPresetId))
+      .toEqual(["mechanical"]);
 
-    const openDrawing = () => {
-      drawing?.click();
-      if (!document.querySelector(".native-pdf-handwriting-preset-editor")) drawing?.click();
-    };
-    openDrawing();
-    expect(document.querySelector("[data-action='sidebar-preset']")?.textContent).toBe("Remove preset from sidebar");
-    document.querySelector<HTMLButtonElement>("[data-action='sidebar-preset']")?.click();
-    expect(preferences.sidebarPresetIds).toEqual(["yellow-highlighter", "mechanical"]);
-
-    openDrawing();
-    document.querySelector<HTMLButtonElement>("[data-option-id='preset-blue-pen']")?.click();
-    expect(preferences.activePresetId).toBe("blue-pen");
-    drawing?.click();
-    [...document.querySelectorAll("button")].find((button) => button.textContent === "Delete selected preset")?.click();
-    expect(preferences.presets.some((preset) => preset.id === "blue-pen")).toBe(false);
-    expect(preferences.sidebarPresetIds).not.toContain("blue-pen");
-    expect(preferences.activePresetId).not.toBe("blue-pen");
-
-    preferences.presets = preferences.presets.filter((preset) => preset.id === "black-pen");
-    preferences.activePresetId = "black-pen";
-    preferences.activeTool = "pen";
-    preferences.sidebarPresetIds = [];
-    openDrawing();
+    const finalPreferences = createDefaultToolPreferences();
+    finalPreferences.presets = [finalPreferences.presets[0]!];
+    finalPreferences.activePresetId = finalPreferences.presets[0]!.id;
+    finalPreferences.activeTool = finalPreferences.presets[0]!.tool;
+    const styleBefore = structuredClone(finalPreferences[finalPreferences.activeTool]);
+    const finalToolbar = new AnnotationToolbar({
+      preferences: finalPreferences,
+      autosave: true,
+      callbacks: { onPreferencesChange: () => undefined }
+    });
+    document.body.append(finalToolbar.element);
+    finalToolbar.element.querySelector<HTMLButtonElement>("[data-control='drawing']")?.click();
     const blocked = [...document.querySelectorAll("button")].find((button) => button.textContent === "Delete selected preset");
+    expect(finalToolbar.element.querySelectorAll("[data-sidebar-preset-id]")).toHaveLength(0);
     expect(blocked?.disabled).toBe(true);
-    expect(blocked?.title).toBe("At least one preset is required.");
     blocked?.click();
-    expect(preferences.presets.map((preset) => preset.id)).toEqual(["black-pen"]);
+    expect(finalPreferences.presets).toHaveLength(1);
+    expect(finalPreferences.activeTool).toBe("pen");
+    expect(finalPreferences[finalPreferences.activeTool]).toEqual(styleBefore);
 
-    toolbar.element.remove();
+    toolbar.destroy();
+    finalToolbar.destroy();
     style.remove();
   });
 });
