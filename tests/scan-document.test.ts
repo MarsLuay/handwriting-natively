@@ -28,6 +28,63 @@ describe("scan document flow", () => {
     expect([0, 1, 2, 3, 0].map((value) => rotateQuarterTurns(value))).toEqual([1, 2, 3, 0, 1]);
   });
 
+  it("draws the current crop quadrilateral and updates every edge during corner drags", () => {
+    const modal = new ScanDocumentModal({} as never, () => undefined);
+    modal.open();
+    const image = document.createElement("img");
+    const internal = modal as unknown as {
+      currentImage: HTMLImageElement | null;
+      currentQuad: ReturnType<typeof defaultDocumentQuad>;
+      renderReview(): void;
+      preview: HTMLElement | null;
+    };
+    internal.currentImage = image;
+    internal.currentQuad = {
+      topLeft: { x: 0.2, y: 0.1 },
+      topRight: { x: 0.8, y: 0.2 },
+      bottomRight: { x: 0.9, y: 0.8 },
+      bottomLeft: { x: 0.1, y: 0.9 }
+    };
+    internal.renderReview();
+    const preview = internal.preview!;
+    preview.getBoundingClientRect = () => ({
+      left: 10, top: 20, right: 210, bottom: 120, x: 10, y: 20, width: 200, height: 100,
+      toJSON: () => ({})
+    });
+    const polygonPoints = (): string => preview.querySelector<SVGPolygonElement>(".native-pdf-handwriting-scan-outline-line")?.getAttribute("points") ?? "";
+    expect(polygonPoints()).toBe("20,10 80,20 90,80 10,90");
+    expect(preview.querySelectorAll(".native-pdf-handwriting-scan-outline polygon")).toHaveLength(2);
+
+    const movedCorners = [
+      ["topLeft", 0.25, 0.15],
+      ["topRight", 0.75, 0.25],
+      ["bottomRight", 0.85, 0.75],
+      ["bottomLeft", 0.15, 0.85]
+    ] as const;
+    const expected = {
+      topLeft: { x: 0.2, y: 0.1 },
+      topRight: { x: 0.8, y: 0.2 },
+      bottomRight: { x: 0.9, y: 0.8 },
+      bottomLeft: { x: 0.1, y: 0.9 }
+    };
+    for (const [corner, x, y] of movedCorners) {
+      const handle = preview.querySelector<HTMLElement>(`[data-corner="${corner}"]`)!;
+      const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+      handle.dispatchEvent(down);
+      const move = new Event("pointermove", { bubbles: true, cancelable: true });
+      Object.defineProperties(move, { clientX: { value: 10 + x * 200 }, clientY: { value: 20 + y * 100 } });
+      preview.dispatchEvent(move);
+      expected[corner] = { x, y };
+      expect(polygonPoints()).toBe(["topLeft", "topRight", "bottomRight", "bottomLeft"]
+        .map((name) => `${expected[name as keyof typeof expected].x * 100},${expected[name as keyof typeof expected].y * 100}`)
+        .join(" "));
+      const up = new Event("pointerup", { bubbles: true });
+      preview.dispatchEvent(up);
+    }
+    expect(preview.querySelectorAll(".native-pdf-handwriting-scan-corner")).toHaveLength(4);
+    modal.close();
+  });
+
   it("requests rear-camera capture only when the scan modal opens and cleans up on cancel", () => {
     const result: unknown[][] = [];
     const modal = new ScanDocumentModal({} as never, (pages) => result.push(pages ? [...pages] : []));
