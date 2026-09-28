@@ -1117,6 +1117,7 @@ export class ViewerInkSession {
   private readonly lastInkPixelByPage = new Map<number, boolean>();
   private zoomCompositeReleaseTimer: number | null = null;
   private zoomCompositeSettledAt = 0;
+  private lastZoomHandoffSettledAt = 0;
   private zoomNativeContentMutations = 0;
   private lastZoomNativeContentAt = 0;
   /** Native PDF.js can change page geometry after our first zoom settle. */
@@ -1151,6 +1152,8 @@ export class ViewerInkSession {
   private zoomSettleQueue: Array<{ page: number; tier: "focus" | "neighbor" }> = [];
   private zoomSettleSliceFrame: number | null = null;
   private zoomSettleSliceStartedAt = 0;
+  /** Count each page once in settle metrics even when focus-fast is upgraded. */
+  private zoomSettlePaintedPages = new Set<number>();
   private zoomSettleBurst: {
     reason: string;
     burstTicks: number;
@@ -1459,9 +1462,7 @@ export class ViewerInkSession {
             callbackAt: callbackStartedAt,
             callbackWorkMs: performance.now() - callbackStartedAt,
             pageNumbers: this.options.adapter.pages().map((page) => page.pageNumber).slice(0, 64),
-            viewerGeneration: "viewerGeneration" in this.options.adapter
-              ? this.options.adapter.viewerGeneration
-              : undefined,
+            viewerGeneration: this.currentAdapterViewerGeneration(),
             phase: this.nativeHandoffPhase()
           });
         }
@@ -3202,7 +3203,9 @@ export class ViewerInkSession {
 
   /** Keep late refresh callbacks on the compositor path once a pinch owns the frame. */
   private deferRefreshDuringZoom(reason: string): boolean {
-    if (reason === "create") return false;
+    // Explicit post-zoom verification may need one canonical projection while
+    // the native handoff mask is still held; ordinary refreshes remain gated.
+    if (reason === "create" || reason.startsWith("post-zoom")) return false;
     const zoomActive = this.zoomCompositing || this.isZoomGestureActive();
     const handoffActive = this.isZoomHandoffActive();
     if (!zoomActive && !handoffActive) return false;
@@ -4488,16 +4491,19 @@ export class ViewerInkSession {
     this.zoomSettlePausedForLiveInk = true;
     this.zoomSettlePausedAt = performance.now();
     this.zoomSettlePausedReason = reason;
+    const alreadyLoggedByInputGate = this.zoomMaintenanceDeferredForInput;
     if (this.zoomSettleTimer !== null) {
       window.clearTimeout(this.zoomSettleTimer);
       this.zoomSettleTimer = null;
     }
-    this.logger.zoomComposite("settle-deferred", {
-      reason,
-      pages: this.surfaces.size,
-      remaining: this.zoomSettleQueue.length,
-      once: true
-    });
+    if (!alreadyLoggedByInputGate) {
+      this.logger.zoomComposite("settle-deferred", {
+        reason,
+        pages: this.surfaces.size,
+        remaining: this.zoomSettleQueue.length,
+        once: true
+      });
+    }
   }
 
   private scheduleZoomSettleResume(): void {
@@ -4704,6 +4710,7 @@ export class ViewerInkSession {
     this.cancelZoomSettleSlice();
     this.endZoomCompositing();
     this.zoomCompositeSettledAt = performance.now();
+    this.lastZoomHandoffSettledAt = this.zoomCompositeSettledAt;
     this.lastZoomSettleAt = Date.now();
     this.zoomSettleSliceStartedAt = this.zoomCompositeSettledAt;
     this.pinchCleanup.endBurst();
@@ -4816,6 +4823,7 @@ export class ViewerInkSession {
       skippedCulled: 0,
       skippedBlitOnly: 0
     };
+    this.zoomSettlePaintedPages.clear();
     const order = this.zoomSettlePageOrder();
     // Sync: focus gets a cheap full-backing blit-stretch so geometry matches under the
     // CSS mask without a 58-stroke vector wall. HQ focus + cheap neighbors drain on rAF.
@@ -4999,8 +5007,11 @@ export class ViewerInkSession {
         }
         this.logZoomInkLayout(surface, "settle", layout, geometry);
         if (this.zoomProfile && tier === "focus" && painted) this.zoomProfile.hqUpgrades += 1;
-        if (painted) this.zoomSettleStats.pagesRepainted += 1;
-        else if (surface.viewportCullPending) {
+        if (painted && !this.zoomSettlePaintedPages.has(pageNumber)) {
+          this.zoomSettlePaintedPages.add(pageNumber);
+          this.zoomSettleStats.pagesRepainted += 1;
+        }
+        else if (!painted && surface.viewportCullPending) {
           this.zoomSettleStats.skippedCulled += 1;
           paintPath = "culled";
         }
@@ -5125,6 +5136,22 @@ export class ViewerInkSession {
     return ViewerInkSession.shouldCompositeDuring(reason)
       || reason.includes("resize")
       || reason.includes("zoom");
+  }
+
+  /** Reopen a short compositor handoff for a redraw that arrives just after release. */
+  private holdLateNativeContent(): void {
+    const now = performance.now();
+    if (this.isZoomHandoffActive()) {
+      this.zoomHandoffNeedsFinalRebase = true;
+      return;
+    }
+    if (this.lastZoomHandoffSettledAt <= 0
+      || now - this.lastZoomHandoffSettledAt >= ViewerInkSession.ZOOM_NATIVE_RENDER_GRACE_MS) return;
+    this.beginZoomCompositing();
+    this.endZoomCompositing();
+    this.zoomCompositeSettledAt = now;
+    this.lastZoomHandoffSettledAt = now;
+    this.zoomHandoffNeedsFinalRebase = true;
   }
 
   private beginZoomCompositing(): void {
@@ -5311,9 +5338,9 @@ export class ViewerInkSession {
   }
 
   private currentAdapterViewerGeneration(): number {
-    return "viewerGeneration" in this.options.adapter
-      ? this.options.adapter.viewerGeneration
-      : 0;
+    if (!("viewerGeneration" in this.options.adapter)) return 0;
+    const generation = this.options.adapter.viewerGeneration;
+    return typeof generation === "number" && Number.isFinite(generation) ? generation : 0;
   }
 
   private queueNativeHandoffUpdate(input:
@@ -5467,6 +5494,7 @@ export class ViewerInkSession {
         lastSignalAt: signalAt
       }
       : change;
+    this.holdLateNativeContent();
     this.queueNativeHandoffUpdate({ kind: "mutation", change: normalized });
   }
 
@@ -5563,10 +5591,26 @@ export class ViewerInkSession {
     // has painted and HQ/neighbor slices are still draining under the CSS mask,
     // treat that window like handoff so native remounts stay layout-only.
     const settleSlicesPending = this.zoomSettleSliceFrame !== null || this.zoomSettleQueue.length > 0;
-    const releasePending = this.zoomCompositing
+    let releasePending = this.zoomCompositing
       || this.zoomCompositeReleaseTimer !== null
-      || this.zoomCompositeReleaseFrame !== null;
-    const handoffGuard = releasePending || settleSlicesPending || this.hasZoomCompositingClass();
+      || this.zoomCompositeReleaseFrame !== null
+      || this.zoomHandoffNeedsFinalRebase;
+    let handoffGuard = releasePending || settleSlicesPending || this.hasZoomCompositingClass();
+    const now = performance.now();
+    // PDF.js can publish its final canvas after the bounded release gate. Reopen
+    // only this recent post-settle window so the late redraw gets one canonical
+    // rebase under the same compositor mask instead of a second zoom burst.
+    const recentSettle = this.zoomCompositeSettledAt > 0
+      && now - this.zoomCompositeSettledAt < ViewerInkSession.ZOOM_NATIVE_RENDER_GRACE_MS;
+    if (!handoffGuard && !reattached && recentSettle) {
+      this.beginZoomCompositing();
+      this.endZoomCompositing();
+      this.zoomCompositeSettledAt = now;
+      this.lastZoomHandoffSettledAt = now;
+      this.zoomHandoffNeedsFinalRebase = true;
+      releasePending = true;
+      handoffGuard = true;
+    }
     this.reportDevProbe("host-page-content-mutation", {
       records: recordCount,
       releasePending,
@@ -5585,7 +5629,6 @@ export class ViewerInkSession {
       noteNativeReplacementTrace();
       return { handled: false, reattached: false };
     }
-    const now = performance.now();
     if (releasePending || settleSlicesPending) {
       this.zoomNativeContentMutations += recordCount;
       this.lastZoomNativeContentAt = now;
@@ -5986,6 +6029,11 @@ export class ViewerInkSession {
       skippedCulled: stats.skippedCulled,
       durationMs: roundMs(performance.now() - started)
     });
+  }
+
+  /** Compatibility entrypoint for adapter/test resize notifications. */
+  private handleRootResize(): void {
+    this.processRootResize();
   }
 
   private processRootResize(): void {
@@ -8938,10 +8986,11 @@ export class ViewerInkSession {
     const target = event.target instanceof Element
       ? event.target.closest<HTMLElement>(".native-pdf-handwriting-text-box")
       : null;
-    if (!target || !surface.textLayer.contains(target)) return false;
-    const annotationId = target.dataset.annotationId;
-    return annotationId !== undefined
-      && this.texts.page(surface.page.pageNumber).some((text) => text.id === annotationId);
+    if (!target || !surface.overlay.contains(target)) return false;
+    // The rendered text layer is the authoritative committed-text surface;
+    // avoid a second store lookup here because a just-loaded annotation may
+    // already be painted while its index is still settling.
+    return target.dataset.annotationId !== undefined;
   }
 
   private refreshSurfaceCursors(surfaces: Iterable<PageSurface> = this.surfaces.values()): void {
@@ -13636,7 +13685,17 @@ export class ViewerInkSession {
     surface.context.setTransform(1, 0, 0, 1, 0, 0);
     surface.context.clearRect(0, 0, pixelWidth, pixelHeight);
     surface.context.imageSmoothingEnabled = false;
-    surface.context.drawImage(surface.inkLayer, 0, 0);
+    surface.context.drawImage(
+      surface.inkLayer,
+      0,
+      0,
+      surface.inkLayer.width,
+      surface.inkLayer.height,
+      0,
+      0,
+      pixelWidth,
+      pixelHeight
+    );
     surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
     if (traceStartedAt !== null) {
       this.zoomPipelineTrace.noteStage("ink-blit", performance.now() - traceStartedAt, 1, "ink-layer-blit");
@@ -13703,7 +13762,7 @@ export class ViewerInkSession {
     rootRect?: DOMRect
   ): boolean {
     const surface = this.surfaces.get(pageNumber);
-    if (!surface || this.zoomCompositing) return false;
+    if (!surface || (this.zoomCompositing && !reason.startsWith("post-zoom"))) return false;
     if (reason.includes("settle-upgrade") && surface.strokePerformance) surface.strokePerformance.hqUpgrades += 1;
     const preserveLiveDraft = this.surfaceHasLiveInkInput(surface);
     // Keep tip draft visible through resize/paint — clearing first caused a blank
@@ -13758,12 +13817,19 @@ export class ViewerInkSession {
       && !livePreview
       && (needsResize || surface.inkLayerBurstCapture || surface.inkLayerBackingScale === null);
     if (cssStretchSettle) {
-      this.blitInkLayerToCanvas(
-        surface,
-        surface.canvas.width,
-        surface.canvas.height,
-        Math.max(0.5, surface.canvas.width / Math.max(1, width))
-      );
+      // Resize the visible backing at settle so the first frame tracks the
+      // native PDF canvas. The captured ink layer remains the source while
+      // the queued focus upgrade restores canonical PDF-space pixels.
+      if (needsResize) {
+        surface.canvas.width = pixelWidth;
+        surface.canvas.height = pixelHeight;
+        surface.liveDrawPaintedPoints = 0;
+        if (this.zoomProfile) this.zoomProfile.canvasResizes += 1;
+        if (this.panProfile) this.panProfile.canvasResizes += 1;
+        if (surface.strokePerformance) surface.strokePerformance.canvasResizes += 1;
+        if (stats) stats.canvasesResized += 1;
+      }
+      this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
       surface.settleUpgradePending = true;
       surface.viewportCullPending = false;
       this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });

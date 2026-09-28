@@ -290,7 +290,7 @@ export class PointerRouter {
       if (event.isPrimary !== false && this.callbacks.touchTextTarget?.(event)) {
         return { route: "text", reason: "text-box-touch" };
       }
-      if (this.callbacks.canAnnotatePointer(event)) {
+      if (this.callbacks.touchAnnotationEnabled?.() === true && this.callbacks.canAnnotatePointer(event)) {
         if (tool === "text") return { route: "text", reason: "touch-fallback-text" };
         if (tool === "eraser" || tool === "lasso") return { route: "edit", reason: "touch-fallback-edit" };
         if (isInkDrawTool(tool)) return { route: "draw", reason: "touch-fallback-draw" };
@@ -428,6 +428,9 @@ export class PointerRouter {
     this.beginStylusEraser(event);
     const routeDecision = this.classifyWithReason(event);
     let route = routeDecision.route;
+    const touchTextTarget = event.pointerType === "touch"
+      && route === "text"
+      && this.callbacks.touchTextTarget?.(event) === true;
     const ownershipDecision = event.pointerType === "touch" || route === "draw" || route === "edit" || route === "text"
       ? this.ownership.pointerDown({
         pointerId: event.pointerId,
@@ -437,7 +440,7 @@ export class PointerRouter {
         target: event.pointerType === "touch" || this.callbacks.canAnnotatePointer(event) ? "page" : "ui",
         inkToolSelected: route === "draw" || route === "edit" || route === "text",
         mouseIntent: (route === "draw" || route === "edit" || route === "text")
-          && (event.pointerType !== "touch" || this.callbacks.canAnnotatePointer(event))
+          && (event.pointerType !== "touch" || this.callbacks.canAnnotatePointer(event) || touchTextTarget)
           ? "ink"
           : "pan"
       })
@@ -777,7 +780,14 @@ export class PointerRouter {
     activePenIds: number[],
     event?: PointerEvent | TouchEvent
   ): void {
+    // A real routed stroke can be quiet longer than the palm-safety timeout.
+    // Keep that contact alive; terminal/lifecycle events still own cleanup.
+    const retained = reason === "pen-inactivity-timeout"
+      ? activePenIds.filter((pointerId) => this.routed.has(pointerId))
+      : [];
+    if (retained.length) this.palmPolicy.adoptActivePenIds(retained);
     for (const pointerId of activePenIds) {
+      if (retained.includes(pointerId)) continue;
       const route = this.routed.get(pointerId);
       if (route) {
         const cancel = this.syntheticPointerEvent(pointerId, "pointercancel", "pen");

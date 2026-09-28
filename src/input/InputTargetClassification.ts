@@ -12,7 +12,6 @@ const UI_CONTROL_SELECTOR = [
   ".native-pdf-handwriting-selection-toolbar",
   ".native-pdf-handwriting-selection-control",
   ".native-pdf-handwriting-rail",
-  ".native-pdf-handwriting-text-box",
   "button",
   "a[href]",
   "label",

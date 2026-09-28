@@ -186,7 +186,7 @@ export class ZoomPipelineTrace {
     this.pendingEvents.set(name, Math.min(999, (this.pendingEvents.get(name) ?? 0) + bounded));
   }
 
-  noteStage(stage: ZoomPipelineStage, durationMs = 0, count = 1, workKey = stage): void {
+  noteStage(stage: ZoomPipelineStage, durationMs = 0, count = 1, workKey: string = stage): void {
     if (!this.active || !Number.isFinite(count) || count <= 0) return;
     const boundedCount = Math.min(999, Math.max(1, Math.floor(count)));
     const duration = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
