@@ -288,21 +288,30 @@ export class AnnotationToolbar {
 
   /** The pen button is the original preset. Added presets open their own settings. */
   private openOriginalPenPreset(anchor: HTMLElement): void {
-    const current = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
-    const preset = current ?? this.originalPenPreset();
-    if (preset) this.applyDrawingPreset(preset);
-    else if (!isDrawingTool(this.preferences.activeTool)) this.activate(this.lastDrawingTool);
+    if (!isDrawingTool(this.preferences.activeTool)) {
+      const current = this.preferences.presets.find((preset) => preset.id === this.preferences.activePresetId);
+      const preset = current ?? this.originalPenPreset();
+      this.dropdown.close(false);
+      if (preset) this.applyDrawingPreset(preset);
+      else this.activate(this.lastDrawingTool);
+      return;
+    }
     this.dropdown.toggle("drawing", anchor, this.drawingMenu());
   }
 
   private openPresetSettings(preset: DrawingPreset, anchor: HTMLElement, menuId = "drawing"): void {
-    this.applyDrawingPreset(preset);
+    const active = this.preferences.activePresetId === preset.id && this.preferences.activeTool === preset.tool;
+    if (!active) {
+      this.dropdown.close(false);
+      this.applyDrawingPreset(preset);
+      return;
+    }
     const live = menuId === "drawing"
       ? anchor
       : this.element.querySelector<HTMLElement>(`[data-sidebar-preset-id="${preset.id}"]`)
         ?? this.element.querySelector<HTMLElement>(`[data-preset-id="${preset.id}"]`)
         ?? anchor;
-    this.dropdown.open(menuId, live, this.drawingMenu());
+    this.dropdown.toggle(menuId, live, this.drawingMenu());
   }
 
   private applyDrawingPreset(preset: DrawingPreset): void {
