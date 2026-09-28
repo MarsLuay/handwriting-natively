@@ -774,6 +774,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousAnnotationBackupPath = this.inkSettings.annotationBackupPath;
     const previousMouseLeftDragDraw = this.inkSettings.mouseLeftDragDraw;
     const previousMouseRightDragErase = this.inkSettings.mouseRightDragErase;
+    const previousTouchDrawFallback = this.inkSettings.touchDrawFallback;
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
     await this.saveData(settings);
@@ -803,7 +804,8 @@ export default class NativePdfInkPlugin extends Plugin {
         ...(previousPlacement !== settings.toolbarPlacement ? ["toolbarPlacement"] : []),
         ...(previousBoostedZoom !== settings.boostedPdfZoom ? ["boostedPdfZoom"] : []),
         ...(previousMouseLeftDragDraw !== settings.mouseLeftDragDraw ? ["mouseLeftDragDraw"] : []),
-        ...(previousMouseRightDragErase !== settings.mouseRightDragErase ? ["mouseRightDragErase"] : [])
+        ...(previousMouseRightDragErase !== settings.mouseRightDragErase ? ["mouseRightDragErase"] : []),
+        ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : [])
       ]
     });
     if (previousPlacement !== settings.toolbarPlacement) {
@@ -814,7 +816,8 @@ export default class NativePdfInkPlugin extends Plugin {
     }
     if (
       previousMouseLeftDragDraw !== settings.mouseLeftDragDraw ||
-      previousMouseRightDragErase !== settings.mouseRightDragErase
+      previousMouseRightDragErase !== settings.mouseRightDragErase ||
+      previousTouchDrawFallback !== settings.touchDrawFallback
     ) {
       for (const session of this.allSessions()) session.updateMouseInputBindings();
     }
@@ -1397,6 +1400,7 @@ export default class NativePdfInkPlugin extends Plugin {
       mouseDragScrollEnabled: () => this.inkSettings.mouseDragScroll,
       mouseLeftDragDrawEnabled: () => this.inkSettings.mouseLeftDragDraw,
       mouseRightDragEraseEnabled: () => this.inkSettings.mouseRightDragErase,
+      touchDrawFallbackEnabled: () => this.inkSettings.touchDrawFallback,
       pressureProfile: () => this.inkSettings.pressureProfile,
       pressureCalibration: () => this.inkSettings.pressureCalibration,
       simplifyStrokesEnabled: () => this.inkSettings.simplifyStrokes,

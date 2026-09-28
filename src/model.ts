@@ -207,6 +207,8 @@ export interface PluginSettings {
   mouseLeftDragDraw: boolean;
   /** Secondary-button mouse drags erase when enabled; native context menus remain otherwise. */
   mouseRightDragErase: boolean;
+  /** Explicit touch-only/ambiguous-device fallback; never enabled by migration. */
+  touchDrawFallback: boolean;
   /** Auto uses stylus pressure when available; Pen/Mouse force that input model. */
   pressureProfile: PressureProfile;
   /** Device-pressure tuning; captured when each stroke starts. */
@@ -317,6 +319,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   mouseDragScroll: true,
   mouseLeftDragDraw: true,
   mouseRightDragErase: false,
+  touchDrawFallback: false,
   pressureProfile: "auto",
   pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
   simplifyStrokes: true,
@@ -397,6 +400,9 @@ export function mergeSettings(
     pdfTemplatePath,
     mouseLeftDragDraw: cleaned.mouseLeftDragDraw !== false,
     mouseRightDragErase,
+    // Legacy `fingerDraw` is removed above; only the new explicit setting may
+    // opt into touch ink, and only with the literal boolean value true.
+    touchDrawFallback: cleaned.touchDrawFallback === true,
     textEscapeAction: "save" as const,
     boostedPdfZoom: cleaned.boostedPdfZoom === true,
     hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,

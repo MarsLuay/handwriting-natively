@@ -275,6 +275,17 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             }
           },
           {
+            name: "Touch drawing fallback",
+            desc: "Allow one-finger touch to use the selected annotation tool when no confirmed stylus has been observed. Off keeps touch native; enable only on touch-only or ambiguous devices.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.touchDrawFallback).onChange(async (value) => {
+                  await this.persistPatch({ touchDrawFallback: value });
+                })
+              );
+            }
+          },
+          {
             name: "Disable one-finger sidebar swipe",
             desc: "Prevent one-finger horizontal swipes on mobile/iPad from opening Obsidian's left or right sidebar. Off by default; buttons and commands still work.",
             render: (setting: Setting) => {

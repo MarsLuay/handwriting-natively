@@ -87,6 +87,8 @@ export interface PointerRouterCallbacks {
   activeTool(): ToolId;
   /** Event-aware annotation gate (pen/touch/mouse policy). Replaces global Draw mode. */
   canAnnotatePointer(event: PointerEvent): boolean;
+  /** Whether the selected touch fallback is currently available for cursors. */
+  touchAnnotationEnabled?(): boolean;
   /** True when the requested mouse button is bound to an annotation gesture. */
   mouseAnnotationEnabled?(button?: number): boolean;
   rightMouseEraserEnabled?(): boolean;
@@ -286,6 +288,11 @@ export class PointerRouter {
       if (event.isPrimary !== false && this.callbacks.touchTextTarget?.(event)) {
         return { route: "text", reason: "text-box-touch" };
       }
+      if (this.callbacks.canAnnotatePointer(event)) {
+        if (tool === "text") return { route: "text", reason: "touch-fallback-text" };
+        if (tool === "eraser" || tool === "lasso") return { route: "edit", reason: "touch-fallback-edit" };
+        if (isInkDrawTool(tool)) return { route: "draw", reason: "touch-fallback-draw" };
+      }
       // Fingers leave native scroll/pinch unless the gesture starts on a text box.
       return { route: "touch-pan", reason: "touch-native" };
     }
@@ -427,7 +434,10 @@ export class PointerRouter {
         buttons: event.buttons,
         target: event.pointerType === "touch" || this.callbacks.canAnnotatePointer(event) ? "page" : "ui",
         inkToolSelected: route === "draw" || route === "edit" || route === "text",
-        mouseIntent: route === "draw" || route === "edit" || route === "text" ? "ink" : "pan"
+        mouseIntent: (route === "draw" || route === "edit" || route === "text")
+          && (event.pointerType !== "touch" || this.callbacks.canAnnotatePointer(event))
+          ? "ink"
+          : "pan"
       })
       : { state: this.ownership.snapshot() };
     if (this.palmPolicy.hasActivePen()) {
@@ -446,17 +456,29 @@ export class PointerRouter {
       && (ownershipDecision.state.owner !== "mouse-ink" || ownershipDecision.state.activeMousePointerId !== event.pointerId)) {
       route = "native";
       routeReason = "gesture-ownership";
+    } else if (gesturePointerType === "touch"
+      && (route === "draw" || route === "edit" || route === "text")
+      && (ownershipDecision.state.owner !== "touch-ink"
+        || !ownershipDecision.state.activeTouchIds.has(event.pointerId))) {
+      route = "touch-pan";
+      routeReason = "gesture-ownership";
     }
     this.callbacks.onRouteDecision?.(route, routeReason, event);
-    if (event.pointerType === "touch" && route !== "ignored" && this.manipulation.activeTouches < this.touchCount()) {
+    if (
+      event.pointerType === "touch"
+      && (route === "touch-pan" || route === "touch-zoom-pan")
+      && route !== "ignored"
+      && this.manipulation.activeTouches < this.touchCount()
+    ) {
       this.beginManipulationTouch();
     }
     this.callbacks.onRoute?.(route, event);
     if (route === "touch-zoom-pan") {
       for (const [pointerId, routed] of this.routed) {
-        if (routed !== "text" || !this.routedPointerTypes.has(pointerId)) continue;
+        if (this.routedPointerTypes.get(pointerId) !== "touch") continue;
         const cancel = this.syntheticPointerEvent(pointerId, "pointercancel", "touch");
-        this.callbacks.onCancel?.("text", cancel);
+        this.callbacks.onCancel?.(routed, cancel);
+        this.releaseGestureOwnership(cancel, "pointercancel");
         safeReleasePointerCapture(this.element, pointerId);
         this.routed.delete(pointerId);
         this.routedPointerTypes.delete(pointerId);
@@ -477,7 +499,7 @@ export class PointerRouter {
     }
     if (route !== "draw" && route !== "edit" && route !== "text") return route;
     this.routed.set(event.pointerId, route);
-    if (event.pointerType === "pen" || event.pointerType === "mouse" || (event.pointerType === "touch" && route === "text")) {
+    if (event.pointerType === "pen" || event.pointerType === "mouse" || event.pointerType === "touch") {
       this.routedPointerTypes.set(event.pointerId, event.pointerType);
     }
     const deferTouchTextClaim = event.pointerType === "touch" && route === "text";
@@ -663,7 +685,8 @@ export class PointerRouter {
   /** Pen or a vertical axis lock wins. Otherwise the manipulation machine owns touch-action. */
   private syncTouchActionMode(): void {
     const nativeTouchGesture = this.touchCount() > 0;
-    const mode = (this.palmPolicy.hasActivePen() && !nativeTouchGesture) || this.touchAxis?.lock === "vertical"
+    const touchInk = this.ownership.snapshot().owner === "touch-ink";
+    const mode = touchInk || ((this.palmPolicy.hasActivePen() && !nativeTouchGesture) || this.touchAxis?.lock === "vertical")
       ? "none"
       : this.manipulation.touchAction();
     this.element.classList.toggle("native-pdf-handwriting-touch-none", mode === "none");
@@ -1271,7 +1294,11 @@ export class PointerRouter {
   }
 
   private updateDrawCursor(event: Pick<PointerEvent, "clientX" | "clientY" | "pointerType">): void {
-    if (event.pointerType !== "mouse" && event.pointerType !== "pen") {
+    if (
+      event.pointerType !== "mouse"
+      && event.pointerType !== "pen"
+      && !(event.pointerType === "touch" && this.callbacks.touchAnnotationEnabled?.() === true)
+    ) {
       this.hideDrawCursor();
       return;
     }
@@ -1281,7 +1308,9 @@ export class PointerRouter {
   private paintDrawCursor(clientX: number, clientY: number, pointerType?: string): void {
     const tool = this.callbacks.activeTool();
     const type = pointerType ?? this.lastCursorPointerType ?? "mouse";
-    const pointerAllows = type === "pen" || this.callbacks.mouseAnnotationEnabled?.(0) === true;
+    const pointerAllows = type === "pen"
+      || (type === "touch" && this.callbacks.touchAnnotationEnabled?.() === true)
+      || this.callbacks.mouseAnnotationEnabled?.(0) === true;
     const visible = pointerAllows && isInkDrawTool(tool);
     if (!visible) {
       this.hideDrawCursor();
@@ -1302,7 +1331,11 @@ export class PointerRouter {
   }
 
   private updateEraserCursor(event: Pick<PointerEvent, "clientX" | "clientY" | "pointerType">): void {
-    if (event.pointerType !== "mouse" && event.pointerType !== "pen") {
+    if (
+      event.pointerType !== "mouse"
+      && event.pointerType !== "pen"
+      && !(event.pointerType === "touch" && this.callbacks.touchAnnotationEnabled?.() === true)
+    ) {
       this.hideEraserCursor();
       return;
     }
@@ -1311,7 +1344,9 @@ export class PointerRouter {
 
   private paintEraserCursor(clientX: number, clientY: number, pointerType?: string): void {
     const type = pointerType ?? this.lastCursorPointerType ?? "mouse";
-    const pointerAllows = type === "pen" || this.callbacks.mouseAnnotationEnabled?.(0) === true;
+    const pointerAllows = type === "pen"
+      || (type === "touch" && this.callbacks.touchAnnotationEnabled?.() === true)
+      || this.callbacks.mouseAnnotationEnabled?.(0) === true;
     const visible = pointerAllows && this.callbacks.activeTool() === "eraser";
     if (!visible) {
       this.hideEraserCursor();
