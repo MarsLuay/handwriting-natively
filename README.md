@@ -8,14 +8,11 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 
 ![Handwriting Natively drawing toolbar on a Lorem Ipsum PDF](docs/handwriting-natively.png)
 
-- Pen, graphite pencil, highlighter, laser pointer (fades away, not saved), circular eraser, and lasso tools with a compact Draw toolbar
-- Stylus-first annotation: fingers keep native PDF scrolling/pinch and mouse behavior follows the selected input policy
-- Autosave, recovery, and explicit Save; commands for save, export, and select-all ink (`save-active-pdf-annotations`, `export-active-annotated-pdf`, `select-all-pdf-ink`)
-- Commands to create a handwritten PDF, create a GoodNotes-sized blank notebook, add a matching blank page, and export selected ink as SVG (`create-handwritten-pdf`, `create-notebook`, `add-page-to-active-pdf`, `export-selected-pdf-ink-as-svg`)
-- File-explorer folder context menu **New PDF** (GoodNotes Standard blank page in that folder)
-- Assignable Hotkeys commands to switch to Pen, Eraser, Laser Pointer, Lasso, or Text (`select-pdf-pen`, `select-pdf-eraser`, `select-pdf-laser-pointer`, `select-pdf-lasso`, `select-pdf-text`), plus undo and redo (`undo-pdf-annotation`, `redo-pdf-annotation`)
-- Clear freehand strokes only (no default hotkeys): all pages, selected/current pages, or a page range prompt (`clear-all-pdf-freehand`, `clear-selected-pages-pdf-freehand`, `clear-specific-pages-pdf-freehand`)
-- Desktop and mobile PDF adapters without telemetry or hosted services
+- Pen, graphite pencil, highlighter, laser pointer, eraser, and lasso tools and a nifty toolbar
+- Mainly built for stylus, yet mouse is also available to draw and drag
+- Autosaving, everyones favorite feature
+- Commands to create a GoodNotes inspired blank PDF/notebook.handwritten PDF where you can add pages as you work
+- Assignable Hotkeys commands to switch to Pen, Eraser, Laser Pointer, Lasso, or Text , plus undo and redo 
 
 ## Setup
 
@@ -28,21 +25,16 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 
 ### Manual Setup
 
-```bash
-git clone https://github.com/MarsLuay/handwriting-natively.git
-cd handwriting-natively
-npm install
-npm test
-npm run build
-```
-
-Copy `manifest.json`, `main.js`, and `styles.css` into your vault plugin folder, then reload Obsidian. See `docs/manual-test-checklist.md` before trusting private PDF-view integration.
-
-Settings includes **Copy all logs**, which copies the last 32,000 characters of the vault debug log after it is enabled and an issue is reproduced. The UI is English; annotation files are language-independent.
+1. Download the BRAT plugin
+2. Press on its icon to enter a plugin, and paste in https://github.com/MarsLuay/handwriting-natively.git
+3. Select any release you desire! (the latest pre-release is my pick..)
+4. Press install and enjoy
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+If this project is used for any others, all that is required is acknowledging this repo. Thank you! Build cool things
 
 ## Privacy
 
