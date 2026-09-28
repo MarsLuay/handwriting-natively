@@ -37,4 +37,4 @@ If this project is used for any others, all that is required is acknowledging th
 
 ## Privacy
 
-Local-only annotation processing. See [PRIVACY.md](PRIVACY.md) and [TERMS.md](TERMS.md). No telemetry or hosted service.
+Local-only annotation processing. See [PRIVACY.md](PRIVACY.md) and [TERMS.md](TERMS.md). No online telemetry or hosted service.
