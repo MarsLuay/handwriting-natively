@@ -2689,6 +2689,140 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("opens a committed text box from one touch without claiming native touch navigation", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "text";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/touch-edit.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const text: PdfTextAnnotation = {
+      id: "touch-edit", page: 1, text: "Touch me", x: 220, y: 650, width: 140, height: 28,
+      color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+      runs: [{ text: "Touch me", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      sourceRuns: [{ text: "Touch me", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      createdAt: "now", updatedAt: "now"
+    };
+    const internal = session as unknown as {
+      texts: { add(annotation: PdfTextAnnotation): void };
+      surfaces: Map<number, unknown>;
+      renderTextAnnotations(surface: unknown): void;
+      activeTextEditor: { draft: PdfTextAnnotation } | null;
+    };
+    internal.texts.add(text);
+    internal.renderTextAnnotations(internal.surfaces.get(1));
+    const box = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box")!;
+
+    const down = pointer("pointerdown", 250, 150, { pointerType: "touch", pointerId: 41 });
+    box.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(false);
+    box.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 41 }));
+
+    expect(internal.activeTextEditor?.draft.id).toBe(text.id);
+    await session.destroy();
+  });
+
+  it("supports targeted text long-press actions, size changes, movement cancellation, and native-menu suppression", async () => {
+    vi.useFakeTimers();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "text";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/touch-context.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const first: PdfTextAnnotation = {
+      id: "touch-context-first", page: 1, text: "First", x: 220, y: 650, width: 140, height: 28,
+      color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+      runs: [{ text: "First", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      sourceRuns: [{ text: "First", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      createdAt: "now", updatedAt: "now"
+    };
+    const second: PdfTextAnnotation = { ...first, id: "touch-context-second", text: "Second", x: 220, y: 600 };
+    const internal = session as unknown as {
+      texts: { add(annotation: PdfTextAnnotation): void; all(): PdfTextAnnotation[] };
+      surfaces: Map<number, unknown>;
+      renderTextAnnotations(surface: unknown): void;
+      selectedTexts: PdfTextAnnotation[];
+    };
+    internal.texts.add(first);
+    internal.texts.add(second);
+    internal.renderTextAnnotations(internal.surfaces.get(1));
+
+    const longPress = async (id: string): Promise<HTMLElement> => {
+      const box = [...adapter.pageElement.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")]
+        .find((candidate) => candidate.dataset.annotationId === id)!;
+      const y = id === second.id ? 200 : 150;
+      box.dispatchEvent(pointer("pointerdown", 250, y, { pointerType: "touch", pointerId: id === first.id ? 51 : 52 }));
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+      return box;
+    };
+
+    const firstBox = await longPress(first.id);
+    expect(internal.selectedTexts.map((text) => text.id)).toEqual([first.id]);
+    expect(document.querySelectorAll(".native-pdf-handwriting-dropdown")).toHaveLength(1);
+    const contextMenuEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    firstBox.dispatchEvent(contextMenuEvent);
+    expect(contextMenuEvent.defaultPrevented).toBe(true);
+    expect(document.querySelectorAll(".native-pdf-handwriting-dropdown")).toHaveLength(1);
+
+    const size = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-dropdown input[type='number']")!;
+    size.value = "36";
+    size.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(internal.texts.all().find((text) => text.id === first.id)?.fontSize).toBe(36);
+
+    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-dropdown-option[data-option-id='copy']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 51 }));
+    session.applySelectionShortcut("paste");
+    expect(internal.texts.all()).toHaveLength(3);
+
+    const firstAfterPaste = await longPress(first.id);
+    expect(firstAfterPaste).toBeDefined();
+    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-dropdown-option[data-option-id='cut']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 51 }));
+    expect(internal.texts.all().some((text) => text.id === first.id)).toBe(false);
+
+    const canceled = [...adapter.pageElement.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")]
+      .find((candidate) => candidate.dataset.annotationId !== "touch-context-second")!;
+    canceled.dispatchEvent(pointer("pointerdown", 250, 160, { pointerType: "touch", pointerId: 53 }));
+    const move = pointer("pointermove", 400, 300, { pointerType: "touch", pointerId: 53 });
+    adapter.pageElement.dispatchEvent(move);
+    expect(move.defaultPrevented).toBe(false);
+    vi.advanceTimersByTime(500);
+    expect(document.querySelector(".native-pdf-handwriting-dropdown")).toBeNull();
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 400, 300, { pointerType: "touch", pointerId: 53 }));
+
+    const remaining = internal.texts.all().find((text) => text.id === "touch-context-second")!;
+    const remainingBox = [...adapter.pageElement.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")]
+      .find((candidate) => candidate.dataset.annotationId === remaining.id)!;
+    remainingBox.dispatchEvent(pointer("pointerdown", 250, 200, { pointerType: "touch", pointerId: 54 }));
+    vi.advanceTimersByTime(500);
+    await Promise.resolve();
+    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-dropdown-option[data-option-id='delete']")?.click();
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 200, { pointerType: "touch", pointerId: 54 }));
+    expect(internal.texts.all().some((text) => text.id === remaining.id)).toBe(false);
+    expect(session.undo()).toBe(true);
+    expect(internal.texts.all().some((text) => text.id === remaining.id)).toBe(true);
+
+    await session.destroy();
+  });
+
   it("persists only selected rich-text characters and renders their saved runs", async () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.toolPreferences.activeTool = "text";

@@ -13,6 +13,8 @@ export interface DropdownOpenOptions {
   label: string;
   options?: DropdownOption[];
   content?: HTMLElement;
+  /** Touch context menus must keep the active pointer lifecycle in the viewer. */
+  focusFirst?: boolean;
 }
 
 /** Keep every icon dropdown compact; longer menus scroll inside the popup. */
@@ -65,7 +67,7 @@ export class DropdownController {
     this.ownerDocument.addEventListener("keydown", this.onKeyDown, { signal: this.abort.signal });
     this.ownerDocument.defaultView?.addEventListener("resize", this.reposition, { signal: this.abort.signal });
     this.ownerDocument.defaultView?.addEventListener("scroll", this.reposition, { capture: true, signal: this.abort.signal });
-    this.enabledItems()[0]?.focus();
+    if (options.focusFirst !== false) this.enabledItems()[0]?.focus();
   }
 
   close(restoreFocus = true): void {

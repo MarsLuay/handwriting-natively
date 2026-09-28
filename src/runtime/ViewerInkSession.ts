@@ -109,6 +109,7 @@ import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
 import { inkBackingBudget, inkBackingSize } from "./inkBackingSize";
 import type { DebugState } from "../ui/DebugPanel";
 import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
+import { DropdownController } from "../ui/DropdownController";
 import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../logging/SessionLogger";
 import { BoundedTiming, EffectiveFrameBudget, type RuntimeFrameProfile, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
 import { ZoomFrameDiagnostics, type FrameAttributionSummary } from "./ZoomFrameDiagnostics";
@@ -117,7 +118,7 @@ import type { AnnotationViewState } from "./AnnotationSurface";
 import { describeScrollElement, scrollPdfByDetailed } from "../integration/PdfScrollRoot";
 import { TextAnnotationSession } from "../text/TextAnnotationSession";
 import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../text/TextAnnotationCommands";
-import type { TextStyleChange } from "../ui/TextDropdown";
+import { textMenu, type TextStyleChange } from "../ui/TextDropdown";
 import { insertStyledText, readTextRuns, renderTextRuns, rescaleTextRuns, restoreSelection, selectionOffsets, type TextSelectionOffsets } from "../text/RichTextDom";
 import { normalizeTextRuns, patchTextRunRange, plainTextFromRuns, plainTextToRuns, styleAtTextOffset } from "../text/RichTextRuns";
 import {
@@ -130,6 +131,8 @@ import type { ScanDocumentPage } from "../scanning/ScanDocument";
 import { ImageRasterExportService, type ImageRasterFormat, type ImageRasterRenderTarget } from "../image/ImageRasterExportService";
 
 const INPUT_OWNER_REGISTRY_KEY = "__nativePdfHandwritingInputOwners";
+const TEXT_TOUCH_HOLD_MS = 500;
+const TEXT_TOUCH_MOVE_THRESHOLD_PX = 10;
 const detachedInputOwners = new WeakMap<HTMLElement, ViewerInkSession>();
 const wheelPanReplayDepth = new WeakMap<Document, number>();
 
@@ -811,7 +814,15 @@ interface PageSurface {
   editTool: "eraser" | "lasso" | undefined;
   eraserSize: number | undefined;
   eraserWholeStrokes: boolean | undefined;
-  textIntent: { start: PagePoint; hit: TextAnnotation | null; pointerType: string } | null;
+  textIntent: {
+    start: PagePoint;
+    hit: TextAnnotation | null;
+    pointerType: string;
+    pointerId: number;
+    target: HTMLElement | null;
+    longPressTimer: number | null;
+    longPressTriggered: boolean;
+  } | null;
   /** Last unsafe evidence reason reported for this page generation. */
   annotationSafetyBlocked: string | null;
 }
@@ -898,6 +909,9 @@ export class ViewerInkSession {
   private readonly previousViewerElementDebugId: number | null;
   private lastAddPageOperationId: string | null;
   private readonly selectionToolbar: SelectionToolbar;
+  private readonly textContextMenu: DropdownController;
+  private textContextMenuTargetId: string | null = null;
+  private textContextMenuSuppressTimer: number | null = null;
   private readonly history: CommandHistory;
   /** Pages dirtied by the next history.execute — avoids full multi-page refresh. */
   private readonly historyDirtyPages = new Set<number>();
@@ -1309,6 +1323,7 @@ export class ViewerInkSession {
       onClear: () => this.clearSelection()
     }, options.adapter.host.ownerDocument);
     this.selectionToolbar.bindViewport(options.adapter.root);
+    this.textContextMenu = new DropdownController(options.adapter.host.ownerDocument);
     this.autosave = new AutosaveQueue<SidecarSchemaV1>({
       delayMs: options.settings.autosaveDelayMs,
       retryFailed: options.settings.retryFailedAutosaves,
@@ -7843,6 +7858,7 @@ export class ViewerInkSession {
     this.syncAnnotationCursorMode(true);
     this.resizeObserver?.disconnect();
     for (const surface of this.surfaces.values()) {
+      if (surface.textIntent) this.clearTextIntentTimer(surface.textIntent);
       this.logger.inputLifecycleEvent("surface-unmount", {
         page: surface.page.pageNumber,
         pageId: getDebugNodeId(surface.page.element),
@@ -7856,6 +7872,10 @@ export class ViewerInkSession {
     }
     this.surfaces.clear();
     this.selectionToolbar.destroy();
+    if (this.textContextMenuSuppressTimer !== null) window.clearTimeout(this.textContextMenuSuppressTimer);
+    this.textContextMenuSuppressTimer = null;
+    this.textContextMenuTargetId = null;
+    this.textContextMenu.destroy();
     this.viewerMousePan.destroy();
     this.addPageControl?.destroy();
     this.thumbnailSidebarActions?.destroy();
@@ -8006,6 +8026,18 @@ export class ViewerInkSession {
   private textBoxesInteractable(): boolean {
     const tool = this.activeTool();
     return tool === "text" || tool === "lasso";
+  }
+
+  /** A finger may claim only a committed text box; every other touch stays native. */
+  private isTouchTextTarget(surface: PageSurface, event: PointerEvent): boolean {
+    if (!this.textBoxesInteractable() || event.pointerType !== "touch") return false;
+    const target = event.target instanceof Element
+      ? event.target.closest<HTMLElement>(".native-pdf-handwriting-text-box")
+      : null;
+    if (!target || !surface.textLayer.contains(target)) return false;
+    const annotationId = target.dataset.annotationId;
+    return annotationId !== undefined
+      && this.texts.page(surface.page.pageNumber).some((text) => text.id === annotationId);
   }
 
   private refreshSurfaceCursors(): void {
@@ -8288,6 +8320,7 @@ export class ViewerInkSession {
         });
         this.commitActiveTextEditor("outside-touch");
       },
+      touchTextTarget: (event) => this.isTouchTextTarget(surface, event),
       onRouterReceived: (event, generation) => {
         this.postZoomRouterByPointer.set(event.pointerId, {
           received: true,
@@ -10785,7 +10818,12 @@ export class ViewerInkSession {
     surface.editTool = undefined;
     surface.eraserSize = undefined;
     surface.eraserWholeStrokes = undefined;
+    if (surface.textIntent) this.clearTextIntentTimer(surface.textIntent);
     surface.textIntent = null;
+    if (event.pointerType === "touch" && this.textContextMenu.isOpen("text-context")) {
+      this.textContextMenu.close(false);
+      this.textContextMenuTargetId = null;
+    }
     this.textMoveDrag = null;
     this.updateDebug(surface, event);
     this.renderPage(surface.page.pageNumber);
@@ -10956,7 +10994,19 @@ export class ViewerInkSession {
       return;
     }
     const hit = this.textAt(surface.page.pageNumber, point);
-    surface.textIntent = { start: point, hit, pointerType: event.pointerType };
+    const target = event.target instanceof Element
+      ? event.target.closest<HTMLElement>(".native-pdf-handwriting-text-box")
+      : null;
+    const intent: NonNullable<PageSurface["textIntent"]> = {
+      start: point,
+      hit,
+      pointerType: event.pointerType,
+      pointerId: event.pointerId,
+      target,
+      longPressTimer: null,
+      longPressTriggered: false
+    };
+    surface.textIntent = intent;
     this.logText(surface, "intent", {
       pointerType: event.pointerType || "(empty)", pointerId: event.pointerId,
       x: round(point.x), y: round(point.y), committedPrevious: false
@@ -10966,6 +11016,19 @@ export class ViewerInkSession {
       x: round(point.x), y: round(point.y),
       ...(hit ? this.textGeometry(hit) : {})
     });
+    if (event.pointerType === "touch" && hit) {
+      intent.longPressTimer = window.setTimeout(() => {
+        intent.longPressTimer = null;
+        if (surface.textIntent !== intent || this.destroyed || this.activeTextEditor) return;
+        intent.longPressTriggered = true;
+        this.logText(surface, "touch-long-press", {
+          annotationId: hit.id,
+          holdMs: TEXT_TOUCH_HOLD_MS,
+          pointerId: intent.pointerId
+        });
+        this.openTextContextMenu(surface, intent);
+      }, TEXT_TOUCH_HOLD_MS);
+    }
   }
 
   private updateTextIntent(surface: PageSurface, sample: PointerSample, event: PointerEvent): void {
@@ -10988,7 +11051,27 @@ export class ViewerInkSession {
       return;
     }
     const intent = surface.textIntent;
-    if (!intent?.hit || intent.pointerType !== "pen") return;
+    if (!intent) return;
+    if (intent.pointerType === "touch") {
+      if (intent.longPressTriggered) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      const threshold = Math.max(TEXT_TOUCH_MOVE_THRESHOLD_PX / Math.max(this.displayScale(surface), 0.1), 6);
+      if (Math.hypot(point.x - intent.start.x, point.y - intent.start.y) < threshold) return;
+      this.clearTextIntentTimer(intent);
+      surface.textIntent = null;
+      this.logText(surface, "touch-long-press-cancel", {
+        annotationId: intent.hit?.id ?? null,
+        pointerId: intent.pointerId,
+        threshold: round(threshold),
+        startX: round(intent.start.x), startY: round(intent.start.y),
+        currentX: round(point.x), currentY: round(point.y)
+      });
+      return;
+    }
+    if (!intent.hit || intent.pointerType !== "pen") return;
     const threshold = Math.max(3 / Math.max(this.displayScale(surface), 0.1), 2);
     if (Math.hypot(point.x - intent.start.x, point.y - intent.start.y) < threshold) return;
     this.textMoveDrag = {
@@ -11030,6 +11113,16 @@ export class ViewerInkSession {
     const intent = surface.textIntent;
     surface.textIntent = null;
     if (!intent) return;
+    this.clearTextIntentTimer(intent);
+    if (intent.longPressTriggered) {
+      _event.preventDefault();
+      _event.stopImmediatePropagation();
+      this.logText(surface, "touch-long-press-end", {
+        annotationId: intent.hit?.id ?? null,
+        pointerId: intent.pointerId
+      });
+      return;
+    }
     if (intent.hit) {
       this.logText(surface, "edit-request", { annotationId: intent.hit.id, ...this.textGeometry(intent.hit) });
       this.openTextEditor(surface, intent.hit);
@@ -11038,6 +11131,60 @@ export class ViewerInkSession {
       this.openTextEditor(surface, null, intent.start);
     }
     this.renderTextAnnotations(surface);
+  }
+
+  private clearTextIntentTimer(intent: NonNullable<PageSurface["textIntent"]>): void {
+    if (intent.longPressTimer === null) return;
+    window.clearTimeout(intent.longPressTimer);
+    intent.longPressTimer = null;
+  }
+
+  private openTextContextMenu(surface: PageSurface, intent: NonNullable<PageSurface["textIntent"]>): void {
+    const annotation = intent.hit;
+    if (!annotation) return;
+    this.clearSelection({ refresh: false });
+    this.selected = [];
+    this.selectedTexts = [annotation];
+    this.selectionShape = boundingShapeFromSelection([], this.selectedTexts);
+    this.selectionPage = surface.page.pageNumber;
+    this.selectionToolbar.hide();
+    this.renderTextAnnotations(surface);
+    const target = [...surface.textLayer.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")]
+      .find((box) => box.dataset.annotationId === annotation.id);
+    if (!target) return;
+    this.textContextMenuTargetId = annotation.id;
+    if (this.textContextMenuSuppressTimer !== null) window.clearTimeout(this.textContextMenuSuppressTimer);
+    this.textContextMenuSuppressTimer = window.setTimeout(() => {
+      this.textContextMenuSuppressTimer = null;
+      this.textContextMenuTargetId = null;
+    }, TEXT_TOUCH_HOLD_MS * 3);
+    const content = textMenu(
+      target.ownerDocument,
+      this.textStyle(annotation),
+      (change) => this.applyTextStyleToSelection(change),
+      this.pointerProbeAbort.signal
+    );
+    this.textContextMenu.open("text-context", target, {
+      label: "Text box actions",
+      options: [
+        { id: "delete", label: "Delete", onSelect: () => this.deleteSelection() },
+        { id: "copy", label: "Copy", onSelect: () => this.copySelection() },
+        { id: "cut", label: "Cut", onSelect: () => this.cutSelection() }
+      ],
+      content,
+      focusFirst: false
+    });
+    this.logText(surface, "touch-context-menu", {
+      annotationId: annotation.id,
+      options: ["delete", "copy", "cut", "size"]
+    });
+  }
+
+  private handleTextBoxContextMenu(event: MouseEvent, annotationId: string): void {
+    if (this.textContextMenuTargetId !== annotationId && !this.textContextMenu.isOpen()) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    this.logger.textTool("context-menu-suppressed", { annotationId });
   }
 
   private textAt(page: number, point: Pick<PagePoint, "x" | "y">): TextAnnotation | null {
@@ -11575,6 +11722,9 @@ export class ViewerInkSession {
       box.className = "native-pdf-handwriting-text-box";
       box.dataset.annotationId = annotation.id;
       box.dataset.annotationSignature = this.textBoxRenderSignature(annotation, selected.has(annotation.id));
+      box.addEventListener("contextmenu", (event) => this.handleTextBoxContextMenu(event, annotation.id), {
+        signal: this.pointerProbeAbort.signal
+      });
       if (this.textBoxesInteractable()) box.classList.add("is-editable");
       if (selected.has(annotation.id)) box.classList.add("is-selected");
       this.positionTextBox(surface, box, annotation);
