@@ -30,6 +30,12 @@ Pointer Events are authoritative when available:
 
 `PointerRouter` generation cleanup, pointer capture loss, cancel, blur, hidden visibility, pagehide, and session destruction clear stale ownership. Blur/background cancellation releases plugin captures, cancels unfinished plugin routes, and clears pen/touch bookkeeping without synthesizing native navigation. This boundary is covered by deterministic DOM tests; it does not prove WebKit lifecycle delivery. This issue remains an architecture umbrella: further owner-state consolidation and Touch fallback removal require measured event ordering first. Real iPadOS/WKWebView traces are still required before removing any compatibility fallback or claiming Pencil/Scribble behavior.
 
+The complete physical release gate is documented in
+[`docs/ipad-input-release-matrix.md`](ipad-input-release-matrix.md). It keeps
+input ownership, native pinch/scroll, UI/text interaction, cancellation,
+background/unload, rotation, sidebar, and generation replacement as separate
+rows. Until a named build/device run is attached, those rows remain `not-run`.
+
 ## Lifecycle (#136)
 
 The session owns page routers, observers, rAF/timer work, zoom profiling, toolbar/overlay nodes, and persistence scheduling. Destroy is idempotent and disconnects those resources; router generations and page replacement checks reject stale callbacks. The highest-risk remaining validation is destroy/rebind during attach retry, zoom settle, active persistence, page virtualization, and same-document multi-leaf editing.
