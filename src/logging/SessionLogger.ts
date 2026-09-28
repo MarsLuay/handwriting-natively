@@ -485,6 +485,20 @@ export class SessionLogger {
     }, true);
   }
 
+  /** One bounded record for a slow document-to-ownership contact path. */
+  inputRoutingLatency(details: Record<string, unknown> = {}): void {
+    const slowPhases = Array.isArray(details.slowPhases) ? details.slowPhases.slice(0, 8) : [];
+    if (slowPhases.length === 0) return;
+    this.emit("warn", "input-routing-latency", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      event: "input-routing-latency",
+      ...details,
+      slowPhases
+    });
+  }
+
   pointerTypeOrigin(details: Record<string, unknown> = {}): void {
     this.emit("info", "pointer-type-origin", {
       document: this.documentPath,

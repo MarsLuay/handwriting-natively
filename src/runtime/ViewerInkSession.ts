@@ -42,7 +42,7 @@ import {
 } from "./InkVisibility";
 import { deferredRenderDisposition } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRoute, type PointerRouterHandoff } from "../input/PointerRouter";
-import { PostUiInputProbe, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
+import { PostUiInputProbe, POST_UI_INPUT_PHASE_THRESHOLD_MS, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type DocumentInputOwnershipHandle } from "../input/DocumentInputOwnership";
 import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
 import {
@@ -1117,6 +1117,8 @@ export class ViewerInkSession {
   /** A browser event object must never be processed twice by one collector. */
   private readonly seenPhysicalPointerEvents = new WeakSet<PointerEvent>();
   private readonly seenPhysicalTouchEvents = new WeakSet<TouchEvent>();
+  /** Capture-phase collectors and the document probe inspect the same down. */
+  private readonly pointerHitTestCache = new WeakMap<PointerEvent, PointerHitTest>();
   /** Links a live PointerEvent id to the bounded physical-contact trace. */
   private readonly physicalContactIdsByPointer = new Map<number, string>();
   /** Pointer-down timestamps let completed stroke profiles separate startup from user draw time. */
@@ -1443,8 +1445,14 @@ export class ViewerInkSession {
       viewerGeneration: this.viewerGeneration,
       isEnabled: () => this.options.debugEnabled?.() ?? false,
       withinTarget: within,
-      onPhysicalContactEvent: (event) => this.handlePhysicalContactEvent(event),
-      onInputHotPathLongTask: (details) => this.logger.inputHotPathLongTask(details),
+      onPhysicalContactEvent: (event) => {
+        if (this.documentInputOwnershipRevoked || this.documentInputOwnership?.isOwner() !== true) return;
+        this.handlePhysicalContactEvent(event);
+      },
+      onInputHotPathLongTask: (details) => {
+        if (this.documentInputOwnershipRevoked || this.documentInputOwnership?.isOwner() !== true) return;
+        this.logger.inputHotPathLongTask(details);
+      },
       onPhysicalContactDuplicate: (details) => this.handlePhysicalContactDuplicate(details)
     });
 
@@ -1469,6 +1477,8 @@ export class ViewerInkSession {
       reason,
       registrationSource: this.documentInputRegistrationSource
     });
+    this.physicalContactCollectorLease?.release();
+    this.physicalContactCollectorLease = null;
     this.pointerProbeAbort.abort();
     this.viewerMousePan.destroy();
     for (const surface of this.surfaces.values()) {
@@ -1731,6 +1741,45 @@ export class ViewerInkSession {
   private expirePostUiProbe(): void {
     const now = Date.now();
     for (const result of this.postUiInputProbe.expire(now)) this.logPostUiProbeResult(result);
+    for (const result of this.postUiInputProbe.expireHandoffs(now)) {
+      this.logger.inputHandoff("expired", {
+        outcome: result.outcome,
+        correlationId: result.correlationId,
+        penContactId: result.penContactId,
+        contact: result.contact,
+        details: result.details
+      });
+      if (result.latency && result.latency.slowPhases.length > 0) {
+        this.logger.inputRoutingLatency({
+          correlationId: result.correlationId,
+          penContactId: result.penContactId,
+          physicalContactId: result.contact?.physicalContactId ?? null,
+          outcome: result.outcome,
+          ownershipStage: result.latency.ownershipStage,
+          ownershipDecision: result.latency.ownershipDecision,
+          totalMs: result.latency.totalMs,
+          phaseDurations: result.latency.phaseDurations,
+          slowPhases: result.latency.slowPhases
+        });
+      }
+      this.logger.physicalContactTrace({
+        outcome: result.outcome,
+        outcomeClass: result.outcomeClass,
+        correlationId: result.correlationId,
+        penContactId: result.penContactId,
+        physicalContactId: result.contact?.physicalContactId ?? null,
+        lastObservedStage: result.contact?.lastObservedStage ?? null,
+        contact: result.contact,
+        trace: result.details.trace ?? null
+      });
+      this.logger.penRoutingRegression({
+        outcome: result.outcome,
+        correlationId: result.correlationId,
+        page: result.contact?.page ?? null,
+        previousSuccessfulCorrelationId: this.logger.lastSuccessfulStroke().lastCorrelationId,
+        toolChangeId: this.lastToolChange?.id ?? null
+      });
+    }
   }
 
   private clearPostUiProbeTimer(): void {
@@ -1814,7 +1863,11 @@ export class ViewerInkSession {
     };
   }
 
-  private recordDocumentHandoff(event: PointerEvent, hitTest: PointerHitTest): void {
+  private recordDocumentHandoff(
+    event: PointerEvent,
+    hitTest: PointerHitTest,
+    timing?: { capturedAt: number; hitTestMs: number }
+  ): void {
     if (!(this.options.debugEnabled?.() ?? false) || event.pointerType !== "pen") return;
     for (const expired of this.postUiInputProbe.expireHandoffs(Date.now())) {
       this.logger.inputHandoff("expired", {
@@ -1833,7 +1886,8 @@ export class ViewerInkSession {
     const page = hitTest.geometricPage?.element ?? null;
     const surface = hitTest.geometricPage ? this.surfaces.get(hitTest.geometricPage.pageNumber) : undefined;
     const router = surface?.router ?? null;
-    const contact = this.postUiInputProbe.observeDocument(Date.now(), event.pointerId, "pen", {
+    const capturedAt = timing?.capturedAt ?? Date.now();
+    const contact = this.postUiInputProbe.observeDocument(capturedAt, event.pointerId, "pen", {
       physicalContactId: this.physicalContactIdsByPointer.get(event.pointerId) ?? null,
       page: hitTest.geometricPage?.pageNumber ?? null,
       geometricPageId: getDebugNodeId(page),
@@ -1872,7 +1926,7 @@ export class ViewerInkSession {
     });
     if (!contact) return;
     this.beginPenScrollEvidence(contact.correlationId, event.pointerId);
-    const captured = this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, "document-capture", {
+    const captured = this.postUiInputProbe.handoffStage(capturedAt, event.pointerId, "document-capture", {
       ...this.pointerEventPropagationDetails(event, page, surface?.overlay ?? null),
       hitTest: hitTest.details
     });
@@ -1888,7 +1942,10 @@ export class ViewerInkSession {
       fallbackConsidered: true,
       fallbackEligible: Boolean(hitTest.safeRecoveryPage && !hitTest.pageOccludedByUi),
       fallbackRejectedReason: hitTest.pageOccludedByUi ? "ui-occluded" : hitTest.safeRecoveryPage ? null : "no-safe-recovery-page",
-      ...hitTest.details
+      ...hitTest.details,
+      ...(timing && timing.hitTestMs >= POST_UI_INPUT_PHASE_THRESHOLD_MS
+        ? { hitTestMs: roundMetric(timing.hitTestMs) }
+        : {})
     });
   }
 
@@ -1922,6 +1979,19 @@ export class ViewerInkSession {
       ...this.pointerEventPropagationDetails(event, this.closestPdfPageElement(event.target), null)
     });
     if (!result) return;
+    if (result.latency && result.latency.slowPhases.length > 0) {
+      this.logger.inputRoutingLatency({
+        correlationId: result.correlationId,
+        penContactId: result.penContactId,
+        physicalContactId: result.contact?.physicalContactId ?? null,
+        outcome: result.outcome,
+        ownershipStage: result.latency.ownershipStage,
+        ownershipDecision: result.latency.ownershipDecision,
+        totalMs: result.latency.totalMs,
+        phaseDurations: result.latency.phaseDurations,
+        slowPhases: result.latency.slowPhases
+      });
+    }
     this.logger.inputHandoff("terminal", {
       outcome: result.outcome,
       correlationId: result.correlationId,
@@ -2478,7 +2548,7 @@ export class ViewerInkSession {
       const targetWithin = isElement(pointer.target)
         && (this.options.adapter.host.contains(pointer.target) || this.options.adapter.root.contains(pointer.target));
       const hitTest = this.shouldFallbackRoutePointer(pointer)
-        ? this.inspectPointerHit(pointer, hitPage, targetWithin)
+        ? this.inspectPointerHitOnce(pointer, hitPage, targetWithin)
         : emptyPointerHitTest(hitPage);
       this.logger.pointerSeen({
         source: "pointerdown",
@@ -2684,10 +2754,15 @@ export class ViewerInkSession {
       this.notePointerTypeOrigin(e, "document-pointer-probe", "capture");
       this.noteUiInput(e);
       const hitPage = this.closestPdfPageElement(e.target);
+      const capturedAt = Date.now();
+      const hitTestStartedAt = performance.now();
       const hitTest = this.shouldFallbackRoutePointer(e)
-        ? this.inspectPointerHit(e, hitPage, within(e.target))
+        ? this.inspectPointerHitOnce(e, hitPage, within(e.target))
         : emptyPointerHitTest(hitPage);
-      this.recordDocumentHandoff(e, hitTest);
+      this.recordDocumentHandoff(e, hitTest, {
+        capturedAt,
+        hitTestMs: performance.now() - hitTestStartedAt
+      });
       this.recordPostUiProbeDocument(e, hitTest);
       this.logger.inputLifecycleEvent("pointerdown", {
         pointerType: e.pointerType || "(empty)",
@@ -8286,6 +8361,18 @@ export class ViewerInkSession {
    * is still visibly present. The result is also the bounded anomaly payload;
    * normal pointer-down logs stay small.
    */
+  private inspectPointerHitOnce(
+    event: PointerEvent,
+    targetPage: HTMLElement | null,
+    targetWithin: boolean
+  ): PointerHitTest {
+    const cached = this.pointerHitTestCache.get(event);
+    if (cached) return cached;
+    const hitTest = this.inspectPointerHit(event, targetPage, targetWithin);
+    this.pointerHitTestCache.set(event, hitTest);
+    return hitTest;
+  }
+
   private inspectPointerHit(
     event: PointerEvent,
     targetPage: HTMLElement | null,

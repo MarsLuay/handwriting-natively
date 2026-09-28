@@ -18,6 +18,7 @@ const REGISTRATION_SCOPE = "document-capture" as const;
 const REGISTRATION_SOURCE = "ViewerInkSession.installPointerProbe" as const;
 const HOT_PATH_LONG_TASK_MS = 2;
 const HOT_PATH_LONG_TASK_INTERVAL_MS = 1_000;
+const HOT_PATH_PHASES = ["owner-selection", "deduplication", "tracking", "dispatch"] as const;
 
 export interface PhysicalContactHotPathStats {
   pointerMoveCount: number;
@@ -225,18 +226,27 @@ class PhysicalContactCollector {
 
   private handlePointer(event: PointerEvent, eventType: PointerEventType): void {
     const started = performance.now();
+    const selectionStarted = started;
     const observers = this.activeObservers(event.target);
     const selected = this.selectOwner(observers);
+    const ownerSelectionMs = performance.now() - selectionStarted;
     if (!selected) return;
-    const alreadySeen = this.markSeen(event, this.pointerKey(event, eventType));
+    const deduplicationStarted = performance.now();
+    const alreadySeen = this.markSeen(
+      event,
+      this.pointerKey(event, eventType),
+      eventType === "pointerdown" && this.tracker.pointerContactId(event.pointerId) === null
+    );
+    const deduplicationMs = performance.now() - deduplicationStarted;
     const now = Date.now();
-    const enrichStarted = performance.now();
+    const trackingStarted = performance.now();
     const records = alreadySeen
       ? []
       : this.processPointer(now, selected, event, eventType);
-    const diagnosticEnrichmentMs = performance.now() - enrichStarted;
+    const trackingMs = performance.now() - trackingStarted;
     const pointerContactId = this.tracker.pointerContactId(event.pointerId);
     const chosenPhysicalContactId = records.at(-1)?.contact.physicalContactId ?? pointerContactId;
+    const dispatchStarted = performance.now();
     this.dispatch({
       kind: "pointer",
       event,
@@ -251,24 +261,41 @@ class PhysicalContactCollector {
       chosenPhysicalContactId,
       eventTimeStamp: event.timeStamp
     });
-    this.noteMoveCost(selected, eventType, event.pointerType || "", started, diagnosticEnrichmentMs, performance.now() - started);
+    const dispatchMs = performance.now() - dispatchStarted;
+    this.noteMoveCost(selected, eventType, event.pointerType || "", {
+      "owner-selection": ownerSelectionMs,
+      deduplication: deduplicationMs,
+      tracking: trackingMs,
+      dispatch: dispatchMs
+    }, performance.now() - started);
   }
 
   private handleTouch(event: TouchEvent, eventType: TouchEventType): void {
     const started = performance.now();
+    const selectionStarted = started;
     const observers = this.activeObservers(event.target);
     const selected = this.selectOwner(observers);
+    const ownerSelectionMs = performance.now() - selectionStarted;
     if (!selected) return;
+    const deduplicationStarted = performance.now();
     const identifiers = [...event.changedTouches].map((touch) => touch.identifier);
-    const alreadySeen = this.markSeen(event, this.touchKey(event, eventType, identifiers));
+    const alreadySeen = this.markSeen(
+      event,
+      this.touchKey(event, eventType, identifiers),
+      eventType === "touchstart" && identifiers.every((identifier) => this.tracker.touchContactId(identifier) === null)
+    );
+    const deduplicationMs = performance.now() - deduplicationStarted;
     const now = Date.now();
+    const trackingStarted = performance.now();
     const records = alreadySeen
       ? []
       : this.processTouch(now, selected, event, eventType);
+    const trackingMs = performance.now() - trackingStarted;
     const touchContactIds = identifiers
       .map((identifier) => this.tracker.touchContactId(identifier))
       .filter((id): id is string => id !== null);
     const chosenPhysicalContactId = records.at(-1)?.contact.physicalContactId ?? touchContactIds[0] ?? null;
+    const dispatchStarted = performance.now();
     this.dispatch({
       kind: "touch",
       event,
@@ -283,15 +310,20 @@ class PhysicalContactCollector {
       chosenPhysicalContactId,
       eventTimeStamp: event.timeStamp
     });
-    this.noteMoveCost(selected, eventType, "touch", started, 0, performance.now() - started);
+    const dispatchMs = performance.now() - dispatchStarted;
+    this.noteMoveCost(selected, eventType, "touch", {
+      "owner-selection": ownerSelectionMs,
+      deduplication: deduplicationMs,
+      tracking: trackingMs,
+      dispatch: dispatchMs
+    }, performance.now() - started);
   }
 
   private noteMoveCost(
     owner: PhysicalContactCollectorOwner,
     eventType: string,
     pointerType: string,
-    started: number,
-    diagnosticEnrichmentMs: number,
+    phaseDurations: Record<(typeof HOT_PATH_PHASES)[number], number>,
     collectorWorkMs: number
   ): void {
     if (eventType !== "pointermove" && eventType !== "touchmove") return;
@@ -306,14 +338,16 @@ class PhysicalContactCollector {
     const now = Date.now();
     if (now - lastHotPathLongTaskAt < HOT_PATH_LONG_TASK_INTERVAL_MS) return;
     lastHotPathLongTaskAt = now;
+    const slowPhases = HOT_PATH_PHASES
+      .filter((phase) => phaseDurations[phase] > HOT_PATH_LONG_TASK_MS)
+      .map((phase) => ({ phase, durationMs: phaseDurations[phase], thresholdMs: HOT_PATH_LONG_TASK_MS }));
     owner.onInputHotPathLongTask?.({
       event: "input-hot-path-long-task",
       eventType,
       pointerType,
       collectorWorkMs,
-      trackerWorkMs: Math.max(0, collectorWorkMs - diagnosticEnrichmentMs),
-      diagnosticEnrichmentMs,
-      dispatchWorkMs: Math.max(0, performance.now() - started - collectorWorkMs)
+      phaseDurations,
+      slowPhases
     });
   }
 
@@ -431,11 +465,11 @@ class PhysicalContactCollector {
     return observers.at(-1) ?? [...this.owners.values()].reverse().find((owner) => owner.isEnabled()) ?? null;
   }
 
-  private markSeen(event: Event, key: string): boolean {
+  private markSeen(event: Event, key: string, allowKeyReuse = false): boolean {
     if (this.seenEvents.has(event)) return true;
     const now = Date.now();
     this.pruneSeen(now);
-    const alreadySeen = this.seenKeys.has(key);
+    const alreadySeen = !allowKeyReuse && this.seenKeys.has(key);
     this.seenEvents.add(event);
     this.seenKeys.set(key, now);
     this.trimMap(this.seenKeys, MAX_SEEN_EVENTS);

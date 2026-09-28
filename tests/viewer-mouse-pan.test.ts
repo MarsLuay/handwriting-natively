@@ -471,4 +471,33 @@ describe("viewer mouse pan", () => {
     pan.destroy();
     scroller.remove();
   });
+
+  it("releases mouse and touch captures during teardown", () => {
+    const scroller = document.createElement("div");
+    Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 600, configurable: true });
+    const canvas = document.createElement("canvas");
+    const releasePointerCapture = vi.fn();
+    Object.assign(canvas, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => true,
+      releasePointerCapture
+    });
+    scroller.append(canvas);
+    document.body.append(scroller);
+
+    const pan = new ViewerMousePan(document, {
+      enabled: () => true,
+      touchPanEnabled: () => true,
+      scrollRoot: () => scroller,
+      withinTarget: (target) => target instanceof Node && scroller.contains(target),
+      captureElement: () => scroller
+    });
+    canvas.dispatchEvent(pointer("pointerdown", canvas, 40, 100, 21, "touch"));
+    expect(releasePointerCapture).not.toHaveBeenCalled();
+    pan.destroy();
+
+    expect(releasePointerCapture).toHaveBeenCalledWith(21);
+    scroller.remove();
+  });
 });

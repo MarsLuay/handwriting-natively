@@ -49,6 +49,22 @@ export function safeReleasePointerCapture(element: Element, pointerId: number): 
   }
 }
 
+export function safeSetPointerCapture(element: Element, pointerId: number): {
+  attempted: boolean;
+  succeeded: boolean;
+} {
+  if (typeof element.setPointerCapture !== "function") return { attempted: false, succeeded: true };
+  try {
+    element.setPointerCapture(pointerId);
+    return {
+      attempted: true,
+      succeeded: element.hasPointerCapture?.(pointerId) ?? true
+    };
+  } catch {
+    return { attempted: true, succeeded: false };
+  }
+}
+
 /** Draw-mode single-finger axis lock (Ink dedicated-writing pattern). */
 interface TouchAxisGesture {
   pointerId: number;
@@ -368,7 +384,7 @@ export class PointerRouter {
     }
     // Palm / Pencil companion touch while a stylus is down: block native scroll.
     if (route === "ignored") {
-      event.preventDefault();
+      if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
       this.syncTouchActionMode();
       this.callbacks.onTouchLifecycle?.("scroll-block", event, {
@@ -383,16 +399,14 @@ export class PointerRouter {
     if (event.pointerType === "pen" || event.pointerType === "mouse") {
       this.routedPointerTypes.set(event.pointerId, event.pointerType);
     }
-    event.preventDefault();
+    if (event.cancelable) event.preventDefault();
     event.stopImmediatePropagation();
-    const captureAttempted = typeof this.element.setPointerCapture === "function";
-    if (captureAttempted) this.element.setPointerCapture(event.pointerId);
-    const captureSucceeded = !captureAttempted || (this.element.hasPointerCapture?.(event.pointerId) ?? true);
+    const capture = safeSetPointerCapture(this.element, event.pointerId);
     this.callbacks.onPointerClaim?.(route, event, {
-      preventDefaultCalled: true,
-      propagationStopped: true,
-      captureAttempted,
-      captureSucceeded
+      preventDefaultCalled: event.defaultPrevented,
+      propagationStopped: event.cancelBubble,
+      captureAttempted: capture.attempted,
+      captureSucceeded: capture.succeeded
     });
     this.syncTouchActionMode();
     this.callbacks.onStart?.(this.inkSamples(event), route, event);
@@ -431,6 +445,7 @@ export class PointerRouter {
     if (!this.callbacks.canAnnotatePointer(event) || !isTipContact(event)) return false;
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
     if (!penLike) return false;
+    this.callbacks.onRouterReceived?.(event, this.generation);
     this.palmPolicy.pointerDown(event);
     if (this.palmPolicy.hasActivePen()) this.syncTouchActionMode();
     this.beginStylusEraser(event);
@@ -441,9 +456,18 @@ export class PointerRouter {
       this.routedPointerTypes.set(event.pointerId, event.pointerType);
     }
     this.callbacks.onPointerHandled?.(event.pointerId, this.generation);
-    event.preventDefault();
+    this.callbacks.onRouteDecision?.(route, "recovered-pointerdown", event);
+    this.callbacks.onRoute?.(route, event);
+    if (event.cancelable) event.preventDefault();
     event.stopImmediatePropagation();
-    this.element.setPointerCapture?.(event.pointerId);
+    const capture = safeSetPointerCapture(this.element, event.pointerId);
+    this.callbacks.onPointerClaim?.(route, event, {
+      preventDefaultCalled: event.defaultPrevented,
+      propagationStopped: event.cancelBubble,
+      captureAttempted: capture.attempted,
+      captureSucceeded: capture.succeeded
+    });
+    this.syncTouchActionMode();
     this.callbacks.onStart?.(this.inkSamples(event), route, event);
     return true;
   }
@@ -957,6 +981,8 @@ export class PointerRouter {
     const ids = new Set<number>([
       ...this.routed.keys(),
       ...this.touches,
+      ...this.manipulationTouches,
+      ...this.stylusErasers,
       ...(this.touchAxis ? [this.touchAxis.pointerId] : [])
     ]);
     const released: number[] = [];
@@ -983,6 +1009,9 @@ export class PointerRouter {
     };
     const captureIds = new Set<number>([
       ...handoff.routed.map(({ pointerId }) => pointerId),
+      ...this.touches,
+      ...this.manipulationTouches,
+      ...this.stylusErasers,
       ...(this.touchAxis ? [this.touchAxis.pointerId] : [])
     ]);
     for (const pointerId of captureIds) {
@@ -990,6 +1019,7 @@ export class PointerRouter {
     }
     this.routed.clear();
     this.routedPointerTypes.clear();
+    if (this.stylusErasers.size > 0) this.callbacks.onStylusEraserEnd?.();
     this.stylusErasers.clear();
     this.touches.clear();
     this.manipulationTouches.clear();
