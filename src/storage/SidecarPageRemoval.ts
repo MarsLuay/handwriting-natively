@@ -38,6 +38,37 @@ export function removePageFromSidecar(
   };
 }
 
+export function reorderPageNumber(page: number, fromPage: number, toPage: number): number {
+  if (page === fromPage) return toPage;
+  if (fromPage < toPage && page > fromPage && page <= toPage) return page - 1;
+  if (fromPage > toPage && page >= toPage && page < fromPage) return page + 1;
+  return page;
+}
+
+/** Remaps page-numbered annotations while moving one existing page in document order. */
+export function reorderPageInSidecar(
+  sidecar: SidecarSchemaV1,
+  fromPage: number,
+  toPage: number,
+  updatedAt = new Date().toISOString()
+): SidecarSchemaV1 {
+  if (!Number.isInteger(fromPage) || fromPage < 1 || !Number.isInteger(toPage) || toPage < 1) {
+    throw new Error("Reordered pages must be positive integers.");
+  }
+  if (fromPage === toPage) return sidecar;
+  const remap = (page: number): number => reorderPageNumber(page, fromPage, toPage);
+  return {
+    ...sidecar,
+    pages: sidecar.pages.map((page) => ({
+      ...page,
+      page: remap(page.page),
+      strokes: page.strokes.map((stroke) => ({ ...stroke, page: remap(stroke.page) })),
+      ...(page.texts ? { texts: page.texts.map((text) => ({ ...text, page: remap(text.page) })) } : {})
+    })).sort((left, right) => left.page - right.page),
+    updatedAt
+  };
+}
+
 /** Leaves the inserted page empty while shifting later annotation pages down one. */
 export function insertPageIntoSidecar(
   sidecar: SidecarSchemaV1,

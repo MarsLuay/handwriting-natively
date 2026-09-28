@@ -38,6 +38,7 @@ import {
   importPdfPages,
   insertScannedPages,
   insertMatchingBlankPage,
+  reorderPdfPage,
   type ImportedPdfPages
 } from "./pdf/PdfNoteService";
 import { writePdfAndAnnotationStoresAtomic } from "./pdf/PdfPageMutation";
@@ -45,7 +46,7 @@ import { isExternalPdfImport, PdfImportFilePicker, PdfPageSelectionModal, type P
 import { mergeSettings, NativePdfInkSettingTab, type CopiedLogDiagnostics } from "./settings";
 import { RecoveryRepository } from "./storage/RecoveryRepository";
 import { createDocumentIdentity, hashDocumentContent } from "./storage/DocumentIdentity";
-import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "./storage/SidecarPageRemoval";
+import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar, reorderPageInSidecar } from "./storage/SidecarPageRemoval";
 import { SidecarRepository } from "./storage/SidecarRepository";
 import type { CloseChoice } from "./storage/SaveCoordinator";
 import type { PluginSettings, ToolPreferences } from "./model";
@@ -1377,6 +1378,7 @@ export default class NativePdfInkPlugin extends Plugin {
         writeExport: async (name: string, bytes: Uint8Array) => this.writeAndOpenExport(file, name, bytes),
         onDeletePage: (pageNumber: number) => this.deletePageInPlace(file, pageNumber),
         onDeletePages: (pageNumbers: readonly number[]) => this.deletePagesInPlace(file, pageNumbers),
+        onReorderPage: (fromPage: number, toPage: number) => this.reorderPageInPlace(file, fromPage, toPage),
         writeSvgExport: async (name: string, svg: string) => this.writeSvgExport(file, name, svg)
       } : {}),
       notice: (message) => new Notice(message),
@@ -1754,6 +1756,69 @@ export default class NativePdfInkPlugin extends Plugin {
         document: file.path,
         page: inserted.pageNumber,
         count: inserted.count,
+        writeStage,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
+  }
+
+  /** Reorders one source page and its matching sidecar/recovery annotations together. */
+  private async reorderPageInPlace(file: TFile, fromPage: number, toPage: number): Promise<void> {
+    if (fromPage === toPage) return;
+    const source = new Uint8Array(await this.app.vault.readBinary(file));
+    const reordered = await reorderPdfPage(source, fromPage, toPage);
+    const files = createVaultFsTextAdapter(this.app.vault, this.annotationFsProbe());
+    const sidecars = new SidecarRepository(files, this.inkSettings.sidecarFolder, {
+      automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+      backupFolder: this.inkSettings.annotationBackupPath
+    });
+    const recovery = new RecoveryRepository(files, `${this.inkSettings.sidecarFolder}/recovery`, {
+      automaticRecovery: this.inkSettings.automaticAnnotationRecovery,
+      backupFolder: this.inkSettings.annotationBackupPath
+    });
+    const identityInput = { vaultPath: file.path, contentHash: hashDocumentContent(source) };
+    const sidecarBefore = await sidecars.loadForDocument(identityInput);
+    const recoveryBefore = await recovery.loadForDocument(identityInput);
+    const sidecarAfter = sidecarBefore ? reorderPageInSidecar(sidecarBefore, fromPage, toPage) : null;
+    const recoveryAfter = recoveryBefore ? reorderPageInSidecar(recoveryBefore, fromPage, toPage) : null;
+    let writeStage = "prepared";
+    try {
+      await this.vaultDebugLog.writeUrgent("info", "pdf-page-reorder-start", {
+        document: file.path,
+        fromPage,
+        toPage,
+        pageCount: reordered.pageCount,
+        hasSidecar: Boolean(sidecarBefore),
+        hasRecovery: Boolean(recoveryBefore)
+      });
+      await writePdfAndAnnotationStoresAtomic({
+        sourceBytes: source,
+        updatedBytes: reordered.bytes,
+        sidecarBefore,
+        sidecarAfter,
+        recoveryBefore,
+        recoveryAfter,
+        writePdf: async (bytes) => this.app.vault.modifyBinary(file, bytes.slice().buffer),
+        saveSidecar: (value) => sidecars.save(value),
+        saveRecovery: (value) => recovery.save(value),
+        onStage: (stage) => { writeStage = stage; }
+      });
+      await this.vaultDebugLog.writeUrgent("info", "pdf-page-reorder-complete", {
+        document: file.path,
+        fromPage,
+        toPage,
+        pageCount: reordered.pageCount,
+        sourceBytes: source.byteLength,
+        resultBytes: reordered.bytes.byteLength,
+        sidecarRemapped: Boolean(sidecarAfter),
+        recoveryRemapped: Boolean(recoveryAfter)
+      });
+    } catch (error) {
+      await this.vaultDebugLog.writeUrgent("error", "pdf-page-reorder-failed", {
+        document: file.path,
+        fromPage,
+        toPage,
         writeStage,
         error: error instanceof Error ? error.message : String(error)
       });

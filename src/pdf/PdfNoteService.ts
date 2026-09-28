@@ -96,6 +96,13 @@ export interface InsertedPdfPages {
   count: number;
 }
 
+export interface ReorderedPdfPage {
+  bytes: Uint8Array;
+  fromPage: number;
+  toPage: number;
+  pageCount: number;
+}
+
 /** Returns the page count after validating that the bytes are a readable PDF. */
 export async function getPdfPageCount(bytes: Uint8Array): Promise<number> {
   const pdf = await PDFDocument.load(bytes);
@@ -142,6 +149,29 @@ export async function importPdfPages(
     pageCount: copiedPages.length,
     pageNumbers
   };
+}
+
+/** Moves one existing page while retaining its original PDF page object and content. */
+export async function reorderPdfPage(
+  sourceBytes: Uint8Array,
+  fromPage: number,
+  toPage: number
+): Promise<ReorderedPdfPage> {
+  const source = await loadRewrittenPdf(sourceBytes);
+  const pageCount = source.getPageCount();
+  if (!Number.isInteger(fromPage) || fromPage < 1 || fromPage > pageCount) {
+    throw new Error(`PDF page ${fromPage} does not exist.`);
+  }
+  if (!Number.isInteger(toPage) || toPage < 1 || toPage > pageCount) {
+    throw new Error(`PDF page ${toPage} does not exist.`);
+  }
+  if (fromPage === toPage) {
+    return { bytes: sourceBytes.slice(), fromPage, toPage, pageCount };
+  }
+  const page = source.getPage(fromPage - 1);
+  source.removePage(fromPage - 1);
+  source.insertPage(toPage - 1, page);
+  return { bytes: await source.save(), fromPage, toPage, pageCount };
 }
 
 /** Keeps a scanned page's aspect ratio while using a practical PDF point size. */

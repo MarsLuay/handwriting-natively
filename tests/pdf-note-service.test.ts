@@ -11,6 +11,7 @@ import {
   importPdfPages,
   insertMatchingBlankPage,
   insertScannedPages,
+  reorderPdfPage,
   scanPageSize,
   ENCRYPTED_PDF_MUTATION_ERROR,
   SIGNED_PDF_MUTATION_ERROR,
@@ -126,6 +127,52 @@ describe("PDF note service", () => {
     await expect(deletePdfPages(source, [])).rejects.toThrow("Select at least one");
     await expect(deletePdfPages(source, [1, 2, 3, 4, 5])).rejects.toThrow("at least one page");
     expect(await sizes(source)).toHaveLength(5);
+  });
+
+  it("moves existing pages without changing their size, rotation, or content", async () => {
+    const sourceDocument = await PDFDocument.create();
+    const pages = [
+      sourceDocument.addPage([100, 200]),
+      sourceDocument.addPage([200, 300]),
+      sourceDocument.addPage([300, 400]),
+      sourceDocument.addPage([400, 500])
+    ];
+    pages[0]!.setRotation(degrees(90));
+    pages[1]!.setRotation(degrees(180));
+    pages[2]!.setRotation(degrees(270));
+    pages[3]!.setRotation(degrees(0));
+    pages[2]!.drawRectangle({ x: 10, y: 20, width: 30, height: 40, color: rgb(1, 0, 0) });
+    const source = await sourceDocument.save();
+
+    const movedUp = await reorderPdfPage(source, 3, 1);
+    expect(movedUp.fromPage).toBe(3);
+    expect(movedUp.toPage).toBe(1);
+    expect(await sizes(movedUp.bytes)).toEqual([
+      { width: 300, height: 400 },
+      { width: 100, height: 200 },
+      { width: 200, height: 300 },
+      { width: 400, height: 500 }
+    ]);
+    const movedDocument = await PDFDocument.load(movedUp.bytes);
+    expect(movedDocument.getPage(0).getRotation().angle).toBe(270);
+    expect(movedDocument.getPage(0).node.Contents()).toBeDefined();
+
+    const movedDown = await reorderPdfPage(movedUp.bytes, 1, 4);
+    expect(await sizes(movedDown.bytes)).toEqual([
+      { width: 100, height: 200 },
+      { width: 200, height: 300 },
+      { width: 400, height: 500 },
+      { width: 300, height: 400 }
+    ]);
+    expect(await sizes(source)).toEqual([
+      { width: 100, height: 200 },
+      { width: 200, height: 300 },
+      { width: 300, height: 400 },
+      { width: 400, height: 500 }
+    ]);
+    expect((await reorderPdfPage(source, 1, 1)).bytes).toEqual(source);
+    await expect(reorderPdfPage(source, 0, 2)).rejects.toThrow("does not exist");
+    await expect(reorderPdfPage(source, 2, 5)).rejects.toThrow("does not exist");
   });
 
   it("imports selected native pages in sorted deterministic order after the current page", async () => {
