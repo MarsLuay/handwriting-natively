@@ -37,7 +37,7 @@ export interface IpadInputTraceEvent {
 }
 
 export interface IpadInputTraceSnapshot {
-  schemaVersion: 2;
+  schemaVersion: 3;
   platform: "ipad";
   active: boolean;
   startedAt: number | null;
@@ -56,6 +56,7 @@ export interface IpadInputTraceSnapshot {
     pointerTouchOverlapEvents: number;
     touchActionValues: string[];
     touchActionStyleReads: number;
+    passivePenHoverMoves: number;
     lifecycleEvents: number;
     scribbleEvents: number;
     lastSequence: number;
@@ -108,6 +109,7 @@ export class IpadPointerTouchTrace {
   private propagationStoppedObserved = 0;
   private pointerTouchOverlapEvents = 0;
   private touchActionStyleReads = 0;
+  private passivePenHoverMoves = 0;
   private lifecycleEvents = 0;
   private scribbleEvents = 0;
   private attached = false;
@@ -166,7 +168,7 @@ export class IpadPointerTouchTrace {
 
   snapshot(): IpadInputTraceSnapshot {
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       platform: "ipad",
       active: this.attached,
       startedAt: this.startedAt,
@@ -185,6 +187,7 @@ export class IpadPointerTouchTrace {
         pointerTouchOverlapEvents: this.pointerTouchOverlapEvents,
         touchActionValues: [...this.touchActionValues].slice(0, MAX_IDS),
         touchActionStyleReads: this.touchActionStyleReads,
+        passivePenHoverMoves: this.passivePenHoverMoves,
         lifecycleEvents: this.lifecycleEvents,
         scribbleEvents: this.scribbleEvents,
         lastSequence: this.sequence
@@ -208,6 +211,16 @@ export class IpadPointerTouchTrace {
     if (typeof pointer.pointerId === "number") rememberBoundedId(this.pointerIds, pointer.pointerId);
   }
 
+  private recordPassivePenHover(pointer: PointerEvent, event: Event): void {
+    this.sequence += 1;
+    increment(this.eventTypes, event.type);
+    increment(this.pointerTypes, pointer.pointerType || "(empty)");
+    rememberBoundedId(this.pointerIds, pointer.pointerId);
+    this.passivePenHoverMoves += 1;
+    if (event.defaultPrevented) this.defaultPreventedObserved += 1;
+    if (event.cancelBubble) this.propagationStoppedObserved += 1;
+  }
+
   private record(event: Event, source: IpadInputTraceEvent["source"]): void {
     const pointer = event as PointerEvent;
     const touch = event as TouchEvent;
@@ -217,6 +230,17 @@ export class IpadPointerTouchTrace {
     const touchEvent = source === "touch" && "touches" in event;
     const pointerId = pointerEvent ? pointer.pointerId : null;
     const pointerType = pointerEvent ? pointer.pointerType || "(empty)" : null;
+    if (
+      pointerEvent
+      && event.type === "pointermove"
+      && pointerType === "pen"
+      && pointer.buttons === 0
+      && finite(pointer.pressure) === 0
+      && !this.activePointerIds.has(pointer.pointerId)
+    ) {
+      this.recordPassivePenHover(pointer, event);
+      return;
+    }
     if (pointerEvent && event.type === "pointerdown") {
       this.activePointerIds.add(pointer.pointerId);
       rememberBoundedId(this.pointerIds, pointer.pointerId);

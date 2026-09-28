@@ -38,6 +38,34 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
+  it("does not feed Pencil hover moves into capture-loss recovery", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const moves = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true,
+      onMove: moves
+    });
+
+    element.dispatchEvent(pointer("pen", 91, { pressure: 0.7 }));
+    const hover = pointer("pen", 91, { eventType: "pointermove", buttons: 0, pressure: 0 });
+    expect(router.acceptDocumentPenStroke(hover)).toBe(false);
+    expect(moves).not.toHaveBeenCalled();
+
+    const contact = pointer("pen", 91, { eventType: "pointermove", buttons: 1, pressure: 0.6 });
+    expect(router.acceptDocumentPenStroke(contact)).toBe(true);
+    expect(moves).toHaveBeenCalledTimes(1);
+
+    router.destroy();
+    element.remove();
+  });
+
   it("keeps native touch and pinch available before a stylus tip goes down", () => {
     const element = document.createElement("div");
     document.body.append(element);
