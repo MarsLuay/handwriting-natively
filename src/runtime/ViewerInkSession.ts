@@ -8994,11 +8994,19 @@ export class ViewerInkSession {
     const target = event.target instanceof Element
       ? event.target.closest<HTMLElement>(".native-pdf-handwriting-text-box")
       : null;
-    if (!target || !surface.overlay.contains(target)) return false;
-    // The rendered text layer is the authoritative committed-text surface;
-    // avoid a second store lookup here because a just-loaded annotation may
-    // already be painted while its index is still settling.
-    return target.dataset.annotationId !== undefined;
+    if (target && surface.overlay.contains(target)) {
+      // The rendered text layer is the authoritative committed-text surface;
+      // avoid a second store lookup here because a just-loaded annotation may
+      // already be painted while its index is still settling.
+      return target.dataset.annotationId !== undefined;
+    }
+    // A long-press selection can replace the text-layer node while the native
+    // touch lifecycle is still active. WebKit may then retarget the next tap
+    // to the page/overlay instead of the replacement box. Recover by geometry
+    // so a second tap on the selected words still enters the editor.
+    if (target) return false;
+    const point = this.textPointerToPagePoint(surface, event);
+    return this.textAt(surface.page.pageNumber, point) !== null;
   }
 
   private refreshSurfaceCursors(surfaces: Iterable<PageSurface> = this.surfaces.values()): void {
@@ -11682,8 +11690,16 @@ export class ViewerInkSession {
     }
     // Content clicks always edit text. Moving a selected text box is reserved
     // for its NPDE-style frame edge, so a click on the selected words cannot
-    // be mistaken for a zero-distance selection drag.
-    if (route === "text" && event.target instanceof Element && event.target.closest(".native-pdf-handwriting-text-box")) {
+    // be mistaken for a zero-distance selection drag. On touch, the native host
+    // can retarget a follow-up tap to the page after a long-press rerender;
+    // resolve that case by the same committed-text geometry hit test.
+    if (
+      route === "text"
+      && (
+        (event.target instanceof Element && event.target.closest(".native-pdf-handwriting-text-box"))
+        || (event.pointerType === "touch" && this.isTouchTextTarget(surface, event))
+      )
+    ) {
       this.beginTextIntent(surface, samples[0]!, event);
       return;
     }

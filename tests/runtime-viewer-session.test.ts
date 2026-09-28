@@ -2730,6 +2730,53 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("reopens a selected text box when a follow-up touch is retargeted to the page", async () => {
+    vi.useFakeTimers();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "text";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/touch-reopen.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const text: PdfTextAnnotation = {
+      id: "touch-reopen", page: 1, text: "Tap again", x: 220, y: 650, width: 140, height: 28,
+      color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
+      runs: [{ text: "Tap again", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      sourceRuns: [{ text: "Tap again", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      createdAt: "now", updatedAt: "now"
+    };
+    const internal = session as unknown as {
+      texts: { add(annotation: PdfTextAnnotation): void };
+      surfaces: Map<number, unknown>;
+      renderTextAnnotations(surface: unknown): void;
+      activeTextEditor: { draft: PdfTextAnnotation } | null;
+    };
+    internal.texts.add(text);
+    const surface = internal.surfaces.get(1)!;
+    internal.renderTextAnnotations(surface);
+    const rendered = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box")!;
+    rendered.dispatchEvent(pointer("pointerdown", 250, 150, { pointerType: "touch", pointerId: 61 }));
+    vi.advanceTimersByTime(500);
+    await Promise.resolve();
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 61 }));
+    expect(internal.activeTextEditor).toBeNull();
+
+    // The replacement text box is not the event target after native touch
+    // retargeting; the hit must still resolve from page geometry.
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 250, 150, { pointerType: "touch", pointerId: 62 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 62 }));
+    expect(internal.activeTextEditor?.draft.id).toBe(text.id);
+    await session.destroy();
+  });
+
   it("supports targeted text long-press actions, size changes, movement cancellation, and native-menu suppression", async () => {
     vi.useFakeTimers();
     const settings = structuredClone(DEFAULT_SETTINGS);
