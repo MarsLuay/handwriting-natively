@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "176b8f91a5956333107bf4bc0a491ac0f01a45b6591fe757085322adaa68c24b",
+  "path": ".agent-state/sessions/issue-130-3006d3a2/handoff.input.json",
+  "status": "deleted",
+  "policy": "untrack",
+  "revision": 1,
+  "createdAt": "2026-09-28T16:37:43.546Z",
+  "updatedAt": "2026-09-28T16:37:43.546Z",
+  "deletedAt": "2026-09-28T16:37:43.546Z"
+}

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "5d2d332187123702b41d970d050c879118af9b58206132d6b1823ac47abd31e1",
+  "path": ".agent-state/chats/01a0d1d2-f284-7440-83b2-ff82e1d6ac47/checkpoint.json",
+  "status": "deleted",
+  "policy": "untrack",
+  "revision": 1,
+  "createdAt": "2026-09-28T16:37:41.743Z",
+  "updatedAt": "2026-09-28T16:37:41.743Z",
+  "deletedAt": "2026-09-28T16:37:41.743Z"
+}

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "d247724d7668a6f28dc8d074b02ba71dd912ab6ea069b0ef216d8a4a9e4050ba",
+  "path": ".agent-state/completion-changed-files.txt",
+  "status": "deleted",
+  "policy": "untrack",
+  "revision": 1,
+  "createdAt": "2026-09-28T16:37:42.008Z",
+  "updatedAt": "2026-09-28T16:37:42.008Z",
+  "deletedAt": "2026-09-28T16:37:42.008Z"
+}

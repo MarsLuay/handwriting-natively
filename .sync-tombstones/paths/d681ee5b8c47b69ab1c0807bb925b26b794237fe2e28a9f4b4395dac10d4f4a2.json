@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "d681ee5b8c47b69ab1c0807bb925b26b794237fe2e28a9f4b4395dac10d4f4a2",
+  "path": ".agent-state/diagnostics/20260923T091114Z-post-position-gated-draw-docs.log",
+  "status": "deleted",
+  "policy": "untrack",
+  "revision": 1,
+  "createdAt": "2026-09-28T16:37:42.088Z",
+  "updatedAt": "2026-09-28T16:37:42.088Z",
+  "deletedAt": "2026-09-28T16:37:42.088Z"
+}

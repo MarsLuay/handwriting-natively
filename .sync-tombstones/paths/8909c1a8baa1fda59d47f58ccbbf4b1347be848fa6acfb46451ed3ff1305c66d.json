@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "8909c1a8baa1fda59d47f58ccbbf4b1347be848fa6acfb46451ed3ff1305c66d",
+  "path": ".agent-state/baselines/pre-position-gated-draw-docs.json",
+  "status": "deleted",
+  "policy": "untrack",
+  "revision": 1,
+  "createdAt": "2026-09-28T16:37:41.665Z",
+  "updatedAt": "2026-09-28T16:37:41.665Z",
+  "deletedAt": "2026-09-28T16:37:41.665Z"
+}
