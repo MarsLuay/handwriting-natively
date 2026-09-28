@@ -35,13 +35,26 @@ describe("SlowSpanTrace", () => {
       settleTimerResetCount: 46,
       resetReasons: { "pages-page-render": 40, "pinch-cleanup": 6 },
       lastDeferralReason: "pinch-cleanup",
-      zoomBurstId: "zoom-7"
+      zoomBurstId: "zoom-7",
+      phaseDurations: {
+        "settle-timer-wait": 1260,
+        "gesture-cleanup": 800,
+        "unattributed-post-gesture": 1260
+      }
     });
     expect(churn).toMatchObject({
       stage: "settle-timer-churn",
       waitMs: 1260,
       activeWorkMs: null,
-      settleTimerResetCount: 46
+      settleTimerResetCount: 46,
+      phaseDurations: {
+        "settle-timer-wait": 1260,
+        "gesture-cleanup": 800,
+        "unattributed-post-gesture": 1260
+      },
+      slowPhases: expect.arrayContaining([
+        expect.objectContaining({ phase: "gesture-cleanup", durationMs: 800, thresholdMs: SLOW_SPAN_ASYNC_MS })
+      ])
     });
     expect(trace.recordSettleChurn({
       settleDelayMs: 2000,
@@ -168,6 +181,64 @@ describe("SlowSpanTrace", () => {
       pointerUpToCommitMs: 1
     })).toBeNull();
     expect(trace.slowInkStrokeSummary().totalSlowStrokes).toBe(1);
+  });
+
+  it("breaks a slow ink span into thresholded pipeline legs", () => {
+    const trace = new SlowSpanTrace();
+    const record = trace.recordInkStroke({
+      pointerId: 11,
+      physicalContactId: "contact-latency",
+      strokeId: "stroke-latency",
+      correlationId: "contact-latency",
+      page: 3,
+      tool: "pen",
+      outcome: "pointerup",
+      pointerDownToStrokeStartMs: 2,
+      strokeStartToFirstCanvasCommitMs: 2,
+      totalPointerDownToFirstCanvasCommitMs: 2,
+      maxInputToRenderMs: 132,
+      p95InputToRenderMs: 132,
+      maxPluginCallbackMs: 2,
+      longestLongTaskMs: 2,
+      p95FrameMs: 148,
+      maxFrameMs: 148,
+      pointerUpToCommitMs: 2,
+      latency: {
+        inputMs: 132,
+        routingMs: 9,
+        geometryMs: 7,
+        modelMs: 8,
+        schedulingMs: 148,
+        canvasCommitMs: 9,
+        paintAcknowledgementMs: 26
+      }
+    });
+    expect(record?.latency).toEqual({
+      inputMs: 132,
+      routingMs: 9,
+      geometryMs: 7,
+      modelMs: 8,
+      schedulingMs: 148,
+      canvasCommitMs: 9,
+      paintAcknowledgementMs: 26
+    });
+    expect(record?.slowStages.map((stage) => stage.stage)).toEqual(expect.arrayContaining([
+      "input",
+      "routing",
+      "model",
+      "scheduling",
+      "canvas-commit",
+      "paint-acknowledgement"
+    ]));
+    expect(record?.slowStages.map((stage) => stage.stage)).not.toContain("geometry");
+    expect(trace.slowInkStrokeSummary().byStage).toMatchObject({
+      input: 1,
+      routing: 1,
+      model: 1,
+      scheduling: 1,
+      "canvas-commit": 1,
+      "paint-acknowledgement": 1
+    });
   });
 
   it("retains only thresholded slow strokes and keeps independent worst records bounded", () => {

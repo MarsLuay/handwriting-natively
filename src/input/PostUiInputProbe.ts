@@ -26,7 +26,6 @@ export type PostUiProbeStage =
   | "router-rejected"
   | "fallback"
   | "route"
-  | "fallback"
   | "pan"
   | "native"
   | "native-evidence"
@@ -35,6 +34,29 @@ export type PostUiProbeStage =
   | "terminal"
   | "lifecycle"
   | "zoom";
+
+/** A single 120 Hz frame is the gate for synchronous input-routing work. */
+export const POST_UI_INPUT_PHASE_THRESHOLD_MS = 8;
+/** Keep a slow-contact record for a delayed end-to-end ownership decision. */
+export const POST_UI_INPUT_TOTAL_THRESHOLD_MS = 50;
+
+export type PostUiProbeLatencyPhase =
+  | "document-to-capture"
+  | "capture-to-hit-test"
+  | "hit-test-to-router"
+  | "router-to-route"
+  | "route-to-ownership"
+  | "ownership-to-stroke"
+  | "stroke-to-terminal"
+  | "document-to-decision";
+
+export interface PostUiProbeLatency {
+  totalMs: number;
+  phaseDurations: Record<PostUiProbeLatencyPhase, number | null>;
+  slowPhases: Array<{ phase: PostUiProbeLatencyPhase; durationMs: number; thresholdMs: number }>;
+  ownershipStage: PostUiProbeStage | null;
+  ownershipDecision: string | null;
+}
 
 export interface PostUiProbeArmContext {
   sessionId: string;
@@ -106,6 +128,7 @@ export interface PostUiProbeResult {
   observedPointerTypes: string[];
   contactCount: number;
   contact: PostUiProbeContactSummary | null;
+  latency: PostUiProbeLatency | null;
   details: Record<string, unknown>;
 }
 
@@ -148,6 +171,8 @@ interface ProbeContact {
   terminal: string | null;
   terminalState: string | null;
   finalized: boolean;
+  /** First timestamp for each bounded ownership phase; never contains moves. */
+  stageTimes: Partial<Record<PostUiProbeStage, number>>;
   details: Record<string, unknown>;
 }
 
@@ -315,6 +340,11 @@ export class PostUiInputProbe {
     const results: PostUiProbeResult[] = [];
     for (const [pointerId, contact] of this.handoffContacts) {
       if (now - contact.startedAt < PostUiInputProbe.WINDOW_MS) continue;
+      this.applyStage(contact, "terminal", {
+        expired: true,
+        terminal: "window-expired",
+        terminalState: "window-expired"
+      }, now);
       contact.finalized = true;
       results.push(this.resultWithoutContext(contact, this.outcomeFor(contact), now, { expired: true }));
       this.handoffContacts.delete(pointerId);
@@ -334,41 +364,8 @@ export class PostUiInputProbe {
   ): PostUiProbeContactSummary | null {
     const contact = this.active?.contacts.get(pointerId);
     if (!contact || contact.finalized) return null;
-    if (!contact.stages.includes(stage)) contact.stages.push(stage);
-    Object.assign(contact.details, details);
-    if (typeof details.page === "number") contact.page = details.page;
-    if (typeof details.routerGeneration === "number") contact.routerGeneration = details.routerGeneration;
-    if (typeof details.route === "string") contact.route = details.route;
-    if (typeof details.routeReason === "string") contact.routeReason = details.routeReason;
-    if (typeof details.eventPhase === "number") contact.eventPhase = details.eventPhase;
-    if (typeof details.composedPathLength === "number") contact.composedPathLength = details.composedPathLength;
-    if (typeof details.targetOwnership === "string") contact.targetOwnership = details.targetOwnership;
-    if (details.fallbackConsidered === true) contact.fallbackConsidered = true;
-    if (typeof details.fallbackDecision === "string") contact.fallbackDecision = details.fallbackDecision;
-    if (stage === "pan") {
-      contact.panObserved = true;
-      if (details.accepted === true) contact.panAccepted = true;
-    }
-    if (stage === "native") {
-      const before = scrollSnapshot(details.scrollBefore);
-      const after = scrollSnapshot(details.scrollAfter);
-      contact.nativeScrollBefore ??= before;
-      if (after) contact.nativeScrollAfter = after;
-      const delta = typeof details.nativeScrollDeltaPx === "number"
-        ? Math.max(0, details.nativeScrollDeltaPx)
-        : before && after
-          ? Math.max(Math.abs(after.left - before.left), Math.abs(after.top - before.top))
-          : 0;
-      contact.nativeMaxScrollDeltaPx = Math.max(contact.nativeMaxScrollDeltaPx, delta);
-    }
-    if (stage === "stroke-start") {
-      contact.strokeStarted = true;
-      if (this.active) this.active.acceptingContacts = false;
-    }
-    if (stage === "terminal") {
-      if (typeof details.terminal === "string") contact.terminal = details.terminal;
-      if (typeof details.terminalState === "string") contact.terminalState = details.terminalState;
-    }
+    this.applyStage(contact, stage, details, now);
+    if (stage === "stroke-start" && this.active) this.active.acceptingContacts = false;
     return this.summary(contact, now);
   }
 
@@ -434,6 +431,7 @@ export class PostUiInputProbe {
         observedPointerTypes,
         contactCount: active.contacts.size,
         contact: null,
+        latency: null,
         details: {
           ...this.contextDetails(active),
           expired: true,
@@ -495,12 +493,14 @@ export class PostUiInputProbe {
       terminal: null,
       terminalState: null,
       finalized: false,
+      stageTimes: { document: startedAt },
       details: { ...details }
     };
   }
 
   private applyStage(contact: ProbeContact, stage: PostUiProbeStage, details: Record<string, unknown>, at: number): void {
     if (!contact.stages.includes(stage)) contact.stages.push(stage);
+    contact.stageTimes[stage] ??= at;
     contact.lastObservedStage = stage;
     contact.rollingContext.push({ at, stage, details: boundedTraceDetails(details) });
     if (contact.rollingContext.length > PostUiInputProbe.MAX_TRACE_CONTEXT) {
@@ -518,6 +518,10 @@ export class PostUiInputProbe {
     if (typeof details.routerGeneration === "number") contact.routerGeneration = details.routerGeneration;
     if (typeof details.route === "string") contact.route = details.route;
     if (typeof details.routeReason === "string") contact.routeReason = details.routeReason;
+    if (typeof details.eventPhase === "number") contact.eventPhase = details.eventPhase;
+    if (typeof details.composedPathLength === "number") contact.composedPathLength = details.composedPathLength;
+    if (typeof details.targetOwnership === "string") contact.targetOwnership = details.targetOwnership;
+    if (typeof details.fallbackDecision === "string") contact.fallbackDecision = details.fallbackDecision;
     if (typeof details.maxScrollDeltaPx === "number") {
       contact.nativeScrollDeltaPx = Math.max(contact.nativeScrollDeltaPx, details.maxScrollDeltaPx);
       contact.nativeMaxScrollDeltaPx = contact.nativeScrollDeltaPx;
@@ -526,8 +530,82 @@ export class PostUiInputProbe {
       contact.panObserved = true;
       if (details.accepted === true) contact.panAccepted = true;
     }
+    if (stage === "native") {
+      const before = scrollSnapshot(details.scrollBefore);
+      const after = scrollSnapshot(details.scrollAfter);
+      contact.nativeScrollBefore ??= before;
+      if (after) contact.nativeScrollAfter = after;
+      const delta = typeof details.nativeScrollDeltaPx === "number"
+        ? Math.max(0, details.nativeScrollDeltaPx)
+        : before && after
+          ? Math.max(Math.abs(after.left - before.left), Math.abs(after.top - before.top))
+          : 0;
+      contact.nativeMaxScrollDeltaPx = Math.max(contact.nativeMaxScrollDeltaPx, delta);
+    }
     if (stage === "stroke-start") contact.strokeStarted = true;
-    if (stage === "terminal" && typeof details.terminal === "string") contact.terminal = details.terminal;
+    if (stage === "terminal") {
+      if (typeof details.terminal === "string") contact.terminal = details.terminal;
+      if (typeof details.terminalState === "string") contact.terminalState = details.terminalState;
+    }
+  }
+
+  private latencyFor(contact: ProbeContact, now: number): PostUiProbeLatency {
+    const time = (stage: PostUiProbeStage): number | null => {
+      const value = contact.stageTimes[stage];
+      return typeof value === "number" ? value : null;
+    };
+    const difference = (start: number | null, end: number | null): number | null => (
+      start === null || end === null ? null : Math.max(0, end - start)
+    );
+    const document = time("document") ?? contact.startedAt;
+    const capture = time("document-capture");
+    const hitTest = time("hit-test");
+    const router = time("router-received");
+    const route = time("route");
+    const ownershipCandidates = (["claim", "fallback", "pan", "native", "router-rejected"] as const)
+      .map((stage) => ({ stage, at: time(stage) }))
+      .filter((entry): entry is { stage: "claim" | "fallback" | "pan" | "native" | "router-rejected"; at: number } => entry.at !== null)
+      .sort((left, right) => left.at - right.at);
+    const ownershipStage = ownershipCandidates[0]?.stage ?? null;
+    const ownership = ownershipCandidates[0]?.at ?? null;
+    const stroke = time("stroke-start");
+    const terminal = time("terminal") ?? now;
+    const measuredHitTestMs = typeof contact.details.hitTestMs === "number"
+      ? Math.max(0, contact.details.hitTestMs)
+      : null;
+    const captureToHitTestMs = difference(capture ?? document, hitTest);
+    // A held pen is user work, not routing latency. End the total at the first
+    // ownership/stroke decision and retain the terminal gap only as context.
+    const decision = stroke ?? ownership ?? terminal;
+    const phaseDurations: Record<PostUiProbeLatencyPhase, number | null> = {
+      "document-to-capture": difference(document, capture),
+      "capture-to-hit-test": captureToHitTestMs === null
+        ? measuredHitTestMs
+        : Math.max(captureToHitTestMs, measuredHitTestMs ?? 0),
+      "hit-test-to-router": difference(hitTest, router),
+      "router-to-route": difference(router, route),
+      "route-to-ownership": difference(route ?? router, ownership),
+      "ownership-to-stroke": difference(ownership ?? route ?? router, stroke),
+      "stroke-to-terminal": difference(stroke ?? ownership ?? route ?? router ?? hitTest ?? document, terminal),
+      "document-to-decision": Math.max(0, decision - document)
+    };
+    const slowPhases = (Object.entries(phaseDurations) as Array<[PostUiProbeLatencyPhase, number | null]>)
+      .flatMap(([phase, durationMs]) => {
+        if (durationMs === null || phase === "stroke-to-terminal") return [];
+        const thresholdMs = phase === "document-to-decision"
+          ? POST_UI_INPUT_TOTAL_THRESHOLD_MS
+          : POST_UI_INPUT_PHASE_THRESHOLD_MS;
+        return durationMs >= thresholdMs ? [{ phase, durationMs, thresholdMs }] : [];
+      });
+    return {
+      totalMs: phaseDurations["document-to-decision"] ?? 0,
+      phaseDurations,
+      slowPhases,
+      ownershipStage,
+      ownershipDecision: contact.route
+        ? `${contact.route}:${contact.routeReason ?? "unknown"}`
+        : contact.fallbackDecision ?? null
+    };
   }
 
   private outcomeFor(contact: ProbeContact): PostUiProbeOutcome {
@@ -583,6 +661,7 @@ export class PostUiInputProbe {
       observedPointerTypes: [...active.observedPointerTypes],
       contactCount: active.contacts.size,
       contact: this.summary(contact, now),
+      latency: this.latencyFor(contact, now),
       details: {
         ...this.contextDetails(active),
         ...contact.details,
@@ -615,6 +694,7 @@ export class PostUiInputProbe {
       observedPointerTypes: [contact.pointerType],
       contactCount: 1,
       contact: this.summary(contact, now),
+      latency: this.latencyFor(contact, now),
       details: {
         ...contact.details,
         physicalContactId: contact.physicalContactId,

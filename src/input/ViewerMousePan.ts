@@ -1,9 +1,8 @@
-import { isHTMLElement } from "../dom/typeGuards";
 import { describeTarget } from "../dom/describeElement";
 import { scrollPdfByDetailed, describeScrollElement } from "../integration/PdfScrollRoot";
 import { ActiveTouches } from "./ActiveTouches";
 import { isSelectablePdfTarget } from "./PdfSelectableTarget";
-import { isAnnotationChromeTarget } from "./PointerRouter";
+import { isAnnotationChromeTarget, safeReleasePointerCapture, safeSetPointerCapture } from "./PointerRouter";
 
 interface PanGesture {
   startX: number;
@@ -72,6 +71,9 @@ export class ViewerMousePan {
   }
 
   destroy(): void {
+    // Teardown can race a virtualized page's terminal event. Release every
+    // claimed mouse/touch capture before dropping the bounded gesture state.
+    for (const [pointerId, pan] of this.panning) this.releaseClaim(pan, pointerId);
     this.panning.clear();
     this.activeTouches.clear();
     this.abort.abort();
@@ -104,24 +106,20 @@ export class ViewerMousePan {
   private claimGesture(event: PointerEvent, pan: PanGesture): void {
     if (pan.claimed) return;
     pan.claimed = true;
-    event.preventDefault();
+    if (event.cancelable) event.preventDefault();
     event.stopPropagation();
-    const captureAttempted = typeof pan.captureTarget.setPointerCapture === "function";
-    if (captureAttempted) pan.captureTarget.setPointerCapture(event.pointerId);
-    const captureSucceeded = !captureAttempted || (pan.captureTarget.hasPointerCapture?.(event.pointerId) ?? true);
+    const capture = safeSetPointerCapture(pan.captureTarget, event.pointerId);
     this.callbacks.onPanClaim?.(event, {
-      preventDefaultCalled: true,
-      propagationStopped: true,
-      captureAttempted,
-      captureSucceeded
+      preventDefaultCalled: event.defaultPrevented,
+      propagationStopped: event.cancelBubble,
+      captureAttempted: capture.attempted,
+      captureSucceeded: capture.succeeded
     });
   }
 
   private releaseClaim(pan: PanGesture, pointerId: number): void {
     if (!pan.claimed) return;
-    if (isHTMLElement(pan.captureTarget) && pan.captureTarget.hasPointerCapture?.(pointerId)) {
-      pan.captureTarget.releasePointerCapture?.(pointerId);
-    }
+    safeReleasePointerCapture(pan.captureTarget, pointerId);
   }
 
   private readonly onDown = (event: PointerEvent): void => {

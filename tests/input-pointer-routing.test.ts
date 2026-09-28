@@ -724,12 +724,18 @@ describe("PointerRouter", () => {
       releasePointerCapture: vi.fn()
     });
     const starts = vi.fn();
+    const received = vi.fn();
+    const routeDecisions = vi.fn();
+    const claims = vi.fn();
     const eraserStart = vi.fn();
     const eraserEnd = vi.fn();
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
       canAnnotatePointer: () => true,
       onStart: starts,
+      onRouterReceived: received,
+      onRouteDecision: routeDecisions,
+      onPointerClaim: claims,
       onStylusEraserStart: eraserStart,
       onStylusEraserEnd: eraserEnd
     });
@@ -744,6 +750,14 @@ describe("PointerRouter", () => {
     element.dispatchEvent(tipMove);
     expect(tipMove.defaultPrevented).toBe(true);
     expect(captures).toContain(71);
+    expect(received).toHaveBeenCalledWith(tipMove, router.generation);
+    expect(routeDecisions).toHaveBeenCalledWith("draw", "recovered-pointerdown", tipMove);
+    expect(claims).toHaveBeenCalledWith("draw", tipMove, expect.objectContaining({
+      preventDefaultCalled: true,
+      propagationStopped: true,
+      captureAttempted: true,
+      captureSucceeded: false
+    }));
     expect(starts.mock.calls[0]?.[1]).toBe("draw");
     expect(starts.mock.calls[0]?.[0][0]).toMatchObject({ pointerType: "pen", pressure: 0.4 });
 

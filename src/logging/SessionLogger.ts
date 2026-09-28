@@ -485,6 +485,20 @@ export class SessionLogger {
     }, true);
   }
 
+  /** One bounded record for a slow document-to-ownership contact path. */
+  inputRoutingLatency(details: Record<string, unknown> = {}): void {
+    const slowPhases = Array.isArray(details.slowPhases) ? details.slowPhases.slice(0, 8) : [];
+    if (slowPhases.length === 0) return;
+    this.emit("warn", "input-routing-latency", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      event: "input-routing-latency",
+      ...details,
+      slowPhases
+    });
+  }
+
   pointerTypeOrigin(details: Record<string, unknown> = {}): void {
     this.emit("info", "pointer-type-origin", {
       document: this.documentPath,
@@ -879,6 +893,28 @@ export class SessionLogger {
       document: this.documentPath,
       ...details
     }, true);
+  }
+
+  /** One terminal autosave summary; normal debounce/write operations stay silent. */
+  autosaveSlow(details: Record<string, unknown> = {}): void {
+    const slowPhases = Array.isArray(details.slowPhases) ? details.slowPhases.slice(0, 8) : [];
+    if (slowPhases.length === 0) return;
+    this.emit("warn", "autosave slow", {
+      document: this.documentPath,
+      pluginVersion: this.pluginVersion,
+      profileSchema: PROFILE_SCHEMA_VERSION,
+      event: "autosave-slow",
+      ...details,
+      slowPhases
+    });
+  }
+
+  /** Threshold-gated layout evidence; callers retain and deduplicate the slow samples. */
+  layoutSlow(details: Record<string, unknown> = {}): void {
+    this.emit("warn", "layout slow", {
+      document: this.documentPath,
+      ...details
+    });
   }
 
   perfSlowInteraction(details: Record<string, unknown> = {}): void {

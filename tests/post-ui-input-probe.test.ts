@@ -285,6 +285,71 @@ describe("PostUiInputProbe", () => {
     expect(second.finish(5, 9, "pointercancel")?.outcome).toBe("post-ui-pen-cancelled-before-ink");
   });
 
+  it("expires an un-terminated handoff with bounded terminal state", () => {
+    const probe = new PostUiInputProbe();
+    probe.observeDocument(4_000, 44, "pen");
+
+    const [result] = probe.expireHandoffs(4_000 + PostUiInputProbe.WINDOW_MS + 1);
+
+    expect(result).toMatchObject({
+      outcome: "post-ui-pen-missed-page-router",
+      contact: expect.objectContaining({
+        terminal: "window-expired",
+        terminalState: "window-expired",
+        lastObservedStage: "terminal"
+      })
+    });
+  });
+
+  it("records bounded ownership phases but leaves normal contacts ungated", () => {
+    const probe = new PostUiInputProbe();
+    probe.observeDocument(1_000, 42, "pen");
+    probe.handoffStage(1_001, 42, "document-capture");
+    probe.handoffStage(1_002, 42, "hit-test", { page: 1 });
+    probe.handoffStage(1_003, 42, "router-received", { page: 1 });
+    probe.handoffStage(1_004, 42, "route", { route: "draw", routeReason: "stylus-draw" });
+    probe.handoffStage(1_005, 42, "claim", { captureSucceeded: true });
+    probe.handoffStage(1_006, 42, "stroke-start", { page: 1 });
+
+    const result = probe.finishHandoff(1_010, 42, "pointerup", "post-ui-pen-success");
+
+    expect(result?.latency).toMatchObject({
+      totalMs: 6,
+      ownershipStage: "claim",
+      ownershipDecision: "draw:stylus-draw",
+      slowPhases: []
+    });
+    expect(result?.latency?.phaseDurations).toMatchObject({
+      "document-to-capture": 1,
+      "capture-to-hit-test": 1,
+      "hit-test-to-router": 1,
+      "router-to-route": 1,
+      "route-to-ownership": 1,
+      "ownership-to-stroke": 1,
+      "stroke-to-terminal": 4
+    });
+  });
+
+  it("only marks slow contact phases when routing or ownership is delayed", () => {
+    const probe = new PostUiInputProbe();
+    probe.observeDocument(2_000, 43, "pen");
+    probe.handoffStage(2_010, 43, "document-capture");
+    probe.handoffStage(2_025, 43, "hit-test", { page: 2 });
+    probe.handoffStage(2_050, 43, "router-received", { page: 2 });
+    probe.handoffStage(2_060, 43, "route", { route: "draw", routeReason: "stylus-draw" });
+    probe.handoffStage(2_075, 43, "claim", { captureSucceeded: true });
+    const result = probe.finishHandoff(2_140, 43, "pointerup", "post-ui-pen-success");
+
+    expect(result?.latency?.slowPhases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: "document-to-capture", durationMs: 10 }),
+      expect.objectContaining({ phase: "capture-to-hit-test", durationMs: 15 }),
+      expect.objectContaining({ phase: "hit-test-to-router", durationMs: 25 }),
+      expect.objectContaining({ phase: "route-to-ownership", durationMs: 15 }),
+      expect.objectContaining({ phase: "document-to-decision", durationMs: 75 })
+    ]));
+    expect(result?.latency?.ownershipStage).toBe("claim");
+  });
+
   it("keeps penContactId null for a touch-only contact", () => {
     const probe = new PostUiInputProbe();
     probe.arm(3_000, context);
