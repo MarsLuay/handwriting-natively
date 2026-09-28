@@ -395,6 +395,7 @@ describe("zoom ink compositing", () => {
     expect(gesture?.length).toBeGreaterThanOrEqual(1);
     expect(gesture?.[0]).toEqual(expect.objectContaining({
       scaleChangingEvents: expect.any(Number),
+      p50FrameDeltaMs: expect.any(Number),
       p95FrameDeltaMs: expect.any(Number),
       lateFrameCount: expect.any(Number),
       frameIntervalHistogram: expect.any(Object)
@@ -433,6 +434,7 @@ describe("zoom ink compositing", () => {
       minScale: 1,
       maxScale: 1.55,
       frameCount: expect.any(Number),
+      p50FrameDeltaMs: expect.any(Number),
       frameIntervalHistogram: expect.any(Object),
       maxPdfInkMismatchPx: expect.any(Number),
       settleAfterLastScaleMs: expect.any(Number)
@@ -541,6 +543,104 @@ describe("zoom ink compositing", () => {
     expect(profile.layoutFramesExecuted).toBe(1);
     expect(profile.coalescedVisualUpdates).toBe(7);
     expect(profile.vectorRepaints).toBeGreaterThan(0);
+    await session.destroy();
+  });
+
+  it("keeps a bounded scale, mutation, and resize storm page-scoped until canonical release", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter, new MemoryFiles(), { mobile: true, phone: false });
+    const surface = probeSurface(session) as SurfaceProbe & { router: unknown };
+    const overlay = overlayOf(adapter);
+    const internal = session as unknown as { handleRootResize(): void };
+
+    // Keep the workload large enough to exercise the canonical paint path, but
+    // generate it from pointer events rather than committing annotation data.
+    for (let index = 0; index < 24; index += 1) {
+      const x = 80 + (index % 8) * 12;
+      const y = 90 + Math.floor(index / 8) * 18;
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", x, y));
+      adapter.pageElement.dispatchEvent(pointer("pointermove", x + 10, y + 12));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", x + 20, y + 24));
+    }
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+
+    context.arc.mockClear();
+    context.fill.mockClear();
+    context.stroke.mockClear();
+    const routerBefore = surface.router;
+
+    vi.useFakeTimers();
+    for (let index = 0; index < 48; index += 1) {
+      adapter.zoomTo(1.2 + index * 0.015, {
+        left: index,
+        top: index / 2,
+        width: 720 + index * 4,
+        height: 960 + index * 5
+      });
+      session.onViewStateChange(adapter.getViewState(), "scalechanging");
+      if (index % 4 === 0) session.onPdfPageContentMutation(1);
+    }
+
+    // Native scale/mutation notifications may move the CSS overlay, but must
+    // not perform canonical repaint work on each notification.
+    expect(debugCalls("ink zoom repaint")).toHaveLength(0);
+    expect(surface.router).toBe(routerBefore);
+
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+
+    // A delayed native replacement plus resize must stay under the handoff
+    // mask and converge through one page-scoped canonical rebase.
+    adapter.zoomTo(1.9, { left: 8, top: 4, width: 1_050, height: 1_400 });
+    session.onPdfPageContentMutation(3);
+    internal.handleRootResize();
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(32);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const repaints = debugCalls("ink zoom repaint").map((call) => call[2] as {
+      pagesRepainted?: number;
+      strokesRedrawn?: number;
+      canvasesResized?: number;
+    });
+    expect(repaints.length).toBeGreaterThanOrEqual(1);
+    expect(repaints.every((entry) => (entry.pagesRepainted ?? 0) <= 1)).toBe(true);
+    expect(repaints.at(-1)).toMatchObject({
+      pagesRepainted: 1,
+      strokesRedrawn: expect.any(Number)
+    });
+
+    const phases = debugCalls("ink zoom composite").map((call) => (call[2] as { phase?: string }).phase);
+    const finalCanonicalIndex = phases.lastIndexOf("final-canonical");
+    const releaseIndex = phases.lastIndexOf("release");
+    expect(phases).toContain("release-scheduled");
+    expect(finalCanonicalIndex).toBeGreaterThanOrEqual(0);
+    expect(releaseIndex).toBeGreaterThan(finalCanonicalIndex);
+    expect(surface.router).toBe(routerBefore);
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+
+    const profile = debugCalls("ink zoom profile").at(-1)?.[2] as {
+      scaleChangingEvents: number;
+      p50FrameDeltaMs: number;
+      zoomPipelineSummary?: {
+        stageTotals?: Record<string, { count: number }>;
+      } | null;
+      zoomNativeHandoffSummary?: {
+        stableRafHeldCount: number;
+        stableRafReleasedCount: number;
+      } | null;
+    } | undefined;
+    expect(profile).toMatchObject({
+      scaleChangingEvents: 48,
+      p50FrameDeltaMs: expect.any(Number)
+    });
+    expect(profile?.zoomPipelineSummary?.stageTotals?.["canonical-paint"]?.count).toBeGreaterThan(0);
+    expect(profile?.zoomNativeHandoffSummary).toMatchObject({
+      stableRafHeldCount: expect.any(Number),
+      stableRafReleasedCount: expect.any(Number)
+    });
+
     await session.destroy();
   });
 
