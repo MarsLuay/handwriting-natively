@@ -37,7 +37,7 @@ export interface IpadInputTraceEvent {
 }
 
 export interface IpadInputTraceSnapshot {
-  schemaVersion: 3;
+  schemaVersion: 4;
   platform: "ipad";
   active: boolean;
   startedAt: number | null;
@@ -57,6 +57,7 @@ export interface IpadInputTraceSnapshot {
     touchActionValues: string[];
     touchActionStyleReads: number;
     passivePenHoverMoves: number;
+    gestureChangeEvents: number;
     lifecycleEvents: number;
     scribbleEvents: number;
     lastSequence: number;
@@ -73,7 +74,7 @@ type TraceListener = {
 const MAX_EVENTS = 256;
 const MAX_IDS = 16;
 const MAX_CLASSES = 8;
-const HIGH_FREQUENCY_EVENT_TYPES = new Set(["pointermove", "touchmove"]);
+const HIGH_FREQUENCY_EVENT_TYPES = new Set(["pointermove", "touchmove", "gesturechange"]);
 
 export class IpadPointerTouchTrace {
   private static readonly shared = new WeakMap<Document, { trace: IpadPointerTouchTrace; references: number }>();
@@ -110,6 +111,7 @@ export class IpadPointerTouchTrace {
   private pointerTouchOverlapEvents = 0;
   private touchActionStyleReads = 0;
   private passivePenHoverMoves = 0;
+  private gestureChangeEvents = 0;
   private lifecycleEvents = 0;
   private scribbleEvents = 0;
   private attached = false;
@@ -139,7 +141,12 @@ export class IpadPointerTouchTrace {
     for (const type of ["beforeinput", "input", "compositionstart", "compositionupdate", "compositionend"]) {
       this.bind(this.document, type, (event) => this.record(event, "scribble"));
     }
-    for (const type of gestureEvents) this.bind(this.document, type, (event) => this.record(event, "gesture"));
+    for (const type of gestureEvents) {
+      this.bind(this.document, type, (event) => {
+        if (type === "gesturechange") this.recordGestureChange(event);
+        else this.record(event, "gesture");
+      });
+    }
     for (const type of lifecycleEvents) {
       this.bind(type === "resize" || type === "orientationchange" ? view ?? this.document : this.document, type, (event) => {
         this.record(event, "lifecycle");
@@ -168,7 +175,7 @@ export class IpadPointerTouchTrace {
 
   snapshot(): IpadInputTraceSnapshot {
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       platform: "ipad",
       active: this.attached,
       startedAt: this.startedAt,
@@ -188,6 +195,7 @@ export class IpadPointerTouchTrace {
         touchActionValues: [...this.touchActionValues].slice(0, MAX_IDS),
         touchActionStyleReads: this.touchActionStyleReads,
         passivePenHoverMoves: this.passivePenHoverMoves,
+        gestureChangeEvents: this.gestureChangeEvents,
         lifecycleEvents: this.lifecycleEvents,
         scribbleEvents: this.scribbleEvents,
         lastSequence: this.sequence
@@ -217,6 +225,14 @@ export class IpadPointerTouchTrace {
     increment(this.pointerTypes, pointer.pointerType || "(empty)");
     rememberBoundedId(this.pointerIds, pointer.pointerId);
     this.passivePenHoverMoves += 1;
+    if (event.defaultPrevented) this.defaultPreventedObserved += 1;
+    if (event.cancelBubble) this.propagationStoppedObserved += 1;
+  }
+
+  private recordGestureChange(event: Event): void {
+    this.sequence += 1;
+    increment(this.eventTypes, event.type);
+    this.gestureChangeEvents += 1;
     if (event.defaultPrevented) this.defaultPreventedObserved += 1;
     if (event.cancelBubble) this.propagationStoppedObserved += 1;
   }
