@@ -7251,41 +7251,11 @@ export class ViewerInkSession {
     shield.className = "native-pdf-handwriting-page-mutation-shield";
     shield.dataset.pageAction = action;
     shield.dataset.pageNumber = String(pageNumber);
-    const windowCapture = await captureNativePdfMutationScreenshot(this.options.adapter.host);
-    if (windowCapture.kind === "captured") {
-      const { screenshot } = windowCapture;
-      const snapshot = createDetachedEl(ownerDocument, "img");
-      snapshot.className = "native-pdf-handwriting-page-mutation-window-snapshot";
-      snapshot.src = screenshot.dataUrl;
-      snapshot.alt = "";
-      snapshot.setAttribute("aria-hidden", "true");
-      setElementCssProps(snapshot, {
-        left: `${screenshot.left}px`,
-        top: `${screenshot.top}px`,
-        width: `${screenshot.width}px`,
-        height: `${screenshot.height}px`
-      });
-      shield.append(snapshot);
-      ownerDocument.body.append(shield);
-      this.pageMutationShield = {
-        element: shield,
-        action,
-        pageNumber,
-        capturedPages: 1,
-        timeout: view.setTimeout(() => this.releasePageMutationShield("timeout"), ViewerInkSession.PAGE_MUTATION_SHIELD_TIMEOUT_MS)
-      };
-      this.logger.pdfPageAction("page-shield-window-captured", {
-        action,
-        pageNumber,
-        left: screenshot.left,
-        top: screenshot.top,
-        width: screenshot.width,
-        height: screenshot.height
-      });
-      return;
-    }
-    this.logger.pdfPageAction("page-shield-window-skipped", { action, pageNumber, reason: windowCapture.reason });
 
+    // Copy already-rendered page canvases before asking Electron for a full
+    // composited screenshot. The canvas shield is synchronous and covers the
+    // expensive PDF reload path, so Add/Delete can begin without waiting for
+    // capturePage on large or busy documents.
     const viewportWidth = view.innerWidth;
     const viewportHeight = view.innerHeight;
     let capturedPages = 0;
@@ -7346,19 +7316,57 @@ export class ViewerInkSession {
       capturedPages += 1;
     }
 
-    if (!capturedPages) {
-      this.logger.pdfPageAction("page-shield-skipped", { action, pageNumber, reason: "no-visible-native-canvas" });
+    if (capturedPages) {
+      ownerDocument.body.append(shield);
+      this.pageMutationShield = {
+        element: shield,
+        action,
+        pageNumber,
+        capturedPages,
+        timeout: view.setTimeout(() => this.releasePageMutationShield("timeout"), ViewerInkSession.PAGE_MUTATION_SHIELD_TIMEOUT_MS)
+      };
+      this.logger.pdfPageAction("page-shield-captured", { action, pageNumber, capturedPages });
       return;
     }
-    ownerDocument.body.append(shield);
-    this.pageMutationShield = {
-      element: shield,
-      action,
-      pageNumber,
-      capturedPages,
-      timeout: view.setTimeout(() => this.releasePageMutationShield("timeout"), ViewerInkSession.PAGE_MUTATION_SHIELD_TIMEOUT_MS)
-    };
-    this.logger.pdfPageAction("page-shield-captured", { action, pageNumber, capturedPages });
+
+    // Hosts without a readable page canvas still get the full renderer
+    // snapshot. This remains an awaited fallback, not the normal Add/Delete
+    // path, so capturePage latency cannot delay responsive page actions.
+    const windowCapture = await captureNativePdfMutationScreenshot(this.options.adapter.host);
+    if (windowCapture.kind === "captured") {
+      const { screenshot } = windowCapture;
+      const snapshot = createDetachedEl(ownerDocument, "img");
+      snapshot.className = "native-pdf-handwriting-page-mutation-window-snapshot";
+      snapshot.src = screenshot.dataUrl;
+      snapshot.alt = "";
+      snapshot.setAttribute("aria-hidden", "true");
+      setElementCssProps(snapshot, {
+        left: `${screenshot.left}px`,
+        top: `${screenshot.top}px`,
+        width: `${screenshot.width}px`,
+        height: `${screenshot.height}px`
+      });
+      shield.append(snapshot);
+      ownerDocument.body.append(shield);
+      this.pageMutationShield = {
+        element: shield,
+        action,
+        pageNumber,
+        capturedPages: 1,
+        timeout: view.setTimeout(() => this.releasePageMutationShield("timeout"), ViewerInkSession.PAGE_MUTATION_SHIELD_TIMEOUT_MS)
+      };
+      this.logger.pdfPageAction("page-shield-window-captured", {
+        action,
+        pageNumber,
+        left: screenshot.left,
+        top: screenshot.top,
+        width: screenshot.width,
+        height: screenshot.height
+      });
+      return;
+    }
+    this.logger.pdfPageAction("page-shield-window-skipped", { action, pageNumber, reason: windowCapture.reason });
+    this.logger.pdfPageAction("page-shield-skipped", { action, pageNumber, reason: "no-visible-native-canvas" });
   }
 
   /** Begin the post-reload render handoff once replacement page nodes return. */
