@@ -2958,6 +2958,7 @@ export class ViewerInkSession {
 
   /** Page capture loses Pencil moves after capture leaves the page. Document still sees them. */
   private continueOpenPenStroke(event: PointerEvent): void {
+    if (this.destroyed || this.inputTeardownStarted || this.documentInputOwnershipRevoked) return;
     if (event.pointerType !== "pen") return;
     for (const surface of this.surfaces.values()) {
       if (surface.router?.acceptDocumentPenStroke(event)) return;
@@ -4021,6 +4022,7 @@ export class ViewerInkSession {
     surface: PageSurface,
     event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
   ): boolean {
+    if (this.destroyed || this.inputTeardownStarted || this.documentInputOwnershipRevoked) return false;
     if (!this.canAnnotatePointerEvent(event)) return false;
     const current = this.options.adapter.page(surface.page.pageNumber);
     let reason = this.pageEvidenceReason(surface.page);
@@ -7521,7 +7523,11 @@ export class ViewerInkSession {
     this.physicalContactCollectorLease = null;
     this.pointerProbeAbort.abort();
     this.viewerMousePan.destroy();
-    for (const surface of this.surfaces.values()) surface.router?.destroy();
+    for (const surface of this.surfaces.values()) {
+      surface.router?.destroy();
+      surface.router = null;
+    }
+    this.gestureOwnership.replaceGeneration();
     this.handledDrawPointers.clear();
     this.physicalContactIdsByPointer.clear();
     this.pointerDownPerformanceAt.clear();
@@ -8502,7 +8508,10 @@ export class ViewerInkSession {
         return prefs[resolveDrawingTool(activeTool)].color;
       },
       projectCursor: (clientX, clientY) => this.projectInkScreenPoint(surface, clientX, clientY),
-      isInputOwnerActive: () => inputOwners(surface.page.element).get(surface.page.element) === this,
+      isInputOwnerActive: () => !this.destroyed
+        && !this.inputTeardownStarted
+        && !this.documentInputOwnershipRevoked
+        && inputOwners(surface.page.element).get(surface.page.element) === this,
       onStart: (samples, route, event) => {
         const recoveredAfterRouterRebind = Boolean(surface.builder);
         if (recoveredAfterRouterRebind) {
@@ -8699,14 +8708,14 @@ export class ViewerInkSession {
           pageMountGeneration: surface.page.mountGeneration ?? null,
           routerGeneration: generation,
           rejection: reason,
-          staleRouter: reason === "inactive-owner"
+          staleRouter: reason === "inactive-owner" || reason === "stale-generation"
         });
         const pageElement = surface.page.element;
         this.logger.inputLifecycleEvent("router-rejected", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           reason,
           listenerGeneration: generation,
-          unexpected: reason === "inactive-owner"
+          unexpected: reason === "inactive-owner" || reason === "stale-generation"
         }));
         this.logger.pageRouter("rejected", {
           page: surface.page.pageNumber,
