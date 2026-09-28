@@ -2807,11 +2807,71 @@ export class ViewerInkSession {
         hitTestMs: performance.now() - hitTestStartedAt
       });
       this.recordPostUiProbeDocument(e, hitTest);
+      const documentTarget = isElement(e.target) ? e.target : null;
+      const documentActivePenIds = [...new Set(
+        [...this.surfaces.values()].flatMap((surface) => surface.router?.activePenIds() ?? [])
+      )];
+      const documentActiveTouchIds = this.pluginTouchPointerIds();
+      const documentPhysicalContactId = this.physicalContactIdsByPointer.get(e.pointerId) ?? null;
+      const duplicateLookingContactIds = documentPhysicalContactId === null
+        ? []
+        : [...this.physicalContactIdsByPointer.entries()]
+          .filter(([pointerId, contactId]) => pointerId !== e.pointerId && contactId === documentPhysicalContactId)
+          .map(([pointerId]) => pointerId)
+          .slice(0, 8);
+      let documentCoalescedCount = 0;
+      let documentPredictedCount = 0;
+      try {
+        documentCoalescedCount = e.getCoalescedEvents?.().length ?? 0;
+        const predicted = (e as PointerEvent & { getPredictedEvents?: () => PointerEvent[] }).getPredictedEvents;
+        documentPredictedCount = predicted ? predicted.call(e).length : 0;
+      } catch {
+        // Browser diagnostic APIs can disappear while a viewer page is recycled.
+      }
       this.logger.inputLifecycleEvent("pointerdown", {
+        source: "document-capture",
+        eventType: e.type,
         pointerType: e.pointerType || "(empty)",
         pointerId: e.pointerId,
+        pointerMetadata: {
+          isPrimary: e.isPrimary,
+          button: e.button,
+          buttons: e.buttons,
+          pressure: e.pressure,
+          width: e.width,
+          height: e.height
+        },
+        targetClass: documentTarget ? {
+          tag: documentTarget.tagName.toLowerCase(),
+          id: documentTarget.id || null,
+          classes: [...documentTarget.classList].slice(0, 6)
+        } : null,
         targetId: getDebugNodeId(e.target),
-        page: hitTest.geometricPage?.pageNumber ?? null
+        pageUiClassification: {
+          page: hitTest.geometricPage?.pageNumber ?? null,
+          targetWithinViewer: hitTest.details.targetWithinViewer ?? null,
+          targetWithinPage: hitTest.details.targetWithinPage ?? null,
+          pageOccludedByUi: hitTest.pageOccludedByUi,
+          targetOwnership: this.pointerTargetOwnership(e, hitTest)
+        },
+        ownerBefore: hitTest.geometricPage
+          ? inputOwners(hitTest.geometricPage.element).get(hitTest.geometricPage.element) === this ? "this-session" : "other-session"
+          : "none",
+        ownerAfter: hitTest.geometricPage
+          ? inputOwners(hitTest.geometricPage.element).get(hitTest.geometricPage.element) === this ? "this-session" : "other-session"
+          : "none",
+        activePenCount: documentActivePenIds.length,
+        activePenIds: documentActivePenIds.slice(0, 8),
+        activeTouchCount: documentActiveTouchIds.length,
+        activeTouchPointerIds: documentActiveTouchIds.slice(0, 8),
+        captureSet: false,
+        captureLost: false,
+        generation: hitTest.geometricPage ? this.surfaces.get(hitTest.geometricPage.pageNumber)?.router?.generation ?? null : null,
+        coalescedCount: documentCoalescedCount,
+        predictedCount: documentPredictedCount,
+        duplicateLookingContactCount: duplicateLookingContactIds.length,
+        duplicateLookingContactIds,
+        reason: "document-capture"
       });
       // Capture: own pen/mouse draw sync here. Page capture can stay deaf after
       // zoom while binds/alive still look healthy; bubble never runs if something
@@ -6411,7 +6471,8 @@ export class ViewerInkSession {
       frameAttributionSummary: this.lastZoomFrameAttributionSummary ?? this.zoomFrameDiagnostics.summary(),
       lastZoomGesturePerformance: this.recentZoomGesturePerformance.map((entry) => ({ ...entry })),
       lastInkStrokeGeometry: this.recentInkStrokeGeometry.slice(),
-      lastSuccessfulStroke: this.logger.lastSuccessfulStroke()
+      lastSuccessfulStroke: this.logger.lastSuccessfulStroke(),
+      inputLifecycle: this.logger.inputLifecycleSnapshot()
     });
     this.logger.handwritingUiSnapshot(snapshot);
     return snapshot;
@@ -8277,16 +8338,30 @@ export class ViewerInkSession {
     const previous = owners.get(pageElement);
     if (previous && previous !== this) {
       this.logger.inputOwner("supersede", { page });
-      this.logger.inputLifecycleEvent("input-owner-supersede", { page, pageId: getDebugNodeId(pageElement) });
+      this.logger.inputLifecycleEvent("input-owner-supersede", {
+        source: "session-input",
+        page,
+        pageId: getDebugNodeId(pageElement),
+        ownerBefore: "other-session",
+        ownerAfter: "this-session",
+        reason: "page-router-replacement",
+        unexpected: true
+      });
       void previous.destroy({ silent: true, alreadyPersisted: true });
     }
     owners.set(pageElement, this);
     this.ownedInputPages.add(pageElement);
     this.logger.inputOwner("claim", { page, replaced: Boolean(previous && previous !== this) });
     this.logger.inputLifecycleEvent("input-owner-claim", {
+      source: "session-input",
       page,
       pageId: getDebugNodeId(pageElement),
-      replaced: Boolean(previous && previous !== this)
+      replaced: Boolean(previous && previous !== this),
+      ownerBefore: previous ? "other-session" : "none",
+      ownerAfter: "this-session",
+      activePenCount: this.surfaces.get(page)?.router?.activePenIds().length ?? 0,
+      activeTouchCount: this.pluginTouchPointerIds().length,
+      reason: "page-router-bind"
     });
   }
 
@@ -8296,7 +8371,95 @@ export class ViewerInkSession {
     if (owners.get(pageElement) !== this) return;
     owners.delete(pageElement);
     this.logger.inputOwner("release", { page: pageElement.dataset.pageNumber ?? null });
-    this.logger.inputLifecycleEvent("input-owner-release", { pageId: getDebugNodeId(pageElement) });
+    this.logger.inputLifecycleEvent("input-owner-release", {
+      source: "session-input",
+      page: pageElement.dataset.pageNumber ?? null,
+      pageId: getDebugNodeId(pageElement),
+      ownerBefore: "this-session",
+      ownerAfter: "none",
+      activePenCount: this.surfaces.get(Number(pageElement.dataset.pageNumber))?.router?.activePenIds().length ?? 0,
+      activeTouchCount: this.pluginTouchPointerIds().length,
+      reason: "page-router-unbind"
+    });
+  }
+
+  /** Shared, diagnostic-only metadata for bounded semantic input transitions. */
+  private inputLifecycleDetails(
+    surface: PageSurface,
+    event: Event | null,
+    details: Record<string, unknown> = {}
+  ): Record<string, unknown> {
+    const pointer = event instanceof PointerEvent ? event : null;
+    const target = isElement(event?.target) ? event.target : null;
+    const activePenIds = [...new Set(
+      [...this.surfaces.values()].flatMap((candidate) => candidate.router?.activePenIds() ?? [])
+    )];
+    const activeTouchPointerIds = this.pluginTouchPointerIds();
+    const owner = inputOwners(surface.page.element).get(surface.page.element);
+    const ownerState = owner === this ? "this-session" : owner ? "other-session" : "none";
+    const duplicateLookingContactIds = pointer
+      ? [...this.physicalContactIdsByPointer.entries()]
+        .filter(([pointerId, contactId]) => pointerId !== pointer.pointerId
+          && contactId === this.physicalContactIdsByPointer.get(pointer.pointerId))
+        .map(([pointerId]) => pointerId)
+        .slice(0, 8)
+      : [];
+    let coalescedCount = 0;
+    let predictedCount = 0;
+    if (pointer) {
+      try {
+        coalescedCount = pointer.getCoalescedEvents?.().length ?? 0;
+        const predicted = (pointer as PointerEvent & {
+          getPredictedEvents?: () => PointerEvent[];
+        }).getPredictedEvents;
+        predictedCount = predicted ? predicted.call(pointer).length : 0;
+      } catch {
+        // Browser diagnostic APIs can disappear during page recycling.
+      }
+    }
+    return {
+      source: pointer ? "page-pointer-router" : event instanceof TouchEvent ? "page-touch-router" : "session-input",
+      eventType: event?.type ?? null,
+      pointerType: pointer?.pointerType ?? (event instanceof TouchEvent ? "touch" : null),
+      pointerId: pointer?.pointerId ?? null,
+      pointerMetadata: pointer ? {
+        isPrimary: pointer.isPrimary,
+        button: pointer.button,
+        buttons: pointer.buttons,
+        pressure: pointer.pressure,
+        width: pointer.width,
+        height: pointer.height
+      } : null,
+      targetClass: target ? {
+        tag: target.tagName.toLowerCase(),
+        id: target.id || null,
+        classes: [...target.classList].slice(0, 6)
+      } : null,
+      pageUiClassification: {
+        page: surface.page.pageNumber,
+        targetWithinPage: Boolean(target && surface.page.element.contains(target)),
+        targetWithinOverlay: Boolean(target && surface.overlay.contains(target)),
+        annotationChrome: isAnnotationChromeTarget(event?.target ?? null),
+        pageConnected: surface.page.element.isConnected,
+        overlayConnected: surface.overlay.isConnected
+      },
+      ownerBefore: ownerState,
+      ownerAfter: ownerState,
+      activePenCount: activePenIds.length,
+      activePenIds: activePenIds.slice(0, 8),
+      activeTouchCount: activeTouchPointerIds.length,
+      activeTouchPointerIds: activeTouchPointerIds.slice(0, 8),
+      captureSet: pointer ? Boolean(surface.router?.hasPointerCapture(pointer.pointerId)) : false,
+      captureLost: event?.type === "lostpointercapture"
+        || (typeof details.reason === "string" && details.reason.includes("lost")),
+      generation: surface.router?.generation ?? null,
+      routerAlive: Boolean(surface.router?.isAlive()),
+      coalescedCount,
+      predictedCount,
+      duplicateLookingContactCount: duplicateLookingContactIds.length,
+      duplicateLookingContactIds,
+      ...details
+    };
   }
 
   private createPageRouter(surface: PageSurface): PointerRouter {
@@ -8341,13 +8504,10 @@ export class ViewerInkSession {
           });
         }
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-start");
-        this.logger.inputLifecycleEvent("route-decision", {
+        this.logger.inputLifecycleEvent("route-decision", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           route,
-          pointerType: event.pointerType || "(empty)",
-          pointerId: event.pointerId,
           routerGeneration: surface.router?.generation ?? null,
-          routerAlive: Boolean(surface.router?.isAlive()),
           routerBindsToPage: Boolean(surface.router?.bindsTo(surface.page.element)),
           inputOwnerIsThisSession: inputOwners(surface.page.element).get(surface.page.element) === this,
           ...this.inputPolicyLogFields(),
@@ -8357,7 +8517,8 @@ export class ViewerInkSession {
           pointerCapture: Boolean(surface.router?.hasPointerCapture(event.pointerId)),
           handledPointerGeneration: this.handledDrawPointers.get(event.pointerId) ?? null,
           touchAction: [...surface.page.element.classList].filter((name) => name.startsWith("native-pdf-handwriting-touch-")),
-        });
+          reason: recoveredAfterRouterRebind ? "router-rebind-recovery" : "pointerdown-route"
+        }));
         const existingRoute = this.postZoomRouterByPointer.get(event.pointerId);
         this.postZoomRouterByPointer.set(event.pointerId, {
           received: existingRoute?.received ?? true,
@@ -8387,6 +8548,11 @@ export class ViewerInkSession {
       onMove: (samples, route, event) => this.pointerMove(surface, samples, route, event),
       onEnd: (samples, route, event) => {
         const hadPenStroke = route === "draw" && Boolean(surface.builder) && event.pointerType === "pen";
+        this.logger.inputLifecycleEvent("pointer-end", this.inputLifecycleDetails(surface, event, {
+          page: surface.page.pageNumber,
+          route,
+          reason: "pointerup"
+        }));
         this.pointerEnd(surface, samples, route, event);
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-end");
         if (hadPenStroke) {
@@ -8406,12 +8572,11 @@ export class ViewerInkSession {
         this.clearPointerPerformanceTiming(event.pointerId);
       },
       onCancel: (route, event) => {
-        this.logger.inputLifecycleEvent("pointer-cancel", {
+        this.logger.inputLifecycleEvent("pointer-cancel", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           route,
-          pointerId: event.pointerId,
-          routerGeneration: surface.router?.generation ?? null
-        });
+          reason: "router-pointercancel"
+        }));
         this.pointerCancel(surface, route, event);
         this.finishPostUiProbe(event, "pointercancel", {
           page: surface.page.pageNumber,
@@ -8425,6 +8590,10 @@ export class ViewerInkSession {
       },
       onTouchStart: (event) => {
         this.notePointerTypeOrigin(event, "page-touch-router", "capture");
+        this.logger.inputLifecycleEvent("touchstart", this.inputLifecycleDetails(surface, event, {
+          page: surface.page.pageNumber,
+          reason: "touchstart-capture"
+        }));
       },
       onTouchPointerDown: (event) => {
         const editor = this.activeTextEditor;
@@ -8466,12 +8635,11 @@ export class ViewerInkSession {
           handledPointerGeneration: this.handledDrawPointers.get(event.pointerId) ?? null,
           ...this.pointerEventPropagationDetails(event, surface.page.element, surface.overlay)
         });
-        this.logger.inputLifecycleEvent("router-received", {
+        this.logger.inputLifecycleEvent("router-received", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           listenerGeneration: generation,
-          pointerType: event.pointerType || "(empty)",
-          pointerId: event.pointerId
-        });
+          reason: "page-capture-listener"
+        }));
         this.logger.pageRouter("received", {
           page: surface.page.pageNumber,
           listenerGeneration: generation,
@@ -8518,12 +8686,12 @@ export class ViewerInkSession {
           staleRouter: reason === "inactive-owner"
         });
         const pageElement = surface.page.element;
-        this.logger.inputLifecycleEvent("router-rejected", {
+        this.logger.inputLifecycleEvent("router-rejected", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           reason,
           listenerGeneration: generation,
-          pointerId: event.pointerId
-        });
+          unexpected: reason === "inactive-owner"
+        }));
         this.logger.pageRouter("rejected", {
           page: surface.page.pageNumber,
           reason,
@@ -8543,13 +8711,11 @@ export class ViewerInkSession {
         });
       },
       onRoute: (route, event) => {
-        this.logger.inputLifecycleEvent("pointer-route", {
+        this.logger.inputLifecycleEvent("pointer-route", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           route,
-          pointerType: event.pointerType || "(empty)",
-          pointerId: event.pointerId,
-          routerGeneration: surface.router?.generation ?? null
-        });
+          reason: "classified"
+        }));
         this.updateDebug(surface, event);
         this.logger.pointerRoute(route, {
           page: surface.page.pageNumber,
@@ -8571,6 +8737,12 @@ export class ViewerInkSession {
         });
       },
       onRouteDecision: (route, reason, event) => {
+        this.logger.inputLifecycleEvent("route-decision", this.inputLifecycleDetails(surface, event, {
+          page: surface.page.pageNumber,
+          route,
+          routeReason: reason,
+          reason: "classifier"
+        }));
         const existing = this.postZoomRouterByPointer.get(event.pointerId);
         this.postZoomRouterByPointer.set(event.pointerId, {
           received: true,
@@ -8597,6 +8769,13 @@ export class ViewerInkSession {
         }
       },
       onPointerClaim: (route, event, details) => {
+        this.logger.inputLifecycleEvent("pointer-claim", this.inputLifecycleDetails(surface, event, {
+          page: surface.page.pageNumber,
+          route,
+          reason: details.captureSucceeded ? "annotation-claim" : "capture-failed",
+          unexpected: !details.preventDefaultCalled || !details.propagationStopped || !details.captureSucceeded,
+          ...details
+        }));
         this.recordPostUiProbeStage(event, "claim", {
           page: surface.page.pageNumber,
           route,
@@ -8613,11 +8792,12 @@ export class ViewerInkSession {
             this.logger.stalePinchContact({ ...prune });
           }
         }
-        this.logger.inputLifecycleEvent(`touch-${phase}`, {
+        this.logger.inputLifecycleEvent(`touch-${phase}`, this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
-          ...(event instanceof PointerEvent ? { pointerId: event.pointerId, isPrimary: event.isPrimary } : {}),
+          reason: details.reason ?? `touch-${phase}`,
+          unexpected: phase === "primary-reset",
           ...details
-        });
+        }));
         this.logger.touchInput(phase, {
           page: surface.page.pageNumber,
           ...(event instanceof PointerEvent
@@ -9275,12 +9455,17 @@ export class ViewerInkSession {
     if (surface.router) {
       if (this.zoomProfile) this.zoomProfile.routerDestroys += 1;
       this.logger.inputLifecycleEvent("router-destroy", {
+        source: "session-input",
         page: surface.page.pageNumber,
         reason,
         listenerGeneration: surface.router.generation,
         zoomBurstId: this.postZoomTrace.currentBurstId(),
         binds,
-        alive
+        alive,
+        activePenCount: surface.router.activePenIds().length,
+        activeTouchCount: surface.router.activeTouchPointerIds().length,
+        captureLost: true,
+        cleanupReason: reason
       });
       this.postZoomTrace.remember("router-destroy", {
         page: surface.page.pageNumber,
@@ -9311,11 +9496,15 @@ export class ViewerInkSession {
     if (this.panProfile) this.panProfile.routerRebinds += 1;
     if (surface.strokePerformance) surface.strokePerformance.routerRebinds += 1;
     this.logger.inputLifecycleEvent("router-rebind", {
+      source: "session-input",
       page: surface.page.pageNumber,
       reason,
       listenerGeneration: surface.router.generation,
       zoomBurstId: this.postZoomTrace.currentBurstId(),
-      pageId: getDebugNodeId(pageElement)
+      pageId: getDebugNodeId(pageElement),
+      ownerBefore: "none",
+      ownerAfter: "this-session",
+      cleanupReason: reason
     });
     this.postZoomTrace.remember("router-rebind", {
       page: surface.page.pageNumber,
