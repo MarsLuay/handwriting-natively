@@ -86,6 +86,12 @@ export class GestureOwnership {
     return this.snapshot();
   }
 
+  adoptPenContact(pointerId: number): ActiveInputState {
+    this.owner = "pen-ink";
+    this.activePenId = pointerId;
+    return this.snapshot();
+  }
+
   pointerDown(contact: GestureContact): GestureDecision {
     if (contact.target === "ui") return this.observe("ignore");
 
@@ -100,15 +106,12 @@ export class GestureOwnership {
     }
 
     if (contact.pointerType === "pen") {
-      if (this.activePenId !== null) return this.observe("ignore");
       if (contact.target !== "page" || !contact.inkToolSelected) return this.observe("observe");
-      if (this.owner !== "idle" && this.owner !== "native-touch-navigation") return this.observe("ignore");
       this.owner = "pen-ink";
       this.activePenId = contact.pointerId;
       return this.claim("claim-ink");
     }
 
-    if (this.owner !== "idle") return this.observe("ignore");
     const intent = contact.mouseIntent ?? "pan";
     this.owner = intent === "pan" ? "mouse-pan" : "mouse-ink";
     this.activeMousePointerId = contact.pointerId;
@@ -152,7 +155,7 @@ export class GestureOwnership {
       if (this.activePenId !== contact.pointerId) return this.observe("observe");
       const wasInk = this.owner === "pen-ink";
       this.activePenId = null;
-      this.restoreOwnerAfterRelease();
+      this.owner = "idle";
       return this.decision(inkAction, wasInk);
     }
 

@@ -100,17 +100,15 @@ export class PalmRejectionPolicy {
   pointerDown(event: PointerEvent): void {
     this.notePenPresence(event);
     if (!this.isPenLikeContact(event)) return;
-    if (this.ownsStandaloneAuthority) {
-      this.ownership.pointerDown({
-        pointerId: event.pointerId,
-        pointerType: "pen",
-        target: "page",
-        inkToolSelected: true,
-        mouseIntent: "ink",
-        button: event.button,
-        buttons: event.buttons
-      });
-    }
+    this.ownership.pointerDown({
+      pointerId: event.pointerId,
+      pointerType: "pen",
+      target: "page",
+      inkToolSelected: true,
+      mouseIntent: "ink",
+      button: event.button,
+      buttons: event.buttons
+    });
     this.markPenActivity();
   }
 
@@ -133,10 +131,8 @@ export class PalmRejectionPolicy {
     const before = this.activePenIds();
     if (!before.includes(pointerId)) return false;
     this.clearInactivityTimer();
+    this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
     this.onReset?.(reason, before);
-    if (this.ownsStandaloneAuthority) {
-      this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
-    }
     return true;
   }
 
@@ -148,12 +144,10 @@ export class PalmRejectionPolicy {
       return false;
     }
     this.clearInactivityTimer();
-    this.onReset?.(reason, before);
-    if (this.ownsStandaloneAuthority) {
-      for (const pointerId of before) {
-        this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
-      }
+    for (const pointerId of before) {
+      this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
     }
+    this.onReset?.(reason, before);
     return true;
   }
 

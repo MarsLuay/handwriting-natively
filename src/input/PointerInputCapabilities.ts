@@ -20,15 +20,16 @@ export function detectPointerInputCapabilities(element: HTMLElement): PointerInp
     PointerEvent?: unknown;
     TouchEvent?: unknown;
   }) | null;
+  const target = element as unknown as Record<string, unknown>;
   const pointerEvents = Boolean(
     typeof view?.PointerEvent === "function"
-      || "onpointerdown" in element
-      || typeof element.setPointerCapture === "function"
+      || typeof target.onpointerdown !== "undefined"
+      || typeof target.setPointerCapture === "function"
   );
   return {
     pointerEvents,
-    pointerCapture: typeof element.setPointerCapture === "function"
-      && typeof element.releasePointerCapture === "function",
+    pointerCapture: typeof target.setPointerCapture === "function"
+      && typeof target.releasePointerCapture === "function",
     touchEvents: Boolean(view && ("ontouchstart" in view || typeof view.TouchEvent === "function"))
   };
 }

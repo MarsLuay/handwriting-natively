@@ -133,6 +133,9 @@ export class ViewerMousePan {
     const tip = isDragPanPointer(event);
 
     if (event.pointerType === "touch" && inBoundary) {
+      if (event.isPrimary && this.ownership.snapshot().activeTouchIds.size > 0) {
+        this.ownership.clearTouchContacts();
+      }
       const decision = this.ownership.pointerDown({
         pointerId: event.pointerId,
         pointerType: "touch",
@@ -218,17 +221,19 @@ export class ViewerMousePan {
       return;
     }
 
-    const ownership = this.ownership.pointerDown({
-      pointerId: event.pointerId,
-      pointerType: "mouse",
-      button: event.button,
-      buttons: event.buttons,
-      target: "page",
-      mouseIntent: "pan"
-    });
-    if (ownership.state.owner !== "mouse-pan" || ownership.state.activeMousePointerId !== event.pointerId) {
-      this.callbacks.onPan?.("skip", event, { reason: "gesture-owned", target: describeTarget(event.target) });
-      return;
+    if (!finger) {
+      const ownership = this.ownership.pointerDown({
+        pointerId: event.pointerId,
+        pointerType: "mouse",
+        button: event.button,
+        buttons: event.buttons,
+        target: "page",
+        mouseIntent: "pan"
+      });
+      if (ownership.state.owner !== "mouse-pan" || ownership.state.activeMousePointerId !== event.pointerId) {
+        this.callbacks.onPan?.("skip", event, { reason: "gesture-owned", target: describeTarget(event.target) });
+        return;
+      }
     }
 
     const scrollRoot = this.callbacks.scrollRoot();
