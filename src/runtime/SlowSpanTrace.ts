@@ -1,11 +1,12 @@
-/** One frame on a 120 Hz display. Synchronous plugin work above this can consume the frame. */
+import { percentile } from "../logging/PerformanceMetrics";
+
+/** Fixed synchronous plugin-work budget; frame gaps use RuntimeFrameProfile. */
 export const SLOW_SPAN_SYNC_MS = 8;
 /** Gated or waiting pipeline stages. */
 export const SLOW_SPAN_ASYNC_MS = 25;
 /** User-visible chains such as first ink after a pen down. */
 export const SLOW_SPAN_INTERACTION_MS = 50;
 export const SLOW_SPAN_WORST_LIMIT = 10;
-import { percentile } from "../logging/PerformanceMetrics";
 const STAGE_SAMPLE_LIMIT = 32;
 
 export type SlowSpanKind = "sync" | "async" | "interaction";
@@ -83,6 +84,9 @@ export interface SlowInkStrokeRecord {
   longestLongTaskMs: number;
   p95FrameMs: number;
   maxFrameMs: number;
+  frameBudgetMs: number | null;
+  lateFrameThresholdMs: number | null;
+  frameThresholdSource: string;
   pointerUpToCommitMs: number | null;
   slowStages: Array<{ stage: string; durationMs: number; thresholdMs: number }>;
 }
@@ -112,6 +116,9 @@ export interface SlowInkStrokePerformanceInput {
   longestLongTaskMs: number;
   p95FrameMs: number;
   maxFrameMs: number;
+  frameBudgetMs?: number | null;
+  lateFrameThresholdMs?: number | null;
+  frameThresholdSource?: string;
   pointerUpToCommitMs: number | null;
 }
 
@@ -190,8 +197,9 @@ export class SlowSpanTrace {
     reason?: string | null;
     correlationId?: string | null;
     zoomBurstId?: string | null;
+    thresholdMs?: number;
   }): SlowSpanRecord | null {
-    const thresholdMs = slowSpanThreshold(input.kind);
+    const thresholdMs = validThreshold(input.thresholdMs) ?? slowSpanThreshold(input.kind);
     if (input.durationMs < thresholdMs) return null;
     const zoomBurstId = input.zoomBurstId ?? this.zoomBurstId;
     const correlationId = input.correlationId ?? null;
@@ -261,24 +269,27 @@ export class SlowSpanTrace {
       ?? input.physicalContactId
       ?? input.strokeId
       ?? (input.pointerId === null ? null : `pointer:${input.pointerId}`);
-    const candidates: Array<{ stage: string; durationMs: number | null; kind: SlowSpanKind }> = [
+    const lateFrameThresholdMs = validThreshold(input.lateFrameThresholdMs)
+      ?? (validThreshold(input.frameBudgetMs) === null ? null : input.frameBudgetMs! * 1.5);
+    const candidates: Array<{ stage: string; durationMs: number | null; kind: SlowSpanKind; thresholdMs?: number }> = [
       { stage: "pointer-down-to-stroke-start", durationMs: input.pointerDownToStrokeStartMs, kind: "sync" },
       { stage: "stroke-start-to-first-canvas-commit", durationMs: input.strokeStartToFirstCanvasCommitMs, kind: "sync" },
       { stage: "input-to-render", durationMs: input.maxInputToRenderMs, kind: "async" },
-      { stage: "stroke-frame-gap", durationMs: input.maxFrameMs, kind: "sync" },
+      { stage: "stroke-frame-gap", durationMs: input.maxFrameMs, kind: "sync", ...(lateFrameThresholdMs === null ? {} : { thresholdMs: lateFrameThresholdMs }) },
       { stage: "plugin-callback", durationMs: input.maxPluginCallbackMs, kind: "sync" },
       { stage: "long-task", durationMs: input.longestLongTaskMs, kind: "interaction" },
       { stage: "pointerup-to-commit", durationMs: input.pointerUpToCommitMs, kind: "sync" }
     ];
-    const slowStages = candidates.flatMap(({ stage, durationMs, kind }) => {
-      const thresholdMs = slowSpanThreshold(kind);
+    const slowStages = candidates.flatMap(({ stage, durationMs, kind, thresholdMs: candidateThresholdMs }) => {
+      const thresholdMs = validThreshold(candidateThresholdMs) ?? slowSpanThreshold(kind);
       return durationMs !== null && durationMs >= thresholdMs
         ? [{ stage, durationMs: roundMs(durationMs), thresholdMs }]
         : [];
     });
     if (slowStages.length === 0) return null;
     for (const candidate of candidates) {
-      if (candidate.durationMs === null || candidate.durationMs < slowSpanThreshold(candidate.kind)) continue;
+      const thresholdMs = validThreshold(candidate.thresholdMs) ?? slowSpanThreshold(candidate.kind);
+      if (candidate.durationMs === null || candidate.durationMs < thresholdMs) continue;
       this.record({
         kind: candidate.kind,
         category: "ink-stroke",
@@ -286,7 +297,8 @@ export class SlowSpanTrace {
         durationMs: candidate.durationMs,
         activeWorkMs: candidate.kind === "sync" ? candidate.durationMs : null,
         waitMs: candidate.kind === "sync" ? 0 : candidate.durationMs,
-        correlationId
+        correlationId,
+        ...(candidate.thresholdMs === undefined ? {} : { thresholdMs: candidate.thresholdMs })
       });
     }
     const record: SlowInkStrokeRecord = {
@@ -308,6 +320,9 @@ export class SlowSpanTrace {
       longestLongTaskMs: roundMs(input.longestLongTaskMs),
       p95FrameMs: roundMs(input.p95FrameMs),
       maxFrameMs: roundMs(input.maxFrameMs),
+      frameBudgetMs: roundNullable(input.frameBudgetMs),
+      lateFrameThresholdMs: roundNullable(lateFrameThresholdMs),
+      frameThresholdSource: input.frameThresholdSource ?? "unknown",
       pointerUpToCommitMs: roundNullable(input.pointerUpToCommitMs),
       slowStages
     };
@@ -393,4 +408,8 @@ function roundMs(value: number): number {
 
 function roundNullable(value: number | null | undefined): number | null {
   return value == null ? null : roundMs(value);
+}
+
+function validThreshold(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }

@@ -1,4 +1,5 @@
 import type { AnnotationViewState } from "../runtime/AnnotationSurface";
+import { SLOW_SPAN_SYNC_MS } from "../runtime/SlowSpanTrace";
 import { FRAME_MS_120 } from "./PerformanceMetrics";
 import type { VaultLogSink } from "./VaultLogSink";
 
@@ -67,6 +68,7 @@ export interface ZoomRepaintLog {
   scaleStart?: number;
   scaleEnd?: number;
   scale?: number;
+  frameBudgetMs?: number;
   /** True when HQ settle painted one page per frame. */
   sliced?: boolean;
 }
@@ -328,7 +330,7 @@ export class SessionLogger {
       draftResized?: boolean;
     } = {}
   ): void {
-    if (!this.isEnabled() || durationMs < 8) return;
+    if (!this.isEnabled() || durationMs < SLOW_SPAN_SYNC_MS) return;
     this.emit(durationMs >= FRAME_MS_120 ? "warn" : "info", "ink input paint", {
       document: this.documentPath,
       page,
@@ -1124,7 +1126,12 @@ export class SessionLogger {
       burstWindowMs: round(burstWindowMs)
     };
     this.emit("info", "ink zoom repaint", payload);
-    if (details.durationMs >= FRAME_MS_120 || (msSinceLastRepaint !== null && msSinceLastRepaint < FRAME_MS_120)) {
+    const frameBudgetMs = typeof details.frameBudgetMs === "number"
+      && Number.isFinite(details.frameBudgetMs)
+      && details.frameBudgetMs > 0
+      ? details.frameBudgetMs
+      : FRAME_MS_120;
+    if (details.durationMs >= SLOW_SPAN_SYNC_MS || (msSinceLastRepaint !== null && msSinceLastRepaint < frameBudgetMs)) {
       this.emit("warn", "ink zoom repaint hot", payload);
     }
   }
