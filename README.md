@@ -24,7 +24,7 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 ### Manual Setup
 
 1. Download the BRAT plugin
-2. Press on its icon to enter a plugin, and paste in https://github.com/MarsLuay/handwriting-natively.git
+2. Press on its icon to enter a plugin, and paste in https://github.com/MarsLuay/handwriting-natively
 3. Select any release you desire! (the latest pre-release is my pick..)
 4. Press install and enjoy
 
