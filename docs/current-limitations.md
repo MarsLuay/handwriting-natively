@@ -15,7 +15,7 @@ Automated compatibility evidence covers the adapter boundary and explicit host-s
 - Shape recognition is on by default in each drawing tool's Advanced settings. Holding a stroke still for 0.5 seconds recognises confident lines, arrows, ellipses, rectangles, triangles, diamonds, stars, and hearts; ambiguous writing remains ink. This is intentionally not claimed as an exact clone of another app's shape set.
 - MacBook Force Touch trackpad pressure is not available in Obsidian (Electron); stylus pressure works when the OS exposes it.
 - Annotation edits do not modify source PDFs. Add/Delete/Import/Scan page actions intentionally rewrite the open PDF and remap sidecar/recovery data; export remains a separate-copy workflow. Reorder/duplicate and persistent page UUIDs are not yet supported.
-- Drawing presets are local settings, capped at eight entries, and do not change saved annotation data. Preset selection is one action; device-specific toolbar sizing still needs the release matrix.
+- Pen, Pencil, and Highlighter settings are independent local preferences and do not change saved annotation data; device-specific toolbar sizing still needs the release matrix.
 - Static PNG and JPEG/JPG image annotation uses the shared one-page surface and sidecar; source images remain read-only, browser-native EXIF orientation is not applied a second time, and the More menu exports a bounded flattened copy in the source PNG/JPEG format. PNG alpha is preserved; JPEG uses an opaque background. WebP, HEIC/HEIF, GIF, SVG, embedded images, and live Obsidian image-view/device coverage remain unsupported manual evidence.
 
 Remaining manual compatibility evidence:

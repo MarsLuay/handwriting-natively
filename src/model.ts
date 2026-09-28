@@ -119,14 +119,6 @@ export interface DrawingToolPreferences {
   simulateMousePressure: boolean;
 }
 
-/** A named, persisted drawing configuration that can be selected in one action. */
-export interface DrawingPreset {
-  id: string;
-  name: string;
-  tool: DrawingTool;
-  settings: DrawingToolPreferences;
-}
-
 /** Ephemeral laser pointer — never written to sidecar. */
 export interface LaserPreferences {
   color: string;
@@ -169,11 +161,6 @@ export interface ToolPreferences {
   lasso: { type: LassoType };
   laser: LaserPreferences;
   recentColors: string[];
-  /** User-selectable drawing configurations; capped during settings migration. */
-  presets: DrawingPreset[];
-  activePresetId: string | null;
-  /** Deprecated saved membership retained for settings migration; sidebar order now follows presets. */
-  sidebarPresetIds: string[];
 }
 
 export interface EnabledSurfaceSettings {
@@ -266,11 +253,6 @@ export function createDefaultToolPreferences(): ToolPreferences {
     tiltSensitivity: false,
     simulateMousePressure: true
   };
-  const presets: DrawingPreset[] = [
-    { id: "black-pen", name: "Black pen", tool: "pen", settings: { ...pen } },
-    { id: "blue-pen", name: "Blue pen", tool: "pen", settings: { ...pen, color: "#2563eb", width: 1.2 } },
-    { id: "yellow-highlighter", name: "Yellow highlighter", tool: "highlighter", settings: { ...highlighter } }
-  ];
   return {
     activeTool: "pen",
     pen,
@@ -294,10 +276,7 @@ export function createDefaultToolPreferences(): ToolPreferences {
       holdMs: 900,
       fadeMs: 1400
     },
-    recentColors: ["#111827", "#2563eb", "#dc2626", "#059669", "#f59e0b", "#facc15"],
-    presets,
-    activePresetId: presets[0]?.id ?? null,
-    sidebarPresetIds: []
+    recentColors: ["#111827", "#2563eb", "#dc2626", "#059669", "#f59e0b", "#facc15"]
   };
 }
 
@@ -378,6 +357,13 @@ export function mergeSettings(
   const savedEnabledSurfaces = cleaned.enabledSurfaces as Partial<EnabledSurfaceSettings> | undefined;
   const savedToolPreferences = { ...(cleaned.toolPreferences ?? {}) } as Record<string, unknown>;
   delete savedToolPreferences.pan;
+  // Presets were the old way to store a drawing style. Migrate their last known
+  // values into the permanent per-tool settings, then discard the legacy keys so
+  // they cannot leak back into the persisted schema.
+  const migratedDrawingPreferences = migrateLegacyDrawingPreferences(savedToolPreferences, defaults.toolPreferences);
+  delete savedToolPreferences.presets;
+  delete savedToolPreferences.activePresetId;
+  delete savedToolPreferences.sidebarPresetIds;
   // Shape recognition used to be a separate active tool. It is now an enabled-by-default
   // option in every drawing tool's Advanced settings, so safely return existing users to pen.
   const savedActiveTool = (cleaned.toolPreferences as { activeTool?: unknown } | undefined)?.activeTool;
@@ -415,15 +401,12 @@ export function mergeSettings(
       ...defaults.toolPreferences,
       ...savedToolPreferences,
       activeTool,
-      pen: { ...defaults.toolPreferences.pen, ...cleaned.toolPreferences?.pen },
-      pencil: { ...defaults.toolPreferences.pencil, ...cleaned.toolPreferences?.pencil },
-        highlighter: {
-          ...defaults.toolPreferences.highlighter,
-          ...cleaned.toolPreferences?.highlighter
-        },
-        shape: {
-          holdToRecognize: cleaned.toolPreferences?.shape?.holdToRecognize !== false
-        },
+      pen: migratedDrawingPreferences.pen,
+      pencil: migratedDrawingPreferences.pencil,
+      highlighter: migratedDrawingPreferences.highlighter,
+      shape: {
+        holdToRecognize: cleaned.toolPreferences?.shape?.holdToRecognize !== false
+      },
       text: {
         color: cleaned.toolPreferences?.text?.color ?? defaults.toolPreferences.text.color,
         fontSize: cleaned.toolPreferences?.text?.fontSize ?? defaults.toolPreferences.text.fontSize,
@@ -453,21 +436,9 @@ export function mergeSettings(
           4000,
           defaults.toolPreferences.laser.fadeMs
         )
-      },
-      presets: normalizeDrawingPresets(cleaned.toolPreferences?.presets, defaults.toolPreferences.presets),
-      activePresetId: null as string | null,
-      sidebarPresetIds: [] as string[]
+      }
     }
   };
-  merged.toolPreferences.sidebarPresetIds = normalizeSidebarPresetIds(
-    cleaned.toolPreferences?.sidebarPresetIds,
-    merged.toolPreferences.presets
-  );
-  const savedPresetId = cleaned.toolPreferences?.activePresetId;
-  merged.toolPreferences.activePresetId = typeof savedPresetId === "string" &&
-    merged.toolPreferences.presets.some((preset) => preset.id === savedPresetId)
-    ? savedPresetId
-    : merged.toolPreferences.presets[0]?.id ?? null;
   merged.sidecarFolder = remapPluginDataPath(cleaned.sidecarFolder, defaults.sidecarFolder, configDir);
   merged.vaultDebugLogPath = migrateVaultDebugLogPath(
     remapPluginDataPath(cleaned.vaultDebugLogPath, defaults.vaultDebugLogPath, configDir)
@@ -547,46 +518,49 @@ function clampLaserMs(value: number, min: number, max: number, fallback: number)
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
-function normalizeDrawingPresets(value: unknown, fallback: readonly DrawingPreset[]): DrawingPreset[] {
-  if (!Array.isArray(value)) return fallback.map(cloneDrawingPreset);
-  const seen = new Set<string>();
-  const result: DrawingPreset[] = [];
-  for (const candidate of value) {
-    if (!candidate || typeof candidate !== "object") continue;
-    const raw = candidate as Partial<DrawingPreset> & { settings?: Partial<DrawingToolPreferences> };
-    const id = raw.id;
-    const name = raw.name;
-    const tool = raw.tool;
-    if (typeof id !== "string" || typeof name !== "string" || typeof tool !== "string" || !isDrawingTool(tool) || seen.has(id)) continue;
-    const defaults = fallback.find((preset) => preset.tool === tool)?.settings;
-    if (!defaults) continue;
-    seen.add(id);
-    result.push({
-      id: id.slice(0, 64),
-      name: name.trim().slice(0, 80) || id.slice(0, 64),
-      tool,
-      settings: { ...defaults, ...(raw.settings ?? {}) }
-    });
-    if (result.length === 8) break;
-  }
-  if (result.length) return result;
-  const seed = fallback[0];
-  return seed ? [cloneDrawingPreset(seed)] : [];
+interface LegacyDrawingPreset {
+  id: string;
+  tool: DrawingTool;
+  settings: Partial<DrawingToolPreferences>;
 }
 
-function normalizeSidebarPresetIds(value: unknown, presets: readonly DrawingPreset[]): string[] {
+function migrateLegacyDrawingPreferences(
+  saved: Record<string, unknown>,
+  defaults: ToolPreferences
+): Pick<ToolPreferences, "pen" | "pencil" | "highlighter"> {
+  const legacyPresets = readLegacyDrawingPresets(saved.presets);
+  const activePresetId = typeof saved.activePresetId === "string" ? saved.activePresetId : undefined;
+  const migrated = {} as Pick<ToolPreferences, "pen" | "pencil" | "highlighter">;
+  for (const tool of DRAWING_TOOLS) {
+    const savedTool = isRecord(saved[tool]) ? saved[tool] : {};
+    const legacyPreset = legacyPresets.find((preset) => preset.id === activePresetId && preset.tool === tool)
+      ?? legacyPresets.find((preset) => preset.tool === tool);
+    migrated[tool] = {
+      ...defaults[tool],
+      ...(legacyPreset?.settings ?? {}),
+      ...savedTool
+    };
+  }
+  return migrated;
+}
+
+function readLegacyDrawingPresets(value: unknown): LegacyDrawingPreset[] {
   if (!Array.isArray(value)) return [];
-  const known = new Set(presets.map((preset) => preset.id));
   const seen = new Set<string>();
-  const result: string[] = [];
-  for (const id of value) {
-    if (typeof id !== "string" || !known.has(id) || seen.has(id)) continue;
+  const result: LegacyDrawingPreset[] = [];
+  for (const candidate of value) {
+    if (!isRecord(candidate)) continue;
+    const id = candidate.id;
+    const tool = candidate.tool;
+    if (typeof id !== "string" || !id || typeof tool !== "string" || !isDrawingTool(tool) || seen.has(id)) continue;
+    if (!isRecord(candidate.settings)) continue;
     seen.add(id);
-    result.push(id);
+    result.push({ id, tool, settings: candidate.settings as Partial<DrawingToolPreferences> });
+    if (result.length === 8) break;
   }
   return result;
 }
 
-function cloneDrawingPreset(preset: DrawingPreset): DrawingPreset {
-  return { ...preset, settings: { ...preset.settings } };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

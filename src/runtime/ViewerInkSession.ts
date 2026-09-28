@@ -8281,7 +8281,7 @@ export class ViewerInkSession {
       source,
       selectedToolBefore: previousTool,
       selectedToolAfter: tool,
-      activePenPreset: this.options.settings.toolPreferences.pen,
+      activePenSettings: this.options.settings.toolPreferences.pen,
       inkCapableBefore: this.isEffectiveDrawTool(previousTool),
       inkCapableAfter: next,
       activePenIdsBefore,
