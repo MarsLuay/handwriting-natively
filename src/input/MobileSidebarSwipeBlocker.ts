@@ -58,19 +58,25 @@ function sidebarIsOpen(ownerDocument: Document, direction: SidebarSwipeDirection
  * Optionally prevents Obsidian's mobile one-finger sidebar and command-palette
  * swipe gestures.
  *
- * This deliberately listens only to TouchEvents, requires one contact, and
- * waits for a strongly directional movement. Pointer events from Apple Pencil
- * are tracked so their companion TouchEvents never become swipe candidates.
+ * This requires one contact and waits for a strongly directional movement.
+ * Both touch and pointer events are handled because mobile Obsidian builds can
+ * route edge gestures through either event family. Pointer events from Apple
+ * Pencil are tracked so their companion TouchEvents never become candidates.
  */
 export class MobileSidebarSwipeBlocker {
   private sidebarEnabled = false;
   private commandPaletteEnabled = false;
   private candidate: TouchCandidate | null = null;
+  private pointerCandidate: TouchCandidate | null = null;
   private readonly activePenPointers = new Set<number>();
+  private readonly activeTouchPointers = new Set<number>();
+  private readonly ownerWindow: Window | null;
   private readonly listenerOptions: AddEventListenerOptions = { capture: true };
   private readonly moveListenerOptions: AddEventListenerOptions = { capture: true, passive: false };
 
-  constructor(private readonly ownerDocument: Document) {}
+  constructor(private readonly ownerDocument: Document) {
+    this.ownerWindow = ownerDocument.defaultView;
+  }
 
   setEnabled(sidebarEnabled: boolean, commandPaletteEnabled = false): void {
     if (this.sidebarEnabled === sidebarEnabled && this.commandPaletteEnabled === commandPaletteEnabled) return;
@@ -83,9 +89,19 @@ export class MobileSidebarSwipeBlocker {
     this.ownerDocument.addEventListener("touchend", this.handleTouchEnd, this.listenerOptions);
     this.ownerDocument.addEventListener("touchcancel", this.handleTouchEnd, this.listenerOptions);
     this.ownerDocument.addEventListener("pointerdown", this.handlePointerDown, this.listenerOptions);
+    this.ownerDocument.addEventListener("pointermove", this.handlePointerMove, this.moveListenerOptions);
     this.ownerDocument.addEventListener("pointerup", this.handlePointerEnd, this.listenerOptions);
     this.ownerDocument.addEventListener("pointercancel", this.handlePointerEnd, this.listenerOptions);
     this.ownerDocument.addEventListener("lostpointercapture", this.handlePointerEnd, this.listenerOptions);
+    this.ownerWindow?.addEventListener("touchstart", this.handleTouchStart, this.listenerOptions);
+    this.ownerWindow?.addEventListener("touchmove", this.handleTouchMove, this.moveListenerOptions);
+    this.ownerWindow?.addEventListener("touchend", this.handleTouchEnd, this.listenerOptions);
+    this.ownerWindow?.addEventListener("touchcancel", this.handleTouchEnd, this.listenerOptions);
+    this.ownerWindow?.addEventListener("pointerdown", this.handlePointerDown, this.listenerOptions);
+    this.ownerWindow?.addEventListener("pointermove", this.handlePointerMove, this.moveListenerOptions);
+    this.ownerWindow?.addEventListener("pointerup", this.handlePointerEnd, this.listenerOptions);
+    this.ownerWindow?.addEventListener("pointercancel", this.handlePointerEnd, this.listenerOptions);
+    this.ownerWindow?.addEventListener("lostpointercapture", this.handlePointerEnd, this.listenerOptions);
   }
 
   destroy(): void {
@@ -120,16 +136,7 @@ export class MobileSidebarSwipeBlocker {
       this.candidate = null;
       return;
     }
-    const direction = classifySidebarSwipe(candidate.startX, candidate.startY, touch.clientX, touch.clientY);
-    const blocksSidebar = this.sidebarEnabled
-      && direction !== null
-      && !sidebarIsOpen(this.ownerDocument, direction);
-    const blocksCommandPalette = this.commandPaletteEnabled
-      && classifyCommandPaletteSwipe(candidate.startX, candidate.startY, touch.clientX, touch.clientY);
-    if (!blocksSidebar && !blocksCommandPalette) return;
-    if (!event.cancelable) return;
-    event.preventDefault();
-    event.stopPropagation();
+    this.blockGesture(candidate, touch.clientX, touch.clientY, event);
   };
 
   private readonly handleTouchEnd = (): void => {
@@ -137,23 +144,85 @@ export class MobileSidebarSwipeBlocker {
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
-    if (event.pointerType === "pen") this.activePenPointers.add(event.pointerId);
+    if (event.pointerType === "pen") {
+      this.activePenPointers.add(event.pointerId);
+      return;
+    }
+    if (event.pointerType !== "touch") return;
+    this.activeTouchPointers.add(event.pointerId);
+    if (this.activePenPointers.size > 0 || this.activeTouchPointers.size !== 1) {
+      this.pointerCandidate = null;
+      return;
+    }
+    this.pointerCandidate = {
+      identifier: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY
+    };
+  };
+
+  private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (event.pointerType !== "touch") return;
+    const candidate = this.pointerCandidate;
+    if (
+      !candidate
+      || candidate.identifier !== event.pointerId
+      || this.activePenPointers.size > 0
+      || this.activeTouchPointers.size !== 1
+    ) {
+      return;
+    }
+    this.blockGesture(candidate, event.clientX, event.clientY, event);
   };
 
   private readonly handlePointerEnd = (event: PointerEvent): void => {
-    if (event.pointerType === "pen") this.activePenPointers.delete(event.pointerId);
+    if (event.pointerType === "pen") {
+      this.activePenPointers.delete(event.pointerId);
+      return;
+    }
+    if (event.pointerType !== "touch") return;
+    this.activeTouchPointers.delete(event.pointerId);
+    if (this.pointerCandidate?.identifier === event.pointerId || this.activeTouchPointers.size !== 1) {
+      this.pointerCandidate = null;
+    }
   };
+
+  private blockGesture(candidate: TouchCandidate, currentX: number, currentY: number, event: Event): void {
+    const direction = classifySidebarSwipe(candidate.startX, candidate.startY, currentX, currentY);
+    const blocksSidebar = this.sidebarEnabled
+      && direction !== null
+      && !sidebarIsOpen(this.ownerDocument, direction);
+    const blocksCommandPalette = this.commandPaletteEnabled
+      && classifyCommandPaletteSwipe(candidate.startX, candidate.startY, currentX, currentY);
+    if (!blocksSidebar && !blocksCommandPalette) return;
+    event.preventDefault();
+    // Obsidian's edge listener can be on the same event target. Stopping only
+    // propagation still lets a later same-target listener open the sidebar.
+    event.stopImmediatePropagation();
+  }
 
   private removeListeners(): void {
     this.candidate = null;
+    this.pointerCandidate = null;
     this.activePenPointers.clear();
+    this.activeTouchPointers.clear();
     this.ownerDocument.removeEventListener("touchstart", this.handleTouchStart, this.listenerOptions);
     this.ownerDocument.removeEventListener("touchmove", this.handleTouchMove, this.moveListenerOptions);
     this.ownerDocument.removeEventListener("touchend", this.handleTouchEnd, this.listenerOptions);
     this.ownerDocument.removeEventListener("touchcancel", this.handleTouchEnd, this.listenerOptions);
     this.ownerDocument.removeEventListener("pointerdown", this.handlePointerDown, this.listenerOptions);
+    this.ownerDocument.removeEventListener("pointermove", this.handlePointerMove, this.moveListenerOptions);
     this.ownerDocument.removeEventListener("pointerup", this.handlePointerEnd, this.listenerOptions);
     this.ownerDocument.removeEventListener("pointercancel", this.handlePointerEnd, this.listenerOptions);
     this.ownerDocument.removeEventListener("lostpointercapture", this.handlePointerEnd, this.listenerOptions);
+    this.ownerWindow?.removeEventListener("touchstart", this.handleTouchStart, this.listenerOptions);
+    this.ownerWindow?.removeEventListener("touchmove", this.handleTouchMove, this.moveListenerOptions);
+    this.ownerWindow?.removeEventListener("touchend", this.handleTouchEnd, this.listenerOptions);
+    this.ownerWindow?.removeEventListener("touchcancel", this.handleTouchEnd, this.listenerOptions);
+    this.ownerWindow?.removeEventListener("pointerdown", this.handlePointerDown, this.listenerOptions);
+    this.ownerWindow?.removeEventListener("pointermove", this.handlePointerMove, this.moveListenerOptions);
+    this.ownerWindow?.removeEventListener("pointerup", this.handlePointerEnd, this.listenerOptions);
+    this.ownerWindow?.removeEventListener("pointercancel", this.handlePointerEnd, this.listenerOptions);
+    this.ownerWindow?.removeEventListener("lostpointercapture", this.handlePointerEnd, this.listenerOptions);
   }
 }
