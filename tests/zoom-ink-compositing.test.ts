@@ -1000,7 +1000,6 @@ describe("zoom ink compositing", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
     await vi.advanceTimersByTimeAsync(560);
-
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
     const deferred = () => debugCalls("ink zoom composite").filter((call) => (call[2] as { phase?: string }).phase === "settle-deferred");
     expect(deferred()).toHaveLength(1);

@@ -68,9 +68,9 @@ interface SignalInput {
   signalAt?: number;
   callbackAt?: number;
   callbackWorkMs?: number;
-  pageNumbers?: number[];
-  viewerGeneration?: number;
-  mountGenerations?: Record<string, number>;
+  pageNumbers?: number[] | undefined;
+  viewerGeneration?: number | undefined;
+  mountGenerations?: Record<string, number> | undefined;
   replacementRecordCount?: number;
   phase?: NativeHandoffPhase;
 }

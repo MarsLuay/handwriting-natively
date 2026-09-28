@@ -83,6 +83,6 @@ describe("ZoomNativeHandoffTrace", () => {
     expect(summary?.pagesTouched).toHaveLength(64);
     expect(summary?.viewerGenerations).toHaveLength(8);
     expect(Object.keys(summary?.signals ?? {})).toHaveLength(1);
-    expect(summary?.signals.canvasReplacement.pagesTouched).toHaveLength(64);
+    expect(summary?.signals.canvasReplacement?.pagesTouched).toHaveLength(64);
   });
 });
