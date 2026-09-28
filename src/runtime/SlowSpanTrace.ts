@@ -298,7 +298,14 @@ export class SlowSpanTrace {
       ?? input.strokeId
       ?? (input.pointerId === null ? null : `pointer:${input.pointerId}`);
     const latency = normalizeLatency(input.latency);
-    const candidates: Array<{ stage: string; durationMs: number | null; kind: SlowSpanKind; thresholdMs?: number }> = [
+    const candidates: Array<{
+      stage: string;
+      durationMs: number | null;
+      kind: SlowSpanKind;
+      thresholdMs?: number;
+      activeWorkMs?: number | null;
+      waitMs?: number | null;
+    }> = [
       { stage: "pointer-down-to-stroke-start", durationMs: input.pointerDownToStrokeStartMs, kind: "sync" },
       { stage: "stroke-start-to-first-canvas-commit", durationMs: input.strokeStartToFirstCanvasCommitMs, kind: "sync" },
       { stage: "input-to-render", durationMs: input.maxInputToRenderMs, kind: "async" },
@@ -306,6 +313,11 @@ export class SlowSpanTrace {
         stage: "stroke-frame-gap",
         durationMs: input.maxFrameMs,
         kind: "sync",
+        // This is elapsed time between presentation callbacks, not a measured
+        // synchronous callback. The stroke's latency fields retain separate
+        // scheduling and callback evidence without double-counting this gap.
+        activeWorkMs: null,
+        waitMs: null,
         ...(input.frameGapThresholdMs === undefined ? {} : { thresholdMs: input.frameGapThresholdMs })
       },
       { stage: "plugin-callback", durationMs: input.maxPluginCallbackMs, kind: "sync" },
@@ -334,8 +346,12 @@ export class SlowSpanTrace {
         category: "ink-stroke",
         stage: candidate.stage,
         durationMs: candidate.durationMs,
-        activeWorkMs: candidate.kind === "sync" ? candidate.durationMs : null,
-        waitMs: candidate.kind === "sync" ? 0 : candidate.durationMs,
+        activeWorkMs: candidate.activeWorkMs !== undefined
+          ? candidate.activeWorkMs
+          : candidate.kind === "sync" ? candidate.durationMs : null,
+        waitMs: candidate.waitMs !== undefined
+          ? candidate.waitMs
+          : candidate.kind === "sync" ? 0 : candidate.durationMs,
         correlationId,
         thresholdMs
       });
