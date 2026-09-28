@@ -21,7 +21,7 @@ import {
 } from "./PointerInputCapabilities";
 
 export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "native" | "ignored";
-export type PointerRejectionReason = "annotation-chrome" | "already-handled" | "inactive-owner";
+export type PointerRejectionReason = "annotation-chrome" | "already-handled" | "inactive-owner" | "stale-generation";
 export interface PointerRouterHandoff {
   routed: Array<{ pointerId: number; route: "draw" | "edit" | "text" }>;
   activePenIds: number[];
@@ -265,6 +265,7 @@ export class PointerRouter {
    * is not the end of that stroke.
    */
   acceptDocumentPenStroke(event: PointerEvent): boolean {
+    if (this.abort.signal.aborted) return false;
     if (event.pointerType !== "pen" || event.type !== "pointermove") return false;
     if (!this.routed.has(event.pointerId)) return false;
     this.handleMove(event);
@@ -378,6 +379,10 @@ export class PointerRouter {
   }
 
   private readonly handleDown = (event: PointerEvent): PointerRoute => {
+    if (this.abort.signal.aborted) {
+      this.callbacks.onPointerRejected?.("stale-generation", event, this.generation);
+      return "ignored";
+    }
     this.callbacks.onRouterReceived?.(event, this.generation);
     if (this.callbacks.isInputOwnerActive?.() === false) {
       this.callbacks.onPointerRejected?.("inactive-owner", event, this.generation);
@@ -521,6 +526,7 @@ export class PointerRouter {
    * pressure/eraser mouse tip; ordinary mouse movement stays native.
    */
   private recoverMissingPointerDown(event: PointerEvent): boolean {
+    if (this.abort.signal.aborted) return false;
     if (this.callbacks.isInputOwnerActive?.() === false) return false;
     if (!this.callbacks.canAnnotatePointer(event) || !isTipContact(event)) return false;
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
@@ -883,6 +889,7 @@ export class PointerRouter {
   }
 
   private readonly handleMove = (event: PointerEvent): void => {
+    if (this.abort.signal.aborted) return;
     this.scheduleCustomCursorUpdate(event);
     this.notePenSignal(event);
     this.palmPolicy.notePenActivity(event);
@@ -916,6 +923,7 @@ export class PointerRouter {
   };
 
   private readonly handleEnd = (event: PointerEvent): void => {
+    if (this.abort.signal.aborted) return;
     this.paintCustomCursorsNow(event);
     const route = this.routed.get(event.pointerId);
     if (route) {
@@ -942,6 +950,7 @@ export class PointerRouter {
   };
 
   private readonly handleCancel = (event: PointerEvent): void => {
+    if (this.abort.signal.aborted) return;
     const route = this.routed.get(event.pointerId);
     if (route) {
       event.preventDefault();
@@ -962,6 +971,7 @@ export class PointerRouter {
   };
 
   private readonly handleLostPointerCapture = (event: PointerEvent): void => {
+    if (this.abort.signal.aborted) return;
     if (event.pointerType === "mouse" || event.pointerType === "pen") this.hideCustomCursors();
     // iOS drops page pointermove after capture leaves the page and reports
     // lostpointercapture at (0, 0). That is capture moving, not the pen lift.
@@ -983,6 +993,7 @@ export class PointerRouter {
   };
 
   private readonly clearEndedTouch = (event: PointerEvent): void => {
+    if (this.abort.signal.aborted) return;
     // Document capture: Pencil terminal events often miss the page listener after
     // acceptPointerDown + setPointerCapture (same failure Ink documents).
     if (event.pointerType === "pen" && event.type === "lostpointercapture") return;
