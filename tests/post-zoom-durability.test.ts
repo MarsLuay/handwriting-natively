@@ -28,7 +28,8 @@ function contact(overrides: Partial<PostZoomDurabilityNote> & Pick<PostZoomDurab
     routerReceived: true,
     routerRejected: false,
     routerRejectReason: null,
-    route: "received",
+    route: "draw",
+    routeReason: "stylus-draw",
     strokeStarted: true,
     strokeEnded: true,
     scrollLeftAtStart: 0,
@@ -67,6 +68,7 @@ function genericTouch(id: string, atMs: number, overrides: Partial<PostZoomDurab
     routerRejected: false,
     routerRejectReason: null,
     route: null,
+    routeReason: null,
     strokeStarted: false,
     strokeEnded: false,
     ...overrides
@@ -159,8 +161,9 @@ describe("PostZoomDurabilityTrace", () => {
       strokeEnded: false,
       routerReceived: false,
       routerRejected: true,
-      routerRejectReason: "route-rejected",
-      route: "rejected"
+      routerRejectReason: "inactive-owner",
+      route: "ignored",
+      routeReason: "inactive-owner"
     }));
     expect(events).toEqual([]);
     const copy = trace.snapshot(settleAt + 50_000);
@@ -169,10 +172,43 @@ describe("PostZoomDurabilityTrace", () => {
       pointerType: "pen",
       stylusIdentity: "established",
       routerReceived: false,
-      routerRejected: true
+      routerRejected: true,
+      routerRejectReason: "inactive-owner",
+      route: "ignored",
+      routeReason: "inactive-owner"
     });
     expect(copy.firstLaterGenericTouchAfterPenRecovery).toBeNull();
     expect(copy.firstLaterPageDragAfterPenRecovery).toBeNull();
+  });
+
+  it("preserves the actual route and reason when a pen reaches the router but does not start", () => {
+    for (const [route, routeReason] of [
+      ["draw", "stylus-draw"],
+      ["edit", "stylus-edit"],
+      ["text", "text-tool"],
+      ["native", "unsupported-pointer"],
+      ["ignored", "already-handled"]
+    ] as const) {
+      const trace = openTrace();
+      trace.note(pen("pen-1", settleAt + 500));
+      trace.note(contact({
+        physicalContactId: `pen-${route}`,
+        atMs: settleAt + 50_000,
+        strokeStarted: false,
+        strokeEnded: false,
+        routerReceived: true,
+        routerRejected: false,
+        route,
+        routeReason
+      }));
+      expect(trace.snapshot(settleAt + 50_000).contacts.at(-1)).toMatchObject({
+        route,
+        routeReason,
+        routerReceived: true,
+        routerRejected: false,
+        strokeStarted: false
+      });
+    }
   });
 
   it("records a later page drag with scroll delta", () => {

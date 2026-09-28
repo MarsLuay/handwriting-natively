@@ -27,6 +27,7 @@ export interface PostZoomDurabilityContact {
   routerRejected: boolean;
   routerRejectReason: string | null;
   route: string | null;
+  routeReason: string | null;
   strokeStarted: boolean;
   strokeEnded: boolean;
   scrollLeftAtStart: number | null;
@@ -59,6 +60,8 @@ export interface PostZoomPageDragContact {
   pointerType: string;
   routerReceived: false;
   strokeStarted: false;
+  route: string | null;
+  routeReason: string | null;
   nativeScrollDeltaPx: number;
   panObserved: true;
   physicalToolClaimed: boolean;
@@ -184,6 +187,8 @@ export class PostZoomDurabilityTrace {
         pointerType: contact.pointerType ?? "touch",
         routerReceived: false,
         strokeStarted: false,
+        route: contact.route,
+        routeReason: contact.routeReason,
         nativeScrollDeltaPx: contact.nativeScrollDeltaPx!,
         panObserved: true,
         physicalToolClaimed: contact.physicalToolClaimed,
@@ -261,6 +266,7 @@ export class PostZoomDurabilityTrace {
       routerRejected: input.routerRejected,
       routerRejectReason: input.routerRejectReason,
       route: input.route,
+      routeReason: input.routeReason,
       strokeStarted: input.strokeStarted,
       strokeEnded: input.strokeEnded,
       scrollLeftAtStart: input.scrollLeftAtStart,
