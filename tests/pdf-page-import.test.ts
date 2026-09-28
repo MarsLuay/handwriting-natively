@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   PdfImportFilePicker,
+  PdfImportOptionsModal,
   PdfPageSelectionModal,
   parsePdfPageSelection,
   readExternalPdf
@@ -12,6 +13,58 @@ describe("PDF page import selection", () => {
     expect(parsePdfPageSelection("4, 2-3, 4", 5)).toEqual([2, 3, 4]);
     expect(parsePdfPageSelection("all", 3)).toEqual([1, 2, 3]);
     expect(parsePdfPageSelection("2-6", 5)).toBeNull();
+  });
+
+  it("chooses all source pages and inserts them at the beginning", () => {
+    const chosen = vi.fn();
+    const cancelled = vi.fn();
+    const modal = new PdfImportOptionsModal(
+      {} as never,
+      {
+        sourcePageCount: 3,
+        destinationPageCount: 5,
+        currentPage: 3,
+        sourceName: "source.pdf",
+        destinationName: "destination.pdf"
+      },
+      chosen,
+      cancelled
+    );
+    modal.open();
+    const location = modal.contentEl.querySelector<HTMLSelectElement>("select")!;
+    location.value = "start";
+    location.dispatchEvent(new Event("change"));
+    [...modal.contentEl.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Import pages")?.click();
+
+    expect(chosen).toHaveBeenCalledWith({ pageNumbers: [1, 2, 3], afterPage: 0 });
+    expect(cancelled).not.toHaveBeenCalled();
+  });
+
+  it("imports only specific ranges after a chosen destination page", () => {
+    const chosen = vi.fn();
+    const modal = new PdfImportOptionsModal(
+      {} as never,
+      { sourcePageCount: 8, destinationPageCount: 4, currentPage: 2 },
+      chosen,
+      vi.fn()
+    );
+    modal.open();
+    const radios = modal.contentEl.querySelectorAll<HTMLInputElement>("input[type='radio']");
+    radios[1]?.click();
+    const range = modal.contentEl.querySelector<HTMLInputElement>("input[type='text']")!;
+    range.value = "2-3, 6";
+    range.dispatchEvent(new Event("input"));
+    const location = modal.contentEl.querySelector<HTMLSelectElement>("select")!;
+    location.value = "after-page";
+    location.dispatchEvent(new Event("change"));
+    const afterPage = modal.contentEl.querySelector<HTMLInputElement>("input[type='number']")!;
+    afterPage.value = "4";
+    afterPage.dispatchEvent(new Event("input"));
+    [...modal.contentEl.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Import pages")?.click();
+
+    expect(chosen).toHaveBeenCalledWith({ pageNumbers: [2, 3, 6], afterPage: 4 });
   });
 
   it("leaves selection cancelled without choosing pages", () => {

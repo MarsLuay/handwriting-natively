@@ -111,7 +111,8 @@ export async function getPdfPageCount(bytes: Uint8Array): Promise<number> {
 
 /**
  * Copies selected native PDF pages into the destination after `afterPage`.
- * `pdf-lib` copies page dictionaries and content streams rather than rasterizing
+ * `afterPage` may be zero to insert at the beginning. `pdf-lib` copies page
+ * dictionaries and content streams rather than rasterizing
  * them, so page dimensions, rotation, vector content, and page annotations stay
  * on the copied page. Document title, outlines, and the catalog AcroForm are not
  * copied. A signed or encrypted destination is refused before any save.
@@ -130,8 +131,8 @@ export async function importPdfPages(
   const destinationCount = destination.getPageCount();
   const sourceCount = source.getPageCount();
   if (!destinationCount) throw new Error("Cannot import pages into a PDF with no pages.");
-  if (!Number.isInteger(afterPage) || afterPage < 1 || afterPage > destinationCount) {
-    throw new Error(`Destination PDF page ${afterPage} does not exist.`);
+  if (!Number.isInteger(afterPage) || afterPage < 0 || afterPage > destinationCount) {
+    throw new Error(`Destination PDF insertion point ${afterPage} does not exist.`);
   }
   const pageNumbers = [...new Set(requestedPageNumbers)].sort((left, right) => left - right);
   if (!pageNumbers.length) throw new Error("Select at least one PDF page to import.");
