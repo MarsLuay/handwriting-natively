@@ -109,6 +109,8 @@ export interface PointerRouterCallbacks {
   onRouterReceived?(event: PointerEvent, generation: number): void;
   /** Page touchstart, before pen scroll-blocking. Raw TouchEvent, not a pointer type. */
   onTouchStart?(event: TouchEvent): void;
+  /** Primary touch pointerdown, before native PDF routing. */
+  onTouchPointerDown?(event: PointerEvent): void;
   /** True when document fallback / another router already owns this pointerId. */
   isPointerHandled?(pointerId: number, generation: number): boolean;
   /** Mark pointerId so document fallback does not start a duplicate stroke. */
@@ -353,6 +355,7 @@ export class PointerRouter {
     }
     this.callbacks.onPointerHandled?.(event.pointerId, this.generation);
     this.paintCustomCursorsNow(event);
+    if (event.pointerType === "touch" && event.isPrimary !== false) this.callbacks.onTouchPointerDown?.(event);
     if (event.pointerType === "touch") {
       // Finger after a vanished Pencil tip: do not keep scroll-lock forever.
       this.palmPolicy.reconcileStalePenOnTouch();
