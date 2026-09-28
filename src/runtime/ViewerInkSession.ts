@@ -775,6 +775,8 @@ interface PageSurface {
   router: PointerRouter | null;
   pendingRouterHandoff: PointerRouterHandoff | null;
   livePaintFrame: number | null;
+  /** One short watchdog lets visible ink paint if the browser misses the next rAF. */
+  livePaintFallbackTimer: number | null;
   pendingLivePaint: { kind: "draw" | "edit"; syncText: boolean; sampleCount: number; event?: PointerEvent } | null;
   pendingLivePaintAt: number | null;
   /** Earliest browser input timestamp represented by the pending frame. */
@@ -8079,6 +8081,7 @@ export class ViewerInkSession {
       settleUpgradePending: false,
       router: null,
       livePaintFrame: null,
+      livePaintFallbackTimer: null,
       pendingLivePaint: null,
       pendingLivePaintAt: null,
       pendingLiveInputAt: null,
@@ -9213,6 +9216,11 @@ export class ViewerInkSession {
       surface.strokePerformance = null;
       return;
     }
+    // A delayed acknowledgement from the previous stroke must not block the
+    // next stroke's one-per-surface acknowledgement slot. It is diagnostic
+    // only, so canceling the stale sample is safer than attributing it to the
+    // new stroke or allowing it to delay live-paint bookkeeping.
+    this.cancelPaintAcknowledgement(surface);
     const startedAt = performance.now();
     const routeReceivedAt = this.pointerRouteReceivedAt.get(event.pointerId) ?? startedAt;
     const inputAt = this.pointerInputAt.get(event.pointerId) ?? routeReceivedAt;
@@ -9996,10 +10004,29 @@ export class ViewerInkSession {
       return;
     }
     surface.livePaintFrame = view.requestAnimationFrame((timestamp) => {
+      if (surface.livePaintFallbackTimer !== null) {
+        view.clearTimeout(surface.livePaintFallbackTimer);
+        surface.livePaintFallbackTimer = null;
+      }
       surface.livePaintFrame = null;
       this.frameBudget.observeRaf(timestamp, surface.overlay.ownerDocument.hidden);
       this.paintScheduledLiveWork(surface);
     });
+    // WKWebView can miss several presentation callbacks while PDF/native work
+    // is active even though the event loop becomes available again. Keep the
+    // normal rAF coalescing path, but give visible wet ink one bounded fallback
+    // so a missed frame cannot strand the pending preview for many frames.
+    if (!surface.overlay.ownerDocument.hidden && typeof view.setTimeout === "function") {
+      const fallbackDelayMs = Math.max(8, this.frameTimingProfile().frameBudgetMs + 4);
+      surface.livePaintFallbackTimer = view.setTimeout(() => {
+        surface.livePaintFallbackTimer = null;
+        if (surface.livePaintFrame !== null) {
+          view.cancelAnimationFrame(surface.livePaintFrame);
+          surface.livePaintFrame = null;
+        }
+        this.paintScheduledLiveWork(surface);
+      }, fallbackDelayMs);
+    }
   }
 
   private paintScheduledLiveWork(surface: PageSurface): void {
@@ -10127,9 +10154,14 @@ export class ViewerInkSession {
 
   /** A terminal input event owns the final synchronous paint, never a stale frame callback. */
   private cancelLivePaint(surface: PageSurface): void {
+    const view = surface.overlay.ownerDocument.defaultView;
     if (surface.livePaintFrame !== null) {
-      surface.overlay.ownerDocument.defaultView?.cancelAnimationFrame(surface.livePaintFrame);
+      view?.cancelAnimationFrame(surface.livePaintFrame);
       surface.livePaintFrame = null;
+    }
+    if (surface.livePaintFallbackTimer !== null) {
+      view?.clearTimeout(surface.livePaintFallbackTimer);
+      surface.livePaintFallbackTimer = null;
     }
     surface.pendingLivePaint = null;
     surface.pendingLivePaintAt = null;

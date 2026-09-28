@@ -3457,6 +3457,98 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("falls back to a bounded timer when a visible live-paint rAF misses the next frame", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    // Keep rAF callbacks under test control while advancing only the fallback
+    // timer. This models a visible WKWebView frame that misses its next tick.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    frames.length = 0;
+    requestFrame.mockClear();
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 140));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
+    const surface = (session as unknown as {
+      surfaces: Map<number, { livePaintFrame: number | null; pendingLivePaint: unknown }>;
+    }).surfaces.get(1)!;
+    expect(surface.livePaintFrame).not.toBeNull();
+    expect(surface.pendingLivePaint).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(40);
+    expect(cancelFrame).toHaveBeenCalled();
+    expect(surface.livePaintFrame).toBeNull();
+    expect(surface.pendingLivePaint).toBeNull();
+
+    // Terminal input still commits every captured point after the fallback.
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180));
+    await session.manualSave();
+    const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+    expect(JSON.parse(sidecar![1]).pages[0].strokes[0].points).toHaveLength(4);
+    await session.destroy();
+  });
+
+  it("does not let an outstanding paint acknowledgement block a new stroke", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      debugEnabled: () => true,
+      notice: () => undefined
+    });
+
+    frames.length = 0;
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 140));
+    const surface = (session as unknown as {
+      surfaces: Map<number, {
+        livePaintFrame: number | null;
+        paintAcknowledgementFrame: number | null;
+      }>;
+    }).surfaces.get(1)!;
+    const livePaintFrame = surface.livePaintFrame;
+    expect(livePaintFrame).not.toBeNull();
+    frames[livePaintFrame! - 1]?.(0);
+    const staleAcknowledgementFrame = surface.paintAcknowledgementFrame;
+    expect(staleAcknowledgementFrame).not.toBeNull();
+
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 140, 160));
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 180, 200));
+    expect(cancelFrame).toHaveBeenCalledWith(staleAcknowledgementFrame);
+    expect(surface.paintAcknowledgementFrame).toBeNull();
+    await session.destroy();
+  });
+
   it("keeps a captured PDF page visible through a delete reload until native render finishes", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
