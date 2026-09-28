@@ -1,5 +1,4 @@
 import { isEraserTip, isTipContact } from "./PenPresence";
-import { GestureOwnership } from "./GestureOwnership";
 
 export interface PalmRejectionOptions {
   ignoreTouchWhilePenActive?: boolean;
@@ -29,9 +28,8 @@ export type PenStateResetReason =
  * terminal path, stale-touch reconcile, and inactivity timeout (Ink-style).
  */
 export class PalmRejectionPolicy {
-  /** The router/session owns contacts; this policy only adapts to that state. */
-  private ownership = new GestureOwnership();
-  private ownsStandaloneAuthority = true;
+  /** Evidence-only pen contact tracking; PointerRouter owns canonical gestures. */
+  private readonly activePenPointers = new Set<number>();
   private readonly ignoreTouchWhilePenActive: boolean;
   private readonly palmWidthThreshold: number;
   private readonly stalePenTouchMs: number;
@@ -55,12 +53,6 @@ export class PalmRejectionPolicy {
       ?? ((handler, ms) => window.setTimeout(handler, ms));
     this.clearSchedule = options.clearTimeout
       ?? ((id) => window.clearTimeout(id));
-  }
-
-  /** Bind policy decisions to the session's canonical contact owner. */
-  setOwnership(ownership: GestureOwnership): void {
-    this.ownership = ownership;
-    this.ownsStandaloneAuthority = false;
   }
 
   /** Optional diagnostic hook when contact flips from active → empty. */
@@ -100,15 +92,7 @@ export class PalmRejectionPolicy {
   pointerDown(event: PointerEvent): void {
     this.notePenPresence(event);
     if (!this.isPenLikeContact(event)) return;
-    this.ownership.pointerDown({
-      pointerId: event.pointerId,
-      pointerType: "pen",
-      target: "page",
-      inkToolSelected: true,
-      mouseIntent: "ink",
-      button: event.button,
-      buttons: event.buttons
-    });
+    this.activePenPointers.add(event.pointerId);
     this.markPenActivity();
   }
 
@@ -131,7 +115,7 @@ export class PalmRejectionPolicy {
     const before = this.activePenIds();
     if (!before.includes(pointerId)) return false;
     this.clearInactivityTimer();
-    this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
+    this.activePenPointers.delete(pointerId);
     this.onReset?.(reason, before);
     return true;
   }
@@ -144,9 +128,7 @@ export class PalmRejectionPolicy {
       return false;
     }
     this.clearInactivityTimer();
-    for (const pointerId of before) {
-      this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
-    }
+    this.activePenPointers.clear();
     this.onReset?.(reason, before);
     return true;
   }
@@ -177,16 +159,17 @@ export class PalmRejectionPolicy {
 
   /** True while at least one stylus tip is down (for scroll-lock / TouchEvent cancel). */
   hasActivePen(): boolean {
-    return this.activePenIds().length > 0;
+    return this.activePenPointers.size > 0;
   }
 
   activePenIds(): number[] {
-    const activePenId = this.ownership.snapshot().activePenId;
-    return activePenId === null ? [] : [activePenId];
+    return [...this.activePenPointers];
   }
 
   /** Restore stylus contact when a page router is rebound during a live tip. */
   adoptActivePenIds(pointerIds: readonly number[]): void {
+    this.activePenPointers.clear();
+    for (const pointerId of pointerIds) this.activePenPointers.add(pointerId);
     if (pointerIds.length > 0) this.markPenActivity();
   }
 
