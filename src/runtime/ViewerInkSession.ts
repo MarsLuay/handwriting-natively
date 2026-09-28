@@ -805,6 +805,9 @@ interface PageSurface {
   wetDamage: DamageLedger;
   /** Prefix of live stroke preview already stamped on draftCanvas (incremental paint). */
   liveDrawPaintedPoints: number;
+  /** Browser-predicted pen points rendered only on the disposable wet layer. */
+  predictedPreview: PagePoint[];
+  predictedPreviewPainted: boolean;
   builder: StrokeBuilder | undefined;
   /** Stroke-local input conditioning; never changes already-captured ink. */
   pressureConditioner: PressureConditioner | undefined;
@@ -8353,6 +8356,8 @@ export class ViewerInkSession {
       wetPreviewActive: false,
       wetDamage: new DamageLedger(),
       liveDrawPaintedPoints: 0,
+      predictedPreview: [],
+      predictedPreviewPainted: false,
       builder: undefined,
       pressureConditioner: undefined,
       pressureLastPagePoint: undefined,
@@ -8602,6 +8607,21 @@ export class ViewerInkSession {
         }
       },
       onMove: (samples, route, event) => this.pointerMove(surface, samples, route, event),
+      onPredictedMove: (samples, route, event) => {
+        if (route !== "draw" || event.pointerType !== "pen" || !surface.builder || surface.laserDraft) {
+          surface.predictedPreview = [];
+          return;
+        }
+        const predicted = this.toPagePoints(surface, samples, false);
+        const anchor = surface.builder.preview(false).at(-1);
+        surface.predictedPreview = predicted.filter((point, index) => {
+          const previous = index === 0 ? anchor : predicted[index - 1];
+          return !previous
+            || Math.hypot(point.x - previous.x, point.y - previous.y) > 0.01
+            || point.time !== previous.time;
+        });
+        this.scheduleLivePaint(surface, "draw", 0, event);
+      },
       onEnd: (samples, route, event) => {
         const hadPenStroke = route === "draw" && Boolean(surface.builder) && event.pointerType === "pen";
         this.logger.inputLifecycleEvent("pointer-end", this.inputLifecycleDetails(surface, event, {
@@ -10643,6 +10663,8 @@ export class ViewerInkSession {
     const { draftCanvas, draftContext } = surface;
     this.endWetPreview(surface);
     surface.liveDrawPaintedPoints = 0;
+    surface.predictedPreview = [];
+    surface.predictedPreviewPainted = false;
     if (!draftCanvas.width || !draftCanvas.height) return;
     draftContext.setTransform(1, 0, 0, 1, 0, 0);
     draftContext.clearRect(0, 0, draftCanvas.width, draftCanvas.height);
@@ -10666,6 +10688,8 @@ export class ViewerInkSession {
     surface.inkLayerValid = false;
     surface.inkLayerRevision = null;
     surface.liveEraserPaintedPoints = 0;
+    surface.predictedPreview = [];
+    surface.predictedPreviewPainted = false;
     surface.wetDamage.clear();
   }
 
@@ -10742,11 +10766,33 @@ export class ViewerInkSession {
     const points = surface.shapePreview ?? builder.preview(this.simplifyStrokesEnabled());
     if (!points.length) {
       surface.liveDrawPaintedPoints = 0;
+      surface.predictedPreviewPainted = false;
       return { draftPoints: 0, incremental: false, compositeMatched, stabilization, draftResized };
     }
     const style = builder.style;
     const context = surface.draftContext;
     const shapeMorph = surface.shapePreview !== null;
+    const predicted = surface.predictedPreview;
+    const hasPredicted = predicted.length > 0 && !shapeMorph;
+    const hadPredicted = surface.predictedPreviewPainted;
+
+    const paintPredicted = (): void => {
+      if (!hasPredicted) return;
+      const anchor = points.at(-1);
+      const predictedPoints = anchor ? [anchor, ...predicted] : predicted;
+      this.drawPoints(
+        surface,
+        predictedPoints,
+        style.color,
+        style.width,
+        Math.max(0, style.opacity * 0.42),
+        style.tool,
+        false,
+        builder.id,
+        "full",
+        context
+      );
+    };
     // Shape preview replaces geometry each frame — never incremental.
     // After a shape frame, force the next freehand paint through the full path.
     if (shapeMorph) {
@@ -10766,6 +10812,32 @@ export class ViewerInkSession {
         context
       );
       surface.liveDrawPaintedPoints = 0;
+      surface.predictedPreviewPainted = false;
+      return { draftPoints: points.length, incremental: false, compositeMatched, stabilization, draftResized };
+    }
+
+    // Predicted points are not part of the builder. Repaint the disposable
+    // layer whenever they appear or disappear so they can never linger or be
+    // mistaken for canonical stroke geometry.
+    if (hasPredicted || hadPredicted) {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, pixelWidth, pixelHeight);
+      context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+      this.drawPoints(
+        surface,
+        points,
+        style.color,
+        style.width,
+        style.opacity,
+        style.tool,
+        false,
+        builder.id,
+        "full",
+        context
+      );
+      paintPredicted();
+      surface.liveDrawPaintedPoints = points.length;
+      surface.predictedPreviewPainted = hasPredicted;
       return { draftPoints: points.length, incremental: false, compositeMatched, stabilization, draftResized };
     }
 
@@ -10818,6 +10890,7 @@ export class ViewerInkSession {
       context
     );
     surface.liveDrawPaintedPoints = points.length;
+    surface.predictedPreviewPainted = false;
     return { draftPoints: points.length, incremental: false, compositeMatched, stabilization, draftResized };
   }
 
@@ -10902,6 +10975,8 @@ export class ViewerInkSession {
       return;
     }
     if (route === "draw") {
+      surface.predictedPreview = [];
+      surface.predictedPreviewPainted = false;
       this.startStrokePerformance(surface, event, samples.length);
       const laser = activeTool === "laser";
       if (laser) {
@@ -11102,6 +11177,8 @@ export class ViewerInkSession {
       this.finishStrokePerformance(surface, termination);
       return;
     }
+    surface.predictedPreview = [];
+    surface.predictedPreviewPainted = false;
     this.cancelHeldShape(surface);
     const laserDraft = surface.laserDraft;
     const simulate = laserDraft ? false : surface.simulateMousePressure;
@@ -11225,6 +11302,8 @@ export class ViewerInkSession {
     if (route === "draw" && event.pointerType === "pen") this.finishInkStrokeGeometry(event, [], "pointercancel");
     if (route === "draw") this.finishStrokePerformance(surface, "pointercancel");
     surface.builder = undefined;
+    surface.predictedPreview = [];
+    surface.predictedPreviewPainted = false;
     surface.pressureConditioner = undefined;
     surface.pressureLastPagePoint = undefined;
     surface.simulateMousePressure = false;
