@@ -33,6 +33,10 @@ export interface AnnotatePointerContext {
   mouseInputMode: MouseInputMode;
   /** Fixed desktop page gate. Omit to retain the legacy mode-only policy. */
   mouseOverPdfPage?: boolean;
+  /** Runtime capability has observed a valid Pointer Events pen contact. */
+  stylusConfirmed?: boolean;
+  /** Explicit fallback for touch-only or ambiguous input devices. */
+  touchDrawFallback?: boolean;
 }
 
 /**
@@ -45,7 +49,9 @@ export function canAnnotatePointer(
   ctx: AnnotatePointerContext
 ): boolean {
   if (event.pointerType === "pen") return stylusAnnotationEnabled();
-  if (event.pointerType === "touch") return false;
+  if (event.pointerType === "touch") {
+    return ctx.touchDrawFallback === true && ctx.stylusConfirmed !== true;
+  }
   if (event.pointerType === "mouse") {
     if (ctx.mouseInputMode !== "annotate") return false;
     if (ctx.mouseOverPdfPage !== undefined) return ctx.mouseOverPdfPage;

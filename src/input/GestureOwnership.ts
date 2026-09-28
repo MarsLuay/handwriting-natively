@@ -1,6 +1,7 @@
 export type InputOwner =
   | "idle"
   | "pen-ink"
+  | "touch-ink"
   | "native-touch-navigation"
   | "mouse-ink"
   | "mouse-pan";
@@ -98,8 +99,17 @@ export class GestureOwnership {
     if (contact.pointerType === "touch") {
       this.activeTouchIds.add(contact.pointerId);
       // A finger/palm observes an active pen; it never becomes the ink owner.
-      if (this.activePenId !== null || this.owner === "mouse-ink" || this.owner === "mouse-pan") {
+      if (
+        this.activePenId !== null
+        || this.owner === "mouse-ink"
+        || this.owner === "mouse-pan"
+        || this.owner === "touch-ink"
+      ) {
         return this.observe("observe");
+      }
+      if (contact.target === "page" && contact.inkToolSelected && contact.mouseIntent === "ink") {
+        this.owner = "touch-ink";
+        return this.claim("claim-ink");
       }
       this.owner = "native-touch-navigation";
       return this.observe("observe");
@@ -131,6 +141,11 @@ export class GestureOwnership {
       this.activeMouseButtons = contact.buttons ?? this.activeMouseButtons;
       return this.append(contact);
     }
+    if (contact.pointerType === "touch"
+      && this.owner === "touch-ink"
+      && this.activeTouchIds.has(contact.pointerId)) {
+      return this.append(contact);
+    }
     return this.observe("observe");
   }
 
@@ -160,9 +175,10 @@ export class GestureOwnership {
     }
 
     if (contact.pointerType === "touch") {
+      const wasInk = this.owner === "touch-ink";
       this.activeTouchIds.delete(contact.pointerId);
       this.restoreOwnerAfterRelease();
-      return this.observe("observe");
+      return wasInk ? this.decision(inkAction, true) : this.observe("observe");
     }
 
     if (this.activeMousePointerId !== contact.pointerId) return this.observe("observe");
@@ -203,7 +219,10 @@ export class GestureOwnership {
   }
 
   private claim(action: GestureDecision["action"]): GestureDecision {
-    return this.decision(action, this.owner === "pen-ink" || this.owner === "mouse-ink");
+    return this.decision(
+      action,
+      this.owner === "pen-ink" || this.owner === "touch-ink" || this.owner === "mouse-ink"
+    );
   }
 
   private decision(

@@ -520,6 +520,8 @@ export interface ViewerInkSessionOptions {
   mouseLeftDragDrawEnabled?(): boolean;
   /** Reads the live secondary-button erasing binding. */
   mouseRightDragEraseEnabled?(): boolean;
+  /** Reads the live explicit touch-only/ambiguous-device fallback. */
+  touchDrawFallbackEnabled?(): boolean;
   /** Reads the current pressure profile; it is captured when a new stroke starts. */
   pressureProfile?(): PressureProfile;
   /** Reads the current calibration; it is captured when a new stroke starts. */
@@ -1148,6 +1150,8 @@ export class ViewerInkSession {
   private readonly findBridge: AnnotationFindBridge | null;
   /** Last applied browser direct-manipulation policy for mounted PDF pages. */
   private touchDrawPolicyEnabled: boolean | null = null;
+  /** Runtime promotion is session-scoped; it is never inferred from UA or persisted. */
+  private stylusCapability: "unknown" | "confirmed" = "unknown";
   private readonly pointerProbeAbort = new AbortController();
   private readonly documentInputOwnerId = `session-${this.viewerGeneration}`;
   private readonly documentInputRegistrationSource = "ViewerInkSession.installPointerProbe";
@@ -3983,11 +3987,30 @@ export class ViewerInkSession {
   ): boolean {
     const context = {
       mouseInputMode: this.mouseInputMode(),
+      stylusConfirmed: this.stylusCapability === "confirmed",
+      touchDrawFallback: this.touchAnnotationEnabled(),
       ...(event.pointerType === "mouse"
         ? { mouseOverPdfPage: this.isDesktopPdfPageEvent(event) }
         : {})
     };
     return canAnnotatePointer(event, context);
+  }
+
+  private touchAnnotationEnabled(): boolean {
+    const enabled = this.options.touchDrawFallbackEnabled?.() ?? this.options.settings.touchDrawFallback;
+    return enabled === true
+      && this.stylusCapability !== "confirmed";
+  }
+
+  private promoteStylusCapability(event: Pick<PointerEvent, "pointerType">): void {
+    if (event.pointerType !== "pen" || this.stylusCapability === "confirmed") return;
+    this.stylusCapability = "confirmed";
+    this.logger.inputLifecycleEvent("stylus-capability-promoted", {
+      capability: this.stylusCapability,
+      reason: "observed-pointerType-pen",
+      ...this.inputPolicyLogFields()
+    });
+    this.syncTouchDrawPolicy("stylus-capability-promoted");
   }
 
   private pageEvidenceReason(page: AnnotationPageInfo): string | null {
@@ -4048,6 +4071,8 @@ export class ViewerInkSession {
         mouseInputMode: this.mouseInputMode(),
         mouseDragScroll: this.options.settings.mouseDragScroll
       }),
+      stylusCapability: this.stylusCapability,
+      touchDrawFallback: this.touchAnnotationEnabled(),
       activeTool: this.activeTool()
     };
   }
@@ -4056,7 +4081,7 @@ export class ViewerInkSession {
     event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
   ): string {
     if (event.pointerType === "pen") return "annotate";
-    if (event.pointerType === "touch") return "native";
+    if (event.pointerType === "touch") return this.touchAnnotationEnabled() ? "annotate-touch-fallback" : "native";
     if (event.pointerType === "mouse" && this.isDesktopPdfPageEvent(event)) {
       return "annotate-page";
     }
@@ -8110,6 +8135,7 @@ export class ViewerInkSession {
   /** Apply live mouse-button setting changes without recreating the viewer. */
   updateMouseInputBindings(): void {
     this.syncAnnotationCursorMode();
+    this.syncTouchDrawPolicy("input-settings");
     this.refreshSurfaceCursors();
   }
 
@@ -8171,16 +8197,20 @@ export class ViewerInkSession {
   /** Apply transient pen hit policy; never permanently disable PDF.js text/annotation layers. */
   private syncTouchDrawPolicy(reason: string): void {
     const penHit = this.hasActivePenCapability();
+    const fallbackHit = this.touchAnnotationEnabled();
+    const annotationHit = penHit || fallbackHit;
     for (const surface of this.surfaces.values()) {
-      this.applyTouchDrawPolicy(surface.page.element, penHit);
+      this.applyTouchDrawPolicy(surface.page.element, annotationHit);
       this.ensurePageRouter(surface);
       surface.router?.syncToolState();
     }
-    if (this.touchDrawPolicyEnabled === penHit) return;
-    this.touchDrawPolicyEnabled = penHit;
+    if (this.touchDrawPolicyEnabled === annotationHit) return;
+    this.touchDrawPolicyEnabled = annotationHit;
     this.logger.touchInput("policy", {
-      enabled: penHit,
+      enabled: annotationHit,
       reason,
+      penHit,
+      fallbackHit,
       surfaces: this.surfaces.size,
       ...this.inputPolicyLogFields()
     });
@@ -8487,6 +8517,7 @@ export class ViewerInkSession {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
       canAnnotatePointer: (event) => this.canAnnotateSurface(surface, event),
+      touchAnnotationEnabled: () => this.touchAnnotationEnabled(),
       pointerInputCapabilities: () => detectPointerInputCapabilities(surface.page.element),
       mouseAnnotationEnabled: (button = 0) => this.mouseButtonEnabled(button),
       rightMouseEraserEnabled: () => this.mouseRightDragEnabled(),
@@ -8633,6 +8664,7 @@ export class ViewerInkSession {
       },
       touchTextTarget: (event) => this.isTouchTextTarget(surface, event),
       onRouterReceived: (event, generation) => {
+        this.promoteStylusCapability(event);
         this.postZoomRouterByPointer.set(event.pointerId, {
           received: true,
           rejected: false,
