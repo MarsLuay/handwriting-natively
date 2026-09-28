@@ -15,6 +15,10 @@ import {
 import {
   type TouchAxisLock
 } from "./TouchAxisPolicy";
+import {
+  DEFAULT_POINTER_INPUT_CAPABILITIES,
+  type PointerInputCapabilities
+} from "./PointerInputCapabilities";
 
 export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "native" | "ignored";
 export type PointerRejectionReason = "annotation-chrome" | "already-handled" | "inactive-owner";
@@ -145,6 +149,7 @@ export interface PointerRouterCallbacks {
   ): void;
   onTouchPan?(phase: "start" | "activate" | "move" | "end" | "abort", event: PointerEvent, details: Record<string, unknown>): void;
   manipulationCapabilities?(): ManipulationPlatformCapabilities;
+  pointerInputCapabilities?(): PointerInputCapabilities;
 }
 
 export class PointerRouter {
@@ -163,6 +168,7 @@ export class PointerRouter {
   private manipulationRearmTimer: number | undefined;
   private readonly palmPolicy: PalmRejectionPolicy;
   private readonly ownership: GestureOwnership;
+  private readonly inputCapabilities: PointerInputCapabilities;
   private readonly resetOwnershipOnDestroy: boolean;
   private readonly abort = new AbortController();
   private readonly eraserCursor: HTMLElement;
@@ -185,6 +191,7 @@ export class PointerRouter {
     );
     this.palmPolicy = palmPolicy ?? new PalmRejectionPolicy();
     this.ownership = ownership ?? new GestureOwnership();
+    this.inputCapabilities = callbacks.pointerInputCapabilities?.() ?? DEFAULT_POINTER_INPUT_CAPABILITIES;
     this.resetOwnershipOnDestroy = resetOwnershipOnDestroy;
     this.palmPolicy.setOwnership(this.ownership);
     this.palmPolicy.setResetListener((reason, activePenIds) => {
@@ -204,38 +211,51 @@ export class PointerRouter {
     // Explicit annotation gestures are handled in capture so a stale router
     // left by a prior plugin session cannot process the same event in bubble.
     // Native text inputs are excluded by isAnnotationChromeTarget above.
-    const options = { capture: true, signal: this.abort.signal };
-    element.addEventListener("pointerdown", this.handleDown, options);
-    element.addEventListener("pointermove", this.handleMove, options);
-    element.addEventListener("pointerup", this.handleEnd, options);
-    element.addEventListener("pointercancel", this.handleCancel, options);
-    element.addEventListener("lostpointercapture", this.handleLostPointerCapture, options);
-    element.addEventListener("contextmenu", this.suppressRightMouseEraserMenu, options);
-    element.addEventListener("pointerleave", this.hideCustomCursors, options);
-    // iPad Pencil emits companion TouchEvents after pen pointerdown. Without a
-    // non-passive cancel, WebKit still pans the PDF scroll root (touch-action
-    // stays auto so fingers can scroll when no pen is down).
-    element.addEventListener("touchstart", this.blockTouchScrollWhilePen, { ...options, passive: false });
-    element.addEventListener("touchmove", this.blockTouchScrollWhilePen, { ...options, passive: false });
-    // Touch Events ignore Pointer Events capture (Ink). Use them for finger
-    // bookkeeping + stale-pen unlock when pointerup never reaches the page.
-    element.ownerDocument.addEventListener("touchend", this.handleTouchTerminal, { ...options, passive: true });
-    element.ownerDocument.addEventListener("touchcancel", this.handleTouchTerminal, { ...options, passive: true });
-    // Native PDF scrolling can deliver a terminal event to another virtualized
-    // page (or directly to document). Do not retain it as a phantom pinch.
-    element.ownerDocument.addEventListener("pointerup", this.clearEndedTouch, options);
-    element.ownerDocument.addEventListener("pointercancel", this.clearEndedTouch, options);
-    element.ownerDocument.addEventListener("lostpointercapture", this.clearEndedTouch, options);
+    const options = { capture: true, passive: false, signal: this.abort.signal };
+    const passiveOptions = { capture: true, passive: true, signal: this.abort.signal };
+    if (this.inputCapabilities.pointerEvents) {
+      element.addEventListener("pointerdown", this.handleDown, options);
+      element.addEventListener("pointermove", this.handleMove, options);
+      element.addEventListener("pointerup", this.handleEnd, options);
+      element.addEventListener("pointercancel", this.handleCancel, options);
+      element.addEventListener("lostpointercapture", this.handleLostPointerCapture, options);
+      element.addEventListener("contextmenu", this.suppressRightMouseEraserMenu, options);
+      element.addEventListener("pointerleave", this.hideCustomCursors, options);
+      // Native PDF scrolling can deliver a terminal event to another virtualized
+      // page (or directly to document). Do not retain it as a phantom pinch.
+      element.ownerDocument.addEventListener("pointerup", this.clearEndedTouch, passiveOptions);
+      element.ownerDocument.addEventListener("pointercancel", this.clearEndedTouch, passiveOptions);
+      element.ownerDocument.addEventListener("lostpointercapture", this.clearEndedTouch, passiveOptions);
+    }
+    if (this.inputCapabilities.touchEvents) {
+      if (this.inputCapabilities.pointerEvents) {
+        // iPad Pencil emits companion TouchEvents after pen pointerdown. Without
+        // a non-passive cancel, WebKit still pans the PDF scroll root (touch-action
+        // stays auto so fingers can scroll when no pen is down).
+        element.addEventListener("touchstart", this.blockTouchScrollWhilePen, { ...options, passive: false });
+        element.addEventListener("touchmove", this.blockTouchScrollWhilePen, { ...options, passive: false });
+        // Touch Events ignore Pointer Events capture (Ink). Use them for finger
+        // bookkeeping + stale-pen unlock when pointerup never reaches the page.
+        element.ownerDocument.addEventListener("touchend", this.handleTouchTerminal, { ...options, passive: true });
+        element.ownerDocument.addEventListener("touchcancel", this.handleTouchTerminal, { ...options, passive: true });
+      } else {
+        // No Pointer Events means Touch Events are observation/native fallback
+        // only. They must never synthesize a second drawing or pan engine.
+        element.addEventListener("touchstart", this.observeTouchFallback, { ...options, passive: true });
+        element.addEventListener("touchmove", this.observeTouchFallback, { ...options, passive: true });
+        element.ownerDocument.addEventListener("touchend", this.observeTouchFallback, { ...options, passive: true });
+        element.ownerDocument.addEventListener("touchcancel", this.observeTouchFallback, { ...options, passive: true });
+      }
+    }
     // Blur/background can suppress pointerup and leave a captured pen alive.
     // Cancel plugin-owned input at this lifecycle boundary; native touch remains
     // untouched when no plugin ownership exists.
     element.ownerDocument.addEventListener("visibilitychange", this.handleLifecycleCancellation, {
-      ...options,
-      passive: true
+      ...passiveOptions
     });
     const view = element.ownerDocument.defaultView;
-    view?.addEventListener("blur", this.handleLifecycleCancellation, { ...options, passive: true });
-    view?.addEventListener("pagehide", this.handleLifecycleCancellation, { ...options, passive: true });
+    view?.addEventListener("blur", this.handleLifecycleCancellation, passiveOptions);
+    view?.addEventListener("pagehide", this.handleLifecycleCancellation, passiveOptions);
     this.syncTouchActionMode();
   }
 
@@ -347,7 +367,7 @@ export class PointerRouter {
   }
 
   private finishManipulationTouch(event: PointerEvent, panned: boolean): void {
-    if (event.pointerType !== "touch" || this.manipulation.activeTouches <= this.touchCount()) return;
+    if (event.pointerType !== "touch" || this.manipulation.activeTouches === 0) return;
     const transition = this.manipulation.touchEnd(panned);
     this.applyManipulationTransition(transition);
   }
@@ -567,6 +587,11 @@ export class PointerRouter {
         activePenIds: this.activePenIds()
       });
     }
+  };
+
+  /** Pointer-less hosts keep Touch Events passive and native-only. */
+  private readonly observeTouchFallback = (event: TouchEvent): void => {
+    if (event.type === "touchstart") this.callbacks.onTouchStart?.(event);
   };
 
   /**
