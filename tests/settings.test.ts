@@ -103,6 +103,12 @@ describe("safe defaults", () => {
     });
   });
 
+  it("keeps one-finger sidebar swipe blocking opt-in and migratable", () => {
+    expect(DEFAULT_SETTINGS.disableSidebarSwipe).toBe(false);
+    expect(mergeSettings({ disableSidebarSwipe: true }).disableSidebarSwipe).toBe(true);
+    expect(mergeSettings({ disableSidebarSwipe: false }).disableSidebarSwipe).toBe(false);
+  });
+
   it("enables autosave", () => {
     expect(DEFAULT_SETTINGS.autosave).toBe(true);
     expect(DEFAULT_SETTINGS.autosaveDelayMs).toBe(750);

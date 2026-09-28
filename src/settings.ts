@@ -275,6 +275,17 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             }
           },
           {
+            name: "Disable one-finger sidebar swipe",
+            desc: "Prevent one-finger horizontal swipes on mobile/iPad from opening Obsidian's left or right sidebar. Off by default; buttons and commands still work.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.disableSidebarSwipe).onChange(async (value) => {
+                  await this.persistPatch({ disableSidebarSwipe: value });
+                })
+              );
+            }
+          },
+          {
             name: "Ink toolbar placement",
             desc: "Put the ink controls on the PDF toolbar, or as a left/right sidebar beside the pages. On mobile, PDF toolbar placement becomes the left sidebar automatically.",
             render: (setting: Setting) => {
