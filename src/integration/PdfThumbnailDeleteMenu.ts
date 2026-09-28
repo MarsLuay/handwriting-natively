@@ -22,6 +22,13 @@ interface LongPressContextSuppression {
   pageNumber: number;
   expiresAt: number;
 }
+interface ThumbnailReorderGesture {
+  pointerId: number;
+  fromPage: number;
+  destinationPage: number;
+  startX: number;
+  startY: number;
+}
 export type ThumbnailMenuPhase =
   | "context-seen"
   | "context-ignored"
@@ -41,6 +48,8 @@ export interface PdfThumbnailSidebarActionsCallbacks {
   onDeletePage(pageNumber: number): void | Promise<void>;
   /** Removes selected source-PDF pages as one validated transaction. */
   onDeletePages?(pageNumbers: readonly number[]): void | Promise<void>;
+  /** Moves one source-PDF page to a new one-indexed position. */
+  onReorderPage?(fromPage: number, toPage: number): void | Promise<void>;
   /** Durable diagnostics for augmenting Obsidian's own thumbnail menu. */
   onMenuEvent?(phase: ThumbnailMenuPhase, details: Record<string, unknown>): void;
   onUiLifecycle?(phase: "mounted" | "duplicate" | "destroyed", details: Record<string, unknown>): void;
@@ -118,6 +127,9 @@ export class PdfThumbnailSidebarActions {
   private rangeEndPage: number | null = null;
   /** Prevent key-repeat from starting overlapping PDF mutations. */
   private keyboardDeletePending = false;
+  private pendingReorder: ThumbnailReorderGesture | null = null;
+  private activeReorder: ThumbnailReorderGesture | null = null;
+  private reorderIndicator: HTMLElement | null = null;
   private pendingLongPress: PendingThumbnailLongPress | null = null;
   private longPressContextSuppression: LongPressContextSuppression | null = null;
   private dispatchingLongPressContext = false;
@@ -167,6 +179,7 @@ export class PdfThumbnailSidebarActions {
     this.restoreTemplateIntercept?.();
     this.restoreTemplateIntercept = null;
     this.cancelPendingLongPress();
+    this.cancelReorderGesture();
     this.longPressContextSuppression = null;
     this.abort.abort();
     this.observer?.disconnect();
@@ -228,6 +241,7 @@ export class PdfThumbnailSidebarActions {
 
   private onPointerDown(event: PointerEvent): void {
     this.cancelPendingLongPress();
+    this.cancelReorderGesture();
     const thumbnailView = findThumbnailView(this.host);
     if (!thumbnailView) {
       this.keyboardDeleteArmed = false;
@@ -254,6 +268,15 @@ export class PdfThumbnailSidebarActions {
         this.rangeEndPage = null;
         this.clearRangeSelection(thumbnailView);
       }
+      if (thumbnailPageElement(this.host, target)) {
+        this.pendingReorder = {
+          pointerId: event.pointerId,
+          fromPage: pageNumber,
+          destinationPage: pageNumber,
+          startX: event.clientX,
+          startY: event.clientY
+        };
+      }
       const pageTarget = thumbnailPageElement(this.host, target);
       if ((event.pointerType === "touch" || event.pointerType === "pen") && pageTarget) {
         this.armLongPress(event, pageTarget, pageNumber);
@@ -264,23 +287,59 @@ export class PdfThumbnailSidebarActions {
       this.keyboardDeleteArmed = true;
       return;
     }
+    this.pendingReorder = null;
     // Any other click inside this PDF (or elsewhere) disarms page-delete keys.
     this.keyboardDeleteArmed = false;
   }
 
   private onPointerMove(event: PointerEvent): void {
-    const pending = this.pendingLongPress;
+    const active = this.activeReorder;
+    if (active?.pointerId === event.pointerId) {
+      event.preventDefault();
+      this.updateReorderInsertion(event.clientY);
+      return;
+    }
+    const pendingLongPress = this.pendingLongPress;
+    if (pendingLongPress?.pointerId === event.pointerId) {
+      const movedX = event.clientX - pendingLongPress.startX;
+      const movedY = event.clientY - pendingLongPress.startY;
+      const movedOutsidePage = thumbnailPageNumber(this.host, event.target) !== pendingLongPress.pageNumber;
+      if (Math.hypot(movedX, movedY) > LONG_PRESS_MOVE_TOLERANCE_PX || movedOutsidePage) {
+        this.cancelPendingLongPress();
+      }
+    }
+    const pending = this.pendingReorder;
     if (!pending || pending.pointerId !== event.pointerId) return;
     const movedX = event.clientX - pending.startX;
     const movedY = event.clientY - pending.startY;
-    const movedOutsidePage = thumbnailPageNumber(this.host, event.target) !== pending.pageNumber;
-    if (Math.hypot(movedX, movedY) > LONG_PRESS_MOVE_TOLERANCE_PX || movedOutsidePage) {
-      this.cancelPendingLongPress();
+    if (Math.hypot(movedX, movedY) <= LONG_PRESS_MOVE_TOLERANCE_PX) return;
+    this.cancelPendingLongPress();
+    if (Math.abs(movedY) <= Math.abs(movedX)) {
+      this.pendingReorder = null;
+      return;
     }
+    this.activeReorder = pending;
+    this.pendingReorder = null;
+    event.preventDefault();
+    this.updateReorderInsertion(event.clientY);
   }
 
   private onPointerEnd(event: PointerEvent): void {
+    if (this.activeReorder?.pointerId === event.pointerId) {
+      if (event.type === "pointerleave") return;
+      const active = this.activeReorder;
+      this.activeReorder = null;
+      this.clearReorderIndicator();
+      if (event.type === "pointerup") {
+        event.preventDefault();
+        if (active.destinationPage !== active.fromPage) {
+          void this.callbacks.onReorderPage?.(active.fromPage, active.destinationPage);
+        }
+      }
+      return;
+    }
     if (this.pendingLongPress?.pointerId === event.pointerId) this.cancelPendingLongPress();
+    if (this.pendingReorder?.pointerId === event.pointerId) this.pendingReorder = null;
   }
 
   private armLongPress(event: PointerEvent, target: HTMLElement, pageNumber: number): void {
@@ -305,9 +364,58 @@ export class PdfThumbnailSidebarActions {
     this.host.ownerDocument.defaultView?.clearTimeout(pending.timer);
   }
 
+  private cancelReorderGesture(): void {
+    this.pendingReorder = null;
+    this.activeReorder = null;
+    this.clearReorderIndicator();
+  }
+
+  private updateReorderInsertion(clientY: number): void {
+    const active = this.activeReorder;
+    const thumbnailView = findThumbnailView(this.host);
+    if (!active || !thumbnailView) return;
+    const items = thumbnails(thumbnailView);
+    let insertionIndex = items.length;
+    for (let index = 0; index < items.length; index += 1) {
+      const rect = items[index]!.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) {
+        insertionIndex = index;
+        break;
+      }
+    }
+    const sourceIndex = items.findIndex((item) => thumbnailPageNumber(this.host, item) === active.fromPage);
+    active.destinationPage = sourceIndex >= 0 && sourceIndex < insertionIndex
+      ? insertionIndex
+      : insertionIndex + 1;
+    this.clearReorderIndicator();
+    const indicator = this.host.ownerDocument.createElement("div");
+    indicator.className = "native-pdf-handwriting-thumbnail-reorder-indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    indicator.style.background = "var(--interactive-accent, #7c3aed)";
+    indicator.style.height = "3px";
+    indicator.style.margin = "2px 0";
+    indicator.style.pointerEvents = "none";
+    indicator.style.position = "relative";
+    indicator.style.zIndex = "2";
+    const before = items[insertionIndex];
+    if (before) thumbnailView.insertBefore(indicator, before);
+    else {
+      const addButton = thumbnailView.querySelector<HTMLElement>(".native-pdf-handwriting-thumbnail-add-page");
+      if (addButton) thumbnailView.insertBefore(indicator, addButton);
+      else thumbnailView.append(indicator);
+    }
+    this.reorderIndicator = indicator;
+  }
+
+  private clearReorderIndicator(): void {
+    this.reorderIndicator?.remove();
+    this.reorderIndicator = null;
+  }
+
   private fireLongPress(pending: PendingThumbnailLongPress): void {
     if (this.pendingLongPress !== pending || this.abort.signal.aborted) return;
     this.pendingLongPress = null;
+    this.pendingReorder = null;
     this.longPressContextSuppression = {
       target: pending.target,
       pageNumber: pending.pageNumber,
@@ -351,6 +459,7 @@ export class PdfThumbnailSidebarActions {
       && this.pendingLongPress.pageNumber === requestedAction?.pageNumber
       && this.pendingLongPress.target === thumbnailPageElement(this.host, event.target)) {
       this.cancelPendingLongPress();
+      this.pendingReorder = null;
     }
     const context = this.contextDetails(event.target);
     if (!requestedAction) {

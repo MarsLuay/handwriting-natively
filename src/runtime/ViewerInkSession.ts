@@ -102,7 +102,7 @@ import { createDocumentIdentity, hashDocumentContent, type DocumentIdentityInput
 import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
-import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar } from "../storage/SidecarPageRemoval";
+import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar, reorderPageInSidecar, reorderPageNumber } from "../storage/SidecarPageRemoval";
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultFs";
 import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
@@ -508,6 +508,8 @@ export interface ViewerInkSessionOptions {
   onDeletePage?(pageNumber: number): Promise<void>;
   /** Removes multiple source-PDF pages and remaps persisted annotations once. */
   onDeletePages?(pageNumbers: readonly number[]): Promise<void>;
+  /** Moves one source-PDF page and remaps its persisted annotations. */
+  onReorderPage?(fromPage: number, toPage: number): Promise<void>;
   notice(message: string): void;
   decideUnsaved?(): Promise<CloseChoice>;
   mouseDragScrollEnabled?(): boolean;
@@ -832,7 +834,7 @@ interface PageSurface {
 /** A one-shot bitmap cover kept alive while Obsidian replaces a source PDF. */
 interface PageMutationShield {
   element: HTMLElement;
-  action: "delete" | "insert";
+  action: "delete" | "insert" | "reorder";
   pageNumber: number;
   capturedPages: number;
   timeout: number | null;
@@ -1431,6 +1433,9 @@ export class ViewerInkSession {
         onDeletePage: (pageNumber) => this.deletePage(pageNumber),
         ...(options.onDeletePages
           ? { onDeletePages: (pageNumbers: readonly number[]) => this.deletePages(pageNumbers) }
+          : {}),
+        ...(options.onReorderPage
+          ? { onReorderPage: (fromPage: number, toPage: number) => this.reorderPage(fromPage, toPage) }
           : {}),
         onMenuEvent: (phase, details) => this.logger.thumbnailMenu(phase, details),
         onUiLifecycle: (phase, details) => this.logger.addPageUiLifecycle(phase, {
@@ -6419,7 +6424,7 @@ export class ViewerInkSession {
    * that mandatory reload looks like a stable page transition instead of a
    * full-view white flash.
    */
-  private async armPageMutationShield(action: "delete" | "insert", pageNumber: number): Promise<void> {
+  private async armPageMutationShield(action: "delete" | "insert" | "reorder", pageNumber: number): Promise<void> {
     this.releasePageMutationShield("superseded");
     const ownerDocument = this.options.adapter.host.ownerDocument;
     const view = ownerDocument.defaultView;
@@ -7105,6 +7110,36 @@ export class ViewerInkSession {
     this.scheduleRefresh("page-import-rollback", true);
   }
 
+  private async reorderPage(fromPage: number, toPage: number): Promise<void> {
+    if (!this.options.onReorderPage || fromPage === toPage) return;
+    if (this.pageMutationInFlight) {
+      this.logger.pdfPageAction("reorder-cancel", { fromPage, toPage, reason: "page-mutation-in-flight" });
+      return;
+    }
+    this.pageMutationInFlight = true;
+    this.logger.pdfPageAction("reorder-start", { fromPage, toPage, dirty: this.isDirty() });
+    try {
+      if (this.isDirty()) await this.manualSave();
+      const before = this.snapshot();
+      const metrics = new Map(this.pageMetrics);
+      await this.armPageMutationShield("reorder", fromPage);
+      await this.options.onReorderPage(fromPage, toPage);
+      this.applyReorderedPageToSession(before, fromPage, toPage, metrics);
+      this.logger.pdfPageAction("reorder-complete", { fromPage, toPage });
+      this.options.notice(`Moved page ${fromPage} to position ${toPage}.`);
+    } catch (error) {
+      this.releasePageMutationShield("reorder-error");
+      this.logger.pdfPageAction("reorder-error", {
+        fromPage,
+        toPage,
+        error: this.errorMessage(error)
+      });
+      this.options.notice(`Could not reorder page ${fromPage}: ${this.errorMessage(error)}`);
+    } finally {
+      this.pageMutationInFlight = false;
+    }
+  }
+
   private async deletePage(pageNumber: number): Promise<void> {
     if (!this.options.onDeletePage) return;
     if (this.pageMutationInFlight) {
@@ -7184,6 +7219,31 @@ export class ViewerInkSession {
     } finally {
       this.pageMutationInFlight = false;
     }
+  }
+
+  /** Keep live ink/text state synchronized with a reordered on-disk sidecar. */
+  private applyReorderedPageToSession(
+    before: SidecarSchemaV1,
+    fromPage: number,
+    toPage: number,
+    metrics: ReadonlyMap<number, { width: number; height: number }>
+  ): void {
+    this.commitActiveTextEditor("page-reorder");
+    this.cancelTextBoxTransform("page-reorder", false);
+    const remapped = reorderPageInSidecar(before, fromPage, toPage);
+    this.hydrateSidecarSnapshot(remapped);
+    this.pageMetrics.clear();
+    for (const [page, value] of metrics) {
+      this.pageMetrics.set(reorderPageNumber(page, fromPage, toPage), value);
+    }
+    this.history.clear();
+    this.historyDirtyPages.clear();
+    this.historyPaintedPages.clear();
+    this.clearSelection({ refresh: false });
+    this.autosave.markClean(this.identity.id);
+    this.saveCoordinator.markSaved();
+    this.toolbar.setSaveStatus("saved", new Date());
+    this.scheduleRefresh("page-reorder", true);
   }
 
   /** Keep live ink/text state synchronized with the remapped on-disk sidecar. */
