@@ -4,7 +4,8 @@ import { PalmRejectionPolicy } from "../src/input/PalmRejectionPolicy";
 import type { ToolId } from "../src/model";
 
 function pointer(type: string, pointerId: number, extra: Record<string, unknown> = {}): PointerEvent {
-  const event = new Event(extra.eventType as string || "pointerdown", { bubbles: true, cancelable: true }) as PointerEvent;
+  const eventType = (extra.eventType ?? extra.type ?? "pointerdown") as string;
+  const event = new Event(eventType, { bubbles: true, cancelable: true }) as PointerEvent;
   Object.defineProperties(event, {
     pointerType: { value: type }, pointerId: { value: pointerId }, button: { value: extra.button ?? 0 },
     buttons: { value: extra.buttons ?? 1 }, pressure: { value: extra.pressure ?? 0.5 },
@@ -1319,7 +1320,7 @@ describe("manipulation touch-action integration", () => {
     element.dispatchEvent(pointer("touch", 1, { isPrimary: true }));
     expect(routes.at(-1)).toBe("touch-pan");
     expect(router.gesturePolicy()).toMatchObject({
-      manipulationState: "assisted-touch",
+      manipulationState: "native-touch",
       manipulationActiveTouches: 1,
       manipulationTouchAction: "pan-xy",
       touchPanXyClassPresent: true

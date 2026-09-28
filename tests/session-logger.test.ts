@@ -318,7 +318,7 @@ describe("SessionLogger", () => {
       write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
     });
 
-    for (let index = 0; index < 45; index += 1) logger.inputLifecycleEvent(`event-${index}`, { index });
+    for (let index = 0; index < 85; index += 1) logger.inputLifecycleEvent(`event-${index}`, { index });
     logger.inputStroke("start", { page: 1, routerGeneration: 4 });
     logger.inputStroke("end", { page: 1, routerGeneration: 4 });
     logger.inputAnomaly({ reason: "pen-over-visible-page-not-routed", geometricPageNumber: 1 });
@@ -334,7 +334,7 @@ describe("SessionLogger", () => {
       },
       firstFailedPenDown: { at: expect.any(String) }
     });
-    expect(anomaly?.payload.lifecycle).toHaveLength(40);
+    expect(anomaly?.payload.lifecycle).toHaveLength(80);
     expect((anomaly?.payload.lifecycle as Array<{ event: string }>)[0]?.event).toBe("event-8");
   });
 
