@@ -105,8 +105,18 @@ interface InputLifecycleRecord {
   details: Record<string, unknown>;
 }
 
+interface InputLifecycleSummary {
+  totalTransitions: number;
+  unexpectedTransitions: number;
+  eventCounts: Record<string, number>;
+  sourceCounts: Record<string, number>;
+  pointerTypeCounts: Record<string, number>;
+  routeCounts: Record<string, number>;
+  lastEvent: string | null;
+}
+
 export class SessionLogger {
-  private static readonly INPUT_LIFECYCLE_LIMIT = 40;
+  private static readonly INPUT_LIFECYCLE_LIMIT = 80;
   private lastViewState: AnnotationViewState | null = null;
   private refreshWindowStart = 0;
   private refreshWindowCount = 0;
@@ -119,6 +129,12 @@ export class SessionLogger {
   private shapeResizeMoveCount = 0;
   private readonly textToolHotCounts = new Map<string, number>();
   private readonly inputLifecycle: InputLifecycleRecord[] = [];
+  private readonly inputLifecycleEventCounts = new Map<string, number>();
+  private readonly inputLifecycleSourceCounts = new Map<string, number>();
+  private readonly inputLifecyclePointerTypeCounts = new Map<string, number>();
+  private readonly inputLifecycleRouteCounts = new Map<string, number>();
+  private inputLifecycleTransitionCount = 0;
+  private inputLifecycleUnexpectedCount = 0;
   private readonly inputHeartbeat: InputStrokeHeartbeat = {
     lastStartAt: null,
     lastEndAt: null,
@@ -651,7 +667,8 @@ export class SessionLogger {
       ...details,
       lastSuccessfulStroke: { ...this.inputHeartbeat },
       msSinceLastSuccessfulStroke: this.timeSinceLastSuccessfulStrokeMs(),
-      lifecycle: this.inputLifecycle.slice()
+      lifecycle: this.inputLifecycle.slice(),
+      lifecycleSummary: this.inputLifecycleSummary()
     });
   }
 
@@ -675,12 +692,40 @@ export class SessionLogger {
     });
   }
 
-  /** Keep bounded input history in memory; dump it only for a routed-input anomaly. */
+  /** Keep a debug-only bounded input history and aggregate transition counts. */
   inputLifecycleEvent(event: string, details: Record<string, unknown> = {}): void {
-    this.inputLifecycle.push({ at: new Date().toISOString(), event, details: { ...details } });
+    if (!this.isEnabled()) return;
+    const boundedDetails = boundInputLifecycleDetails(details);
+    this.inputLifecycle.push({ at: new Date().toISOString(), event, details: boundedDetails });
     if (this.inputLifecycle.length > SessionLogger.INPUT_LIFECYCLE_LIMIT) {
       this.inputLifecycle.splice(0, this.inputLifecycle.length - SessionLogger.INPUT_LIFECYCLE_LIMIT);
     }
+    this.inputLifecycleTransitionCount += 1;
+    incrementBoundedCount(this.inputLifecycleEventCounts, event);
+    incrementBoundedCount(this.inputLifecycleSourceCounts, boundedString(boundedDetails.source));
+    incrementBoundedCount(this.inputLifecyclePointerTypeCounts, boundedString(boundedDetails.pointerType));
+    incrementBoundedCount(this.inputLifecycleRouteCounts, boundedString(boundedDetails.route));
+    if (boundedDetails.unexpected === true) this.inputLifecycleUnexpectedCount += 1;
+  }
+
+  /** Copy-safe bounded ring and summary for diagnosing ownership transitions. */
+  inputLifecycleSnapshot(): { transitions: InputLifecycleRecord[]; summary: InputLifecycleSummary } {
+    return {
+      transitions: this.inputLifecycle.slice(),
+      summary: this.inputLifecycleSummary()
+    };
+  }
+
+  private inputLifecycleSummary(): InputLifecycleSummary {
+    return {
+      totalTransitions: this.inputLifecycleTransitionCount,
+      unexpectedTransitions: this.inputLifecycleUnexpectedCount,
+      eventCounts: sortedCountRecord(this.inputLifecycleEventCounts),
+      sourceCounts: sortedCountRecord(this.inputLifecycleSourceCounts),
+      pointerTypeCounts: sortedCountRecord(this.inputLifecyclePointerTypeCounts),
+      routeCounts: sortedCountRecord(this.inputLifecycleRouteCounts),
+      lastEvent: this.inputLifecycle.at(-1)?.event ?? null
+    };
   }
 
   /** Last successful pen stroke heartbeat, used to correlate the first failed down. */
@@ -756,7 +801,8 @@ export class SessionLogger {
         timeSinceLastSuccessfulStrokeMs: this.timeSinceLastSuccessfulStrokeMs(),
         lastSuccessfulStroke: { ...this.inputHeartbeat },
         currentFailure: { ...details },
-        lifecycle: this.inputLifecycle.slice(-12)
+        lifecycle: this.inputLifecycle.slice(-12),
+        lifecycleSummary: this.inputLifecycleSummary()
       });
     }
     this.emit("warn", "ink input anomaly", {
@@ -764,7 +810,8 @@ export class SessionLogger {
       ...details,
       firstFailedPenDown: this.firstFailedPenDown,
       lastSuccessfulStroke: { ...this.inputHeartbeat },
-      lifecycle: this.inputLifecycle.slice()
+      lifecycle: this.inputLifecycle.slice(),
+      lifecycleSummary: this.inputLifecycleSummary()
     });
   }
 
@@ -1255,6 +1302,48 @@ export class SessionLogger {
     else console.warn(PREFIX, event, payload);
     this.vaultLog?.write(level, event, payload);
   }
+}
+
+const INPUT_LIFECYCLE_MAX_STRING = 128;
+const INPUT_LIFECYCLE_MAX_ARRAY = 8;
+const INPUT_LIFECYCLE_MAX_KEYS = 24;
+
+function boundedString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, INPUT_LIFECYCLE_MAX_STRING)
+    : undefined;
+}
+
+function boundInputLifecycleDetails(details: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(details)
+      .slice(0, INPUT_LIFECYCLE_MAX_KEYS)
+      .map(([key, value]) => [key, boundInputLifecycleValue(value, 0)])
+  );
+}
+
+function boundInputLifecycleValue(value: unknown, depth: number): unknown {
+  if (typeof value === "string") return value.slice(0, INPUT_LIFECYCLE_MAX_STRING);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "boolean" || value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, INPUT_LIFECYCLE_MAX_ARRAY).map((entry) => boundInputLifecycleValue(entry, depth + 1));
+  }
+  if (depth >= 2 || typeof value !== "object") return "[bounded]";
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .slice(0, INPUT_LIFECYCLE_MAX_KEYS)
+      .map(([key, entry]) => [key, boundInputLifecycleValue(entry, depth + 1)])
+  );
+}
+
+function incrementBoundedCount(counts: Map<string, number>, value: string | undefined): void {
+  if (!value) return;
+  counts.set(value, (counts.get(value) ?? 0) + 1);
+}
+
+function sortedCountRecord(counts: Map<string, number>): Record<string, number> {
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
 function boundsFrom(points: readonly { x: number; y: number }[]): DrawPositionLog["bounds"] | undefined {
