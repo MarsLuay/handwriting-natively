@@ -57,6 +57,13 @@ Bounded local profiles now summarize zoom, stroke, pan, render, and persistence 
 
 The remaining large-document decision must be based on 10/100/500/1,000-page fixtures, dense strokes, rapid scroll/zoom, and at least one constrained mobile device. Until then, avoid expanding bitmap caches or eager page mounting merely to improve an unmeasured case.
 
+Issue #348's physical zoom protocol is documented in
+[`docs/ipad-zoom-benchmark.md`](ipad-zoom-benchmark.md). It pairs the existing
+bounded zoom, native-handoff, release-gate, visibility, and stroke-latency
+records with the passive iPad Pointer/Touch harness. Its hardware rows remain
+`not-run` until a named iPadOS/WKWebView build and copied evidence are
+attached; desktop or synthetic output cannot promote them.
+
 ## Release matrix (#135)
 
 Before a release, run the repeatable smoke sequence in `docs/current-limitations.md` on:

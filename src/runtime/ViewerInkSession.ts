@@ -3818,6 +3818,7 @@ export class ViewerInkSession {
       frameCount: profile.frameCount,
       frames: profile.frameCount,
       avgFrameDeltaMs: roundMetric(frameIntervals.averageMs),
+      p50FrameDeltaMs: roundMetric(frameIntervals.p50Ms),
       p95FrameDeltaMs: roundMetric(frameIntervals.p95Ms),
       maxFrameIntervalMs: roundMetric(frameIntervals.maxMs),
       maxFrameDeltaMs: roundMetric(frameIntervals.maxMs),
@@ -3919,6 +3920,7 @@ export class ViewerInkSession {
     scaleIntervalMaxMs: number;
     scaleIntervalHistogram: Record<string, number>;
     frameCount: number;
+    p50FrameDeltaMs: number;
     p95FrameDeltaMs: number;
     maxFrameIntervalMs: number;
     lateFrameCount: number;
@@ -3939,6 +3941,7 @@ export class ViewerInkSession {
       scaleIntervalMaxMs: metrics.scaleIntervalMaxMs,
       scaleIntervalHistogram: metrics.scaleIntervalHistogram,
       frameCount: metrics.frameCount,
+      p50FrameDeltaMs: metrics.p50FrameDeltaMs,
       p95FrameDeltaMs: metrics.p95FrameDeltaMs,
       maxFrameIntervalMs: metrics.maxFrameIntervalMs,
       lateFrameCount: metrics.lateFrameCount,
