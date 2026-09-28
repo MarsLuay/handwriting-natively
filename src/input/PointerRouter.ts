@@ -111,6 +111,8 @@ export interface PointerRouterCallbacks {
   onTouchStart?(event: TouchEvent): void;
   /** Primary touch pointerdown, before native PDF routing. */
   onTouchPointerDown?(event: PointerEvent): void;
+  /** True when a single finger is over a committed text annotation. */
+  touchTextTarget?(event: PointerEvent): boolean;
   /** True when document fallback / another router already owns this pointerId. */
   isPointerHandled?(pointerId: number, generation: number): boolean;
   /** Mark pointerId so document fallback does not start a duplicate stroke. */
@@ -151,7 +153,7 @@ export class PointerRouter {
   /** Monotonic id for this listener generation (fresh AbortController per instance). */
   readonly generation: number;
   private readonly routed = new Map<number, "draw" | "edit" | "text">();
-  private readonly routedPointerTypes = new Map<number, "pen" | "mouse">();
+  private readonly routedPointerTypes = new Map<number, "pen" | "mouse" | "touch">();
   /** Same PointerEvent must not append ink twice when document and page both see it. */
   private readonly consumedStrokeEvents = new WeakSet<Event>();
   private readonly stylusErasers = new Set<number>();
@@ -253,7 +255,10 @@ export class PointerRouter {
       if (this.palmPolicy.shouldIgnore(event)) return { route: "ignored", reason: "palm-rejection" };
       const multi = this.touches.size + (this.touches.has(event.pointerId) ? 0 : 1) >= 2;
       if (multi) return { route: "touch-zoom-pan", reason: "multi-touch-native" };
-      // Fingers always leave native scroll/pinch. Annotation is stylus + optional mouse only.
+      if (event.isPrimary !== false && this.callbacks.touchTextTarget?.(event)) {
+        return { route: "text", reason: "text-box-touch" };
+      }
+      // Fingers leave native scroll/pinch unless the gesture starts on a text box.
       return { route: "touch-pan", reason: "touch-native" };
     }
     if (event.pointerType === "mouse"
@@ -383,6 +388,14 @@ export class PointerRouter {
     }
     this.callbacks.onRoute?.(route, event);
     if (route === "touch-zoom-pan") {
+      for (const [pointerId, routed] of this.routed) {
+        if (routed !== "text" || !this.routedPointerTypes.has(pointerId)) continue;
+        const cancel = this.syntheticPointerEvent(pointerId, "pointercancel", "touch");
+        this.callbacks.onCancel?.("text", cancel);
+        safeReleasePointerCapture(this.element, pointerId);
+        this.routed.delete(pointerId);
+        this.routedPointerTypes.delete(pointerId);
+      }
       this.clearTouchAxisGesture("multi-finger");
     }
     // Palm / Pencil companion touch while a stylus is down: block native scroll.
@@ -399,12 +412,17 @@ export class PointerRouter {
     }
     if (route !== "draw" && route !== "edit" && route !== "text") return route;
     this.routed.set(event.pointerId, route);
-    if (event.pointerType === "pen" || event.pointerType === "mouse") {
+    if (event.pointerType === "pen" || event.pointerType === "mouse" || (event.pointerType === "touch" && route === "text")) {
       this.routedPointerTypes.set(event.pointerId, event.pointerType);
     }
-    if (event.cancelable) event.preventDefault();
-    event.stopImmediatePropagation();
-    const capture = safeSetPointerCapture(this.element, event.pointerId);
+    const deferTouchTextClaim = event.pointerType === "touch" && route === "text";
+    if (!deferTouchTextClaim) {
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    const capture = deferTouchTextClaim
+      ? { attempted: false, succeeded: true }
+      : safeSetPointerCapture(this.element, event.pointerId);
     this.callbacks.onPointerClaim?.(route, event, {
       preventDefaultCalled: event.defaultPrevented,
       propagationStopped: event.cancelBubble,
@@ -746,8 +764,6 @@ export class PointerRouter {
     this.palmPolicy.notePenActivity(event);
     const route = this.routed.get(event.pointerId);
     if (route) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
       if (this.consumedStrokeEvents.has(event)) return;
       // Ink: skip Pencil hover / near-zero pressure on move (keep down/up for floor + tip).
       const samples = this.inkSamples(event, {
@@ -756,6 +772,10 @@ export class PointerRouter {
       if (samples.length === 0) return;
       this.consumedStrokeEvents.add(event);
       this.callbacks.onMove?.(samples, route, event);
+      if (!(route === "text" && event.pointerType === "touch")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
       return;
     }
     if (this.recoverMissingPointerDown(event)) return;
@@ -766,9 +786,11 @@ export class PointerRouter {
     this.paintCustomCursorsNow(event);
     const route = this.routed.get(event.pointerId);
     if (route) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
       this.callbacks.onEnd?.(this.inkSamples(event), route, event);
+      if (!(route === "text" && event.pointerType === "touch")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
       safeReleasePointerCapture(this.element, event.pointerId);
       this.routed.delete(event.pointerId);
       this.routedPointerTypes.delete(event.pointerId);
