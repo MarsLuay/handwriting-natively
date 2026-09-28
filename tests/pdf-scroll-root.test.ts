@@ -20,7 +20,13 @@ describe("pdf scroll root", () => {
     Object.defineProperty(viewerRoot, "clientHeight", { value: 600, configurable: true });
     viewerRoot.append(container);
     host.append(viewerRoot);
+    document.body.append(host);
 
+    expect(resolvePdfScrollRoot(viewerRoot, { container })).toBe(container);
+    const querySelector = viewerRoot.querySelector;
+    viewerRoot.querySelector = (() => {
+      throw new Error("cached scroll root should not rescan the DOM");
+    }) as typeof querySelector;
     expect(resolvePdfScrollRoot(viewerRoot, { container })).toBe(container);
   });
 

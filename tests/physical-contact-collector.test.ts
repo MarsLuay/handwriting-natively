@@ -168,13 +168,20 @@ describe("PhysicalContactCollector", () => {
     expect(terminal).toBeDefined();
     expect(terminal?.records[0]?.contact.pointerCaptureLost).toBe(true);
 
+    // A completed contact may legally reuse its pointer id and timestamp.
+    const reusedDown = pointerEvent("pointerdown", 309615810, 22851);
+    dispatch(target, reusedDown);
+    const reused = second.events.find((event) => event.event === reusedDown);
+    expect(reused).toMatchObject({ alreadySeen: false, records: [expect.objectContaining({ phase: "start" })] });
+    dispatch(target, pointerEvent("pointerup", 309615810, 22852));
+
     dispatch(target, pointerEvent("pointerdown", 309615811, 22853));
     dispatch(target, pointerEvent("pointerup", 309615811, 22854));
     const contactIds = second.events
       .flatMap((event) => event.records)
       .filter(({ phase }) => phase === "start")
       .map(({ contact }) => contact.physicalContactId);
-    expect(new Set(contactIds).size).toBe(2);
+    expect(new Set(contactIds).size).toBe(3);
 
     second.release();
     first.release();

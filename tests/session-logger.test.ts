@@ -459,6 +459,32 @@ describe("SessionLogger", () => {
     expect(writes[1]?.payload).toMatchObject({ phase: "terminal", outcome: "post-ui-pen-success" });
   });
 
+  it("logs only the bounded slow input-routing latency record", () => {
+    const writes: Array<{ level: string; event: string; payload: Record<string, unknown> }> = [];
+    const logger = new SessionLogger("Notes/example.pdf", {
+      write: (level, event, payload) => writes.push({ level, event, payload: payload ?? {} })
+    }, () => true, "0.1.60");
+
+    logger.inputRoutingLatency({
+      correlationId: "normal-contact",
+      totalMs: 5,
+      slowPhases: []
+    });
+    logger.inputRoutingLatency({
+      correlationId: "pen-routing-1",
+      totalMs: 72,
+      ownershipStage: "claim",
+      slowPhases: [{ phase: "route-to-ownership", durationMs: 12, thresholdMs: 8 }]
+    });
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({
+      level: "warn",
+      event: "input-routing-latency",
+      payload: expect.objectContaining({ event: "input-routing-latency", totalMs: 72 })
+    });
+  });
+
   it("keeps touch-only probe expiry informational", () => {
     const writes: Array<{ level: string; event: string; payload: Record<string, unknown> }> = [];
     const logger = new SessionLogger("Notes/example.pdf", {

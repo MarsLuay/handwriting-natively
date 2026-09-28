@@ -59,6 +59,13 @@ describe("PointerCapabilities pen hover filter", () => {
     expect(PointerCapabilities.samples(mouse, { useCoalesced: true }).map((s) => s.clientX)).toEqual([1, 2, 3]);
   });
 
+  it("repairs an out-of-order coalesced batch without sorting ordered input", () => {
+    const late = penEvent(0.9, { clientX: 2, timeStamp: 20 });
+    const early = penEvent(0.2, { clientX: 1, timeStamp: 10 });
+    const move = penEvent(0.9, { clientX: 3, timeStamp: 30, getCoalescedEvents: () => [late, early] });
+    expect(PointerCapabilities.samples(move).map((s) => s.clientX)).toEqual([1, 2, 3]);
+  });
+
   it("can drop an entire coalesced hover batch when coalesced is forced on", () => {
     const a = penEvent(0, { clientX: 1 });
     const b = penEvent(0.01, { clientX: 2 });

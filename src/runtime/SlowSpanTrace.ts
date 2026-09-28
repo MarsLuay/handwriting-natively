@@ -7,8 +7,20 @@ export const SLOW_SPAN_INTERACTION_MS = 50;
 export const SLOW_SPAN_WORST_LIMIT = 10;
 import { percentile } from "../logging/PerformanceMetrics";
 const STAGE_SAMPLE_LIMIT = 32;
+const SEEN_KEY_LIMIT = 512;
 
 export type SlowSpanKind = "sync" | "async" | "interaction";
+
+/** Bounded latency legs for one pen contact. Values are maxima over the stroke. */
+export interface InkLatencyBreakdown {
+  inputMs: number | null;
+  routingMs: number | null;
+  geometryMs: number | null;
+  modelMs: number | null;
+  schedulingMs: number | null;
+  canvasCommitMs: number | null;
+  paintAcknowledgementMs: number | null;
+}
 
 export interface SlowSpanRecord {
   event: "perf-slow-span";
@@ -34,6 +46,9 @@ export interface SettleChurnSummary {
   reason: string | null;
   correlationId: string | null;
   zoomBurstId: string | null;
+  /** Thresholded sub-phases that explain the aggregate settle wait. */
+  phaseDurations: Record<string, number | null>;
+  slowPhases: Array<{ phase: string; durationMs: number; thresholdMs: number }>;
   settleDelayMs: number;
   settleTimerResetCount: number;
   inGestureResetCount: number;
@@ -84,6 +99,7 @@ export interface SlowInkStrokeRecord {
   p95FrameMs: number;
   maxFrameMs: number;
   pointerUpToCommitMs: number | null;
+  latency: InkLatencyBreakdown;
   slowStages: Array<{ stage: string; durationMs: number; thresholdMs: number }>;
 }
 
@@ -113,6 +129,8 @@ export interface SlowInkStrokePerformanceInput {
   p95FrameMs: number;
   maxFrameMs: number;
   pointerUpToCommitMs: number | null;
+  /** Optional so older callers can keep using the legacy stroke profile fields. */
+  latency?: Partial<InkLatencyBreakdown>;
 }
 
 export function slowSpanThreshold(kind: SlowSpanKind): number {
@@ -130,7 +148,9 @@ export class SlowSpanTrace {
   private readonly inkStrokeSamples = new Map<string, number[]>();
   private readonly worstInkStrokes: SlowInkStrokeRecord[] = [];
   private totalSlowInkStrokes = 0;
+  /** Deduplication is diagnostic-only and must not grow with document lifetime. */
   private readonly seen = new Set<string>();
+  private readonly seenOrder: string[] = [];
   private zoomSettledAt: number | null = null;
   private zoomBurstId: string | null = null;
   private penDownAt: number | null = null;
@@ -196,8 +216,8 @@ export class SlowSpanTrace {
     const zoomBurstId = input.zoomBurstId ?? this.zoomBurstId;
     const correlationId = input.correlationId ?? null;
     const key = `${input.stage}|${correlationId ?? ""}|${zoomBurstId ?? ""}|${input.reason ?? ""}`;
-    if (this.seen.has(key)) return null;
-    this.seen.add(key);
+    if (this.hasSeen(key)) return null;
+    this.rememberSeen(key);
     const record: SlowSpanRecord = {
       event: "perf-slow-span",
       category: input.category,
@@ -225,23 +245,36 @@ export class SlowSpanTrace {
     pinchTerminalToSettleMs?: number | null;
     lastScaleChangeToSettleMs?: number | null;
     liveInkWaitAfterPinchTerminalMs?: number | null;
+    phaseDurations?: Record<string, number | null | undefined>;
   }): SettleChurnSummary | null {
-    if (input.settleDelayMs < SLOW_SPAN_ASYNC_MS) return null;
+    const phaseDurations = Object.fromEntries(
+      Object.entries(input.phaseDurations ?? {})
+        .filter(([, durationMs]) => durationMs === null || Number.isFinite(durationMs))
+        .map(([phase, durationMs]) => [phase, durationMs === null ? null : roundMs(Math.max(0, durationMs!))])
+    ) as Record<string, number | null>;
+    const slowPhases = Object.entries(phaseDurations)
+      .flatMap(([phase, durationMs]) => durationMs !== null && durationMs >= SLOW_SPAN_ASYNC_MS
+        ? [{ phase, durationMs, thresholdMs: SLOW_SPAN_ASYNC_MS }]
+        : []);
+    const maxPhaseMs = Math.max(0, ...slowPhases.map((phase) => phase.durationMs));
+    if (input.settleDelayMs < SLOW_SPAN_ASYNC_MS && maxPhaseMs < SLOW_SPAN_ASYNC_MS) return null;
     const zoomBurstId = input.zoomBurstId ?? this.zoomBurstId;
     const key = `settle-timer-churn|${zoomBurstId ?? ""}`;
-    if (this.seen.has(key)) return null;
-    this.seen.add(key);
+    if (this.hasSeen(key)) return null;
+    this.rememberSeen(key);
     const record: SettleChurnSummary = {
       event: "perf-slow-span",
       category: "zoom",
       stage: "settle-timer-churn",
-      durationMs: roundMs(input.settleDelayMs),
+      durationMs: roundMs(Math.max(input.settleDelayMs, maxPhaseMs)),
       thresholdMs: SLOW_SPAN_ASYNC_MS,
       activeWorkMs: null,
       waitMs: roundMs(input.settleDelayMs),
       reason: input.lastDeferralReason,
       correlationId: null,
       zoomBurstId,
+      phaseDurations,
+      slowPhases,
       settleDelayMs: roundMs(input.settleDelayMs),
       settleTimerResetCount: input.settleTimerResetCount,
       inGestureResetCount: input.inGestureResetCount ?? 0,
@@ -261,6 +294,7 @@ export class SlowSpanTrace {
       ?? input.physicalContactId
       ?? input.strokeId
       ?? (input.pointerId === null ? null : `pointer:${input.pointerId}`);
+    const latency = normalizeLatency(input.latency);
     const candidates: Array<{ stage: string; durationMs: number | null; kind: SlowSpanKind }> = [
       { stage: "pointer-down-to-stroke-start", durationMs: input.pointerDownToStrokeStartMs, kind: "sync" },
       { stage: "stroke-start-to-first-canvas-commit", durationMs: input.strokeStartToFirstCanvasCommitMs, kind: "sync" },
@@ -268,7 +302,14 @@ export class SlowSpanTrace {
       { stage: "stroke-frame-gap", durationMs: input.maxFrameMs, kind: "sync" },
       { stage: "plugin-callback", durationMs: input.maxPluginCallbackMs, kind: "sync" },
       { stage: "long-task", durationMs: input.longestLongTaskMs, kind: "interaction" },
-      { stage: "pointerup-to-commit", durationMs: input.pointerUpToCommitMs, kind: "sync" }
+      { stage: "pointerup-to-commit", durationMs: input.pointerUpToCommitMs, kind: "sync" },
+      { stage: "input", durationMs: latency.inputMs, kind: "async" },
+      { stage: "routing", durationMs: latency.routingMs, kind: "sync" },
+      { stage: "geometry", durationMs: latency.geometryMs, kind: "sync" },
+      { stage: "model", durationMs: latency.modelMs, kind: "sync" },
+      { stage: "scheduling", durationMs: latency.schedulingMs, kind: "async" },
+      { stage: "canvas-commit", durationMs: latency.canvasCommitMs, kind: "sync" },
+      { stage: "paint-acknowledgement", durationMs: latency.paintAcknowledgementMs, kind: "async" }
     ];
     const slowStages = candidates.flatMap(({ stage, durationMs, kind }) => {
       const thresholdMs = slowSpanThreshold(kind);
@@ -309,6 +350,7 @@ export class SlowSpanTrace {
       p95FrameMs: roundMs(input.p95FrameMs),
       maxFrameMs: roundMs(input.maxFrameMs),
       pointerUpToCommitMs: roundNullable(input.pointerUpToCommitMs),
+      latency,
       slowStages
     };
     this.rememberSlowInkStroke(record);
@@ -370,6 +412,19 @@ export class SlowSpanTrace {
     if (this.worstInkStrokes.length > SLOW_SPAN_WORST_LIMIT) this.worstInkStrokes.length = SLOW_SPAN_WORST_LIMIT;
   }
 
+  private hasSeen(key: string): boolean {
+    return this.seen.has(key);
+  }
+
+  private rememberSeen(key: string): void {
+    this.seen.add(key);
+    this.seenOrder.push(key);
+    while (this.seenOrder.length > SEEN_KEY_LIMIT) {
+      const oldest = this.seenOrder.shift();
+      if (oldest !== undefined) this.seen.delete(oldest);
+    }
+  }
+
   private remember(record: SlowSpanRecord): void {
     this.totalSlowSpans += 1;
     this.counts.set(record.stage, (this.counts.get(record.stage) ?? 0) + 1);
@@ -385,6 +440,18 @@ export class SlowSpanTrace {
 
 function slowInkStrokeSeverity(record: SlowInkStrokeRecord): number {
   return record.slowStages.reduce((max, stage) => Math.max(max, stage.durationMs), 0);
+}
+
+function normalizeLatency(input: Partial<InkLatencyBreakdown> | undefined): InkLatencyBreakdown {
+  return {
+    inputMs: roundNullable(input?.inputMs),
+    routingMs: roundNullable(input?.routingMs),
+    geometryMs: roundNullable(input?.geometryMs),
+    modelMs: roundNullable(input?.modelMs),
+    schedulingMs: roundNullable(input?.schedulingMs),
+    canvasCommitMs: roundNullable(input?.canvasCommitMs),
+    paintAcknowledgementMs: roundNullable(input?.paintAcknowledgementMs)
+  };
 }
 
 function roundMs(value: number): number {

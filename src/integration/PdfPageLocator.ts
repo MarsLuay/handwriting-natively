@@ -17,11 +17,23 @@ interface CanonicalPageSize {
   height: number;
 }
 
+interface GeometryObservation {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  scale: number;
+  rotation: number;
+  size: CanonicalPageSize;
+  confidence: "authoritative" | "derived" | "heuristic";
+}
+
 const PLAUSIBLE_PDF_MIN = 200;
 const PLAUSIBLE_PDF_MAX = 2500;
 
 export class PdfPageLocator {
   private readonly canonicalByElement = new WeakMap<HTMLElement, CanonicalPageSize>();
+  private readonly geometryByElement = new WeakMap<HTMLElement, GeometryObservation>();
   private readonly activeElementByPage = new Map<number, HTMLElement>();
   private readonly mountGenerationByPage = new Map<number, number>();
 
@@ -136,13 +148,34 @@ export class PdfPageLocator {
     const pageNumber = Number(element.dataset.pageNumber) || 1;
     const scale = this.scaleFor(element);
     const rotation = this.number(element.dataset.rotation, this.number(this.privateViewer?.pagesRotation, 0));
-    const { width, height } = this.canonicalSize(element, rect, scale, rotation);
+    const previous = this.geometryByElement.get(element);
+    const unchanged = Boolean(previous
+      && previous.left === rect.left
+      && previous.top === rect.top
+      && previous.width === rect.width
+      && previous.height === rect.height
+      && previous.scale === scale
+      && previous.rotation === rotation);
+    const size = unchanged ? previous!.size : this.canonicalSize(element, rect, scale, rotation);
+    const geometryConfidence = unchanged
+      ? previous!.confidence
+      : this.geometryConfidence(element, rect, scale, rotation);
+    this.geometryByElement.set(element, {
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+      scale,
+      rotation,
+      size,
+      confidence: geometryConfidence
+    });
+    const { width, height } = size;
     const active = this.activeElementByPage.get(pageNumber);
     if (active !== element) {
       this.activeElementByPage.set(pageNumber, element);
       this.mountGenerationByPage.set(pageNumber, this.mountGeneration(pageNumber) + 1);
     }
-    const geometryConfidence = this.geometryConfidence(element, rect, scale, rotation);
     return {
       pageNumber,
       width,
@@ -268,6 +301,9 @@ export class PdfPageLocator {
   private scaleFor(element: HTMLElement): number {
     const fromPage = this.number(element.dataset.scale, 0);
     const fromViewer = this.number(this.privateViewer?.currentScale, 0);
+    // The common case has matching PDF.js/page scales. Avoid scanning the
+    // canvas tree merely to confirm a value that is already authoritative.
+    if (fromPage > 0 && fromViewer > 0 && Math.abs(fromPage - fromViewer) <= 0.01) return fromPage;
     const canvas = pdfRenderCanvas(element);
     const cssWidth = canvas ? (canvas.clientWidth || canvas.getBoundingClientRect().width) : 0;
 
