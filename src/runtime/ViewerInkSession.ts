@@ -721,6 +721,8 @@ interface ZoomProfileState {
   layoutSyncs: number;
   compositorTicks: number;
   bitmapBlits: number;
+  inkLayerCaptures: number;
+  inkLayerBlits: number;
   vectorRepaints: number;
   canvasResizes: number;
   hqUpgrades: number;
@@ -3418,6 +3420,8 @@ export class ViewerInkSession {
       layoutSyncs: 0,
       compositorTicks: 0,
       bitmapBlits: 0,
+      inkLayerCaptures: 0,
+      inkLayerBlits: 0,
       vectorRepaints: 0,
       canvasResizes: 0,
       hqUpgrades: 0,
@@ -3846,6 +3850,8 @@ export class ViewerInkSession {
       layoutSyncs: profile.layoutSyncs,
       compositorTicks: profile.compositorTicks,
       bitmapBlits: profile.bitmapBlits,
+      inkLayerCaptures: profile.inkLayerCaptures,
+      inkLayerBlits: profile.inkLayerBlits,
       vectorRepaints: profile.vectorRepaints,
       canvasResizes: profile.canvasResizes,
       hqUpgrades: profile.hqUpgrades,
@@ -13387,7 +13393,14 @@ export class ViewerInkSession {
 
   /** Warm inkLayer from main canvas before zoom burst CSS-stretch. */
   private captureInkLayerFromCanvas(surface: PageSurface, layoutOverride?: PageCoordinateLayout): void {
-    if (surface.inkLayerValid && surface.inkLayer) return;
+    const pageRevision = this.ink.pageRevision(surface.page.pageNumber);
+    if (
+      surface.inkLayerValid
+      && surface.inkLayer
+      && surface.inkLayer.width === surface.canvas.width
+      && surface.inkLayer.height === surface.canvas.height
+      && surface.inkLayerRevision === pageRevision
+    ) return;
     if (!surface.canvas.width || !surface.canvas.height) return;
     const traceStartedAt = this.zoomPipelineTrace.isActive() ? performance.now() : null;
     const layout = layoutOverride ?? this.pageLayout(surface);
@@ -13399,10 +13412,13 @@ export class ViewerInkSession {
     layerContext.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
     layerContext.imageSmoothingEnabled = false;
     layerContext.drawImage(surface.canvas, 0, 0);
-    if (this.zoomProfile) this.zoomProfile.bitmapBlits += 1;
+    if (this.zoomProfile) {
+      this.zoomProfile.bitmapBlits += 1;
+      this.zoomProfile.inkLayerCaptures += 1;
+    }
     layerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
     surface.inkLayerValid = true;
-    surface.inkLayerRevision = this.ink.pageRevision(surface.page.pageNumber);
+    surface.inkLayerRevision = pageRevision;
     // Raster warm — must not satisfy blit-only settle (needs vector restamp).
     surface.inkLayerBurstCapture = true;
     surface.inkLayerBackingScale = null;
@@ -13434,7 +13450,10 @@ export class ViewerInkSession {
   ): void {
     if (!surface.inkLayer) return;
     const traceStartedAt = this.zoomPipelineTrace.isActive() ? performance.now() : null;
-    if (this.zoomProfile) this.zoomProfile.bitmapBlits += 1;
+    if (this.zoomProfile) {
+      this.zoomProfile.bitmapBlits += 1;
+      this.zoomProfile.inkLayerBlits += 1;
+    }
     surface.context.setTransform(1, 0, 0, 1, 0, 0);
     surface.context.clearRect(0, 0, pixelWidth, pixelHeight);
     surface.context.imageSmoothingEnabled = false;
@@ -13545,6 +13564,34 @@ export class ViewerInkSession {
     const livePreview = includeActivePreview && (Boolean(surface.builder?.preview().length)
       || (surface.editTool === "lasso" && surface.editPath.length > 0)
       || Boolean(this.selectionShape && this.selectionPage === pageNumber));
+    // Focus-fast and neighbor settle stay on the compositor stretch while the
+    // handoff is held. Reuse the captured layer at the existing backing size
+    // and defer the one required final-resolution resize to the queued upgrade.
+    const cssStretchSettle = settleCheap
+      && surface.overlay.classList.contains("native-pdf-handwriting-zoom-compositing")
+      && this.isZoomHandoffActive()
+      && surface.canvas.width > 0
+      && surface.canvas.height > 0
+      && surface.inkLayerValid
+      && Boolean(surface.inkLayer)
+      && !erasingLive
+      && !movingSelection
+      && !livePreview
+      && (needsResize || surface.inkLayerBurstCapture || surface.inkLayerBackingScale === null);
+    if (cssStretchSettle) {
+      this.blitInkLayerToCanvas(
+        surface,
+        surface.canvas.width,
+        surface.canvas.height,
+        Math.max(0.5, surface.canvas.width / Math.max(1, width))
+      );
+      surface.settleUpgradePending = true;
+      surface.viewportCullPending = false;
+      this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
+      if (syncText) this.renderTextAnnotations(surface);
+      if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
+      return true;
+    }
     // pages-dom storms + idle zoomed pages: layout sync only — skip giant canvas blit.
     if (
       !needsResize
@@ -13731,13 +13778,16 @@ export class ViewerInkSession {
     const useLayerCache = canBlit && !erasingLive && !movingSelection;
     if (useLayerCache) {
       const layerContext = this.ensureInkLayer(surface, pixelWidth, pixelHeight, backingScale);
-      if (!surface.inkLayerValid) {
+      const pageRevision = this.ink.pageRevision(pageNumber);
+      const canonicalLayerRepaint = canonicalZoomSettle
+        && (surface.inkLayerBurstCapture || surface.inkLayerRevision !== pageRevision);
+      if (!surface.inkLayerValid || canonicalLayerRepaint) {
         layerContext.clearRect(0, 0, width, height);
         this.paintCommittedStrokes(surface, layerContext, visibleStrokes, stats, "full");
         surface.inkLayerValid = true;
         surface.inkLayerBackingScale = backingScale;
         surface.inkLayerBurstCapture = false;
-        surface.inkLayerRevision = this.ink.pageRevision(pageNumber);
+        surface.inkLayerRevision = pageRevision;
         if (canonicalZoomSettle) {
           this.logZoomInkRenderer(pageNumber, "settle-canonical", "canonical-pdf-space", visibleStrokes);
         }
