@@ -172,7 +172,7 @@ export interface ToolPreferences {
   /** User-selectable drawing configurations; capped during settings migration. */
   presets: DrawingPreset[];
   activePresetId: string | null;
-  /** Pinned drawing presets shown under Pen in the sidebar, in insertion order. */
+  /** Deprecated saved membership retained for settings migration; sidebar order now follows presets. */
   sidebarPresetIds: string[];
 }
 

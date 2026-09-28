@@ -130,7 +130,7 @@ export class AnnotationToolbar {
   private sidebarPresetHost(): HTMLElement {
     const host = createDetachedDiv(this.ownerDocument);
     host.className = "native-pdf-handwriting-sidebar-presets";
-    host.setAttribute("aria-label", "Pinned drawing presets");
+    host.setAttribute("aria-label", "Additional drawing presets");
     return host;
   }
 
@@ -138,10 +138,10 @@ export class AnnotationToolbar {
     const host = this.element.querySelector(".native-pdf-handwriting-sidebar-presets");
     if (!(host instanceof HTMLElement)) return;
     host.replaceChildren();
-    const pinned = this.preferences.sidebarPresetIds ?? [];
-    for (const id of pinned) {
-      const preset = this.preferences.presets.find((candidate) => candidate.id === id);
-      if (!preset) continue;
+    // The Pen/drawing button represents the first preset. Additional presets
+    // are always a contiguous sidebar block in saved preset order; legacy
+    // sidebarPresetIds membership is intentionally ignored.
+    for (const preset of this.preferences.presets.slice(1)) {
       const button = createDetachedEl(this.ownerDocument, "button");
       button.type = "button";
       button.className = "native-pdf-handwriting-toolbar-button clickable-icon native-pdf-handwriting-sidebar-preset";
@@ -341,8 +341,7 @@ export class AnnotationToolbar {
         let suffix = 2;
         while (this.preferences.presets.some((preset) => preset.id === id)) id = `${idBase}-${suffix++}`;
         if (this.preferences.presets.length >= 8) {
-          const dropped = this.preferences.presets.shift();
-          if (dropped) this.preferences.sidebarPresetIds = this.preferences.sidebarPresetIds.filter((id) => id !== dropped.id);
+          this.preferences.presets.shift();
         }
         this.preferences.presets.push({ id, name, tool, settings: { ...this.preferences[tool] } });
         this.preferences.activePresetId = id;
@@ -368,25 +367,10 @@ export class AnnotationToolbar {
         const next = this.preferences.presets[index + 1] ?? this.preferences.presets[index - 1];
         const deletingActive = this.preferences.activePresetId === selected.id;
         this.preferences.presets.splice(index, 1);
-        this.preferences.sidebarPresetIds = this.preferences.sidebarPresetIds.filter((id) => id !== selected.id);
         if (deletingActive && next) this.applyDrawingPreset(next);
         else this.changed();
       }, { signal: this.abort.signal });
       wrapper.append(remove);
-      const pinned = this.preferences.sidebarPresetIds.includes(selected.id);
-      const sidebarToggle = createDetachedEl(this.ownerDocument, "button");
-      sidebarToggle.type = "button";
-      sidebarToggle.dataset.action = "sidebar-preset";
-      sidebarToggle.textContent = pinned ? "Remove preset from sidebar" : "Add preset to sidebar";
-      sidebarToggle.addEventListener("click", () => {
-        if (this.preferences.sidebarPresetIds.includes(selected.id)) {
-          this.preferences.sidebarPresetIds = this.preferences.sidebarPresetIds.filter((id) => id !== selected.id);
-        } else {
-          this.preferences.sidebarPresetIds.push(selected.id);
-        }
-        this.changed();
-      }, { signal: this.abort.signal });
-      wrapper.append(sidebarToggle);
     }
     return wrapper;
   }
