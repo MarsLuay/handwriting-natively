@@ -28,8 +28,10 @@ export type FrameAttribution =
   | "pdf-render-burst"
   | "plugin-work"
   | "raf/compositor-delay"
-  | "unsupported-longtask-observer"
   | "unknown";
+export type FrameTelemetryLimitation =
+  | "longtask-observer-unsupported"
+  | "longtask-observer-install-failed";
 
 export interface PerformanceObserverCapability {
   performanceObserverSupported: boolean;
@@ -69,6 +71,7 @@ export interface ZoomFrameRecord {
   measuredPluginWorkMs: number;
   measuredPdfCallbackWorkMs: number;
   longTaskObserverSupported: boolean;
+  limitations: FrameTelemetryLimitation[];
   longestObservedLongTaskMs: number;
   pdfSignals: Record<string, PdfSignalSummary>;
   observerSignals: Record<string, PdfSignalSummary>;
@@ -83,6 +86,7 @@ export interface ZoomFrameRecord {
 export interface FrameAttributionSummary {
   slowFrameCount: number;
   byAttribution: Record<string, number>;
+  limitations: FrameTelemetryLimitation[];
   maxFrameGapMs: number;
   p95FrameGapMs: number;
   maxRafSchedulingDelayMs: number;
@@ -283,6 +287,7 @@ export class ZoomFrameDiagnostics {
       measuredPluginWorkMs: rounded(measuredPluginWorkMs),
       measuredPdfCallbackWorkMs: rounded(pdfCallbackWorkMs),
       longTaskObserverSupported: this.capability.longtaskSupported,
+      limitations: this.currentLimitations(),
       longestObservedLongTaskMs: rounded(this.longestObservedLongTaskMs),
       pdfSignals: cloneSignals(this.pdfSignals),
       observerSignals: cloneSignals(this.observerSignals),
@@ -316,6 +321,7 @@ export class ZoomFrameDiagnostics {
       ...(includeCurrent ? this.frameGaps : [])
     ];
     const byAttribution: Record<string, number> = {};
+    const limitations = new Set<FrameTelemetryLimitation>();
     const knownOperations = new Map<string, KnownOperationTiming>();
     const worstFrames = summaries.flatMap((summary) => summary.worstFrames)
       .sort((a, b) => b.frameDeltaMs - a.frameDeltaMs)
@@ -324,6 +330,7 @@ export class ZoomFrameDiagnostics {
       for (const [name, count] of Object.entries(summary.byAttribution)) {
         byAttribution[name] = (byAttribution[name] ?? 0) + count;
       }
+      for (const limitation of summary.limitations) limitations.add(limitation);
       for (const [name, timing] of Object.entries(summary.knownOperations)) {
         const existing = knownOperations.get(name) ?? { count: 0, totalMs: 0, maxMs: 0 };
         existing.count += timing.count;
@@ -335,6 +342,7 @@ export class ZoomFrameDiagnostics {
     return {
       slowFrameCount: summaries.reduce((total, summary) => total + summary.slowFrameCount, 0),
       byAttribution,
+      limitations: [...limitations],
       maxFrameGapMs: rounded(Math.max(0, ...gaps)),
       p95FrameGapMs: rounded(percentile(gaps, 0.95)),
       maxRafSchedulingDelayMs: rounded(Math.max(0, ...summaries.map((summary) => summary.maxRafSchedulingDelayMs))),
@@ -347,7 +355,8 @@ export class ZoomFrameDiagnostics {
         ...frame,
         pdfSignals: { ...frame.pdfSignals },
         observerSignals: { ...frame.observerSignals },
-        knownOperations: { ...frame.knownOperations }
+        knownOperations: { ...frame.knownOperations },
+        limitations: [...frame.limitations]
       })),
       capabilities: { ...current.capabilities, supportedEntryTypes: [...current.capabilities.supportedEntryTypes] },
       frameTiming: { ...current.frameTiming }
@@ -369,6 +378,7 @@ export class ZoomFrameDiagnostics {
     return {
       slowFrameCount: this.frameGaps.length,
       byAttribution: Object.fromEntries(this.byAttribution),
+      limitations: this.currentLimitations(),
       maxFrameGapMs: rounded(Math.max(0, ...this.frameGaps)),
       p95FrameGapMs: rounded(percentile(this.frameGaps, 0.95)),
       maxRafSchedulingDelayMs: rounded(Math.max(0, ...this.frames.map((frame) => frame.rafRequestToCallbackMs))),
@@ -377,7 +387,7 @@ export class ZoomFrameDiagnostics {
       maxMeasuredPdfCallbackWorkMs: rounded(Math.max(0, ...this.frames.map((frame) => frame.measuredPdfCallbackWorkMs))),
       knownOperations: Object.fromEntries([...this.knownOperations.entries()].map(([name, value]) => [name, { ...value }])),
       unattributedFrameCount: this.frames.filter((frame) => frame.attribution !== "plugin-work" && frame.attribution !== "pdf-render-burst" && frame.attribution !== "event-loop-starvation").length,
-      worstFrames: this.worst.map((frame) => ({ ...frame, pdfSignals: { ...frame.pdfSignals }, observerSignals: { ...frame.observerSignals }, knownOperations: { ...frame.knownOperations } })),
+      worstFrames: this.worst.map((frame) => ({ ...frame, pdfSignals: { ...frame.pdfSignals }, observerSignals: { ...frame.observerSignals }, knownOperations: { ...frame.knownOperations }, limitations: [...frame.limitations] })),
       capabilities: { ...this.capability, supportedEntryTypes: [...this.capability.supportedEntryTypes] },
       frameTiming: this.frameBudget.snapshot()
     };
@@ -394,9 +404,14 @@ export class ZoomFrameDiagnostics {
     if (input.measuredPluginWorkMs >= ZOOM_FRAME_SLOW_MS && input.measuredPluginWorkMs >= input.frameDeltaMs * 0.5) return "plugin-work";
     if (input.eventLoopDelayMs >= ZOOM_FRAME_SLOW_MS && input.eventLoopDelayMs >= input.frameDeltaMs * 0.5) return "event-loop-starvation";
     if (input.pdfCallbackWorkMs >= ZOOM_FRAME_SLOW_MS && input.pdfCallbackWorkMs >= input.frameDeltaMs * 0.5) return "pdf-render-burst";
-    if (input.rafRequestToCallbackMs >= input.lateFrameThresholdMs) return "raf/compositor-delay";
-    if (!this.capability.longtaskSupported && input.measuredPluginWorkMs < ZOOM_FRAME_SLOW_MS) return "unsupported-longtask-observer";
+    if (input.rafRequestToCallbackMs >= input.lateFrameThresholdMs && input.rafRequestToCallbackMs >= input.frameDeltaMs * 0.5) return "raf/compositor-delay";
     return "unknown";
+  }
+
+  private currentLimitations(): FrameTelemetryLimitation[] {
+    if (!this.capability.longtaskSupported) return ["longtask-observer-unsupported"];
+    if (!this.capability.longTaskObserverInstalled) return ["longtask-observer-install-failed"];
+    return [];
   }
 
   private noteSignal(target: Map<string, PdfSignalSummary>, name: string, callbackWorkMs: number, at: number): void {

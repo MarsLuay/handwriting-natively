@@ -12,3 +12,4 @@
 - Runtime frame cadence uses bounded active and sparse idle rAF samples. A stable active ~33 ms cadence remains a possible every-other-frame 60 Hz miss and keeps the conservative fallback until idle evidence confirms a genuine lower-refresh runtime.
 - Stroke `frame-gap` telemetry is elapsed time between presentation callbacks, not synchronous plugin work; callback/canvas active work and scheduling latency remain separate correlated spans.
 - Live ink coalesces to one visible-surface rAF, with a single frame-budget-plus-slack timer fallback only when a visible browser misses that next callback; terminal input cancels stale scheduled work and commits synchronously.
+- Zoom frame attribution reports only observed causes; unsupported Long Task observation is retained as a bounded `limitations` field and never presented as the cause of an unexplained gap.

@@ -17,7 +17,11 @@ function testClock() {
         timers.delete(timer as unknown as number);
       }
     },
-    setTime: (next: number) => { time = next; }
+    setTime: (next: number) => { time = next; },
+    runNextTimer: () => {
+      const callback = timers.values().next().value;
+      callback?.();
+    }
   };
 }
 
@@ -140,10 +144,50 @@ describe("ZoomFrameDiagnostics", () => {
     expect(diagnostics.recordFrame({ requestedAt: 0, callbackAt: 30, pluginWorkMs: 16 })).toBeNull();
     expect(diagnostics.summary()).toMatchObject({
       byAttribution: { "plugin-work": 1 },
+      limitations: ["longtask-observer-unsupported"],
       capabilities: {
         longTaskObserverInstalled: false,
         longTaskObserverError: "unsupported"
       }
     });
+  });
+
+  it("does not turn unsupported longtask observation into a cause for a mostly unexplained gap", () => {
+    vi.stubGlobal("PerformanceObserver", undefined);
+    try {
+      const harness = testClock();
+      const diagnostics = new ZoomFrameDiagnostics(harness.clock);
+      diagnostics.begin("zoom-436", 0);
+      harness.setTime(98);
+      harness.runNextTimer();
+      diagnostics.recordFrame({ requestedAt: 0, callbackAt: 0, pluginWorkMs: 0 });
+      const frame = diagnostics.recordFrame({
+        requestedAt: 410,
+        callbackAt: 436,
+        pluginWorkMs: 0
+      });
+
+      expect(frame).toMatchObject({
+        frameDeltaMs: 436,
+        rafRequestToCallbackMs: 26,
+        eventLoopDelayMs: 48,
+        measuredPluginWorkMs: 0,
+        measuredPdfCallbackWorkMs: 0,
+        attribution: "unknown",
+        limitations: ["longtask-observer-unsupported"]
+      });
+      expect(diagnostics.summary()).toMatchObject({
+        byAttribution: { unknown: 1 },
+        limitations: ["longtask-observer-unsupported"],
+        capabilities: {
+          performanceObserverSupported: false,
+          longtaskSupported: false,
+          longTaskObserverInstalled: false
+        }
+      });
+      expect(diagnostics.summary().byAttribution["unsupported-longtask-observer"]).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
