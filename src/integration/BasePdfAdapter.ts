@@ -36,6 +36,7 @@ import { LayoutWorkTrace, type LayoutOperationResult } from "../runtime/LayoutWo
 
 export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   abstract readonly kind: "direct" | "embedded";
+  readonly surfaceType = "pdf" as const;
   readonly supportsPdfExport = true as const;
   readonly host: HTMLElement;
   readonly root: HTMLElement;

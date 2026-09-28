@@ -9,6 +9,7 @@ import type { AnnotationPageInfo, AnnotationSurface, AnnotationSurfaceCallbacks,
  */
 export class ImageViewAdapter implements AnnotationSurface {
   readonly kind = "direct" as const;
+  readonly surfaceType = "image" as const;
   readonly supportsImageExport = true as const;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
