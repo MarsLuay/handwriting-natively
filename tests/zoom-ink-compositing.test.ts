@@ -195,6 +195,7 @@ type CanvasSpy = {
   rect: ReturnType<typeof vi.fn>;
   ellipse: ReturnType<typeof vi.fn>;
   drawImage: ReturnType<typeof vi.fn>;
+  getImageData: ReturnType<typeof vi.fn>;
 };
 
 function mockCanvas2d(): CanvasSpy {
@@ -213,7 +214,8 @@ function mockCanvas2d(): CanvasSpy {
     setLineDash: vi.fn(),
     rect: vi.fn(),
     ellipse: vi.fn(),
-    drawImage: vi.fn()
+    drawImage: vi.fn(),
+    getImageData: vi.fn(() => ({ data: new Uint8ClampedArray([0, 0, 0, 255]) }))
   };
 }
 
@@ -435,6 +437,80 @@ describe("zoom ink compositing", () => {
       maxPdfInkMismatchPx: expect.any(Number),
       settleAfterLastScaleMs: expect.any(Number)
     });
+
+    await session.destroy();
+  });
+
+  it("records ink visibility for the release frame and reports a transient blank", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const overlay = overlayOf(adapter);
+    const internal = session as unknown as { releaseZoomCompositeLayers(): void };
+    let inkAlpha = 255;
+    context.getImageData.mockImplementation(() => ({
+      data: new Uint8ClampedArray([0, 0, 0, inkAlpha])
+    }));
+
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 180, 200));
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+
+    // Exercise the same handoff boundary used by the scheduled release while
+    // keeping the test deterministic about the next two browser frames.
+    internal.releaseZoomCompositeLayers();
+    const visibilityBeforeFrames = debugCalls("ink-visibility").map((call) => call[2] as {
+      phase: string;
+      pixelProbeRan: boolean;
+      pixelProbeHasInk: boolean;
+    });
+    expect(visibilityBeforeFrames.map((entry) => entry.phase)).toEqual([
+      "before-final-canonical",
+      "after-final-canonical",
+      "before-composite-release"
+    ]);
+    expect(visibilityBeforeFrames.every((entry) => entry.pixelProbeRan && entry.pixelProbeHasInk)).toBe(true);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+
+    inkAlpha = 0;
+    await vi.advanceTimersByTimeAsync(16);
+    inkAlpha = 255;
+    await vi.advanceTimersByTimeAsync(16);
+
+    const visibility = debugCalls("ink-visibility").map((call) => call[2] as {
+      phase: string;
+      pixelProbeRan: boolean;
+      pixelProbeHasInk: boolean;
+    });
+    expect(visibility.map((entry) => entry.phase)).toEqual([
+      "before-final-canonical",
+      "after-final-canonical",
+      "before-composite-release",
+      "post-composite-release-frame-1",
+      "post-composite-release-frame-2"
+    ]);
+    expect(visibility.at(-2)).toMatchObject({
+      phase: "post-composite-release-frame-1",
+      pixelProbeRan: true,
+      pixelProbeHasInk: false
+    });
+    expect(visibility.at(-1)).toMatchObject({
+      phase: "post-composite-release-frame-2",
+      pixelProbeRan: true,
+      pixelProbeHasInk: true
+    });
+    expect(warnCalls("ink-visibility-flash").map((call) => call[2])).toEqual([
+      expect.objectContaining({
+        event: "ink-visibility-flash",
+        phase: "post-composite-release-frame-1",
+        cause: "canvas-cleared",
+        previousPhasePixelProbeHasInk: true
+      })
+    ]);
 
     await session.destroy();
   });
