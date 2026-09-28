@@ -129,6 +129,7 @@ import {
 } from "./DevProbeDiagnostics";
 import type { ScanDocumentPage } from "../scanning/ScanDocument";
 import { ImageRasterExportService, type ImageRasterFormat, type ImageRasterRenderTarget } from "../image/ImageRasterExportService";
+import { IpadPointerTouchTrace } from "../input/IpadPointerTouchTrace";
 
 const INPUT_OWNER_REGISTRY_KEY = "__nativePdfHandwritingInputOwners";
 const TEXT_TOUCH_HOLD_MS = 500;
@@ -534,7 +535,7 @@ export interface ViewerInkSessionOptions {
   claimPersistEpoch?: (documentId: string) => number;
   livePersistEpoch?: (documentId: string) => number;
   /** Host runtime flags — avoid importing `obsidian` here so unit tests stay portable. */
-  runtimePlatform?: () => { mobile: boolean; phone: boolean };
+  runtimePlatform?: () => { mobile: boolean; phone: boolean; ipad?: boolean };
 }
 
 interface LaserTrail {
@@ -1130,6 +1131,7 @@ export class ViewerInkSession {
   private pasteGeneration = 0;
   private readonly resizeObserver: ResizeObserver | null;
   private readonly logger: SessionLogger;
+  private readonly ipadInputTrace: IpadPointerTouchTrace | null;
   private readonly viewerMousePan: ViewerMousePan;
   private readonly addPageControl: AddPageControl | null;
   private readonly thumbnailSidebarActions: PdfThumbnailSidebarActions | null;
@@ -1193,6 +1195,11 @@ export class ViewerInkSession {
     };
     this.identity = createDocumentIdentity(identityInput);
     this.logger = new SessionLogger(options.documentPath, options.vaultLog, options.debugEnabled, options.pluginVersion);
+    const runtimePlatform = options.runtimePlatform?.();
+    this.ipadInputTrace = runtimePlatform?.ipad === true
+      ? IpadPointerTouchTrace.acquire(options.adapter.host.ownerDocument)
+      : null;
+    this.ipadInputTrace?.start(options.debugEnabled?.() === true);
     this.frameBudget = new EffectiveFrameBudget(this.frameTimingEnvironment());
     this.zoomFrameDiagnostics = new ZoomFrameDiagnostics(undefined, this.frameBudget);
     this.ink = new InkSession([], (event) => this.recordInkLifecycle(event));
@@ -6411,6 +6418,7 @@ export class ViewerInkSession {
 
   /** Write a bounded UI snapshot into the vault log when Copy logs is pressed. */
   writeCopiedLogUiSnapshot(): Record<string, unknown> {
+    this.ipadInputTrace?.start(this.options.debugEnabled?.() === true);
     const host = this.options.adapter.host;
     const root = this.options.adapter.root;
     const toolbar = this.toolbar.element;
@@ -6472,7 +6480,8 @@ export class ViewerInkSession {
       lastZoomGesturePerformance: this.recentZoomGesturePerformance.map((entry) => ({ ...entry })),
       lastInkStrokeGeometry: this.recentInkStrokeGeometry.slice(),
       lastSuccessfulStroke: this.logger.lastSuccessfulStroke(),
-      inputLifecycle: this.logger.inputLifecycleSnapshot()
+      inputLifecycle: this.logger.inputLifecycleSnapshot(),
+      ipadInputTrace: this.ipadInputTrace?.snapshot() ?? null
     });
     this.logger.handwritingUiSnapshot(snapshot);
     return snapshot;
@@ -7930,6 +7939,7 @@ export class ViewerInkSession {
 
   async destroy(options: { silent?: boolean; alreadyPersisted?: boolean } = {}): Promise<boolean> {
     if (this.destroyed) return true;
+    this.ipadInputTrace?.release();
     this.stopFrameProfileSampling();
     // Remove document-level probes before any persistence/close await so a
     // registry removal cannot leave a stale session observing the next event.

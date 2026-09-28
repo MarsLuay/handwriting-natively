@@ -103,6 +103,10 @@ set/lost counts, cancellation reason, coalesced/predicted sample counts, and
 whether duplicate-looking Pointer/Touch contacts were observed. It never stores
 per-move floods, annotation contents, or raw coordinates as durable telemetry.
 
+The iPad-only passive observer and physical run matrix live in
+`docs/ipad-pointer-touch-trace-harness.md`. It captures the real Obsidian
+viewer/UI/Scribble ordering without participating in routing.
+
 ## Module boundaries
 
 - `PointerRouter.ts` is the single Pointer Events entry point and emits semantic
