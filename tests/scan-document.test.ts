@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   defaultDocumentQuad,
@@ -5,6 +6,8 @@ import {
   rotateQuarterTurns
 } from "../src/scanning/ScanDocument";
 import { ScanDocumentModal } from "../src/ui/ScanDocumentModal";
+
+const styles = readFileSync("styles.css", "utf8");
 
 describe("scan document flow", () => {
   it("detects a reviewable paper boundary and keeps the fallback conservative", () => {
@@ -83,6 +86,22 @@ describe("scan document flow", () => {
     }
     expect(preview.querySelectorAll(".native-pdf-handwriting-scan-corner")).toHaveLength(4);
     modal.close();
+  });
+
+  it("styles crop handles as transparent ring-and-dot controls with a touch-sized hit area", () => {
+    const handleRule = styles.match(/\.native-pdf-handwriting-scan-corner \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    const ringRule = styles.match(/\.native-pdf-handwriting-scan-corner::before \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    const dotRule = styles.match(/\.native-pdf-handwriting-scan-corner::after \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(handleRule).toContain("background: transparent");
+    expect(handleRule).toContain("height: 28px");
+    expect(handleRule).toContain("width: 28px");
+    expect(ringRule).toContain("border: 2px solid #fff");
+    expect(ringRule).toContain("inset: 4px");
+    expect(dotRule).toContain("background: #fff");
+    expect(dotRule).toContain("height: 6px");
+    expect(dotRule).toContain("left: 50%");
+    expect(dotRule).toContain("top: 50%");
+    expect(dotRule).toContain("width: 6px");
   });
 
   it("requests rear-camera capture only when the scan modal opens and cleans up on cancel", () => {

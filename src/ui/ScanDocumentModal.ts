@@ -175,7 +175,7 @@ export class ScanDocumentModal extends Modal {
       handle.className = "native-pdf-handwriting-scan-corner";
       handle.dataset.corner = corner;
       handle.setAttribute("aria-label", `Move ${cornerLabel(corner)} corner`);
-      handle.textContent = "•";
+      handle.textContent = "";
       handle.addEventListener("pointerdown", (event) => {
         event.preventDefault();
         this.draggingCorner = corner;
