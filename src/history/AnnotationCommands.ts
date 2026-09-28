@@ -6,6 +6,7 @@ import type { Command } from "./CommandHistory";
 export class AddStrokeCommand implements Command {
   readonly label = "Add stroke";
   constructor(private readonly session: InkSession, private readonly stroke: InkStroke) {}
+  get strokeForIncrementalPaint(): InkStroke { return this.stroke; }
   execute(): void { this.session.add(this.stroke); }
   undo(): void { this.session.remove(this.stroke.id, "history-undo"); }
 }

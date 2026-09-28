@@ -19,6 +19,7 @@ export interface SlowSpanRecord {
   activeWorkMs: number | null;
   waitMs: number | null;
   reason: string | null;
+  correlationId: string | null;
   zoomBurstId: string | null;
 }
 
@@ -31,6 +32,7 @@ export interface SettleChurnSummary {
   activeWorkMs: null;
   waitMs: number;
   reason: string | null;
+  correlationId: string | null;
   zoomBurstId: string | null;
   settleDelayMs: number;
   settleTimerResetCount: number;
@@ -49,9 +51,8 @@ export interface FirstPenInteraction {
   zoomBurstId: string | null;
   zoomSettleToPointerDownMs: number | null;
   pointerDownToStrokeStartMs: number | null;
-  strokeStartToFirstInkMs: number | null;
-  totalPointerDownToFirstInkMs: number | null;
-  totalDurationMs: number | null;
+  strokeStartToFirstCanvasCommitMs: number | null;
+  totalPointerDownToFirstCanvasCommitMs: number | null;
   slowStages: Array<{ stage: string; durationMs: number }>;
 }
 
@@ -61,6 +62,57 @@ export interface SlowSpanSummary {
   maxByStage: Record<string, number>;
   p95ByStage: Record<string, number>;
   worstSpans: SlowSpanRecord[];
+}
+
+export interface SlowInkStrokeRecord {
+  event: "perf-slow-interaction";
+  interaction: "ink-stroke";
+  correlationId: string | null;
+  pointerId: number | null;
+  physicalContactId: string | null;
+  strokeId: string | null;
+  page: number;
+  tool: string;
+  outcome: string;
+  pointerDownToStrokeStartMs: number | null;
+  strokeStartToFirstCanvasCommitMs: number | null;
+  totalPointerDownToFirstCanvasCommitMs: number | null;
+  maxInputToRenderMs: number;
+  p95InputToRenderMs: number;
+  maxPluginCallbackMs: number;
+  longestLongTaskMs: number;
+  p95FrameMs: number;
+  maxFrameMs: number;
+  pointerUpToCommitMs: number | null;
+  slowStages: Array<{ stage: string; durationMs: number; thresholdMs: number }>;
+}
+
+export interface SlowInkStrokeSummary {
+  totalSlowStrokes: number;
+  byStage: Record<string, number>;
+  maxByStage: Record<string, number>;
+  p95ByStage: Record<string, number>;
+  worstStrokes: SlowInkStrokeRecord[];
+}
+
+export interface SlowInkStrokePerformanceInput {
+  pointerId: number | null;
+  physicalContactId: string | null;
+  strokeId: string | null;
+  correlationId: string | null;
+  page: number;
+  tool: string;
+  outcome: string;
+  pointerDownToStrokeStartMs: number | null;
+  strokeStartToFirstCanvasCommitMs: number | null;
+  totalPointerDownToFirstCanvasCommitMs: number | null;
+  maxInputToRenderMs: number;
+  p95InputToRenderMs: number;
+  maxPluginCallbackMs: number;
+  longestLongTaskMs: number;
+  p95FrameMs: number;
+  maxFrameMs: number;
+  pointerUpToCommitMs: number | null;
 }
 
 export function slowSpanThreshold(kind: SlowSpanKind): number {
@@ -74,6 +126,10 @@ export class SlowSpanTrace {
   private readonly counts = new Map<string, number>();
   private readonly samples = new Map<string, number[]>();
   private readonly worst: SlowSpanRecord[] = [];
+  private readonly inkStrokeCounts = new Map<string, number>();
+  private readonly inkStrokeSamples = new Map<string, number[]>();
+  private readonly worstInkStrokes: SlowInkStrokeRecord[] = [];
+  private totalSlowInkStrokes = 0;
   private readonly seen = new Set<string>();
   private zoomSettledAt: number | null = null;
   private zoomBurstId: string | null = null;
@@ -97,29 +153,29 @@ export class SlowSpanTrace {
     if (this.strokeStartAt === null) this.strokeStartAt = at;
   }
 
-  finishFirstPen(firstInkAt: number): FirstPenInteraction | null {
+  /** The caller supplies the timestamp only after the first live canvas render completes. */
+  finishFirstPen(firstCanvasCommitAt: number): FirstPenInteraction | null {
     if (this.firstPenEmitted || this.penDownAt === null) return null;
     this.firstPenEmitted = true;
     const pointerDownToStrokeStartMs = this.strokeStartAt === null ? null : roundMs(this.strokeStartAt - this.penDownAt);
-    const strokeStartToFirstInkMs = this.strokeStartAt === null ? null : roundMs(firstInkAt - this.strokeStartAt);
-    const totalPointerDownToFirstInkMs = roundMs(firstInkAt - this.penDownAt);
+    const strokeStartToFirstCanvasCommitMs = this.strokeStartAt === null ? null : roundMs(firstCanvasCommitAt - this.strokeStartAt);
+    const totalPointerDownToFirstCanvasCommitMs = roundMs(firstCanvasCommitAt - this.penDownAt);
     const slowStages: Array<{ stage: string; durationMs: number }> = [];
     if (pointerDownToStrokeStartMs !== null && pointerDownToStrokeStartMs >= SLOW_SPAN_SYNC_MS) {
       slowStages.push({ stage: "pointerDownToStrokeStartMs", durationMs: pointerDownToStrokeStartMs });
     }
-    if (strokeStartToFirstInkMs !== null && strokeStartToFirstInkMs >= SLOW_SPAN_SYNC_MS) {
-      slowStages.push({ stage: "strokeStartToFirstInkMs", durationMs: strokeStartToFirstInkMs });
+    if (strokeStartToFirstCanvasCommitMs !== null && strokeStartToFirstCanvasCommitMs >= SLOW_SPAN_SYNC_MS) {
+      slowStages.push({ stage: "strokeStartToFirstCanvasCommitMs", durationMs: strokeStartToFirstCanvasCommitMs });
     }
-    if (totalPointerDownToFirstInkMs < SLOW_SPAN_INTERACTION_MS && slowStages.length === 0) return null;
+    if (totalPointerDownToFirstCanvasCommitMs < SLOW_SPAN_INTERACTION_MS && slowStages.length === 0) return null;
     return {
       event: "perf-slow-interaction",
       interaction: "first-post-zoom-pen",
       zoomBurstId: this.zoomBurstId,
       zoomSettleToPointerDownMs: this.zoomSettledAt === null ? null : roundMs(this.penDownAt - this.zoomSettledAt),
       pointerDownToStrokeStartMs,
-      strokeStartToFirstInkMs,
-      totalPointerDownToFirstInkMs,
-      totalDurationMs: totalPointerDownToFirstInkMs,
+      strokeStartToFirstCanvasCommitMs,
+      totalPointerDownToFirstCanvasCommitMs,
       slowStages
     };
   }
@@ -132,12 +188,14 @@ export class SlowSpanTrace {
     activeWorkMs?: number | null;
     waitMs?: number | null;
     reason?: string | null;
+    correlationId?: string | null;
     zoomBurstId?: string | null;
   }): SlowSpanRecord | null {
     const thresholdMs = slowSpanThreshold(input.kind);
     if (input.durationMs < thresholdMs) return null;
     const zoomBurstId = input.zoomBurstId ?? this.zoomBurstId;
-    const key = `${input.stage}|${zoomBurstId ?? ""}|${input.reason ?? ""}`;
+    const correlationId = input.correlationId ?? null;
+    const key = `${input.stage}|${correlationId ?? ""}|${zoomBurstId ?? ""}|${input.reason ?? ""}`;
     if (this.seen.has(key)) return null;
     this.seen.add(key);
     const record: SlowSpanRecord = {
@@ -149,6 +207,7 @@ export class SlowSpanTrace {
       activeWorkMs: input.activeWorkMs ?? null,
       waitMs: input.waitMs ?? null,
       reason: input.reason ?? null,
+      correlationId,
       zoomBurstId
     };
     this.remember(record);
@@ -181,6 +240,7 @@ export class SlowSpanTrace {
       activeWorkMs: null,
       waitMs: roundMs(input.settleDelayMs),
       reason: input.lastDeferralReason,
+      correlationId: null,
       zoomBurstId,
       settleDelayMs: roundMs(input.settleDelayMs),
       settleTimerResetCount: input.settleTimerResetCount,
@@ -194,6 +254,87 @@ export class SlowSpanTrace {
     };
     this.remember(record);
     return record;
+  }
+
+  recordInkStroke(input: SlowInkStrokePerformanceInput): SlowInkStrokeRecord | null {
+    const correlationId = input.correlationId
+      ?? input.physicalContactId
+      ?? input.strokeId
+      ?? (input.pointerId === null ? null : `pointer:${input.pointerId}`);
+    const candidates: Array<{ stage: string; durationMs: number | null; kind: SlowSpanKind }> = [
+      { stage: "pointer-down-to-stroke-start", durationMs: input.pointerDownToStrokeStartMs, kind: "sync" },
+      { stage: "stroke-start-to-first-canvas-commit", durationMs: input.strokeStartToFirstCanvasCommitMs, kind: "sync" },
+      { stage: "input-to-render", durationMs: input.maxInputToRenderMs, kind: "async" },
+      { stage: "stroke-frame-gap", durationMs: input.maxFrameMs, kind: "sync" },
+      { stage: "plugin-callback", durationMs: input.maxPluginCallbackMs, kind: "sync" },
+      { stage: "long-task", durationMs: input.longestLongTaskMs, kind: "interaction" },
+      { stage: "pointerup-to-commit", durationMs: input.pointerUpToCommitMs, kind: "sync" }
+    ];
+    const slowStages = candidates.flatMap(({ stage, durationMs, kind }) => {
+      const thresholdMs = slowSpanThreshold(kind);
+      return durationMs !== null && durationMs >= thresholdMs
+        ? [{ stage, durationMs: roundMs(durationMs), thresholdMs }]
+        : [];
+    });
+    if (slowStages.length === 0) return null;
+    for (const candidate of candidates) {
+      if (candidate.durationMs === null || candidate.durationMs < slowSpanThreshold(candidate.kind)) continue;
+      this.record({
+        kind: candidate.kind,
+        category: "ink-stroke",
+        stage: candidate.stage,
+        durationMs: candidate.durationMs,
+        activeWorkMs: candidate.kind === "sync" ? candidate.durationMs : null,
+        waitMs: candidate.kind === "sync" ? 0 : candidate.durationMs,
+        correlationId
+      });
+    }
+    const record: SlowInkStrokeRecord = {
+      event: "perf-slow-interaction",
+      interaction: "ink-stroke",
+      correlationId,
+      pointerId: input.pointerId,
+      physicalContactId: input.physicalContactId,
+      strokeId: input.strokeId,
+      page: input.page,
+      tool: input.tool,
+      outcome: input.outcome,
+      pointerDownToStrokeStartMs: roundNullable(input.pointerDownToStrokeStartMs),
+      strokeStartToFirstCanvasCommitMs: roundNullable(input.strokeStartToFirstCanvasCommitMs),
+      totalPointerDownToFirstCanvasCommitMs: roundNullable(input.totalPointerDownToFirstCanvasCommitMs),
+      maxInputToRenderMs: roundMs(input.maxInputToRenderMs),
+      p95InputToRenderMs: roundMs(input.p95InputToRenderMs),
+      maxPluginCallbackMs: roundMs(input.maxPluginCallbackMs),
+      longestLongTaskMs: roundMs(input.longestLongTaskMs),
+      p95FrameMs: roundMs(input.p95FrameMs),
+      maxFrameMs: roundMs(input.maxFrameMs),
+      pointerUpToCommitMs: roundNullable(input.pointerUpToCommitMs),
+      slowStages
+    };
+    this.rememberSlowInkStroke(record);
+    return record;
+  }
+
+  slowInkStrokeSummary(): SlowInkStrokeSummary {
+    const maxByStage: Record<string, number> = {};
+    const p95ByStage: Record<string, number> = {};
+    const byStage: Record<string, number> = {};
+    for (const [stage, count] of this.inkStrokeCounts) byStage[stage] = count;
+    for (const [stage, samples] of this.inkStrokeSamples) {
+      const sorted = [...samples].sort((a, b) => a - b);
+      maxByStage[stage] = sorted[sorted.length - 1] ?? 0;
+      p95ByStage[stage] = roundMs(percentile(sorted, 0.95));
+    }
+    return {
+      totalSlowStrokes: this.totalSlowInkStrokes,
+      byStage,
+      maxByStage,
+      p95ByStage,
+      worstStrokes: this.worstInkStrokes.map((stroke) => ({
+        ...stroke,
+        slowStages: stroke.slowStages.map((stage) => ({ ...stage }))
+      }))
+    };
   }
 
   summary(): SlowSpanSummary {
@@ -215,6 +356,20 @@ export class SlowSpanTrace {
     };
   }
 
+  private rememberSlowInkStroke(record: SlowInkStrokeRecord): void {
+    this.totalSlowInkStrokes += 1;
+    for (const stage of record.slowStages) {
+      this.inkStrokeCounts.set(stage.stage, (this.inkStrokeCounts.get(stage.stage) ?? 0) + 1);
+      const samples = this.inkStrokeSamples.get(stage.stage) ?? [];
+      samples.push(stage.durationMs);
+      if (samples.length > STAGE_SAMPLE_LIMIT) samples.shift();
+      this.inkStrokeSamples.set(stage.stage, samples);
+    }
+    this.worstInkStrokes.push(record);
+    this.worstInkStrokes.sort((a, b) => slowInkStrokeSeverity(b) - slowInkStrokeSeverity(a));
+    if (this.worstInkStrokes.length > SLOW_SPAN_WORST_LIMIT) this.worstInkStrokes.length = SLOW_SPAN_WORST_LIMIT;
+  }
+
   private remember(record: SlowSpanRecord): void {
     this.totalSlowSpans += 1;
     this.counts.set(record.stage, (this.counts.get(record.stage) ?? 0) + 1);
@@ -226,6 +381,10 @@ export class SlowSpanTrace {
     this.worst.sort((a, b) => b.durationMs - a.durationMs);
     if (this.worst.length > SLOW_SPAN_WORST_LIMIT) this.worst.length = SLOW_SPAN_WORST_LIMIT;
   }
+}
+
+function slowInkStrokeSeverity(record: SlowInkStrokeRecord): number {
+  return record.slowStages.reduce((max, stage) => Math.max(max, stage.durationMs), 0);
 }
 
 function roundMs(value: number): number {
