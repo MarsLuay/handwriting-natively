@@ -12,6 +12,7 @@ import {
   type WorkspaceLeaf
 } from "obsidian";
 import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
+import { MobileSidebarSwipeBlocker } from "./input/MobileSidebarSwipeBlocker";
 import { getPhysicalContactCollectorSnapshot, type PhysicalContactCollectorSnapshot } from "./input/PhysicalContactCollector";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
@@ -197,6 +198,7 @@ export default class NativePdfInkPlugin extends Plugin {
   private readonly missingSessionRecoveryLeaves = new Set<WorkspaceLeaf>();
   private readonly scanDebounce = new ScanDebounce();
   private readonly flushDebounce = new ScanDebounce();
+  private sidebarSwipeBlocker: MobileSidebarSwipeBlocker | null = null;
   private scanAgain = false;
   private scanInProgress = false;
   private unloaded = false;
@@ -219,6 +221,8 @@ export default class NativePdfInkPlugin extends Plugin {
       this.app.vault.configDir
     );
     await this.vaultDebugLog.clear();
+    this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(document);
+    this.updateSidebarSwipeBlocker();
     this.addSettingTab(new NativePdfInkSettingTab(this.app, this));
     this.addRibbonIcon("file-plus-2", "Create handwritten PDF", () => void this.createPdfNote());
 
@@ -375,6 +379,8 @@ export default class NativePdfInkPlugin extends Plugin {
 
   onunload(): void {
     this.unloaded = true;
+    this.sidebarSwipeBlocker?.destroy();
+    this.sidebarSwipeBlocker = null;
     this.scanDebounce.clear();
     this.attachRetry.clearAll();
     this.attachingLeaves.clear();
@@ -771,6 +777,7 @@ export default class NativePdfInkPlugin extends Plugin {
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
     await this.saveData(settings);
+    this.updateSidebarSwipeBlocker();
     if (previousPdfEnabled !== settings.enabledSurfaces.pdf) {
       this.vaultDebugLog.write("info", "content-surface-setting-changed", {
         surface: "pdf",
@@ -817,6 +824,10 @@ export default class NativePdfInkPlugin extends Plugin {
     ) {
       for (const session of this.allSessions()) session.updateAnnotationRecoveryOptions(settings);
     }
+  }
+
+  private updateSidebarSwipeBlocker(): void {
+    this.sidebarSwipeBlocker?.setEnabled(Platform.isMobile && this.inkSettings.disableSidebarSwipe);
   }
 
   async readAllLogs(): Promise<string | null> {
