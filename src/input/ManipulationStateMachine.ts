@@ -104,28 +104,15 @@ export class ManipulationStateMachine {
     if (this.activeTouchCount >= 2) {
       return this.pinchStart(from);
     }
-    if (!this.capabilities.supportsTouchAction || from === "touch-linger" || from === "native-touch") {
-      this.currentState = "native-touch";
-      return this.record({
-        event: "touch-start",
-        from,
-        assistThisGesture: false,
-        pinchTakeover: false,
-        cancelAssist: false,
-        scheduleRearm: false,
-        cancelRearm: from === "touch-linger",
-        activeTouches: this.activeTouchCount
-      });
-    }
-    this.currentState = "assisted-touch";
+    this.currentState = "native-touch";
     return this.record({
       event: "touch-start",
       from,
-      assistThisGesture: true,
+      assistThisGesture: false,
       pinchTakeover: false,
       cancelAssist: false,
       scheduleRearm: false,
-      cancelRearm: false,
+      cancelRearm: from === "touch-linger",
       activeTouches: this.activeTouchCount
     });
   }
@@ -150,14 +137,7 @@ export class ManipulationStateMachine {
     const from = this.currentState;
     this.activeTouchCount = Math.max(0, this.activeTouchCount - 1);
     let scheduleRearm = false;
-    if (this.activeTouchCount === 0) {
-      if ((from === "assisted-touch" || from === "native-touch") && panned) {
-        this.currentState = "touch-linger";
-        scheduleRearm = true;
-      } else {
-        this.currentState = "armed";
-      }
-    }
+    if (this.activeTouchCount === 0) this.currentState = "armed";
     return this.record({
       event: "touch-end",
       from,
