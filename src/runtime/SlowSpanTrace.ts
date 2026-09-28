@@ -128,6 +128,8 @@ export interface SlowInkStrokePerformanceInput {
   longestLongTaskMs: number;
   p95FrameMs: number;
   maxFrameMs: number;
+  /** Runtime-derived presentation threshold captured with this stroke. */
+  frameGapThresholdMs?: number;
   pointerUpToCommitMs: number | null;
   /** Optional so older callers can keep using the legacy stroke profile fields. */
   latency?: Partial<InkLatencyBreakdown>;
@@ -210,8 +212,9 @@ export class SlowSpanTrace {
     reason?: string | null;
     correlationId?: string | null;
     zoomBurstId?: string | null;
+    thresholdMs?: number;
   }): SlowSpanRecord | null {
-    const thresholdMs = slowSpanThreshold(input.kind);
+    const thresholdMs = input.thresholdMs ?? slowSpanThreshold(input.kind);
     if (input.durationMs < thresholdMs) return null;
     const zoomBurstId = input.zoomBurstId ?? this.zoomBurstId;
     const correlationId = input.correlationId ?? null;
@@ -295,11 +298,16 @@ export class SlowSpanTrace {
       ?? input.strokeId
       ?? (input.pointerId === null ? null : `pointer:${input.pointerId}`);
     const latency = normalizeLatency(input.latency);
-    const candidates: Array<{ stage: string; durationMs: number | null; kind: SlowSpanKind }> = [
+    const candidates: Array<{ stage: string; durationMs: number | null; kind: SlowSpanKind; thresholdMs?: number }> = [
       { stage: "pointer-down-to-stroke-start", durationMs: input.pointerDownToStrokeStartMs, kind: "sync" },
       { stage: "stroke-start-to-first-canvas-commit", durationMs: input.strokeStartToFirstCanvasCommitMs, kind: "sync" },
       { stage: "input-to-render", durationMs: input.maxInputToRenderMs, kind: "async" },
-      { stage: "stroke-frame-gap", durationMs: input.maxFrameMs, kind: "sync" },
+      {
+        stage: "stroke-frame-gap",
+        durationMs: input.maxFrameMs,
+        kind: "sync",
+        ...(input.frameGapThresholdMs === undefined ? {} : { thresholdMs: input.frameGapThresholdMs })
+      },
       { stage: "plugin-callback", durationMs: input.maxPluginCallbackMs, kind: "sync" },
       { stage: "long-task", durationMs: input.longestLongTaskMs, kind: "interaction" },
       { stage: "pointerup-to-commit", durationMs: input.pointerUpToCommitMs, kind: "sync" },
@@ -311,15 +319,16 @@ export class SlowSpanTrace {
       { stage: "canvas-commit", durationMs: latency.canvasCommitMs, kind: "sync" },
       { stage: "paint-acknowledgement", durationMs: latency.paintAcknowledgementMs, kind: "async" }
     ];
-    const slowStages = candidates.flatMap(({ stage, durationMs, kind }) => {
-      const thresholdMs = slowSpanThreshold(kind);
+    const slowStages = candidates.flatMap(({ stage, durationMs, kind, thresholdMs: candidateThresholdMs }) => {
+      const thresholdMs = candidateThresholdMs ?? slowSpanThreshold(kind);
       return durationMs !== null && durationMs >= thresholdMs
         ? [{ stage, durationMs: roundMs(durationMs), thresholdMs }]
         : [];
     });
     if (slowStages.length === 0) return null;
     for (const candidate of candidates) {
-      if (candidate.durationMs === null || candidate.durationMs < slowSpanThreshold(candidate.kind)) continue;
+      const thresholdMs = candidate.thresholdMs ?? slowSpanThreshold(candidate.kind);
+      if (candidate.durationMs === null || candidate.durationMs < thresholdMs) continue;
       this.record({
         kind: candidate.kind,
         category: "ink-stroke",
@@ -327,7 +336,8 @@ export class SlowSpanTrace {
         durationMs: candidate.durationMs,
         activeWorkMs: candidate.kind === "sync" ? candidate.durationMs : null,
         waitMs: candidate.kind === "sync" ? 0 : candidate.durationMs,
-        correlationId
+        correlationId,
+        thresholdMs
       });
     }
     const record: SlowInkStrokeRecord = {

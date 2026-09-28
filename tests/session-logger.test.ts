@@ -90,6 +90,30 @@ describe("SessionLogger", () => {
     debug.mockRestore();
   });
 
+  it("uses the runtime frame budget for zoom repaint cadence warnings", () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const now = vi.spyOn(performance, "now").mockReturnValueOnce(100).mockReturnValueOnce(120);
+    const logger = new SessionLogger("Notes/example.pdf");
+    const repaint = {
+      reason: "view-scalechanging",
+      durationMs: 1,
+      pagesRepainted: 1,
+      canvasesResized: 0,
+      strokesRedrawn: 0,
+      skippedDisconnected: 0,
+      frameBudgetMs: 25
+    };
+
+    logger.zoomRepaint(repaint);
+    logger.zoomRepaint(repaint);
+
+    expect(warn.mock.calls.filter((call) => call[1] === "ink zoom repaint hot")).toHaveLength(1);
+    now.mockRestore();
+    debug.mockRestore();
+    warn.mockRestore();
+  });
+
   it("logs zoom tick deferral and repaint timing", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const logger = new SessionLogger("Notes/example.pdf");

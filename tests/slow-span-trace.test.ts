@@ -183,6 +183,55 @@ describe("SlowSpanTrace", () => {
     expect(trace.slowInkStrokeSummary().totalSlowStrokes).toBe(1);
   });
 
+  it("uses the runtime frame budget for stroke-frame gaps but keeps plugin work strict", () => {
+    const trace = new SlowSpanTrace();
+    const fastAt60Hz = trace.recordInkStroke({
+      pointerId: 9,
+      physicalContactId: "contact-frame",
+      strokeId: "stroke-frame",
+      correlationId: "contact-frame",
+      page: 1,
+      tool: "pen",
+      outcome: "pointerup",
+      pointerDownToStrokeStartMs: 1,
+      strokeStartToFirstCanvasCommitMs: 1,
+      totalPointerDownToFirstCanvasCommitMs: 2,
+      maxInputToRenderMs: 1,
+      p95InputToRenderMs: 1,
+      maxPluginCallbackMs: 1,
+      longestLongTaskMs: 1,
+      p95FrameMs: 16.7,
+      maxFrameMs: 16.7,
+      frameGapThresholdMs: 25,
+      pointerUpToCommitMs: 1
+    });
+    expect(fastAt60Hz).toBeNull();
+
+    const missedAt60Hz = trace.recordInkStroke({
+      pointerId: 10,
+      physicalContactId: "contact-frame-missed",
+      strokeId: "stroke-frame-missed",
+      correlationId: "contact-frame-missed",
+      page: 1,
+      tool: "pen",
+      outcome: "pointerup",
+      pointerDownToStrokeStartMs: 1,
+      strokeStartToFirstCanvasCommitMs: 1,
+      totalPointerDownToFirstCanvasCommitMs: 2,
+      maxInputToRenderMs: 1,
+      p95InputToRenderMs: 1,
+      maxPluginCallbackMs: 1,
+      longestLongTaskMs: 1,
+      p95FrameMs: 26,
+      maxFrameMs: 26,
+      frameGapThresholdMs: 25,
+      pointerUpToCommitMs: 1
+    });
+    expect(missedAt60Hz?.slowStages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: "stroke-frame-gap", thresholdMs: 25 })
+    ]));
+  });
+
   it("breaks a slow ink span into thresholded pipeline legs", () => {
     const trace = new SlowSpanTrace();
     const record = trace.recordInkStroke({

@@ -34,7 +34,7 @@ describe("ZoomFrameDiagnostics", () => {
     diagnostics.recordFrame({ requestedAt: 100, callbackAt: 100, pluginWorkMs: 1 });
     const emitted = diagnostics.recordFrame({
       requestedAt: 100,
-      callbackAt: 116,
+      callbackAt: 133,
       pluginWorkMs: 1,
       context: { documentHidden: false, visualViewportScale: 1, devicePixelRatio: 2 }
     });
@@ -43,8 +43,8 @@ describe("ZoomFrameDiagnostics", () => {
       event: "perf-unattributed-frame-gap",
       zoomBurstId: "zoom-1",
       phase: "active-pinch",
-      frameDeltaMs: 16,
-      rafRequestToCallbackMs: 16,
+      frameDeltaMs: 33,
+      rafRequestToCallbackMs: 33,
       attribution: "raf/compositor-delay",
       pdfSignals: { pagerendered: { count: 1 } },
       observerSignals: { mutationObserver: { count: 1 } },
@@ -55,8 +55,14 @@ describe("ZoomFrameDiagnostics", () => {
     expect(diagnostics.summary()).toMatchObject({
       slowFrameCount: 1,
       byAttribution: { "raf/compositor-delay": 1 },
-      maxFrameGapMs: 16,
-      knownOperations: { "overlay-layout": { count: 1, totalMs: 10, maxMs: 10 } }
+      maxFrameGapMs: 33,
+      knownOperations: { "overlay-layout": { count: 1, totalMs: 10, maxMs: 10 } },
+      frameTiming: {
+        fallbackRefreshHz: 60,
+        frameBudgetMs: 16.67,
+        lateFrameThresholdMs: 25,
+        thresholdSource: "platform-fallback"
+      }
     });
   });
 
@@ -85,8 +91,8 @@ describe("ZoomFrameDiagnostics", () => {
     for (let index = 0; index < 80; index += 1) {
       diagnostics.notePdfSignal(`signal-${index}`);
       diagnostics.recordFrame({
-        requestedAt: index * 20,
-        callbackAt: index * 20 + 20,
+        requestedAt: index * 30,
+        callbackAt: index * 30 + 30,
         pluginWorkMs: 0
       });
     }
@@ -101,10 +107,10 @@ describe("ZoomFrameDiagnostics", () => {
     const diagnostics = new ZoomFrameDiagnostics(harness.clock);
     diagnostics.begin("zoom-pdf");
     diagnostics.recordFrame({ requestedAt: 0, callbackAt: 0, pluginWorkMs: 0 });
-    diagnostics.notePdfSignal("pagerendered", 12);
-    const frame = diagnostics.recordFrame({ requestedAt: 20, callbackAt: 20, pluginWorkMs: 0 });
+    diagnostics.notePdfSignal("pagerendered", 14);
+    const frame = diagnostics.recordFrame({ requestedAt: 26, callbackAt: 26, pluginWorkMs: 0 });
     expect(frame?.attribution).toBe("pdf-render-burst");
-    expect(frame?.measuredPdfCallbackWorkMs).toBe(12);
+    expect(frame?.measuredPdfCallbackWorkMs).toBe(14);
   });
 
   it("reports supported observer entry types without treating missing longtask as no observer", () => {
@@ -131,7 +137,7 @@ describe("ZoomFrameDiagnostics", () => {
     diagnostics.begin("zoom-plugin");
     diagnostics.setLongTaskObserverState(false, "unsupported");
     diagnostics.recordFrame({ requestedAt: 0, callbackAt: 0, pluginWorkMs: 0 });
-    expect(diagnostics.recordFrame({ requestedAt: 0, callbackAt: 20, pluginWorkMs: 12 })).toBeNull();
+    expect(diagnostics.recordFrame({ requestedAt: 0, callbackAt: 30, pluginWorkMs: 16 })).toBeNull();
     expect(diagnostics.summary()).toMatchObject({
       byAttribution: { "plugin-work": 1 },
       capabilities: {

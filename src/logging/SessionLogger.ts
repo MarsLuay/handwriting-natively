@@ -69,6 +69,8 @@ export interface ZoomRepaintLog {
   scale?: number;
   /** True when HQ settle painted one page per frame. */
   sliced?: boolean;
+  /** Runtime frame budget used for cadence-sensitive hot detection. */
+  frameBudgetMs?: number;
 }
 
 export interface ZoomTickLog {
@@ -1160,7 +1162,10 @@ export class SessionLogger {
       burstWindowMs: round(burstWindowMs)
     };
     this.emit("info", "ink zoom repaint", payload);
-    if (details.durationMs >= FRAME_MS_120 || (msSinceLastRepaint !== null && msSinceLastRepaint < FRAME_MS_120)) {
+    const frameBudgetMs = Number.isFinite(details.frameBudgetMs) && (details.frameBudgetMs ?? 0) > 0
+      ? details.frameBudgetMs!
+      : FRAME_MS_120;
+    if (details.durationMs >= FRAME_MS_120 || (msSinceLastRepaint !== null && msSinceLastRepaint < frameBudgetMs)) {
       this.emit("warn", "ink zoom repaint hot", payload);
     }
   }
