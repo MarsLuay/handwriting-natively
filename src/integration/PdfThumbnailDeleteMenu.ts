@@ -4,8 +4,24 @@ import { isElement, isHTMLElement } from "../dom/typeGuards";
 const THUMBNAIL_VIEW_SELECTOR = ".pdf-thumbnail-view, #thumbnailView, .thumbnailView";
 const THUMBNAIL_RANGE_SELECTED_CLASS = "native-pdf-handwriting-thumbnail-range-selected";
 const thumbnailActionOwners = new WeakMap<HTMLElement, PdfThumbnailSidebarActions>();
+const LONG_PRESS_DELAY_MS = 1_000;
+const LONG_PRESS_MOVE_TOLERANCE_PX = 12;
+const LONG_PRESS_DUPLICATE_SUPPRESSION_MS = 1_500;
 let nextThumbnailUiGeneration = 0;
 type ThumbnailAction = { kind: "delete" | "add"; pageNumber: number };
+interface PendingThumbnailLongPress {
+  pointerId: number;
+  target: HTMLElement;
+  pageNumber: number;
+  startX: number;
+  startY: number;
+  timer: number;
+}
+interface LongPressContextSuppression {
+  target: HTMLElement;
+  pageNumber: number;
+  expiresAt: number;
+}
 export type ThumbnailMenuPhase =
   | "context-seen"
   | "context-ignored"
@@ -102,6 +118,9 @@ export class PdfThumbnailSidebarActions {
   private rangeEndPage: number | null = null;
   /** Prevent key-repeat from starting overlapping PDF mutations. */
   private keyboardDeletePending = false;
+  private pendingLongPress: PendingThumbnailLongPress | null = null;
+  private longPressContextSuppression: LongPressContextSuppression | null = null;
+  private dispatchingLongPressContext = false;
 
   constructor(
     private readonly host: HTMLElement,
@@ -121,6 +140,22 @@ export class PdfThumbnailSidebarActions {
       capture: true,
       signal: this.abort.signal
     });
+    contextRoot.addEventListener("pointermove", (event) => this.onPointerMove(event as PointerEvent), {
+      capture: true,
+      signal: this.abort.signal
+    });
+    contextRoot.addEventListener("pointerup", (event) => this.onPointerEnd(event as PointerEvent), {
+      capture: true,
+      signal: this.abort.signal
+    });
+    contextRoot.addEventListener("pointercancel", (event) => this.onPointerEnd(event as PointerEvent), {
+      capture: true,
+      signal: this.abort.signal
+    });
+    contextRoot.addEventListener("pointerleave", (event) => this.onPointerEnd(event as PointerEvent), {
+      capture: true,
+      signal: this.abort.signal
+    });
     this.observer = new MutationObserver(() => this.scheduleMountAddButton());
     this.observer.observe(host, { childList: true, subtree: true });
     this.mountAddButton();
@@ -131,6 +166,8 @@ export class PdfThumbnailSidebarActions {
     if (thumbnailActionOwners.get(this.host) === this) thumbnailActionOwners.delete(this.host);
     this.restoreTemplateIntercept?.();
     this.restoreTemplateIntercept = null;
+    this.cancelPendingLongPress();
+    this.longPressContextSuppression = null;
     this.abort.abort();
     this.observer?.disconnect();
     this.observer = null;
@@ -190,6 +227,7 @@ export class PdfThumbnailSidebarActions {
   }
 
   private onPointerDown(event: PointerEvent): void {
+    this.cancelPendingLongPress();
     const thumbnailView = findThumbnailView(this.host);
     if (!thumbnailView) {
       this.keyboardDeleteArmed = false;
@@ -216,6 +254,10 @@ export class PdfThumbnailSidebarActions {
         this.rangeEndPage = null;
         this.clearRangeSelection(thumbnailView);
       }
+      const pageTarget = thumbnailPageElement(this.host, target);
+      if ((event.pointerType === "touch" || event.pointerType === "pen") && pageTarget) {
+        this.armLongPress(event, pageTarget, pageNumber);
+      }
       return;
     }
     if (target instanceof Node && thumbnailView.contains(target)) {
@@ -226,8 +268,90 @@ export class PdfThumbnailSidebarActions {
     this.keyboardDeleteArmed = false;
   }
 
+  private onPointerMove(event: PointerEvent): void {
+    const pending = this.pendingLongPress;
+    if (!pending || pending.pointerId !== event.pointerId) return;
+    const movedX = event.clientX - pending.startX;
+    const movedY = event.clientY - pending.startY;
+    const movedOutsidePage = thumbnailPageNumber(this.host, event.target) !== pending.pageNumber;
+    if (Math.hypot(movedX, movedY) > LONG_PRESS_MOVE_TOLERANCE_PX || movedOutsidePage) {
+      this.cancelPendingLongPress();
+    }
+  }
+
+  private onPointerEnd(event: PointerEvent): void {
+    if (this.pendingLongPress?.pointerId === event.pointerId) this.cancelPendingLongPress();
+  }
+
+  private armLongPress(event: PointerEvent, target: HTMLElement, pageNumber: number): void {
+    const window = this.host.ownerDocument.defaultView;
+    if (!window) return;
+    const pending: PendingThumbnailLongPress = {
+      pointerId: event.pointerId,
+      target,
+      pageNumber,
+      startX: event.clientX,
+      startY: event.clientY,
+      timer: 0
+    };
+    pending.timer = window.setTimeout(() => this.fireLongPress(pending), LONG_PRESS_DELAY_MS);
+    this.pendingLongPress = pending;
+  }
+
+  private cancelPendingLongPress(): void {
+    const pending = this.pendingLongPress;
+    if (!pending) return;
+    this.pendingLongPress = null;
+    this.host.ownerDocument.defaultView?.clearTimeout(pending.timer);
+  }
+
+  private fireLongPress(pending: PendingThumbnailLongPress): void {
+    if (this.pendingLongPress !== pending || this.abort.signal.aborted) return;
+    this.pendingLongPress = null;
+    this.longPressContextSuppression = {
+      target: pending.target,
+      pageNumber: pending.pageNumber,
+      expiresAt: Date.now() + LONG_PRESS_DUPLICATE_SUPPRESSION_MS
+    };
+    if (!this.host.ownerDocument.defaultView) return;
+    const contextMenu = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: pending.startX,
+      clientY: pending.startY
+    });
+    this.dispatchingLongPressContext = true;
+    try {
+      pending.target.dispatchEvent(contextMenu);
+    } finally {
+      this.dispatchingLongPressContext = false;
+    }
+  }
+
   private show = (event: MouseEvent): void => {
     const requestedAction = thumbnailActionAtPoint(this.host, event.target, event.clientY);
+    const suppressed = this.longPressContextSuppression;
+    const sameSuppressedPage = suppressed
+      && suppressed.expiresAt >= Date.now()
+      && suppressed.pageNumber === requestedAction?.pageNumber
+      && suppressed.target === thumbnailPageElement(this.host, event.target);
+    if (sameSuppressedPage && !this.dispatchingLongPressContext) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.callbacks.onMenuEvent?.("context-ignored", {
+        ...this.contextDetails(event.target),
+        reason: "long-press-duplicate",
+        pageNumber: suppressed.pageNumber
+      });
+      return;
+    }
+    if (suppressed && suppressed.expiresAt < Date.now()) this.longPressContextSuppression = null;
+    if (this.pendingLongPress && !this.dispatchingLongPressContext
+      && this.pendingLongPress.pageNumber === requestedAction?.pageNumber
+      && this.pendingLongPress.target === thumbnailPageElement(this.host, event.target)) {
+      this.cancelPendingLongPress();
+    }
     const context = this.contextDetails(event.target);
     if (!requestedAction) {
       this.callbacks.onMenuEvent?.("context-ignored", { ...context, reason: "outside-thumbnail-sidebar" });
@@ -702,13 +826,20 @@ function menuDetails(menu: HTMLElement): Record<string, unknown> {
 
 /** Resolves a page only from the PDF thumbnail sidebar, never the document canvas. */
 export function thumbnailPageNumber(host: HTMLElement, target: EventTarget | null): number | null {
-  if (!isHTMLElement(target)) return null;
+  const thumbnail = thumbnailPageElement(host, target);
+  if (!thumbnail) return null;
+  const pageNumber = Number(thumbnail.dataset.pageNumber);
+  return Number.isInteger(pageNumber) && pageNumber >= 1 ? pageNumber : null;
+}
+
+function thumbnailPageElement(host: HTMLElement, target: EventTarget | null): HTMLElement | null {
+  if (!isElement(target)) return null;
   const thumbnailView = findThumbnailView(host);
   if (!thumbnailView || !thumbnailView.contains(target)) return null;
   const numbered = target.closest<HTMLElement>("[data-page-number]");
   if (!numbered || !thumbnailView.contains(numbered)) return null;
   const pageNumber = Number(numbered.dataset.pageNumber);
-  return Number.isInteger(pageNumber) && pageNumber >= 1 ? pageNumber : null;
+  return Number.isInteger(pageNumber) && pageNumber >= 1 ? numbered : null;
 }
 
 /**
