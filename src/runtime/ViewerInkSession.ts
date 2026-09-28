@@ -567,6 +567,11 @@ interface RectSnapshot {
   height: number;
 }
 
+interface ZoomGeometrySnapshot {
+  contentRect: RectSnapshot | null;
+  overlayRect: RectSnapshot;
+}
+
 interface StrokeRenderLifecycleState {
   strokeId: string;
   page: number;
@@ -661,10 +666,13 @@ interface PanPerformanceState {
 
 interface ZoomOverlayLayoutTiming {
   totalMs: number;
+  geometryReads: number;
+  geometryReadAfterWrite: number;
   phaseDurations: {
     "page-snapshot": number;
     "surface-reconcile": number;
     "layout-read": number;
+    "geometry-read": number;
     "overlay-write": number;
     "text-layout": number;
     "layout-diagnostic": number;
@@ -691,6 +699,8 @@ interface ZoomProfileState {
   longTaskMaxMs: number;
   lastPdfGeometry: RectSnapshot | null;
   lastInkGeometry: RectSnapshot | null;
+  geometryReadCount: number;
+  geometryReadAfterWriteCount: number;
   maxPdfGeometryDeltaPx: number;
   maxInkGeometryDeltaPx: number;
   maxPdfInkMismatchPx: number;
@@ -3386,6 +3396,8 @@ export class ViewerInkSession {
       longTaskMaxMs: 0,
       lastPdfGeometry: null,
       lastInkGeometry: null,
+      geometryReadCount: 0,
+      geometryReadAfterWriteCount: 0,
       maxPdfGeometryDeltaPx: 0,
       maxInkGeometryDeltaPx: 0,
       maxPdfInkMismatchPx: 0,
@@ -3547,9 +3559,7 @@ export class ViewerInkSession {
       }
       const layoutTiming = this.syncZoomOverlayLayouts();
       const layoutMs = layoutTiming.totalMs;
-      const geometryStarted = performance.now();
-      this.recordZoomGeometry();
-      const geometryMs = performance.now() - geometryStarted;
+      const geometryMs = layoutTiming.phaseDurations["geometry-read"];
       // Overlay layout must not correct scroll during the live gesture — any
       // delta here is plugin-owned and belongs in the burst profile.
       const pluginScrollDelta = Math.max(
@@ -3613,7 +3623,9 @@ export class ViewerInkSession {
           contributors: {
             syncZoomOverlayLayouts: roundMs(layoutMs),
             overlayLayoutPhases: layoutTiming.phaseDurations,
-            recordZoomGeometry: roundMs(geometryMs)
+            recordZoomGeometry: roundMs(geometryMs),
+            geometryReads: layoutTiming.geometryReads,
+            geometryReadAfterWrite: layoutTiming.geometryReadAfterWrite
           }
         });
       }
@@ -3644,28 +3656,50 @@ export class ViewerInkSession {
     else this.zoomPipelineTrace.recordFrame(frame);
   }
 
-  private recordZoomGeometry(): void {
+  private readZoomGeometry(surfaces: readonly PageSurface[]): {
+    snapshots: Map<number, ZoomGeometrySnapshot>;
+    readCount: number;
+  } {
+    const snapshots = new Map<number, ZoomGeometrySnapshot>();
+    let readCount = 0;
+    for (const surface of surfaces) {
+      const pdf = pdfRenderCanvas(surface.page.element);
+      const contentRect = pdf?.getBoundingClientRect() ?? null;
+      if (contentRect) readCount += 1;
+      const overlayRect = surface.overlay.getBoundingClientRect();
+      readCount += 1;
+      snapshots.set(surface.page.pageNumber, {
+        contentRect: contentRect ? {
+          left: contentRect.left,
+          top: contentRect.top,
+          width: contentRect.width,
+          height: contentRect.height
+        } : null,
+        overlayRect: {
+          left: overlayRect.left,
+          top: overlayRect.top,
+          width: overlayRect.width,
+          height: overlayRect.height
+        }
+      });
+    }
+    return { snapshots, readCount };
+  }
+
+  private recordZoomGeometry(
+    geometry: ReadonlyMap<number, ZoomGeometrySnapshot>,
+    readCount: number
+  ): void {
     const profile = this.zoomProfile;
     if (!profile || !this.logger.isEnabled()) return;
+    profile.geometryReadCount += readCount;
     const now = performance.now();
-    for (const pageNumber of this.zoomWorkingPageNumbers) {
+    for (const [pageNumber, snapshot] of geometry) {
       const surface = this.surfaces.get(pageNumber);
       if (!surface) continue;
-      const pdf = pdfRenderCanvas(surface.page.element)?.getBoundingClientRect();
-      const ink = surface.overlay.getBoundingClientRect();
-      if (!pdf) continue;
-      const pdfRect: RectSnapshot = {
-        left: pdf.left,
-        top: pdf.top,
-        width: pdf.width,
-        height: pdf.height
-      };
-      const inkRect: RectSnapshot = {
-        left: ink.left,
-        top: ink.top,
-        width: ink.width,
-        height: ink.height
-      };
+      const pdfRect = snapshot.contentRect;
+      if (!pdfRect) continue;
+      const inkRect = snapshot.overlayRect;
       profile.maxPdfGeometryDeltaPx = Math.max(profile.maxPdfGeometryDeltaPx, rectDelta(profile.lastPdfGeometry, pdfRect));
       profile.maxInkGeometryDeltaPx = Math.max(profile.maxInkGeometryDeltaPx, rectDelta(profile.lastInkGeometry, inkRect));
       const mismatch = rectMismatch(pdfRect, inkRect);
@@ -3772,6 +3806,8 @@ export class ViewerInkSession {
       frameIntervalHistogram: frameIntervals.histogram,
       longestLongTaskMs: roundMetric(profile.longTaskMaxMs),
       pdfGeometrySamples: profile.lastPdfGeometry ? profile.frameCount : 0,
+      geometryReadCount: profile.geometryReadCount,
+      geometryReadAfterWriteCount: profile.geometryReadAfterWriteCount,
       maxPdfGeometryDeltaPx: roundMetric(profile.maxPdfGeometryDeltaPx),
       maxInkGeometryDeltaPx: roundMetric(profile.maxInkGeometryDeltaPx),
       maxPdfInkMismatchPx: roundMetric(profile.maxPdfInkMismatchPx),
@@ -3785,7 +3821,7 @@ export class ViewerInkSession {
       viewportWidth: roundMetric(rootRect.width),
       viewportHeight: roundMetric(rootRect.height),
       devicePixelRatio: this.options.adapter.host.ownerDocument.defaultView?.devicePixelRatio ?? null,
-      visiblePageCount: this.surfaces.size,
+      visiblePageCount: this.zoomActivePageCount,
       strokeCount: this.ink.all().length,
       scrollEvents: profile.scrollEvents,
       pageChangingEvents: profile.pageChangingEvents,
@@ -4863,8 +4899,21 @@ export class ViewerInkSession {
           reason: this.surfaceHasLiveInkInput(surface) ? `${reason}-live-ink` : reason
         });
         const upgradeBefore = surface.settleUpgradePending;
-        const painted = this.renderPage(pageNumber, this.zoomSettleStats, reason);
-        this.logZoomInkLayout(surface, "settle");
+        const layout = this.pageLayout(surface);
+        const geometryBatch = this.logger.isEnabled()
+          ? this.readZoomGeometry([surface])
+          : null;
+        if (geometryBatch && this.zoomProfile) this.zoomProfile.geometryReadCount += geometryBatch.readCount;
+        const geometry = geometryBatch?.snapshots.get(pageNumber);
+        const previousLayoutCache = this.zoomLayoutCache;
+        this.zoomLayoutCache = new Map([[pageNumber, layout]]);
+        let painted = false;
+        try {
+          painted = this.renderPage(pageNumber, this.zoomSettleStats, reason);
+        } finally {
+          this.zoomLayoutCache = previousLayoutCache;
+        }
+        this.logZoomInkLayout(surface, "settle", layout, geometry);
         if (this.zoomProfile && tier === "focus" && painted) this.zoomProfile.hqUpgrades += 1;
         if (painted) this.zoomSettleStats.pagesRepainted += 1;
         else if (surface.viewportCullPending) {
@@ -4917,7 +4966,7 @@ export class ViewerInkSession {
     this.ensureSelectionToolbar();
     this.zoomPipelineTrace.noteStage("toolbar-refresh", performance.now() - toolbarStartedAt, 1, "selection-toolbar");
     const cursorStartedAt = performance.now();
-    this.refreshSurfaceCursors();
+    this.refreshZoomWorkingSurfaceCursors();
     this.zoomPipelineTrace.noteStage("cursor-refresh", performance.now() - cursorStartedAt, 1, "settle-cursor-refresh");
     const view = this.options.adapter.getViewState();
     if (durationMs >= this.frameTimingProfile().lateFrameThresholdMs && this.isZoomHandoffActive()) {
@@ -5589,6 +5638,7 @@ export class ViewerInkSession {
       "page-snapshot": 0,
       "surface-reconcile": 0,
       "layout-read": 0,
+      "geometry-read": 0,
       "overlay-write": 0,
       "text-layout": 0,
       "layout-diagnostic": 0,
@@ -5619,13 +5669,6 @@ export class ViewerInkSession {
         }
       }
       this.ensurePageRouter(surface);
-      // A page can enter the working set after the pinch starts. Warm its
-      // committed bitmap before applying the compositor class so it follows
-      // the same handoff as pages visible at pinch start.
-      if (!surface.overlay.classList.contains("native-pdf-handwriting-zoom-compositing")) {
-        this.captureInkLayerFromCanvas(surface);
-      }
-      surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
       active.push(surface);
     }
     this.zoomActivePageCount = active.length;
@@ -5639,8 +5682,22 @@ export class ViewerInkSession {
     const layouts = new Map<number, PageCoordinateLayout>();
     for (const surface of active) layouts.set(surface.page.pageNumber, this.pageLayout(surface));
     phaseDurations["layout-read"] = performance.now() - layoutReadStartedAt;
+    const geometryReadStartedAt = performance.now();
+    const geometry = this.logger.isEnabled()
+      ? this.readZoomGeometry(active)
+      : { snapshots: new Map<number, ZoomGeometrySnapshot>(), readCount: 0 };
+    phaseDurations["geometry-read"] = performance.now() - geometryReadStartedAt;
+    this.recordZoomGeometry(geometry.snapshots, geometry.readCount);
     this.zoomLayoutCache = layouts;
     try {
+      // Keep class/canvas handoff writes together before the overlay/text
+      // writes. A page can enter the working set after the pinch starts.
+      for (const surface of active) {
+        if (!surface.overlay.classList.contains("native-pdf-handwriting-zoom-compositing")) {
+          this.captureInkLayerFromCanvas(surface, layouts.get(surface.page.pageNumber));
+        }
+        surface.overlay.classList.add("native-pdf-handwriting-zoom-compositing");
+      }
       for (const surface of active) {
         const layout = layouts.get(surface.page.pageNumber);
         const overlayWriteStartedAt = performance.now();
@@ -5650,22 +5707,23 @@ export class ViewerInkSession {
         this.syncTextLayoutDuringZoom(surface, layout);
         phaseDurations["text-layout"] += performance.now() - textLayoutStartedAt;
         const layoutDiagnosticStartedAt = performance.now();
-        this.logZoomInkLayout(surface, phase);
+        this.logZoomInkLayout(surface, phase, layout, geometry.snapshots.get(surface.page.pageNumber));
         phaseDurations["layout-diagnostic"] += performance.now() - layoutDiagnosticStartedAt;
+      }
+      // Keep the same layout snapshot alive while cursor projection runs so a
+      // late cursor refresh cannot resolve page geometry again after writes.
+      if (!this.isZoomGestureActive()) {
+        const cursorRefreshStartedAt = performance.now();
+        this.refreshSurfaceCursors(active);
+        phaseDurations["cursor-refresh"] = performance.now() - cursorRefreshStartedAt;
       }
     } finally {
       this.zoomLayoutCache = null;
     }
-    // Cursor position is not visible during an active touch pinch and each
-    // refresh walks every page router. The settle/handoff refresh restores the
-    // affordance without adding work to the gesture frame.
-    if (!this.isZoomGestureActive()) {
-      const cursorRefreshStartedAt = performance.now();
-      this.refreshSurfaceCursors();
-      phaseDurations["cursor-refresh"] = performance.now() - cursorRefreshStartedAt;
-    }
     return {
       totalMs: roundMs(performance.now() - startedAt),
+      geometryReads: geometry.readCount,
+      geometryReadAfterWrite: 0,
       phaseDurations: Object.fromEntries(
         Object.entries(phaseDurations).map(([name, durationMs]) => [name, roundMs(durationMs)])
       ) as ZoomOverlayLayoutTiming["phaseDurations"]
@@ -5693,6 +5751,7 @@ export class ViewerInkSession {
     const working = this.zoomWorkingSurfaces(undefined, pages);
     this.zoomActivePageCount = working.length;
     this.zoomWorkingPageNumbers = new Set(working.map((surface) => surface.page.pageNumber));
+    const reconciled: PageSurface[] = [];
     for (const surface of working) {
       const pageNumber = surface.page.pageNumber;
       const current = pages.get(pageNumber);
@@ -5700,9 +5759,9 @@ export class ViewerInkSession {
         stats.skippedDisconnected += 1;
         continue;
       }
-      if (!this.reattachSurface(surface, current)) {
+      if (!this.reattachSurface(surface, current, false)) {
         if (current.element.isConnected) {
-          this.remountSurfaceOnPageReplacement(surface, current);
+          this.remountSurfaceOnPageReplacement(surface, current, false);
         } else {
           stats.skippedDisconnected += 1;
           continue;
@@ -5711,17 +5770,33 @@ export class ViewerInkSession {
       this.ensurePageRouter(surface, {
         reason: this.surfaceHasLiveInkInput(surface) ? "zoom-handoff-final-live-ink" : "zoom-handoff-final"
       });
-      // A capped backing canvas can keep the same pixel dimensions while its
-      // CSS geometry changes. Invalidating forces a canonical PDF-space paint
-      // at the final scale in either case.
-      surface.inkLayerValid = false;
-      surface.inkLayerBackingScale = null;
-      surface.inkLayerBurstCapture = false;
-      surface.inkLayerRevision = null;
-      const painted = this.renderPage(pageNumber, stats, "zoom-handoff-final");
-      this.logZoomInkLayout(surface, "handoff-final");
-      if (painted) stats.pagesRepainted += 1;
-      else if (surface.viewportCullPending) stats.skippedCulled += 1;
+      reconciled.push(surface);
+    }
+    const layouts = new Map<number, PageCoordinateLayout>();
+    for (const surface of reconciled) layouts.set(surface.page.pageNumber, this.pageLayout(surface));
+    const geometry = this.logger.isEnabled()
+      ? this.readZoomGeometry(reconciled)
+      : { snapshots: new Map<number, ZoomGeometrySnapshot>(), readCount: 0 };
+    if (this.zoomProfile) this.zoomProfile.geometryReadCount += geometry.readCount;
+    const previousLayoutCache = this.zoomLayoutCache;
+    this.zoomLayoutCache = layouts;
+    try {
+      for (const surface of reconciled) {
+        const pageNumber = surface.page.pageNumber;
+        // A capped backing canvas can keep the same pixel dimensions while its
+        // CSS geometry changes. Invalidating forces a canonical PDF-space paint
+        // at the final scale in either case.
+        surface.inkLayerValid = false;
+        surface.inkLayerBackingScale = null;
+        surface.inkLayerBurstCapture = false;
+        surface.inkLayerRevision = null;
+        const painted = this.renderPage(pageNumber, stats, "zoom-handoff-final");
+        this.logZoomInkLayout(surface, "handoff-final", layouts.get(pageNumber), geometry.snapshots.get(pageNumber));
+        if (painted) stats.pagesRepainted += 1;
+        else if (surface.viewportCullPending) stats.skippedCulled += 1;
+      }
+    } finally {
+      this.zoomLayoutCache = previousLayoutCache;
     }
     this.logger.zoomComposite("final-canonical", {
       pagesRepainted: stats.pagesRepainted,
@@ -8684,8 +8759,14 @@ export class ViewerInkSession {
       && this.texts.page(surface.page.pageNumber).some((text) => text.id === annotationId);
   }
 
-  private refreshSurfaceCursors(): void {
-    for (const surface of this.surfaces.values()) surface.router?.refreshCursors();
+  private refreshSurfaceCursors(surfaces: Iterable<PageSurface> = this.surfaces.values()): void {
+    for (const surface of surfaces) surface.router?.refreshCursors();
+  }
+
+  private refreshZoomWorkingSurfaceCursors(): void {
+    for (const pageNumber of this.zoomWorkingPageNumbers) {
+      this.surfaces.get(pageNumber)?.router?.refreshCursors();
+    }
   }
 
   private logMousePanConfig(reason: string): void {
@@ -13305,14 +13386,13 @@ export class ViewerInkSession {
   }
 
   /** Warm inkLayer from main canvas before zoom burst CSS-stretch. */
-  private captureInkLayerFromCanvas(surface: PageSurface): void {
+  private captureInkLayerFromCanvas(surface: PageSurface, layoutOverride?: PageCoordinateLayout): void {
     if (surface.inkLayerValid && surface.inkLayer) return;
     if (!surface.canvas.width || !surface.canvas.height) return;
     const traceStartedAt = this.zoomPipelineTrace.isActive() ? performance.now() : null;
-    const layout = this.pageLayout(surface);
-    const rect = surface.overlay.getBoundingClientRect();
-    const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
-    const height = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
+    const layout = layoutOverride ?? this.pageLayout(surface);
+    const width = Math.max(1, layout.contentWidth || 1);
+    const height = Math.max(1, layout.contentHeight || 1);
     const { backingScale } = this.resolveInkBacking(width, height);
     const layerContext = this.ensureInkLayer(surface, surface.canvas.width, surface.canvas.height, backingScale);
     layerContext.setTransform(1, 0, 0, 1, 0, 0);
@@ -13431,15 +13511,16 @@ export class ViewerInkSession {
     // Keep tip draft visible through resize/paint — clearing first caused a blank
     // flash between tip-up and settle-paint (draft gone, committed still building).
     const layout = this.pageLayout(surface);
-    this.syncOverlayLayout(surface);
     const marginMode = ViewerInkSession.isZoomPaintReason(reason) ? "strict" : "idle";
     if (this.shouldCullPagePaint(surface, includeActivePreview, marginMode, rootRect)) {
       surface.viewportCullPending = true;
       return false;
     }
-    const rect = surface.overlay.getBoundingClientRect();
-    const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
-    const height = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
+    // The viewport decision is a read phase. Apply the cached layout only
+    // after culling so the next geometry read cannot follow this write.
+    this.syncOverlayLayout(surface, layout);
+    const width = Math.max(1, layout.contentWidth || 1);
+    const height = Math.max(1, layout.contentHeight || 1);
     if (width < 2 || height < 2) return false;
     const settleNeighbor = reason.includes("settle-neighbor");
     const settleFocusFast = reason.includes("settle-focus-fast");
@@ -14372,22 +14453,29 @@ export class ViewerInkSession {
    */
   private logZoomInkLayout(
     surface: PageSurface,
-    phase: "burst" | "settle" | "native-content" | "handoff-final"
+    phase: "burst" | "settle" | "native-content" | "handoff-final",
+    layoutOverride?: PageCoordinateLayout,
+    geometry?: ZoomGeometrySnapshot
   ): void {
     if (!this.logger.isEnabled()) return;
     const key = `${surface.page.pageNumber}:${phase}`;
     if (this.zoomInkLayoutLoggedPhases.has(key)) return;
     this.zoomInkLayoutLoggedPhases.add(key);
 
-    const layout = this.pageLayout(surface);
+    const layout = layoutOverride ?? this.pageLayout(surface);
     const metrics = this.metricsFor(surface);
-    const contentRect = pdfRenderCanvas(surface.page.element)?.getBoundingClientRect();
-    const overlayRect = surface.overlay.getBoundingClientRect();
+    const contentRect = geometry?.contentRect ?? null;
+    const overlayRect = geometry?.overlayRect ?? {
+      left: layout.offsetX,
+      top: layout.offsetY,
+      width: layout.contentWidth,
+      height: layout.contentHeight
+    };
     const overlayWidth = overlayRect.width >= 8 ? overlayRect.width : layout.contentWidth;
     const overlayHeight = overlayRect.height >= 8 ? overlayRect.height : layout.contentHeight;
     const firstStroke = this.ink.page(surface.page.pageNumber)[0];
     const anchorPoint = firstStroke?.points[0];
-    const mapped = anchorPoint ? this.mapper(surface).toViewport(anchorPoint) : null;
+    const mapped = anchorPoint ? this.mapper(surface, layout).toViewport(anchorPoint) : null;
     const normalized = mapped && overlayWidth > 0 && overlayHeight > 0
       ? { x: mapped.x / overlayWidth, y: mapped.y / overlayHeight }
       : null;
@@ -14467,8 +14555,8 @@ export class ViewerInkSession {
     }
   }
 
-  private mapper(surface: PageSurface): PageCoordinateMapper {
-    const layout = this.pageLayout(surface);
+  private mapper(surface: PageSurface, layoutOverride?: PageCoordinateLayout): PageCoordinateMapper {
+    const layout = layoutOverride ?? this.pageLayout(surface);
     const metrics = this.metricsFor(surface);
     return new PageCoordinateMapper({
       width: metrics.width,
