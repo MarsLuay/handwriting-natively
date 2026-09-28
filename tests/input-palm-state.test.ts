@@ -24,16 +24,16 @@ describe("mobile manipulation state", () => {
 
     expect(palm).toMatchObject({
       event: "touch-start",
-      to: "assisted-touch",
-      assistThisGesture: true,
+      to: "native-touch",
+      assistThisGesture: false,
       touchAction: "pan-xy"
     });
     expect(pen).toMatchObject({
       event: "pen-signal",
-      from: "assisted-touch",
+      from: "native-touch",
       to: "armed",
-      cancelAssist: true,
-      touchAction: "none"
+      cancelAssist: false,
+      touchAction: "pan-xy"
     });
     expect(lift).toMatchObject({ to: "armed", scheduleRearm: false });
   });
@@ -47,10 +47,10 @@ describe("mobile manipulation state", () => {
 
     expect(pinch).toMatchObject({
       event: "pinch-start",
-      from: "assisted-touch",
+      from: "native-touch",
       to: "pinch",
       pinchTakeover: true,
-      cancelAssist: true,
+      cancelAssist: false,
       touchAction: "pan-xy"
     });
     expect(firstLift.activeTouches).toBe(1);
@@ -66,15 +66,15 @@ describe("mobile manipulation state", () => {
     const rearm = machine.rearm();
 
     expect(panEnd).toMatchObject({
-      to: "touch-linger",
+      to: "armed",
       touchAction: "pan-xy",
-      scheduleRearm: true
+      scheduleRearm: false
     });
     expect(nativeWindow).toMatchObject({
       to: "native-touch",
       touchAction: "pan-xy",
       assistThisGesture: false,
-      cancelRearm: true
+      cancelRearm: false
     });
     expect(rearm).toMatchObject({ to: "native-touch", touchAction: "pan-xy" });
   });

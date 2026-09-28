@@ -195,7 +195,7 @@ export class PointerRouter {
     this.resetOwnershipOnDestroy = resetOwnershipOnDestroy;
     this.palmPolicy.setOwnership(this.ownership);
     this.palmPolicy.setResetListener((reason, activePenIds) => {
-      this.handlePalmPolicyReset(reason, activePenIds);
+      this.emitPenStateReset(reason, activePenIds);
     });
     this.eraserCursor = createDetachedSpan(element.ownerDocument);
     this.eraserCursor.className = "native-pdf-handwriting-eraser-cursor";
@@ -447,7 +447,7 @@ export class PointerRouter {
       routeReason = "gesture-ownership";
     }
     this.callbacks.onRouteDecision?.(route, routeReason, event);
-    if (event.pointerType === "touch" && this.manipulation.activeTouches < this.touchCount()) {
+    if (event.pointerType === "touch" && route !== "ignored" && this.manipulation.activeTouches < this.touchCount()) {
       this.beginManipulationTouch();
     }
     this.callbacks.onRoute?.(route, event);
@@ -744,25 +744,6 @@ export class PointerRouter {
       return;
     }
     this.clearTouchAxisGesture("native-touch-policy");
-  }
-
-  /** Reconcile policy evidence by clearing the canonical pen owner once. */
-  private handlePalmPolicyReset(reason: PenStateResetReason, activePenIds: number[]): void {
-    for (const pointerId of activePenIds) {
-      const route = this.routed.get(pointerId);
-      if (route) {
-        const cancel = this.syntheticPointerEvent(pointerId, "pointercancel", "pen");
-        this.callbacks.onCancel?.(route, cancel);
-        safeReleasePointerCapture(this.element, pointerId);
-        this.routed.delete(pointerId);
-        this.routedPointerTypes.delete(pointerId);
-      }
-      if (this.stylusErasers.delete(pointerId) && this.stylusErasers.size === 0) {
-        this.callbacks.onStylusEraserEnd?.();
-      }
-      this.ownership.pointerCancel({ pointerId, pointerType: "pen", buttons: 0 });
-    }
-    this.emitPenStateReset(reason, activePenIds);
   }
 
   private emitPenStateReset(
@@ -1149,6 +1130,9 @@ export class PointerRouter {
         // The platform may have already ended the pointer during the rebind.
       }
     }
+    for (const penId of handoff.activePenIds) {
+      this.ownership.adoptPenContact(penId);
+    }
     this.palmPolicy.adoptActivePenIds(handoff.activePenIds);
     this.syncTouchActionMode();
   }
@@ -1180,6 +1164,7 @@ export class PointerRouter {
   }
 
   destroy(): void {
+    if (this.abort.signal.aborted) return;
     this.cancelScheduledCursorUpdate();
     this.clearManipulationRearm();
     const handoff: PointerRouterHandoff = {
