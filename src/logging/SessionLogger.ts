@@ -414,7 +414,10 @@ export class SessionLogger {
 
   /** Major synchronous render work, never one event per pointer sample/frame. */
   renderProfile(details: Record<string, unknown>): void {
-    this.emit("info", "ink render profile", {
+    const durationMs = typeof details.durationMs === "number" && Number.isFinite(details.durationMs)
+      ? details.durationMs
+      : 0;
+    this.emit(durationMs >= FRAME_MS_120 ? "warn" : "info", "ink render profile", {
       document: this.documentPath,
       pluginVersion: this.pluginVersion,
       profileSchema: PROFILE_SCHEMA_VERSION,
