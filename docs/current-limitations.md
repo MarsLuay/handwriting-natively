@@ -24,6 +24,10 @@ Remaining manual compatibility evidence:
 - Use [`ipad-pointer-touch-trace-harness.md`](ipad-pointer-touch-trace-harness.md)
   for the physical Pointer/Touch/Scribble ordering rows. These rows remain
   `not-run` until captured on a current Obsidian iPadOS build.
+- Use [`ipad-input-release-matrix.md`](ipad-input-release-matrix.md) for the
+  complete physical input release gate, including cancellation, background,
+  unload, rotation, sidebar, and generation replacement. These rows remain
+  `not-run` until the named build/device evidence is attached.
 - Desktop: record the Obsidian API version and observed `view.viewer` graph; open direct and embedded PDFs; verify draw-off native scrolling/selection, draw-on overlay alignment across zoom/rotation/resize, page redraw/reload, close/reopen cleanup, and no duplicate listeners or overlays.
 - Android: record the Obsidian API version and observed viewer graph; repeat the direct/embedded, delayed-page, pinch/zoom alignment, reload, and teardown checks after the mobile PDF has rendered.
 - iPad: record the Obsidian API version and observed viewer graph; repeat the direct/embedded, Apple Pencil plus finger-scroll/pinch, zoom alignment, reload, and teardown checks. Confirm companion touch handling does not leave the PDF in an intercepted state.

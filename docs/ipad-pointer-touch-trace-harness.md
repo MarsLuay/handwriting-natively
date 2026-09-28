@@ -30,6 +30,11 @@ comparison, and visual-alignment checks, use
 passive input evidence required by that protocol; it does not replace the
 zoom profile or visual checklist.
 
+For the full physical input release gate, use
+[`ipad-input-release-matrix.md`](ipad-input-release-matrix.md). The rows in
+that matrix combine this observer with routing, cleanup, UI, generation, and
+visual outcomes; a copied event trace alone is not a release pass.
+
 Run each row from a clean PDF session. Do not use the harness to draw, pan,
 zoom, or cancel a gesture; it is an observer only.
 
