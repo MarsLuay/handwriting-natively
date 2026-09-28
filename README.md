@@ -29,6 +29,10 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 3. Select any release you desire! (the latest pre-release is my pick..)
 4. Press install and enjoy
 
+## If you want..
+
+If you like what I've made, I would deeply appreciate a donation to my https://buymeacoffee.com/marwanluaye! I need to support a coffee addiction but have to spend my spare money on silly things like a college education
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
