@@ -5,8 +5,8 @@ export const SLOW_SPAN_ASYNC_MS = 25;
 /** User-visible chains such as first ink after a pen down. */
 export const SLOW_SPAN_INTERACTION_MS = 50;
 export const SLOW_SPAN_WORST_LIMIT = 10;
+export const STAGE_SAMPLE_LIMIT = 32;
 import { percentile } from "../logging/PerformanceMetrics";
-const STAGE_SAMPLE_LIMIT = 32;
 
 export type SlowSpanKind = "sync" | "async" | "interaction";
 
@@ -19,7 +19,39 @@ export interface SlowSpanRecord {
   activeWorkMs: number | null;
   waitMs: number | null;
   reason: string | null;
+  correlationId: string | null;
   zoomBurstId: string | null;
+}
+
+export interface SlowInkStrokeRecord {
+  event: "perf-slow-interaction";
+  interaction: "ink-stroke";
+  correlationId: string | null;
+  pointerId: number | null;
+  physicalContactId: string | null;
+  strokeId: string | null;
+  page: number;
+  tool: string;
+  outcome: string;
+  zoomBurstId: string | null;
+  durationMs: number;
+  pointerDownToStrokeStartMs: number | null;
+  strokeStartToFirstCanvasCommitMs: number | null;
+  maxInputToRenderMs: number;
+  p95InputToRenderMs: number;
+  maxPluginCallbackMs: number;
+  p95FrameMs: number;
+  maxFrameMs: number;
+  pointerUpToCommitMs: number | null;
+  slowStages: Array<{ stage: string; durationMs: number; thresholdMs: number }>;
+}
+
+export interface SlowInkStrokeSummary {
+  totalSlowStrokes: number;
+  byStage: Record<string, number>;
+  maxByStage: Record<string, number>;
+  p95ByStage: Record<string, number>;
+  worstStrokes: SlowInkStrokeRecord[];
 }
 
 export interface SettleChurnSummary {
@@ -31,6 +63,7 @@ export interface SettleChurnSummary {
   activeWorkMs: null;
   waitMs: number;
   reason: string | null;
+  correlationId: null;
   zoomBurstId: string | null;
   settleDelayMs: number;
   settleTimerResetCount: number;
@@ -61,6 +94,7 @@ export interface SlowSpanSummary {
   maxByStage: Record<string, number>;
   p95ByStage: Record<string, number>;
   worstSpans: SlowSpanRecord[];
+  slowInkStrokeSummary: SlowInkStrokeSummary;
 }
 
 export function slowSpanThreshold(kind: SlowSpanKind): number {
@@ -75,6 +109,11 @@ export class SlowSpanTrace {
   private readonly samples = new Map<string, number[]>();
   private readonly worst: SlowSpanRecord[] = [];
   private readonly seen = new Set<string>();
+  private readonly seenOrder: string[] = [];
+  private slowInkStrokeCount = 0;
+  private readonly slowInkStrokeCounts = new Map<string, number>();
+  private readonly slowInkStrokeSamples = new Map<string, number[]>();
+  private readonly worstInkStrokes: SlowInkStrokeRecord[] = [];
   private zoomSettledAt: number | null = null;
   private zoomBurstId: string | null = null;
   private penDownAt: number | null = null;
@@ -132,14 +171,16 @@ export class SlowSpanTrace {
     activeWorkMs?: number | null;
     waitMs?: number | null;
     reason?: string | null;
+    correlationId?: string | null;
     zoomBurstId?: string | null;
   }): SlowSpanRecord | null {
     const thresholdMs = slowSpanThreshold(input.kind);
     if (input.durationMs < thresholdMs) return null;
+    const correlationId = input.correlationId ?? null;
     const zoomBurstId = input.zoomBurstId ?? this.zoomBurstId;
-    const key = `${input.stage}|${zoomBurstId ?? ""}|${input.reason ?? ""}`;
+    const key = `${input.stage}|${correlationId ?? ""}|${zoomBurstId ?? ""}|${input.reason ?? ""}`;
     if (this.seen.has(key)) return null;
-    this.seen.add(key);
+    this.rememberSeen(key);
     const record: SlowSpanRecord = {
       event: "perf-slow-span",
       category: input.category,
@@ -149,6 +190,7 @@ export class SlowSpanTrace {
       activeWorkMs: input.activeWorkMs ?? null,
       waitMs: input.waitMs ?? null,
       reason: input.reason ?? null,
+      correlationId,
       zoomBurstId
     };
     this.remember(record);
@@ -169,9 +211,9 @@ export class SlowSpanTrace {
   }): SettleChurnSummary | null {
     if (input.settleDelayMs < SLOW_SPAN_ASYNC_MS) return null;
     const zoomBurstId = input.zoomBurstId ?? this.zoomBurstId;
-    const key = `settle-timer-churn|${zoomBurstId ?? ""}`;
+    const key = `settle-timer-churn||${zoomBurstId ?? ""}|`;
     if (this.seen.has(key)) return null;
-    this.seen.add(key);
+    this.rememberSeen(key);
     const record: SettleChurnSummary = {
       event: "perf-slow-span",
       category: "zoom",
@@ -181,6 +223,7 @@ export class SlowSpanTrace {
       activeWorkMs: null,
       waitMs: roundMs(input.settleDelayMs),
       reason: input.lastDeferralReason,
+      correlationId: null,
       zoomBurstId,
       settleDelayMs: roundMs(input.settleDelayMs),
       settleTimerResetCount: input.settleTimerResetCount,
@@ -194,6 +237,107 @@ export class SlowSpanTrace {
     };
     this.remember(record);
     return record;
+  }
+
+  /** Retain only abnormal completed ink strokes; physical down time is not a stage. */
+  recordInkStroke(input: {
+    pointerId?: number | null;
+    physicalContactId?: string | null;
+    strokeId?: string | null;
+    page: number;
+    tool: string;
+    outcome: string;
+    pointerDownToStrokeStartMs?: number | null;
+    strokeStartToFirstCanvasCommitMs?: number | null;
+    maxInputToRenderMs?: number;
+    p95InputToRenderMs?: number;
+    maxPluginCallbackMs?: number;
+    p95FrameMs?: number;
+    maxFrameMs?: number;
+    pointerUpToCommitMs?: number | null;
+    zoomBurstId?: string | null;
+  }): SlowInkStrokeRecord | null {
+    const pointerId = input.pointerId ?? null;
+    const physicalContactId = input.physicalContactId ?? null;
+    const strokeId = input.strokeId ?? null;
+    const correlationId = physicalContactId ?? strokeId ?? (pointerId === null ? null : `pointer-${pointerId}`);
+    const pointerDownToStrokeStartMs = roundNullable(input.pointerDownToStrokeStartMs);
+    const strokeStartToFirstCanvasCommitMs = roundNullable(input.strokeStartToFirstCanvasCommitMs);
+    const maxInputToRenderMs = roundMs(input.maxInputToRenderMs ?? 0);
+    const p95InputToRenderMs = roundMs(input.p95InputToRenderMs ?? 0);
+    const maxPluginCallbackMs = roundMs(input.maxPluginCallbackMs ?? 0);
+    const p95FrameMs = roundMs(input.p95FrameMs ?? 0);
+    const maxFrameMs = roundMs(input.maxFrameMs ?? 0);
+    const pointerUpToCommitMs = roundNullable(input.pointerUpToCommitMs);
+    const candidates: Array<{ stage: string; durationMs: number | null; thresholdMs: number; kind: SlowSpanKind }> = [
+      { stage: "pointer-down-to-stroke-start", durationMs: pointerDownToStrokeStartMs, thresholdMs: SLOW_SPAN_SYNC_MS, kind: "sync" },
+      { stage: "first-canvas-commit", durationMs: strokeStartToFirstCanvasCommitMs, thresholdMs: SLOW_SPAN_INTERACTION_MS, kind: "interaction" },
+      { stage: "input-to-render", durationMs: maxInputToRenderMs, thresholdMs: SLOW_SPAN_ASYNC_MS, kind: "async" },
+      { stage: "stroke-frame-gap", durationMs: maxFrameMs, thresholdMs: SLOW_SPAN_SYNC_MS, kind: "sync" },
+      { stage: "plugin-callback", durationMs: maxPluginCallbackMs, thresholdMs: SLOW_SPAN_SYNC_MS, kind: "sync" },
+      { stage: "pointerup-to-commit", durationMs: pointerUpToCommitMs, thresholdMs: SLOW_SPAN_INTERACTION_MS, kind: "interaction" }
+    ];
+    const slowStages = candidates
+      .filter((candidate): candidate is typeof candidate & { durationMs: number } => candidate.durationMs !== null && candidate.durationMs >= candidate.thresholdMs)
+      .map(({ stage, durationMs, thresholdMs, kind }) => {
+        this.record({
+          kind,
+          category: "ink",
+          stage,
+          durationMs,
+          correlationId,
+          reason: "ink-stroke",
+          zoomBurstId: input.zoomBurstId ?? null
+        });
+        return { stage, durationMs: roundMs(durationMs), thresholdMs };
+      });
+    if (slowStages.length === 0) return null;
+    const record: SlowInkStrokeRecord = {
+      event: "perf-slow-interaction",
+      interaction: "ink-stroke",
+      correlationId,
+      pointerId,
+      physicalContactId,
+      strokeId,
+      page: input.page,
+      tool: input.tool,
+      outcome: input.outcome,
+      zoomBurstId: input.zoomBurstId ?? this.zoomBurstId,
+      durationMs: Math.max(...slowStages.map((stage) => stage.durationMs)),
+      pointerDownToStrokeStartMs,
+      strokeStartToFirstCanvasCommitMs,
+      maxInputToRenderMs,
+      p95InputToRenderMs,
+      maxPluginCallbackMs,
+      p95FrameMs,
+      maxFrameMs,
+      pointerUpToCommitMs,
+      slowStages
+    };
+    this.rememberInkStroke(record);
+    return record;
+  }
+
+  slowInkStrokeSummary(): SlowInkStrokeSummary {
+    const byStage: Record<string, number> = {};
+    const maxByStage: Record<string, number> = {};
+    const p95ByStage: Record<string, number> = {};
+    for (const [stage, count] of this.slowInkStrokeCounts) byStage[stage] = count;
+    for (const [stage, samples] of this.slowInkStrokeSamples) {
+      const sorted = [...samples].sort((a, b) => a - b);
+      maxByStage[stage] = sorted[sorted.length - 1] ?? 0;
+      p95ByStage[stage] = roundMs(percentile(sorted, 0.95));
+    }
+    return {
+      totalSlowStrokes: this.slowInkStrokeCount,
+      byStage,
+      maxByStage,
+      p95ByStage,
+      worstStrokes: this.worstInkStrokes.map((stroke) => ({
+        ...stroke,
+        slowStages: stroke.slowStages.map((stage) => ({ ...stage }))
+      }))
+    };
   }
 
   summary(): SlowSpanSummary {
@@ -211,7 +355,8 @@ export class SlowSpanTrace {
       byStage,
       maxByStage,
       p95ByStage,
-      worstSpans: this.worst.map((span) => ({ ...span }))
+      worstSpans: this.worst.map((span) => ({ ...span })),
+      slowInkStrokeSummary: this.slowInkStrokeSummary()
     };
   }
 
@@ -225,6 +370,29 @@ export class SlowSpanTrace {
     this.worst.push(record);
     this.worst.sort((a, b) => b.durationMs - a.durationMs);
     if (this.worst.length > SLOW_SPAN_WORST_LIMIT) this.worst.length = SLOW_SPAN_WORST_LIMIT;
+  }
+
+  private rememberInkStroke(record: SlowInkStrokeRecord): void {
+    this.slowInkStrokeCount += 1;
+    for (const stage of record.slowStages) {
+      this.slowInkStrokeCounts.set(stage.stage, (this.slowInkStrokeCounts.get(stage.stage) ?? 0) + 1);
+      const samples = this.slowInkStrokeSamples.get(stage.stage) ?? [];
+      samples.push(stage.durationMs);
+      if (samples.length > STAGE_SAMPLE_LIMIT) samples.shift();
+      this.slowInkStrokeSamples.set(stage.stage, samples);
+    }
+    this.worstInkStrokes.push(record);
+    this.worstInkStrokes.sort((a, b) => b.durationMs - a.durationMs);
+    if (this.worstInkStrokes.length > SLOW_SPAN_WORST_LIMIT) this.worstInkStrokes.length = SLOW_SPAN_WORST_LIMIT;
+  }
+
+  private rememberSeen(key: string): void {
+    this.seen.add(key);
+    this.seenOrder.push(key);
+    while (this.seenOrder.length > SLOW_SPAN_WORST_LIMIT * STAGE_SAMPLE_LIMIT) {
+      const oldest = this.seenOrder.shift();
+      if (oldest !== undefined) this.seen.delete(oldest);
+    }
   }
 }
 
