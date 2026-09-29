@@ -148,6 +148,17 @@ export class MobilePdfZoomHandoff {
     return { phase: this.phase, accepted: true };
   }
 
+  /** Update the final page-space anchor as the two-finger midpoint moves. */
+  updateFocalPoint(focalPoint: ViewportPoint): boolean {
+    if ((this.phase !== "preview" && this.phase !== "committing") || !finitePoint(focalPoint) || !this.anchor) {
+      return false;
+    }
+    // Generation/page validation remains at commit and release boundaries;
+    // midpoint updates stay on the input-critical path and do not query DOM.
+    this.anchor.focalPoint = { ...focalPoint };
+    return true;
+  }
+
   observe(signal: MobilePdfZoomHandoffSignal): MobilePdfZoomHandoffPhase {
     if (this.phase !== "committing") return this.phase;
     const reason = this.validateGenerationAndPage();
