@@ -9091,6 +9091,7 @@ export class ViewerInkSession {
       "native-pdf-handwriting-touch-draw-page",
       "native-pdf-handwriting-touch-none",
       "native-pdf-handwriting-touch-pan-xy",
+      "native-pdf-handwriting-touch-custom-pinch",
       "native-pdf-handwriting-pen-capturing"
     );
     const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
