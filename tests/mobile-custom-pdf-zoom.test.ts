@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   cancellationReason,
-  classifyMobilePdfContact,
   decideGenerationReplacement,
   planMobileCustomPdfZoom,
   type MobileCustomPdfZoomGateInput
 } from "../src/integration/MobileCustomPdfZoom";
+import { GestureOwnership } from "../src/input/GestureOwnership";
 import type { PdfIntegrationProfile } from "../src/integration/PdfViewerCompatibility";
 import { probePlatformCapabilities } from "../src/integration/PlatformCapabilities";
 
@@ -143,47 +143,26 @@ describe("mobile custom PDF zoom contract", () => {
   });
 
   it("keeps one-finger navigation and pen-plus-finger input out of custom pinch", () => {
-    expect(classifyMobilePdfContact({
-      mode: "custom-mobile",
-      touchCount: 1,
-      penActive: false,
-      penCompanionTouch: false,
-      cancelled: false
-    })).toBe("native-touch");
-    expect(classifyMobilePdfContact({
-      mode: "custom-mobile",
-      touchCount: 2,
-      penActive: false,
-      penCompanionTouch: false,
-      cancelled: false
-    })).toBe("custom-pinch");
-    expect(classifyMobilePdfContact({
-      mode: "custom-mobile",
-      touchCount: 2,
-      penActive: false,
-      penCompanionTouch: true,
-      cancelled: false
-    })).toBe("pen-companion-native");
-    expect(classifyMobilePdfContact({
-      mode: "custom-mobile",
-      touchCount: 1,
-      penActive: true,
-      penCompanionTouch: true,
-      cancelled: false
-    })).toBe("pen-annotation");
+    const ownership = new GestureOwnership({ customPinchEnabled: true });
+    expect(ownership.pointerDown({ pointerId: 1, pointerType: "touch" }).state.owner)
+      .toBe("native-touch-navigation");
+    expect(ownership.pointerDown({ pointerId: 2, pointerType: "touch" }).state.owner)
+      .toBe("custom-touch-pinch");
+
+    const penOwnership = new GestureOwnership({ customPinchEnabled: true });
+    penOwnership.pointerDown({ pointerId: 3, pointerType: "pen", target: "page", inkToolSelected: true });
+    expect(penOwnership.pointerDown({ pointerId: 4, pointerType: "touch", target: "page" }).state.owner)
+      .toBe("pen-ink");
   });
 
   it("turns every cancellation signal into a compositor release decision", () => {
     expect(cancellationReason("pointer-cancel")).toBe("pointer-cancel");
     expect(cancellationReason("visibility-hidden")).toBe("visibility-hidden");
     expect(cancellationReason(null)).toBeNull();
-    expect(classifyMobilePdfContact({
-      mode: "custom-mobile",
-      touchCount: 2,
-      penActive: false,
-      penCompanionTouch: false,
-      cancelled: true
-    })).toBe("cancelled");
+    const ownership = new GestureOwnership({ customPinchEnabled: true });
+    ownership.pointerDown({ pointerId: 1, pointerType: "touch" });
+    ownership.pointerDown({ pointerId: 2, pointerType: "touch" });
+    expect(ownership.pointerCancel({ pointerId: 2, pointerType: "touch" }).action).toBe("preview");
   });
 
   it("never carries a temporary transform across a viewer generation replacement", () => {

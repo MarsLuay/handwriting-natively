@@ -13,6 +13,7 @@ export type ManipulationState =
   | "assisted-touch"
   | "native-touch"
   | "pinch"
+  | "custom-pinch"
   | "touch-linger";
 
 export interface ManipulationPlatformCapabilities {
@@ -20,11 +21,14 @@ export interface ManipulationPlatformCapabilities {
   supportsTouchAction: boolean;
   /** Whether the host/viewer can own a native two-finger pinch. */
   supportsNativePinch: boolean;
+  /** Whether the qualified mobile session owns the two-touch path. */
+  supportsCustomPinch?: boolean;
 }
 
 export const DEFAULT_MANIPULATION_PLATFORM_CAPABILITIES: ManipulationPlatformCapabilities = {
   supportsTouchAction: true,
-  supportsNativePinch: true
+  supportsNativePinch: true,
+  supportsCustomPinch: false
 };
 
 /** One-shot delay before the standing cold-contact guard is restored. */
@@ -55,11 +59,18 @@ export interface ManipulationTransition {
 export class ManipulationStateMachine {
   private currentState: ManipulationState = "armed";
   private activeTouchCount = 0;
+  private customPinchEnabled: boolean;
   private last: ManipulationTransition | null = null;
 
   constructor(
     private readonly capabilities: ManipulationPlatformCapabilities = DEFAULT_MANIPULATION_PLATFORM_CAPABILITIES
-  ) {}
+  ) {
+    this.customPinchEnabled = capabilities.supportsCustomPinch === true;
+  }
+
+  setCustomPinchEnabled(enabled: boolean): void {
+    this.customPinchEnabled = enabled;
+  }
 
   get state(): ManipulationState {
     return this.currentState;
@@ -120,7 +131,7 @@ export class ManipulationStateMachine {
   pinchStart(previousState: ManipulationState = this.currentState): ManipulationTransition {
     const from = previousState;
     this.activeTouchCount = Math.max(2, this.activeTouchCount);
-    this.currentState = "pinch";
+    this.currentState = this.customPinchEnabled ? "custom-pinch" : "pinch";
     return this.record({
       event: "pinch-start",
       from,

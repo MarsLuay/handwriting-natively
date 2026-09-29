@@ -117,34 +117,6 @@ export function planMobileCustomPdfZoom(input: MobileCustomPdfZoomGateInput): Mo
   };
 }
 
-export type MobileCustomPdfZoomContactOwnership =
-  | "native-touch"
-  | "custom-pinch"
-  | "pen-annotation"
-  | "pen-companion-native"
-  | "cancelled";
-
-export interface MobileCustomPdfZoomContactInput {
-  mode: MobileCustomPdfZoomMode;
-  touchCount: number;
-  penActive: boolean;
-  penCompanionTouch: boolean;
-  cancelled: boolean;
-}
-
-/**
- * Contact ownership is intentionally conservative: one finger remains with
- * the PDF host, and any touch accompanying a pen remains native rather than
- * becoming a plugin-owned pinch.
- */
-export function classifyMobilePdfContact(input: MobileCustomPdfZoomContactInput): MobileCustomPdfZoomContactOwnership {
-  if (input.cancelled) return "cancelled";
-  if (input.penActive) return "pen-annotation";
-  if (input.penCompanionTouch) return "pen-companion-native";
-  if (input.mode === "custom-mobile" && input.touchCount >= 2) return "custom-pinch";
-  return "native-touch";
-}
-
 export type MobileCustomPdfZoomCancellationReason =
   | "pointer-cancel"
   | "touch-cancel"

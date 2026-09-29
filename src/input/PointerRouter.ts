@@ -21,7 +21,18 @@ import {
   type PointerInputCapabilities
 } from "./PointerInputCapabilities";
 
-export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "native" | "ignored";
+export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "touch-custom-pinch" | "native" | "ignored";
+
+export interface CustomPinchPoint {
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+}
+
+export interface CustomPinchFrame {
+  generation: number;
+  points: readonly CustomPinchPoint[];
+}
 export type PointerRejectionReason = "annotation-chrome" | "already-handled" | "inactive-owner" | "stale-generation";
 export interface PointerRouterHandoff {
   routed: Array<{ pointerId: number; route: "draw" | "edit" | "text" }>;
@@ -89,6 +100,12 @@ export interface PointerRouterCallbacks {
   canAnnotatePointer(event: PointerEvent): boolean;
   /** Whether the selected touch fallback is currently available for cursors. */
   touchAnnotationEnabled?(): boolean;
+  /** Qualified mobile-only custom pinch gate; false preserves native touch. */
+  customPinchEnabled?(): boolean;
+  onCustomPinchStart?(frame: CustomPinchFrame): void;
+  /** Latest visual sample, delivered at most once per display frame. */
+  onCustomPinchFrame?(frame: CustomPinchFrame): void;
+  onCustomPinchEnd?(reason: "pointerup" | "pointercancel" | "lostpointercapture" | "pen-contact" | "lifecycle" | "disabled"): void;
   /** True when the requested mouse button is bound to an annotation gesture. */
   mouseAnnotationEnabled?(button?: number): boolean;
   rightMouseEraserEnabled?(): boolean;
@@ -182,6 +199,10 @@ export class PointerRouter {
   private lastCursorPointerType: string | null = null;
   private pendingCursorUpdate: Pick<PointerEvent, "clientX" | "clientY" | "pointerType"> | null = null;
   private cursorAnimationFrame: number | null = null;
+  private readonly customPinchPoints = new Map<number, CustomPinchPoint>();
+  private customPinchFrameAnimation: number | null = null;
+  private customPinchActive = false;
+  private touchTextContactActive = false;
 
   constructor(
     private readonly element: HTMLElement,
@@ -191,11 +212,15 @@ export class PointerRouter {
     resetOwnershipOnDestroy = true
   ) {
     this.generation = PointerRouter.nextGeneration++;
-    this.manipulation = new ManipulationStateMachine(
-      callbacks.manipulationCapabilities?.() ?? DEFAULT_MANIPULATION_PLATFORM_CAPABILITIES
-    );
+    const manipulationCapabilities = callbacks.manipulationCapabilities?.() ?? DEFAULT_MANIPULATION_PLATFORM_CAPABILITIES;
+    const customPinchEnabled = callbacks.customPinchEnabled?.() === true && manipulationCapabilities.supportsTouchAction;
+    this.manipulation = new ManipulationStateMachine({
+      ...manipulationCapabilities,
+      supportsCustomPinch: customPinchEnabled
+    });
+    this.manipulation.setCustomPinchEnabled(customPinchEnabled);
     this.palmPolicy = palmPolicy ?? new PalmRejectionPolicy();
-    this.ownership = ownership ?? new GestureOwnership();
+    this.ownership = ownership ?? new GestureOwnership({ customPinchEnabled });
     this.inputCapabilities = callbacks.pointerInputCapabilities?.() ?? DEFAULT_POINTER_INPUT_CAPABILITIES;
     this.resetOwnershipOnDestroy = resetOwnershipOnDestroy;
     this.palmPolicy.setResetListener((reason, activePenIds) => {
@@ -289,6 +314,12 @@ export class PointerRouter {
       if (this.palmPolicy.shouldIgnore(event)) return { route: "ignored", reason: "palm-rejection" };
       const activeTouchIds = this.ownership.snapshot().activeTouchIds;
       const multi = activeTouchIds.size + (activeTouchIds.has(event.pointerId) ? 0 : 1) >= 2;
+      const touchFallback = this.callbacks.touchAnnotationEnabled?.() === true
+        && this.callbacks.canAnnotatePointer(event);
+      const textTarget = this.callbacks.touchTextTarget?.(event) === true;
+      if (multi && this.customPinchAllowed() && !touchFallback && !this.touchTextContactActive && !textTarget) {
+        return { route: "touch-custom-pinch", reason: "multi-touch-custom" };
+      }
       if (multi) return { route: "touch-zoom-pan", reason: "multi-touch-native" };
       if (event.isPrimary !== false && this.callbacks.touchTextTarget?.(event)) {
         return { route: "text", reason: "text-box-touch" };
@@ -342,6 +373,11 @@ export class PointerRouter {
     if (!this.callbacks.canAnnotatePointer(event)) return;
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
     if (!penLike) return;
+    if (this.ownership.snapshot().owner === "custom-touch-pinch") {
+      this.ownership.setCustomPinchEnabled(false);
+      this.finishCustomPinch("pen-contact");
+      this.ownership.setCustomPinchEnabled(this.customPinchAllowed());
+    }
     const transition = this.manipulation.penSignal();
     if (transition.cancelAssist) this.clearTouchAxisGesture("pen-contact", event);
     this.applyManipulationTransition(transition);
@@ -379,6 +415,72 @@ export class PointerRouter {
     return this.ownership.snapshot().activeTouchIds.size;
   }
 
+  private customPinchAllowed(): boolean {
+    return this.callbacks.customPinchEnabled?.() === true
+      && this.inputCapabilities.pointerEvents
+      && this.inputCapabilities.touchEvents;
+  }
+
+  private syncCustomPinchPolicy(): void {
+    const enabled = this.customPinchAllowed();
+    this.manipulation.setCustomPinchEnabled(enabled);
+    const before = this.ownership.snapshot().owner;
+    const after = this.ownership.setCustomPinchEnabled(enabled);
+    if (before === "custom-touch-pinch" && after.owner !== "custom-touch-pinch") {
+      this.finishCustomPinch("disabled");
+    }
+  }
+
+  private updateCustomPinchPoint(event: PointerEvent): void {
+    if (event.pointerType !== "touch") return;
+    this.customPinchPoints.set(event.pointerId, {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY
+    });
+  }
+
+  private currentCustomPinchFrame(): CustomPinchFrame {
+    return {
+      generation: this.generation,
+      points: [...this.customPinchPoints.values()]
+        .sort((left, right) => left.pointerId - right.pointerId)
+        .map((point) => ({ ...point }))
+    };
+  }
+
+  private beginCustomPinch(): void {
+    if (this.customPinchActive) return;
+    this.customPinchActive = true;
+    this.callbacks.onCustomPinchStart?.(this.currentCustomPinchFrame());
+    this.scheduleCustomPinchFrame();
+  }
+
+  private scheduleCustomPinchFrame(): void {
+    if (!this.customPinchActive || this.customPinchPoints.size < 2 || this.customPinchFrameAnimation !== null) return;
+    const view = this.element.ownerDocument.defaultView;
+    const flush = (): void => {
+      this.customPinchFrameAnimation = null;
+      if (!this.customPinchActive || this.customPinchPoints.size < 2) return;
+      this.callbacks.onCustomPinchFrame?.(this.currentCustomPinchFrame());
+    };
+    this.customPinchFrameAnimation = view?.requestAnimationFrame?.(flush)
+      ?? (view?.setTimeout(flush, 16) ?? window.setTimeout(flush, 16));
+  }
+
+  private finishCustomPinch(reason: "pointerup" | "pointercancel" | "lostpointercapture" | "pen-contact" | "lifecycle" | "disabled"): void {
+    if (this.customPinchFrameAnimation !== null) {
+      const view = this.element.ownerDocument.defaultView;
+      if (view?.cancelAnimationFrame) view.cancelAnimationFrame(this.customPinchFrameAnimation);
+      else (view?.clearTimeout ?? window.clearTimeout)(this.customPinchFrameAnimation);
+      this.customPinchFrameAnimation = null;
+    }
+    this.customPinchPoints.clear();
+    if (!this.customPinchActive) return;
+    this.customPinchActive = false;
+    this.callbacks.onCustomPinchEnd?.(reason);
+  }
+
   private finishManipulationTouch(event: PointerEvent, panned: boolean): void {
     if (event.pointerType !== "touch" || this.manipulation.activeTouches === 0) return;
     const transition = this.manipulation.touchEnd(panned);
@@ -411,7 +513,12 @@ export class PointerRouter {
     }
     this.callbacks.onPointerHandled?.(event.pointerId, this.generation);
     this.paintCustomCursorsNow(event);
+    this.syncCustomPinchPolicy();
     if (event.pointerType === "touch" && event.isPrimary !== false) this.callbacks.onTouchPointerDown?.(event);
+    if (event.pointerType === "touch") {
+      if (this.touchCount() === 0) this.touchTextContactActive = this.callbacks.touchTextTarget?.(event) === true;
+      this.updateCustomPinchPoint(event);
+    }
     if (event.pointerType === "touch") {
       // Finger after a vanished Pencil tip: do not keep scroll-lock forever.
       this.palmPolicy.reconcileStalePenOnTouch();
@@ -420,6 +527,7 @@ export class PointerRouter {
       const trackedBefore = this.touchCount();
       this.ownership.clearTouchContacts();
       this.clearManipulationRearm();
+      this.finishCustomPinch("lifecycle");
       this.manipulation.reset();
       // Keep active pens — a stale finger ID must not unlock Pencil scroll lock.
       if (!this.palmPolicy.hasActivePen()) this.palmPolicy.reset();
@@ -470,11 +578,17 @@ export class PointerRouter {
         || !ownershipDecision.state.activeTouchIds.has(event.pointerId))) {
       route = "touch-pan";
       routeReason = "gesture-ownership";
+    } else if (gesturePointerType === "touch"
+      && route === "touch-custom-pinch"
+      && (ownershipDecision.state.owner !== "custom-touch-pinch"
+        || !ownershipDecision.state.activeTouchIds.has(event.pointerId))) {
+      route = "touch-pan";
+      routeReason = "gesture-ownership";
     }
     this.callbacks.onRouteDecision?.(route, routeReason, event);
     if (
       event.pointerType === "touch"
-      && (route === "touch-pan" || route === "touch-zoom-pan")
+      && (route === "touch-pan" || route === "touch-zoom-pan" || route === "touch-custom-pinch")
       && this.manipulation.activeTouches < this.touchCount()
     ) {
       this.beginManipulationTouch();
@@ -491,6 +605,12 @@ export class PointerRouter {
         this.routedPointerTypes.delete(pointerId);
       }
       this.clearTouchAxisGesture("multi-finger");
+    }
+    if (route === "touch-custom-pinch") {
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+      this.beginCustomPinch();
+      return route;
     }
     // Palm / Pencil companion touch while a stylus is down: block native scroll.
     if (route === "ignored") {
@@ -856,9 +976,17 @@ export class PointerRouter {
       button: event.button,
       buttons: event.buttons
     } as const;
+    const wasCustomPinch = this.ownership.snapshot().owner === "custom-touch-pinch";
     if (phase === "pointercancel") this.ownership.pointerCancel(contact);
     else if (phase === "lostpointercapture") this.ownership.lostCapture(contact);
     else this.ownership.pointerUp(contact);
+    if (wasCustomPinch && this.ownership.snapshot().owner !== "custom-touch-pinch") {
+      this.finishCustomPinch(phase);
+    }
+    if (event.pointerType === "touch") {
+      this.customPinchPoints.delete(event.pointerId);
+      if (this.touchCount() === 0) this.touchTextContactActive = false;
+    }
   }
 
   private finishRoutedPointer(event: PointerEvent, phase: "pointerup" | "pointercancel"): void {
@@ -901,6 +1029,7 @@ export class PointerRouter {
     this.clearManipulationRearm();
     this.manipulation.reset();
     this.palmPolicy.clearAll("pointercancel");
+    this.finishCustomPinch("lifecycle");
     this.ownership.replaceGeneration();
     this.syncTouchActionMode();
     this.hideCustomCursors();
@@ -933,6 +1062,10 @@ export class PointerRouter {
     this.scheduleCustomCursorUpdate(event);
     this.notePenSignal(event);
     this.palmPolicy.notePenActivity(event);
+    if (event.pointerType === "touch") {
+      this.updateCustomPinchPoint(event);
+      if (this.ownership.snapshot().owner === "custom-touch-pinch") this.scheduleCustomPinchFrame();
+    }
     const route = this.routed.get(event.pointerId);
     const ownership = this.ownership.pointerMove({
       pointerId: event.pointerId,
@@ -1126,6 +1259,7 @@ export class PointerRouter {
 
   syncToolState(): void {
     this.cancelScheduledCursorUpdate();
+    this.syncCustomPinchPolicy();
     this.syncTouchActionMode();
     const tool = this.callbacks.activeTool();
     if (tool !== "eraser") this.hideEraserCursor();
@@ -1248,6 +1382,7 @@ export class PointerRouter {
     this.routedPointerTypes.clear();
     if (this.stylusErasers.size > 0) this.callbacks.onStylusEraserEnd?.();
     this.stylusErasers.clear();
+    this.finishCustomPinch("lifecycle");
     this.manipulation.reset();
     this.clearTouchAxisGesture("destroy");
     this.touchAxis = null;
