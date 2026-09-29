@@ -30,7 +30,14 @@ export class FuzzySuggestModal<T> extends Modal {
       .filter((item) => !normalized || this.getItemText(item).toLowerCase().includes(normalized))
       .map((item) => ({ item, match: { score: 0, matches: [] } }));
   }
-  onChooseItem(_item: T): void {}
+  selectSuggestion(value: { item: T; match: unknown }, evt?: MouseEvent | KeyboardEvent): void {
+    this.close();
+    this.onChooseSuggestion(value, (evt ?? new MouseEvent("click")) as MouseEvent | KeyboardEvent);
+  }
+  onChooseSuggestion(value: { item: T; match: unknown }, evt: MouseEvent | KeyboardEvent): void {
+    this.onChooseItem(value.item, evt);
+  }
+  onChooseItem(_item: T, _evt?: MouseEvent | KeyboardEvent): void {}
 }
 
 export class Menu {

@@ -49,8 +49,9 @@ export class PdfImportOptionsModal extends Modal {
   ) {
     super(app);
     this.config = config;
+    const requestedCurrentPage = Number.isFinite(config.currentPage) ? Math.trunc(config.currentPage) : 1;
     this.currentPage = Math.min(
-      Math.max(1, Math.trunc(config.currentPage)),
+      Math.max(1, requestedCurrentPage),
       Math.max(1, config.destinationPageCount)
     );
   }
@@ -186,8 +187,12 @@ export class PdfImportOptionsModal extends Modal {
 
   private refreshSummary(): void {
     if (!this.summaryEl) return;
+    if (this.errorEl) this.errorEl.textContent = "";
     const count = this.selectedPages()?.length ?? 0;
-    const location = this.locationEl?.selectedOptions[0]?.textContent?.replace("…", "") ?? "the selected location";
+    const selectedOption = this.locationEl && this.locationEl.selectedIndex >= 0
+      ? this.locationEl.options[this.locationEl.selectedIndex]
+      : null;
+    const location = selectedOption?.textContent?.replace("…", "") ?? "the selected location";
     this.summaryEl.textContent = `${count} page${count === 1 ? "" : "s"} will be imported ${location.toLowerCase()}.`;
   }
 
@@ -347,6 +352,7 @@ export async function readExternalPdf(file: Pick<File, "name" | "type" | "arrayB
 /** Vault PDF picker. Destination may be selected for safe self-import. */
 export class PdfImportFilePicker extends FuzzySuggestModal<PdfImportItem> {
   private chosen = false;
+  private closed = false;
   private externalInput: HTMLInputElement | null = null;
   private externalSettled = false;
 
@@ -381,21 +387,33 @@ export class PdfImportFilePicker extends FuzzySuggestModal<PdfImportItem> {
     return isExternalImportAction(item) ? item.label : item.path;
   }
 
+  /**
+   * Obsidian's SuggestModal calls `this.close()` inside `selectSuggestion`
+   * before invoking `onChooseSuggestion` / `onChooseItem`. Mark the item as chosen
+   * before delegating so `onClose()` does not treat the close as user cancellation.
+   */
+  selectSuggestion(value: FuzzyMatch<PdfImportItem>, evt: MouseEvent | KeyboardEvent): void {
+    this.chosen = true;
+    super.selectSuggestion(value, evt);
+  }
+
+  override close(): void {
+    this.closed = true;
+    super.close();
+  }
+
   onChooseItem(item: PdfImportItem): void {
     this.chosen = true;
+    if (!this.closed) this.close();
     if (isExternalImportAction(item)) {
       this.openExternalPicker();
-      this.close();
       return;
     }
-    // Close before resolving the picker promise. The caller immediately opens
-    // the follow-up options modal; leaving this modal active can cover it or
-    // cause Obsidian's modal stack to close the newly opened modal.
-    this.close();
     this.onChoose(item);
   }
 
   onClose(): void {
+    this.closed = true;
     super.onClose();
     if (!this.chosen) this.onCancel();
   }

@@ -183,6 +183,44 @@ describe("PDF page import selection", () => {
     })).rejects.toThrow("The selected PDF could not be read.");
   });
 
+  it("marks selection as chosen before Obsidian close lifecycle runs during selectSuggestion", () => {
+    const chosen = vi.fn();
+    const cancelled = vi.fn();
+    const source = { path: "source.pdf", extension: "pdf" } as never;
+    const picker = new PdfImportFilePicker(
+      { vault: { getFiles: () => [source] } } as never,
+      "destination.pdf",
+      chosen,
+      cancelled
+    );
+    picker.open();
+    picker.selectSuggestion({ item: source, match: { score: 1, matches: [] } }, new MouseEvent("click"));
+
+    expect(chosen).toHaveBeenCalledWith(source);
+    expect(cancelled).not.toHaveBeenCalled();
+  });
+
+  it("allows selecting external import action via selectSuggestion without triggering picker cancellation", async () => {
+    const chosen = vi.fn();
+    const cancelled = vi.fn();
+    const picker = new PdfImportFilePicker(
+      { vault: { getFiles: () => [] } } as never,
+      "destination.pdf",
+      chosen,
+      cancelled
+    );
+    picker.open();
+    picker.selectSuggestion(picker.getSuggestions("")[0]!, new MouseEvent("click"));
+    expect(cancelled).not.toHaveBeenCalled();
+    const input = document.querySelector<HTMLInputElement>("input[type='file']");
+    expect(input).not.toBeNull();
+    const file = new File(["%PDF-1.7\nexternal"], "outside.pdf", { type: "application/pdf" });
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    input?.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(chosen).toHaveBeenCalledOnce());
+    expect(cancelled).not.toHaveBeenCalled();
+  });
+
   it("closes the vault picker before resolving the source callback", () => {
     const chosen = vi.fn();
     const picker = new PdfImportFilePicker(
