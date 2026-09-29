@@ -38,6 +38,19 @@ function customRouter(element: HTMLElement, overrides: Record<string, unknown> =
   });
 }
 
+function touch(identifier: number, clientX: number, clientY: number, target: EventTarget): Touch {
+  return { identifier, clientX, clientY, target } as Touch;
+}
+
+function touchEvent(type: "touchstart" | "touchmove" | "touchend", touches: Touch[], changedTouches: Touch[] = touches): TouchEvent {
+  const event = new Event(type, { bubbles: true, cancelable: true }) as TouchEvent;
+  Object.defineProperties(event, {
+    touches: { value: touches },
+    changedTouches: { value: changedTouches }
+  });
+  return event;
+}
+
 describe("mobile custom pinch ownership", () => {
   it("promotes one-finger native navigation to custom pinch and cleans up", () => {
     const ownership = new GestureOwnership({ customPinchEnabled: true });
@@ -115,6 +128,39 @@ describe("mobile custom pinch ownership", () => {
     element.dispatchEvent(pointer("pointerup", "touch", 1));
     expect(router.activeTouchPointerIds()).toEqual([]);
     expect(router.activeRoutedPointerIds()).toEqual([]);
+    router.destroy();
+    element.remove();
+  });
+
+  it("uses the iOS TouchEvent stream when the second PointerEvent is withheld", async () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const starts = vi.fn();
+    const frames = vi.fn();
+    const ends = vi.fn();
+    const router = customRouter(element, {
+      onCustomPinchStart: starts,
+      onCustomPinchFrame: frames,
+      onCustomPinchEnd: ends
+    });
+
+    element.dispatchEvent(pointer("pointerdown", "touch", 1, { clientX: 10, clientY: 20 }));
+    element.dispatchEvent(touchEvent("touchstart", [touch(1, 10, 20, element)]));
+    const secondTouch = touch(2, 40, 20, element);
+    const secondStart = touchEvent("touchstart", [touch(1, 10, 20, element), secondTouch], [secondTouch]);
+    element.dispatchEvent(secondStart);
+    expect(secondStart.defaultPrevented).toBe(true);
+    expect(starts).toHaveBeenCalledTimes(1);
+    expect(starts.mock.calls[0]?.[0].points).toHaveLength(2);
+
+    element.dispatchEvent(touchEvent("touchmove", [touch(1, 10, 20, element), touch(2, 55, 20, element)], [touch(2, 55, 20, element)]));
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    expect(frames).toHaveBeenCalledTimes(1);
+    expect(frames.mock.calls[0]?.[0].points).toHaveLength(2);
+
+    const firstTouch = touch(1, 10, 20, element);
+    element.ownerDocument.dispatchEvent(touchEvent("touchend", [touch(2, 55, 20, element)], [firstTouch]));
+    expect(ends).toHaveBeenCalledWith("pointerup");
     router.destroy();
     element.remove();
   });

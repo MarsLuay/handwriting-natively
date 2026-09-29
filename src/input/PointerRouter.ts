@@ -202,6 +202,8 @@ export class PointerRouter {
   private readonly customPinchPoints = new Map<number, CustomPinchPoint>();
   private customPinchFrameAnimation: number | null = null;
   private customPinchActive = false;
+  /** iOS can deliver TouchEvents without the promoting second PointerEvent. */
+  private customPinchTouchFallbackActive = false;
   private touchTextContactActive = false;
 
   constructor(
@@ -263,6 +265,14 @@ export class PointerRouter {
         // stays auto so fingers can scroll when no pen is down).
         element.addEventListener("touchstart", this.blockTouchScrollWhilePen, { ...options, passive: false });
         element.addEventListener("touchmove", this.blockTouchScrollWhilePen, { ...options, passive: false });
+        // WKWebView may expose the two-finger TouchEvent stream while native
+        // gesture recognition suppresses the promoting second PointerEvent.
+        // Keep this page-local and only enable it after the same qualified gate.
+        element.addEventListener("touchstart", this.handleTouchCustomPinch, options);
+        element.addEventListener("touchmove", this.handleTouchCustomPinch, options);
+        for (const type of ["gesturestart", "gesturechange", "gestureend"] as const) {
+          element.addEventListener(type, this.handleNativeGesture, options);
+        }
         // Touch Events ignore Pointer Events capture (Ink). Use them for finger
         // bookkeeping + stale-pen unlock when pointerup never reaches the page.
         element.ownerDocument.addEventListener("touchend", this.handleTouchTerminal, { ...options, passive: true });
@@ -426,19 +436,85 @@ export class PointerRouter {
     this.manipulation.setCustomPinchEnabled(enabled);
     const before = this.ownership.snapshot().owner;
     const after = this.ownership.setCustomPinchEnabled(enabled);
-    if (before === "custom-touch-pinch" && after.owner !== "custom-touch-pinch") {
+    if (!enabled && (before === "custom-touch-pinch" || this.customPinchActive)) {
+      this.finishCustomPinch("disabled");
+    } else if (before === "custom-touch-pinch" && after.owner !== "custom-touch-pinch") {
       this.finishCustomPinch("disabled");
     }
   }
 
   private updateCustomPinchPoint(event: PointerEvent): void {
-    if (event.pointerType !== "touch") return;
+    if (event.pointerType !== "touch" || this.customPinchTouchFallbackActive) return;
     this.customPinchPoints.set(event.pointerId, {
       pointerId: event.pointerId,
       clientX: event.clientX,
       clientY: event.clientY
     });
   }
+
+  private touchContactsAreQualified(event: TouchEvent): boolean {
+    const contacts = Array.from(event.touches).slice(0, 2);
+    return contacts.length >= 2 && contacts.every((touch) => {
+      const target = touch.target;
+      return target instanceof Element
+        && this.element.contains(target)
+        && classifyInputTarget(target).targetClass === "page";
+    });
+  }
+
+  private updateCustomPinchTouches(event: TouchEvent): boolean {
+    if (!this.touchContactsAreQualified(event)) return false;
+    this.customPinchPoints.clear();
+    for (const touch of Array.from(event.touches).slice(0, 2)) {
+      this.customPinchPoints.set(touch.identifier, {
+        pointerId: touch.identifier,
+        clientX: touch.clientX,
+        clientY: touch.clientY
+      });
+    }
+    return this.customPinchPoints.size >= 2;
+  }
+
+  private preventCustomPinchTouch(event: TouchEvent): void {
+    if (!event.cancelable) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  /**
+   * iPadOS/WKWebView can expose TouchEvents for a pinch while withholding the
+   * second PointerEvent after native gesture recognition begins. Use the same
+   * page-local gate and point stream as the pointer path, without synthesizing
+   * ink or changing native one-finger navigation.
+   */
+  private readonly handleTouchCustomPinch = (event: TouchEvent): void => {
+    if (!this.customPinchAllowed()
+      || this.palmPolicy.hasActivePen()
+      || classifyInputTarget(event.target).targetClass !== "page"
+      || this.touchTextContactActive) return;
+    if (this.customPinchActive && !this.customPinchTouchFallbackActive) return;
+    if (event.type === "touchstart") {
+      if (event.touches.length < 2 || this.customPinchActive) return;
+      if (!this.updateCustomPinchTouches(event)) return;
+      this.customPinchTouchFallbackActive = true;
+      while (this.manipulation.activeTouches < 2) this.beginManipulationTouch();
+      this.beginCustomPinch();
+      this.preventCustomPinchTouch(event);
+      return;
+    }
+    if (!this.customPinchTouchFallbackActive) return;
+    if (!this.updateCustomPinchTouches(event)) return;
+    this.scheduleCustomPinchFrame();
+    this.preventCustomPinchTouch(event);
+  };
+
+  /** Stop WebKit's parallel native GestureEvent recognizer on a qualified page. */
+  private readonly handleNativeGesture = (event: Event): void => {
+    if (!this.customPinchAllowed()
+      || classifyInputTarget(event.target).targetClass !== "page") return;
+    if (event.cancelable) event.preventDefault();
+    event.stopImmediatePropagation();
+  };
 
   private currentCustomPinchFrame(): CustomPinchFrame {
     return {
@@ -476,6 +552,7 @@ export class PointerRouter {
       this.customPinchFrameAnimation = null;
     }
     this.customPinchPoints.clear();
+    this.customPinchTouchFallbackActive = false;
     if (!this.customPinchActive) return;
     this.customPinchActive = false;
     this.callbacks.onCustomPinchEnd?.(reason);
@@ -514,6 +591,13 @@ export class PointerRouter {
     this.callbacks.onPointerHandled?.(event.pointerId, this.generation);
     this.paintCustomCursorsNow(event);
     this.syncCustomPinchPolicy();
+    // A TouchEvent fallback may already own the two-finger gesture while this
+    // host is still emitting a late/duplicate PointerEvent.
+    if (event.pointerType === "touch" && this.customPinchTouchFallbackActive) {
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+      return "touch-custom-pinch";
+    }
     if (event.pointerType === "touch" && event.isPrimary !== false) this.callbacks.onTouchPointerDown?.(event);
     if (event.pointerType === "touch") {
       if (this.touchCount() === 0) this.touchTextContactActive = this.callbacks.touchTextTarget?.(event) === true;
@@ -762,10 +846,17 @@ export class PointerRouter {
     const trackedBefore = this.touchCount();
     const hadTouchAxis = this.touchAxis !== null;
     const hadActivePen = this.palmPolicy.hasActivePen();
+    // A qualified iOS TouchEvent fallback ends when either finger leaves. The
+    // pointer terminal may be absent or arrive later, so commit/cancel here.
+    if (this.customPinchTouchFallbackActive) {
+      if (event.type === "touchcancel") this.finishCustomPinch("pointercancel");
+      else if (event.touches.length < 2) this.finishCustomPinch("pointerup");
+      this.syncTouchActionMode();
+    }
     // Every page router observes document terminals. Once the owning router
     // clears shared touch state, the remaining page routers have no work and
     // must not repeat the same bookkeeping or diagnostic record.
-    if (trackedBefore === 0 && !hadTouchAxis && !hadActivePen) return;
+    if (trackedBefore === 0 && !hadTouchAxis && !hadActivePen && !this.customPinchActive) return;
     for (const touch of Array.from(event.changedTouches)) {
       const terminal = this.syntheticPointerEvent(touch.identifier, event.type === "touchcancel" ? "pointercancel" : "pointerup");
       this.releaseGestureOwnership(terminal, event.type === "touchcancel" ? "pointercancel" : "pointerup");
@@ -1078,6 +1169,11 @@ export class PointerRouter {
     this.palmPolicy.notePenActivity(event);
     if (event.pointerType === "touch") {
       this.updateCustomPinchPoint(event);
+      if (this.customPinchTouchFallbackActive) {
+        if (event.cancelable) event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       if (this.ownership.snapshot().owner === "custom-touch-pinch") this.scheduleCustomPinchFrame();
     }
     const route = this.routed.get(event.pointerId);
@@ -1118,6 +1214,11 @@ export class PointerRouter {
 
   private readonly handleEnd = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (event.pointerType === "touch" && this.customPinchTouchFallbackActive) {
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     this.paintCustomCursorsNow(event);
     const route = this.routed.get(event.pointerId);
     if (route) {
@@ -1146,6 +1247,11 @@ export class PointerRouter {
 
   private readonly handleCancel = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (event.pointerType === "touch" && this.customPinchTouchFallbackActive) {
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     const route = this.routed.get(event.pointerId);
     if (route) {
       event.preventDefault();
