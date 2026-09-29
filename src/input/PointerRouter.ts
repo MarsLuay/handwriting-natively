@@ -1257,6 +1257,22 @@ export class PointerRouter {
     });
   };
 
+  /**
+   * Abort a custom pinch before page/viewer replacement or capability loss.
+   * This is intentionally routed through the existing GestureOwnership instance
+   * so no second interaction state can retain a touch after the compositor is
+   * released.
+   */
+  cancelCustomPinch(reason: "lifecycle" | "disabled" = "lifecycle"): void {
+    if (this.ownership.snapshot().owner !== "custom-touch-pinch" && !this.customPinchActive) return;
+    this.ownership.setCustomPinchEnabled(false);
+    this.finishCustomPinch(reason);
+    this.ownership.clearTouchContacts();
+    this.manipulation.reset();
+    this.clearManipulationRearm();
+    this.syncTouchActionMode();
+  }
+
   syncToolState(): void {
     this.cancelScheduledCursorUpdate();
     this.syncCustomPinchPolicy();
