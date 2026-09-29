@@ -623,7 +623,7 @@ export class PostUiInputProbe {
       return "post-ui-pen-missed-page-router";
     }
     if (contact.panAccepted) return "post-ui-pen-entered-pan";
-    if (contact.route === "native" || contact.route === "touch-pan" || contact.route === "touch-zoom-pan") {
+    if (contact.route === "native" || contact.route === "touch-pan" || contact.route === "touch-zoom-pan" || contact.route === "touch-custom-pinch") {
       return "post-ui-pen-routed-native";
     }
     if (contact.details.claimFailed === true || (contact.route && !contact.stages.includes("claim"))) {
