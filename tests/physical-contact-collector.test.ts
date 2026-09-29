@@ -121,6 +121,32 @@ function dispatch(target: HTMLElement, event: Event): void {
 }
 
 describe("PhysicalContactCollector", () => {
+  it("short-circuits document events while every owner is disabled", () => {
+    const { document, target } = createDocument();
+    let enabled = false;
+    const withinTarget = vi.fn(() => true);
+    const onPhysicalContactEvent = vi.fn();
+    const lease = acquirePhysicalContactCollector(document, {
+      ownerId: "viewer-session-disabled",
+      sessionId: "session-disabled",
+      viewerGeneration: 1,
+      isEnabled: () => enabled,
+      withinTarget,
+      onPhysicalContactEvent,
+      onPhysicalContactDuplicate: vi.fn()
+    });
+
+    dispatch(target, pointerEvent("pointermove", 1, 1));
+    expect(withinTarget).not.toHaveBeenCalled();
+    expect(onPhysicalContactEvent).not.toHaveBeenCalled();
+
+    enabled = true;
+    dispatch(target, pointerEvent("pointerdown", 1, 2));
+    expect(withinTarget).toHaveBeenCalledTimes(1);
+    expect(onPhysicalContactEvent).toHaveBeenCalledTimes(1);
+    lease.release();
+  });
+
   it("shares one document listener across owners and deduplicates the same raw event", () => {
     const { document, target } = createDocument();
     const addEventListener = vi.spyOn(document, "addEventListener");
