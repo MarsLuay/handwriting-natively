@@ -1,6 +1,6 @@
 # Mobile-only hybrid PDF pinch-zoom contract
 
-This document defines the opt-in replacement path for mobile PDF pinch zoom. The persisted `customMobilePdfPinchZoom` setting defaults to `false`, is independent of `boostedPdfZoom`, and does not change desktop behavior.
+This document defines the experimental replacement path for mobile PDF pinch zoom. The persisted `customMobilePdfPinchZoom` setting defaults to `true`, can be explicitly disabled, is independent of `boostedPdfZoom`, and does not change desktop behavior.
 
 ## Activation gate
 
@@ -69,7 +69,7 @@ Physical validation remains separate from the gate. A diagnostic mode is evidenc
 
 Direct and embedded PDF views are separate compatibility targets. Each needs its own capability evidence and a named host/device run; success on one does not imply success on the other. Desktop native zoom, mouse/trackpad zoom, stylus annotation, and unsupported hosts remain outside this replacement path.
 
-The feature stays opt-in until physical evidence is copied for at least:
+The feature remains capability-gated until physical evidence is copied for at least:
 
 - a named iPadOS/iOS host using a direct PDF view and an embedded PDF view;
 - a named Android host using a direct PDF view and an embedded PDF view; and

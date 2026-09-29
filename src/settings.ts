@@ -357,7 +357,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
           },
           {
             name: "Experimental mobile PDF pinch zoom",
-            desc: "Opt in to the experimental mobile-only custom PDF pinch path. Pencil, one-finger navigation, PDF links/search, and unsupported hosts keep their native behavior; unsafe or unavailable hosts fall back to native zoom. This may use more memory during the temporary preview and is independent of the 25× zoom limit.",
+            desc: "Experimental mobile-only custom PDF pinch path, enabled by default. Turn it off to keep native pinch zoom; Pencil, one-finger navigation, PDF links/search, and unsupported hosts keep their native behavior, while unsafe or unavailable hosts fall back to native zoom. This may use more memory during the temporary preview and is independent of the 25× zoom limit.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
                 toggle.setValue(this.host.inkSettings.customMobilePdfPinchZoom).onChange(async (value) => {
