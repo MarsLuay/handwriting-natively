@@ -9,7 +9,10 @@ results into iPad support evidence.
 
 The current repository state is `not-run`: no device result is claimed by this
 document. Keep a row `not-run`, `blocked`, or `failed` until its bounded Copy
-Logs evidence is attached to the issue record.
+Logs evidence is attached to the issue record. For #438, every workload/cell
+has one `native` baseline row and one `custom-mobile` candidate row; an
+unsupported or unsafe candidate is recorded as `native-fallback`, never as a
+custom result.
 
 ## Evidence boundary
 
@@ -62,6 +65,12 @@ post-change build:
 | Z5 | pinch, then three Pencil strokes and a two-finger pinch | Pencil remains routed; finger navigation remains native |
 | Z6 | pinch across a page boundary, then return to the original page | page/overlay alignment and router generation remain valid |
 
+Run the same Z1–Z6 prompts in both modes. The custom row must additionally
+record gesture begin/promote/cancel/commit, sampled midpoint and scale range,
+transform frame timing, native commit wait, release reason, focal-anchor error,
+visible page count, and whether PDF.js performed canonical render work. The
+native row records the same fields as `null` or `not-applicable`; an unsafe
+candidate records only the bounded fallback reason and native ownership.
 The durations and scale ranges are prompts for repeatability, not pass/fail
 thresholds. Record the observed duration and scale range in the result. Run
 each cell three times in a clean session when practical; retain every bounded
@@ -106,6 +115,8 @@ and `ink stroke profile` records for each cell.
 | input latency | `ink stroke profile`: `p50InputToRenderMs`, `p95InputToRenderMs`, `maxInputToRenderMs`, `paintAcknowledgementMs`, `outcome` |
 | Pencil continuity | `lastZoomTrace.firstPostZoomContacts[0..2]`, router/stroke outcomes, and the passive iPad pointer/touch trace |
 | visual flash cause | `ink-visibility` checkpoints and any `ink-visibility-flash` record, with the matching zoom burst ID |
+| mode and custom lifecycle | `mobilePdfZoom.trace`: `mode`, gesture counts, bounded midpoint/scale range, transform frame count/timing, `releaseReason`, `fallbackReason`, `focalAnchorErrorPx`, `pageCount`, and `pdfJsCanonicalRenderWork` |
+| mode attribution | `frameAttributionSummary.mode`/`modes`, `zoomPipelineSummary.mode`, `zoomNativeHandoffSummary.mode`, `lastZoomTrace.mode`, and post-zoom durability `mode`; no custom fields are expected for native-fallback |
 
 `p50FrameDeltaMs` is part of the zoom profile specifically so the physical
 benchmark does not have to reconstruct a percentile from raw frame events.
@@ -141,10 +152,10 @@ Keep baseline and post-change rows side by side. Do not invent a device budget
 from one run; use this worksheet to identify regressions and to decide which
 physical result needs follow-up.
 
-| Workload/cell | Build | Frame p50/p95/max | Long frames | Plugin/native wait | Canonical/release | Input latency | Visual result |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `<id>/<Z#>` | baseline | `<...>` | `<...>` | `<...>` | `<...>` | `<...>` | pass/fail/blocked |
-| `<id>/<Z#>` | post-change | `<...>` | `<...>` | `<...>` | `<...>` | `<...>` | pass/fail/blocked |
+| Workload/cell | Mode | Build | Frame p50/p95/max | Long frames | Plugin/native wait | Transform/anchor | Canonical/release | Input latency | Visual result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `<id>/<Z#>` | native | baseline | `<...>` | `<...>` | `<...>` | n/a | `<...>` | `<...>` | pass/fail/blocked |
+| `<id>/<Z#>` | custom-mobile/native-fallback | post-change | `<...>` | `<...>` | `<...>` | `<...>` | `<...>` | `<...>` | pass/fail/blocked |
 
 ## Result record
 
@@ -178,6 +189,17 @@ metrics:
   canonicalPaint: { count: <number>, totalMs: <number>, maxMs: <number> }
   releaseGate: { held: <number>, released: <number>, finalPhase: <string> }
   input: { p50Ms: <number>, p95Ms: <number>, maxMs: <number> }
+custom:
+  mode: native | custom-mobile | native-fallback
+  gesture: { begin: <number>, promote: <number>, cancel: <number>, commit: <number> }
+  samples: { count: <number>, firstMidpoint: [<x>, <y>] | null, lastMidpoint: [<x>, <y>] | null, minScale: <number> | null, maxScale: <number> | null }
+  transform: { frames: <number>, totalMs: <number>, maxMs: <number> }
+  nativeCommitWaitMs: <number> | null
+  releaseReason: <string> | null
+  fallbackReason: <string> | null
+  focalAnchorErrorPx: <number> | null
+  pageCount: <number>
+  pdfJsCanonicalRenderWork: true | false
 visual:
   alignment: pass | fail | blocked
   visibility: pass | fail | blocked

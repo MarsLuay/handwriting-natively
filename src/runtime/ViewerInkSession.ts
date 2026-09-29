@@ -125,6 +125,7 @@ import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../lo
 import { BoundedTiming, EffectiveFrameBudget, type RuntimeFrameProfile, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
 import { ZoomFrameDiagnostics, type FrameAttributionSummary } from "./ZoomFrameDiagnostics";
 import { ZoomPipelineTrace, type ZoomPipelineSummary } from "./ZoomPipelineTrace";
+import { MobilePdfZoomDiagnosticsTrace, type MobilePdfZoomTraceSummary } from "./MobilePdfZoomDiagnostics";
 import {
   ZoomNativeHandoffTrace,
   type NativeHandoffPhase,
@@ -463,6 +464,7 @@ export interface MobilePdfZoomDiagnostics {
   fallbackReasons: readonly MobileCustomPdfZoomFallbackReason[];
   active: boolean;
   activePhase: string | null;
+  trace: MobilePdfZoomTraceSummary;
 }
 
 export interface SessionDiagnostics {
@@ -1110,6 +1112,7 @@ export class ViewerInkSession {
   private readonly zoomFrameDiagnostics: ZoomFrameDiagnostics;
   private readonly zoomPipelineTrace: ZoomPipelineTrace;
   private readonly zoomNativeHandoffTrace: ZoomNativeHandoffTrace;
+  private readonly mobilePdfZoomTrace = new MobilePdfZoomDiagnosticsTrace();
   private frameProfileRaf: number | null = null;
   private frameProfileTimer: number | null = null;
   private static readonly FRAME_PROFILE_IDLE_SAMPLE_COUNT = 24;
@@ -3815,6 +3818,13 @@ export class ViewerInkSession {
     this.lastZoomPipelineSummary = zoomPipelineSummary;
     const frameAttributionSummary = this.zoomFrameDiagnostics.summary();
     this.lastZoomFrameAttributionSummary = frameAttributionSummary;
+    const mobilePdfZoom = (() => {
+      try {
+        return this.mobilePdfZoomDiagnostics();
+      } catch {
+        return null;
+      }
+    })();
     const scaleIntervals = profile.scaleIntervals.summary();
     const scaleDeltas = profile.scaleDeltas.summary();
     const frameIntervals = profile.frameIntervals.summary();
@@ -3918,6 +3928,7 @@ export class ViewerInkSession {
       sidebarFollowSuppressedTriggers: profile.sidebarFollowSuppressedTriggers,
       frameTiming: this.frameTimingProfile(),
       nativeContentMutations: this.zoomNativeContentMutations,
+      mobilePdfZoom: mobilePdfZoom?.trace ?? this.mobilePdfZoomTrace.summary(),
       frameAttributionSummary,
       zoomPipelineSummary,
       zoomNativeHandoffSummary: this.zoomNativeHandoffTrace.summary()
@@ -3980,7 +3991,8 @@ export class ViewerInkSession {
       longestLongTaskMs: metrics.longestLongTaskMs,
       maxPdfInkMismatchPx: metrics.maxPdfInkMismatchPx,
       frameIntervalHistogram: metrics.frameIntervalHistogram,
-      frameTiming: metrics.frameTiming
+      frameTiming: metrics.frameTiming,
+      mobilePdfZoom: this.mobilePdfZoomTrace.summary()
     };
     this.recentZoomGesturePerformance.push(summary);
     if (this.recentZoomGesturePerformance.length > 3) this.recentZoomGesturePerformance.shift();
@@ -6871,14 +6883,10 @@ export class ViewerInkSession {
   }
 
   private cancelCustomPinches(reason: "lifecycle" | "disabled" = "lifecycle"): void {
-<<<<<<< HEAD
     for (const surface of this.surfaces.values()) {
       surface.router?.cancelCustomPinch(reason);
       if (surface.mobileCustomPinch) this.cancelMobileCustomPinch(surface, "capability-lost");
     }
-=======
-    for (const surface of this.surfaces.values()) surface.router?.cancelCustomPinch(reason);
->>>>>>> origin/main
   }
 
   onPageLifecycleChange(change: AnnotationPageLifecycleChange): void {
@@ -8306,13 +8314,17 @@ export class ViewerInkSession {
       mode = plan.mode;
       fallbackReasons = [...plan.fallbackReasons];
     }
+    if (mode === "native-fallback") {
+      this.mobilePdfZoomTrace.setFallbackReason(fallbackReasons[0] ?? "unsupported");
+    }
     const active = [...this.surfaces.values()].find((surface) => surface.mobileCustomPinch);
     return {
       settingEnabled,
       mode,
       fallbackReasons,
       active: Boolean(active),
-      activePhase: active?.mobileCustomPinch?.handoff.currentPhase() ?? null
+      activePhase: active?.mobileCustomPinch?.handoff.currentPhase() ?? null,
+      trace: this.mobilePdfZoomTrace.summary()
     };
   }
 
@@ -9452,8 +9464,22 @@ export class ViewerInkSession {
     const compositor = new MobilePdfCompositor();
     let started = false;
     let handoffStarted = false;
+    const traceStarted = this.mobilePdfZoomTrace.begin({
+      mode: "custom-mobile",
+      at: typeof performance === "undefined" ? Date.now() : performance.now(),
+      pageCount: pages.filter((page) => page.visible).length,
+      initialScale: viewState.scale,
+      midpoint: focalPoint
+    });
+    if (traceStarted) {
+      this.zoomPipelineTrace.setMode("custom-mobile");
+      this.zoomFrameDiagnostics.setMode("custom-mobile");
+      this.zoomNativeHandoffTrace.setMode("custom-mobile");
+      this.postZoomTrace.setMode("custom-mobile");
+      this.postZoomDurability.setMode("custom-mobile");
+    }
     try {
-      started = compositor.begin({
+      started = traceStarted && compositor.begin({
         mode: "custom-mobile",
         enabled: true,
         root: this.options.adapter.root,
@@ -9462,6 +9488,9 @@ export class ViewerInkSession {
         initialScale: viewState.scale,
         focalPoint,
         maxVisiblePages: 4
+      }, (frame) => {
+        this.mobilePdfZoomTrace.noteSample(frame.focalPoint, frame.previewScale);
+        this.mobilePdfZoomTrace.noteTransformFrame(frame.transformDurationMs);
       });
       handoffStarted = started && handoff.begin({
         pageNumber: surface.page.pageNumber,
@@ -9473,9 +9502,16 @@ export class ViewerInkSession {
     }
     if (!started || !handoffStarted) {
       compositor.cancel();
+      this.mobilePdfZoomTrace.cancel("handoff-failed");
+      this.zoomPipelineTrace.setMode("native");
+      this.zoomFrameDiagnostics.setMode("native");
+      this.zoomNativeHandoffTrace.setMode("native");
+      this.postZoomTrace.setMode("native");
+      this.postZoomDurability.setMode("native");
       surface.router?.cancelCustomPinch("disabled");
       return;
     }
+    this.mobilePdfZoomTrace.notePromote();
     surface.mobileCustomPinch = {
       compositor,
       handoff,
@@ -9503,6 +9539,7 @@ export class ViewerInkSession {
     const previewScale = Math.max(0.1, Math.min(maxScale,
       state.initialScale * distance / state.initialDistance));
     state.latestScale = previewScale;
+    this.mobilePdfZoomTrace.noteSample(focalPoint, previewScale);
     state.compositor.submit({ previewScale, focalPoint });
   }
 
@@ -9527,6 +9564,7 @@ export class ViewerInkSession {
       this.cancelMobileCustomPinch(surface, result.reason ?? "native-scale-commit-unavailable");
       return;
     }
+    this.mobilePdfZoomTrace.noteNativeCommit(typeof performance === "undefined" ? Date.now() : performance.now());
     const view = surface.page.element.ownerDocument.defaultView;
     state.releaseTimer = (view?.setTimeout ?? window.setTimeout)(() => {
       if (surface.mobileCustomPinch !== state) return;
@@ -9542,7 +9580,13 @@ export class ViewerInkSession {
     const state = surface.mobileCustomPinch;
     if (!state) return;
     try {
-      state.handoff.observe(signal);
+      const phase = state.handoff.observe(signal);
+      if (phase === "committing") {
+        this.mobilePdfZoomTrace.noteNativeSignal(
+          typeof performance === "undefined" ? Date.now() : performance.now(),
+          signal === "render" || signal === "mutation"
+        );
+      }
       this.tryReleaseMobileCustomPinch(surface);
     } catch {
       this.cancelMobileCustomPinch(surface, "capability-lost");
@@ -9559,7 +9603,8 @@ export class ViewerInkSession {
       this.cancelMobileCustomPinch(surface, "capability-lost");
       return;
     }
-    if (!result.released && state.handoff.currentPhase() !== "cancelled") return;
+    const cancelled = state.handoff.currentPhase() === "cancelled";
+    if (!result.released && !cancelled) return;
     if (state.releaseTimer !== null) {
       const view = surface.page.element.ownerDocument.defaultView;
       (view?.clearTimeout ?? window.clearTimeout)(state.releaseTimer);
@@ -9567,6 +9612,15 @@ export class ViewerInkSession {
     }
     surface.mobileCustomPinch = null;
     state.compositor.cancel();
+    if (cancelled) {
+      this.mobilePdfZoomTrace.cancel(state.handoff.currentCancelReason() ?? "capability-lost");
+    } else {
+      this.mobilePdfZoomTrace.release({
+        at: typeof performance === "undefined" ? Date.now() : performance.now(),
+        focalAnchorErrorPx: Math.hypot(result.scrollDelta.left, result.scrollDelta.top),
+        canonicalRenderWork: true
+      });
+    }
     pdfSurfaceExtensions(this.options.adapter)?.setInkZoomBurstActive?.(false);
   }
 
@@ -9577,6 +9631,7 @@ export class ViewerInkSession {
     const state = surface.mobileCustomPinch;
     if (!state) return;
     state.handoff.cancel(reason);
+    this.mobilePdfZoomTrace.cancel(reason ?? "capability-lost");
     state.compositor.cancel();
     if (state.releaseTimer !== null) {
       const view = surface.page.element.ownerDocument.defaultView;
