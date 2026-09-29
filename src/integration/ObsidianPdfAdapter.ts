@@ -18,6 +18,13 @@ export interface PdfSurfaceExtensions {
   eventBus?(): PdfJsEventBus | null;
   onPdfEvent?(name: string, handler: (event: unknown) => void): () => void;
   setInkZoomBurstActive?(next: boolean): void;
+  nativeScaleCommitAvailable?(): boolean;
+  compatibilityReport?(): {
+    errors: string[];
+    warnings: string[];
+    profile?: PdfIntegrationProfile;
+    platform?: PlatformCapabilityReport;
+  };
   /** Adapter-owned native handoff; private viewer objects stay behind this boundary. */
   createMobilePdfZoomHandoff?(): MobilePdfZoomHandoff;
   consumeSidebarFollowZoomMetrics?(): {

@@ -286,6 +286,17 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             }
           },
           {
+            name: "Experimental mobile PDF pinch zoom",
+            desc: "Opt in to the experimental mobile-only custom PDF pinch path. Pencil, one-finger navigation, PDF links/search, and unsupported hosts keep their native behavior; unsafe or unavailable hosts fall back to native zoom. This may use more memory during the temporary preview and is independent of the 25× zoom limit.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.customMobilePdfPinchZoom).onChange(async (value) => {
+                  await this.persistPatch({ customMobilePdfPinchZoom: value });
+                })
+              );
+            }
+          },
+          {
             name: "Disable one-finger sidebar swipe",
             desc: "Prevent one-finger horizontal swipes on mobile/iPad from opening Obsidian's left or right sidebar. Off by default; buttons and commands still work.",
             render: (setting: Setting) => {

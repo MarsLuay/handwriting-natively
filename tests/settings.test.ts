@@ -113,6 +113,15 @@ describe("safe defaults", () => {
     expect(mergeSettings({ disableSearchBarSwipe: true } as never).disableCommandPaletteSwipe).toBe(true);
   });
 
+  it("keeps custom mobile PDF pinch zoom opt-in and independent from boosted zoom", () => {
+    expect(DEFAULT_SETTINGS.customMobilePdfPinchZoom).toBe(false);
+    expect(DEFAULT_SETTINGS.boostedPdfZoom).toBe(false);
+    expect(mergeSettings({ boostedPdfZoom: true }).customMobilePdfPinchZoom).toBe(false);
+    expect(mergeSettings({ customMobilePdfPinchZoom: true }).customMobilePdfPinchZoom).toBe(true);
+    expect(mergeSettings({ customMobilePdfPinchZoom: false }).customMobilePdfPinchZoom).toBe(false);
+    expect(mergeSettings({ customMobilePdfPinchZoom: "true" } as never).customMobilePdfPinchZoom).toBe(false);
+  });
+
   it("enables autosave", () => {
     expect(DEFAULT_SETTINGS.autosave).toBe(true);
     expect(DEFAULT_SETTINGS.autosaveDelayMs).toBe(750);

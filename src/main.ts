@@ -21,6 +21,7 @@ import { isSupportedImageFile } from "./integration/ImageFileTypes";
 import type { AnnotationSurface, AnnotationSurfaceCallbacks } from "./runtime/AnnotationSurface";
 import { pdfSurfaceExtensions } from "./integration/ObsidianPdfAdapter";
 import { PdfViewerCompatibility } from "./integration/PdfViewerCompatibility";
+import { probePlatformCapabilities } from "./integration/PlatformCapabilities";
 import { describePdfPageDom } from "./integration/pdfPageSelectors";
 import { getDebugNodeId } from "./dom/debugNodeId";
 import { EmbedAnnotateChrome, findExistingEmbedChrome } from "./focus-view/EmbedAnnotateChrome";
@@ -774,6 +775,7 @@ export default class NativePdfInkPlugin extends Plugin {
   async saveSettings(settings: PluginSettings): Promise<void> {
     const previousPlacement = this.inkSettings.toolbarPlacement;
     const previousBoostedZoom = this.inkSettings.boostedPdfZoom;
+    const previousCustomMobilePdfPinchZoom = this.inkSettings.customMobilePdfPinchZoom;
     const previousPdfEnabled = this.inkSettings.enabledSurfaces.pdf;
     const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
     const previousAutomaticAnnotationRecovery = this.inkSettings.automaticAnnotationRecovery;
@@ -809,6 +811,7 @@ export default class NativePdfInkPlugin extends Plugin {
       changedKeys: [
         ...(previousPlacement !== settings.toolbarPlacement ? ["toolbarPlacement"] : []),
         ...(previousBoostedZoom !== settings.boostedPdfZoom ? ["boostedPdfZoom"] : []),
+        ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
         ...(previousMouseLeftDragDraw !== settings.mouseLeftDragDraw ? ["mouseLeftDragDraw"] : []),
         ...(previousMouseRightDragErase !== settings.mouseRightDragErase ? ["mouseRightDragErase"] : []),
         ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : [])
@@ -819,6 +822,9 @@ export default class NativePdfInkPlugin extends Plugin {
     }
     if (previousBoostedZoom !== settings.boostedPdfZoom) {
       for (const session of this.allSessions()) session.setBoostedPdfZoom(settings.boostedPdfZoom);
+    }
+    if (previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom) {
+      for (const session of this.allSessions()) session.setCustomMobilePdfPinchZoomEnabled(settings.customMobilePdfPinchZoom);
     }
     if (
       previousMouseLeftDragDraw !== settings.mouseLeftDragDraw ||
@@ -1076,7 +1082,22 @@ export default class NativePdfInkPlugin extends Plugin {
             privateViewer?: import("./integration/PdfViewerCompatibility").PdfJsViewerLike;
             findController?: import("./integration/PdfViewerCompatibility").PdfFindControllerLike;
             pageWaitMs: number;
-          } = { pageWaitMs };
+            platform: import("./integration/PlatformCapabilities").PlatformCapabilityReport;
+          } = {
+            pageWaitMs,
+            platform: probePlatformCapabilities({
+              ...(Platform.isIosApp && !Platform.isPhone
+                ? { platform: "ipad" as const }
+                : Platform.isAndroidApp
+                  ? { platform: "android" as const }
+                  : Platform.isDesktop
+                    ? { platform: "desktop" as const }
+                    : {}),
+              obsidianVersion: apiVersion,
+              isMobile: Platform.isMobile,
+              isPhone: Platform.isPhone
+            })
+          };
           if (privateViewer) attachOptions.privateViewer = privateViewer;
           if (graph.findController) attachOptions.findController = graph.findController;
           adapter = await NativePdfViewAdapter.attach(

@@ -1,12 +1,12 @@
 # Mobile-only hybrid PDF pinch-zoom contract
 
-This document defines the opt-in replacement path for mobile PDF pinch zoom. It is a contract for the later gesture, compositor, and native-handoff work; it does not enable the feature by default and does not change desktop behavior.
+This document defines the opt-in replacement path for mobile PDF pinch zoom. The persisted `customMobilePdfPinchZoom` setting defaults to `false`, is independent of `boostedPdfZoom`, and does not change desktop behavior.
 
 ## Activation gate
 
 `planMobileCustomPdfZoom` must receive all of the following explicit evidence:
 
-- the future user setting is enabled;
+- `customMobilePdfPinchZoom` is enabled;
 - the surface is a PDF and the adapter is identified separately as `direct` or `embedded`;
 - `PlatformCapabilityReport` identifies Android or iPad, reports `isMobile: true`, and reports both Pointer Events and Touch Events as available;
 - the PDF compatibility profile has a viewer root, rendered page elements, a scroll root, readable geometry, trustworthy page numbers, a private viewer, a readable scale, and an observable page replacement path;
@@ -58,6 +58,12 @@ A viewer-generation change always cancels the temporary transform. The new gener
 Cancellation removes the compositor transform, releases captures/listeners, clears contact and anchor state, and restores the last native scroll/scale observation. It covers pointer cancel, TouchEvent cancel, lost capture, visibility/pagehide/background, viewer or page replacement, capability loss, native scrolling observed before admission, and handoff failure. Cancellation is fail-closed: native navigation resumes rather than leaving a half-owned gesture.
 
 Close, note switching, plugin unload, and adapter teardown run the same cleanup even if no final touch event arrives. A stale listener or old adapter must not receive the next generation's contacts.
+
+## Diagnostics and compatibility targets
+
+Copied session diagnostics expose only bounded mode evidence: `settingEnabled`, `mode` (`custom-mobile` or `native-fallback`), fallback reasons, and the active handoff phase. They do not expose private viewer objects, raw pointer streams, document contents, or telemetry. A `native-fallback` result is expected for disabled settings, desktop/unknown hosts, missing capability evidence, unsafe page generations, and unavailable native scale commits.
+
+Physical validation remains separate from the gate. A diagnostic mode is evidence of the selected branch, not a device support claim.
 
 ## Compatibility targets and validation gate
 
