@@ -4439,11 +4439,11 @@ export class ViewerInkSession {
 
   /** Plugin touch ids still held by page routers. Logged, not cleared. */
   private pluginTouchPointerIds(): number[] {
-    const ids: number[] = [];
+    const ids = new Set<number>();
     for (const surface of this.surfaces.values()) {
-      ids.push(...(surface.router?.activeTouchPointerIds() ?? []));
+      for (const pointerId of surface.router?.activeTouchPointerIds() ?? []) ids.add(pointerId);
     }
-    return ids;
+    return [...ids];
   }
 
   /**
@@ -8326,6 +8326,10 @@ export class ViewerInkSession {
       activePhase: active?.mobileCustomPinch?.handoff.currentPhase() ?? null,
       trace: this.mobilePdfZoomTrace.summary()
     };
+  }
+
+  getMobilePdfZoomDiagnostics(): MobilePdfZoomDiagnostics {
+    return this.mobilePdfZoomDiagnostics();
   }
 
   getDiagnostics(): SessionDiagnostics {

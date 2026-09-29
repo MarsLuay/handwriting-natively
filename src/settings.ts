@@ -13,6 +13,24 @@ export interface SettingsHost {
 export const MAX_COPIED_LOG_CHARACTERS = 32_000;
 export const COPIED_LOG_DIAGNOSTICS_SEPARATOR = "\n\n--- Handwriting Natively diagnostics ---\n";
 
+export interface CopiedMobilePdfZoomDiagnostics {
+  sessionNumber: number;
+  settingEnabled: boolean;
+  gateMode: "custom-mobile" | "native-fallback";
+  fallbackReason: string | null;
+  active: boolean;
+  activePhase: string | null;
+  traceMode: "native" | "custom-mobile" | "native-fallback";
+  tracePhase: string;
+  observedCustomGesture: boolean;
+  gestureBeginCount: number;
+  transformFrameCount: number;
+  transformTotalMs: number;
+  transformMaxMs: number;
+  nativeCommitWaitMs: number | null;
+  releaseReason: string | null;
+}
+
 export interface CopiedLogDiagnostics {
   pluginVersion: string;
   obsidianVersion: string;
@@ -22,6 +40,8 @@ export interface CopiedLogDiagnostics {
   userAgent?: string;
   devicePixelRatio?: number;
   profileSchemaVersion?: number;
+  /** Copy-time status is appended outside the potentially truncated log tail. */
+  mobilePdfZoom?: readonly CopiedMobilePdfZoomDiagnostics[];
 }
 
 const MAX_DIAGNOSTIC_VALUE_CHARACTERS = 512;
@@ -30,6 +50,36 @@ function diagnosticValue(value: string | number | undefined): string {
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : "unavailable";
   const normalized = value?.trim();
   return normalized ? normalized.slice(0, MAX_DIAGNOSTIC_VALUE_CHARACTERS) : "unavailable";
+}
+
+function mobilePdfZoomDiagnosticsText(
+  sessions: readonly CopiedMobilePdfZoomDiagnostics[] | undefined
+): string {
+  if (!sessions || sessions.length === 0) {
+    return [
+      "Mobile PDF pinch zoom:",
+      "Sessions: 0",
+      "Experimental pinch cannot be active without a registered PDF session."
+    ].join("\n");
+  }
+  return [
+    "Mobile PDF pinch zoom:",
+    `Sessions: ${sessions.length}`,
+    ...sessions.slice(0, 8).map((session) => [
+      `Session ${session.sessionNumber}: setting=${session.settingEnabled ? "on" : "off"}`,
+      `gate=${session.gateMode}`,
+      `active=${session.active ? "yes" : "no"}`,
+      `phase=${session.activePhase ?? "none"}`,
+      `observed=${session.observedCustomGesture ? "yes" : "no"}`,
+      `trace=${session.traceMode}/${session.tracePhase}`,
+      `begins=${session.gestureBeginCount}`,
+      `transformFrames=${session.transformFrameCount}`,
+      `transformMs=${session.transformTotalMs}/${session.transformMaxMs}`,
+      `nativeCommitWaitMs=${session.nativeCommitWaitMs ?? "none"}`,
+      `release=${session.releaseReason ?? "none"}`,
+      `fallback=${session.fallbackReason ?? "none"}`
+    ].join(" "))
+  ].join("\n");
 }
 
 /** Build a deterministic, bounded snapshot of the runtime available at copy time. */
@@ -43,6 +93,7 @@ export function buildCopiedLogDiagnostics(
     `Platform: ${diagnosticValue(diagnostics.platform)}`,
     `App mode: ${diagnosticValue(diagnostics.appMode)}`
   ].join("\n");
+  const mobilePdfZoom = mobilePdfZoomDiagnosticsText(diagnostics.mobilePdfZoom);
   const optional = [
     `Runtime: ${diagnosticValue(diagnostics.runtime)}`,
     `User agent: ${diagnosticValue(diagnostics.userAgent)}`,
@@ -51,9 +102,17 @@ export function buildCopiedLogDiagnostics(
   ].join("\n");
   const budget = Math.max(0, maxCharacters);
   if (core.length >= budget) return core.slice(0, budget);
-  const optionalBudget = budget - core.length - 1;
-  if (optionalBudget <= 0) return core;
-  return `${core}\n${optional.slice(0, optionalBudget)}`;
+  let result = core;
+  for (const section of [mobilePdfZoom, optional]) {
+    const remaining = budget - result.length - 1;
+    if (remaining <= 0) return result;
+    if (section.length <= remaining) {
+      result += `\n${section}`;
+      continue;
+    }
+    return `${result}\n${section.slice(0, remaining)}`;
+  }
+  return result;
 }
 
 export function getCopiedLogText(logs: string, diagnostics: CopiedLogDiagnostics): string {

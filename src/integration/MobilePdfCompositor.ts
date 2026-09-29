@@ -103,6 +103,12 @@ export class MobilePdfCompositor {
         }
       });
     }
+    // These properties are invariant for the burst. Set them once rather than
+    // rewriting style declarations on every compositor frame.
+    for (const { page } of this.pages.values()) {
+      page.element.style.transformOrigin = "0 0";
+      page.element.style.willChange = "transform";
+    }
 
     this.initialScale = options.initialScale;
     this.view = options.root.ownerDocument.defaultView;
@@ -164,8 +170,6 @@ export class MobilePdfCompositor {
     for (const { page, rect } of this.pages.values()) {
       const offsetX = focalX - (focalX - rect.left) * ratio - rect.left;
       const offsetY = focalY - (focalY - rect.top) * ratio - rect.top;
-      page.element.style.transformOrigin = "0 0";
-      page.element.style.willChange = "transform";
       page.element.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${ratio})`;
     }
     const timestampMs = typeof performance === "undefined" ? Date.now() : performance.now();
