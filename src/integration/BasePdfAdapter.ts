@@ -28,6 +28,17 @@ export interface SidebarFollowZoomMetrics {
   sidebarFollowSuppressedTriggers: number;
 }
 import type { CompatibilityResult } from "./PdfViewerCompatibility";
+
+function hasWritableCurrentScale(viewer: NonNullable<CompatibilityResult["privateViewer"]>): boolean {
+  let current: object | null = viewer as object;
+  while (current) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, "currentScale");
+    if (descriptor?.set || descriptor?.writable) return true;
+    current = Object.getPrototypeOf(current) as object | null;
+  }
+  return false;
+}
+
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import { PDF_PAGE_SELECTOR } from "./pdfPageSelectors";
 import { installPdfZoomBoost, type PdfZoomBoostHandle } from "./PdfZoomBoost";
@@ -230,15 +241,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   nativeScaleCommitAvailable(): boolean {
     try {
       const viewer = this.compatibility.privateViewer;
-      if (!viewer) return false;
-      if (typeof viewer.updateScale === "function") return true;
-      let current: object | null = viewer as object;
-      while (current) {
-        const descriptor = Object.getOwnPropertyDescriptor(current, "currentScale");
-        if (descriptor?.set || descriptor?.writable) return true;
-        current = Object.getPrototypeOf(current) as object | null;
-      }
-      return false;
+      return Boolean(viewer && (typeof viewer.updateScale === "function" || hasWritableCurrentScale(viewer)));
     } catch {
       return false;
     }
@@ -277,12 +280,22 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     if (!Number.isFinite(scale) || scale <= 0) return false;
     const viewer = this.compatibility.privateViewer;
     if (!viewer) return false;
-    try {
-      if (typeof viewer.updateScale === "function") {
-        viewer.updateScale({ scaleFactor: scale, origin: null });
-        return true;
+    if (typeof viewer.updateScale === "function") {
+      const currentScale = viewer.currentScale;
+      if (typeof currentScale === "number" && Number.isFinite(currentScale) && currentScale > 0) {
+        try {
+          // PDF.js treats scaleFactor as a relative multiplier, while the
+          // handoff receives the requested absolute canonical scale.
+          viewer.updateScale({ scaleFactor: scale / currentScale });
+          return true;
+        } catch {
+          // Some Obsidian mobile builds expose updateScale but reject calls
+          // during a native gesture. Try their writable scale surface below.
+        }
       }
-      if (typeof viewer.currentScale !== "number") return false;
+    }
+    if (!hasWritableCurrentScale(viewer)) return false;
+    try {
       viewer.currentScale = scale;
       return true;
     } catch {
