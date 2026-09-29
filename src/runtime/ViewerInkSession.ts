@@ -9553,6 +9553,10 @@ export class ViewerInkSession {
       x: (first.clientX + second.clientX) / 2,
       y: (first.clientY + second.clientY) / 2
     };
+    if (!state.handoff.updateFocalPoint(focalPoint)) {
+      this.cancelMobileCustomPinch(surface, state.handoff.currentCancelReason() ?? "capability-lost");
+      return;
+    }
     const maxScale = this.options.settings.boostedPdfZoom ? 25 : 10;
     const previewScale = Math.max(0.1, Math.min(maxScale,
       state.initialScale * distance / state.initialDistance));
