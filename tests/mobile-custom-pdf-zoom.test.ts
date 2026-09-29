@@ -109,6 +109,15 @@ describe("mobile custom PDF zoom contract", () => {
     ["unknown platform", gateInput({
       platform: probePlatformCapabilities({ runtime: { pointerEvents: true, touchEvents: true } })
     }), "platform-unknown"],
+    ["iPhone host", gateInput({
+      platform: probePlatformCapabilities({
+        platform: "ipad",
+        obsidianVersion: "1.8.10",
+        isMobile: true,
+        isPhone: true,
+        runtime: { pointerEvents: true, touchEvents: true }
+      })
+    }), "platform-unknown"],
     ["non-PDF", gateInput({ surfaceType: "image" }), "non-pdf-surface"]
   ] as const)("falls back for %s", (_label, input, reason) => {
     const plan = planMobileCustomPdfZoom(input);
