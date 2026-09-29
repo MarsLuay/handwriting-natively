@@ -6841,7 +6841,17 @@ export class ViewerInkSession {
     };
   }
 
+  private cancelCustomPinches(reason: "lifecycle" | "disabled" = "lifecycle"): void {
+    for (const surface of this.surfaces.values()) surface.router?.cancelCustomPinch(reason);
+  }
+
   onPageLifecycleChange(change: AnnotationPageLifecycleChange): void {
+    // Replacement/reload is a hard boundary for custom ownership. Cancel the
+    // existing router state before maintenance can detach its page shell; the
+    // canonical handoff still receives render/mutation evidence after release.
+    if (change.kind === "replace" || change.kind === "reload" || change.kind === "viewer-replaced" || change.kind === "unmount") {
+      this.cancelCustomPinches("lifecycle");
+    }
     const adapterGeneration = "viewerGeneration" in this.options.adapter
       ? this.options.adapter.viewerGeneration
       : change.viewerGeneration;
