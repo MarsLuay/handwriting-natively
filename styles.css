@@ -714,6 +714,67 @@
 .native-pdf-handwriting-page-range-input:disabled { opacity: 0.6; }
 .native-pdf-handwriting-import-error { color: var(--text-error, #dc2626); }
 
+.native-pdf-handwriting-import-preview {
+  border: 1px solid var(--background-modifier-border, #cbd5e1);
+  border-radius: 8px;
+  margin: 12px 0 16px;
+  padding: 10px;
+}
+.native-pdf-handwriting-import-preview-heading {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.native-pdf-handwriting-import-preview-heading span {
+  color: var(--text-muted, #64748b);
+  font-size: 0.85em;
+}
+.native-pdf-handwriting-import-preview-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  max-height: 280px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 2px;
+}
+.native-pdf-handwriting-import-preview-page {
+  align-items: center;
+  background: var(--background-secondary, #f8fafc);
+  border: 1px solid var(--background-modifier-border, #cbd5e1);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  justify-content: center;
+  min-height: 132px;
+  padding: 6px;
+}
+.native-pdf-handwriting-import-preview-page canvas {
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 18%);
+  display: block;
+  max-height: 210px;
+  max-width: 100%;
+}
+.native-pdf-handwriting-import-preview-page-number {
+  color: var(--text-muted, #475569);
+  font-size: 0.8em;
+  font-weight: 600;
+}
+.native-pdf-handwriting-import-preview-fallback iframe {
+  border: 1px solid var(--background-modifier-border, #cbd5e1);
+  display: block;
+  height: 240px;
+  width: 100%;
+}
+.native-pdf-handwriting-import-preview-unavailable {
+  color: var(--text-muted, #64748b);
+  font-size: 0.85em;
+  margin: 4px 0 8px;
+}
+
 /* Explicit page-end action; ordinary overscroll never creates a page. */
 .native-pdf-handwriting-add-page {
   align-items: center;
