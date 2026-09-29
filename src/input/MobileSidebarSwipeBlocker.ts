@@ -2,9 +2,14 @@ export type SidebarSwipeDirection = "left" | "right";
 
 const HORIZONTAL_DOMINANCE_RATIO = 3;
 const MIN_HORIZONTAL_DISTANCE_PX = 10;
-const COMMAND_PALETTE_TOP_EDGE_PX = 48;
-const COMMAND_PALETTE_VERTICAL_DOMINANCE_RATIO = 3;
-const MIN_VERTICAL_DISTANCE_PX = 10;
+// Include the iPad safe-area/title-bar region; clientY can start below the
+// physical screen edge even when the user begins the system-style gesture at
+// the top of the app.
+const COMMAND_PALETTE_TOP_EDGE_PX = 96;
+// Obsidian recognizes this gesture before it is perfectly vertical. Keep the
+// guard early enough to cancel the host gesture before it commits.
+const COMMAND_PALETTE_VERTICAL_DOMINANCE_RATIO = 1.5;
+const MIN_VERTICAL_DISTANCE_PX = 4;
 
 interface TouchCandidate {
   identifier: number;
