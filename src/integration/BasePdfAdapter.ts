@@ -227,6 +227,23 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     }
   }
 
+  nativeScaleCommitAvailable(): boolean {
+    try {
+      const viewer = this.compatibility.privateViewer;
+      if (!viewer) return false;
+      if (typeof viewer.updateScale === "function") return true;
+      let current: object | null = viewer as object;
+      while (current) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, "currentScale");
+        if (descriptor?.set || descriptor?.writable) return true;
+        current = Object.getPrototypeOf(current) as object | null;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   createMobilePdfZoomHandoff(): MobilePdfZoomHandoff {
     return new MobilePdfZoomHandoff({
       viewerGeneration: () => this.viewerGeneration,
