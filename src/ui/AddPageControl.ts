@@ -49,7 +49,7 @@ export class AddPageControl {
     this.button.type = "button";
     this.button.className = "native-pdf-handwriting-add-page";
     this.button.setAttribute("aria-label", "Add page");
-    this.button.textContent = "+ add page";
+    this.button.textContent = "+";
     this.button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -166,8 +166,8 @@ export class AddPageControl {
     const busy = this.isBusy();
     this.button.disabled = busy;
     this.button.setAttribute("aria-busy", busy ? "true" : "false");
-    const label = busy ? "Adding…" : "+ add page";
-    if (this.button.textContent !== label) this.button.textContent = label;
+    this.button.setAttribute("aria-label", busy ? "Adding page…" : "Add page");
+    if (this.button.textContent !== "+") this.button.textContent = "+";
   }
 
   private async commit(): Promise<void> {
