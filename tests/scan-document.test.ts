@@ -57,6 +57,11 @@ describe("scan document flow", () => {
     const polygonPoints = (): string => preview.querySelector<SVGPolygonElement>(".native-pdf-handwriting-scan-outline-line")?.getAttribute("points") ?? "";
     expect(polygonPoints()).toBe("20,10 80,20 90,80 10,90");
     expect(preview.querySelectorAll(".native-pdf-handwriting-scan-outline polygon")).toHaveLength(2);
+    const cornerCircles = preview.querySelectorAll<SVGCircleElement>(".native-pdf-handwriting-scan-outline-corner");
+    expect(cornerCircles).toHaveLength(4);
+    expect([...cornerCircles].map((circle) => [circle.getAttribute("cx"), circle.getAttribute("cy")])).toEqual([
+      ["20", "10"], ["80", "20"], ["90", "80"], ["10", "90"]
+    ]);
 
     const movedCorners = [
       ["topLeft", 0.25, 0.15],
@@ -81,10 +86,15 @@ describe("scan document flow", () => {
       expect(polygonPoints()).toBe(["topLeft", "topRight", "bottomRight", "bottomLeft"]
         .map((name) => `${expected[name as keyof typeof expected].x * 100},${expected[name as keyof typeof expected].y * 100}`)
         .join(" "));
+      const circleIndex = ["topLeft", "topRight", "bottomRight", "bottomLeft"].indexOf(corner);
+      const circle = cornerCircles[circleIndex];
+      expect(circle?.getAttribute("cx")).toBe(String(x * 100));
+      expect(circle?.getAttribute("cy")).toBe(String(y * 100));
       const up = new Event("pointerup", { bubbles: true });
       preview.dispatchEvent(up);
     }
     expect(preview.querySelectorAll(".native-pdf-handwriting-scan-corner")).toHaveLength(4);
+    expect(preview.querySelectorAll(".native-pdf-handwriting-scan-outline-corner")).toHaveLength(4);
     modal.close();
   });
 
@@ -115,18 +125,18 @@ describe("scan document flow", () => {
     modal.close();
   });
 
-  it("styles crop handles as empty circular outlines with a touch-sized hit area", () => {
+  it("uses empty SVG circles with transparent touch-sized hit areas", () => {
     const handleRule = styles.match(/\.native-pdf-handwriting-scan-corner \{([\s\S]*?)\n\}/)?.[1] ?? "";
-    const ringRule = styles.match(/\.native-pdf-handwriting-scan-corner::before \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    const circleRule = styles.match(/\.native-pdf-handwriting-scan-outline-corner \{([\s\S]*?)\n\}/)?.[1] ?? "";
     expect(handleRule).toContain("aspect-ratio: 1 / 1");
     expect(handleRule).toContain("background: transparent");
     expect(handleRule).toContain("box-sizing: border-box");
     expect(handleRule).toContain("height: 28px");
     expect(handleRule).toContain("width: 28px");
-    expect(ringRule).toContain("background: transparent");
-    expect(ringRule).toContain("border: 2px solid #fff");
-    expect(ringRule).toContain("box-sizing: border-box");
-    expect(ringRule).toContain("inset: 4px");
+    expect(circleRule).toContain("fill: none");
+    expect(circleRule).toContain("stroke: #fff");
+    expect(circleRule).toContain("pointer-events: none");
+    expect(styles).not.toContain(".native-pdf-handwriting-scan-corner::before");
     expect(styles).not.toContain(".native-pdf-handwriting-scan-corner::after");
   });
 

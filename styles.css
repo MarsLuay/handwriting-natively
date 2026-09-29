@@ -986,11 +986,18 @@
   stroke: #fff;
   stroke-width: 2px;
 }
+.native-pdf-handwriting-scan-outline-corner {
+  fill: none;
+  pointer-events: none;
+  stroke: #fff;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
 .native-pdf-handwriting-scan-corner {
   appearance: none;
   aspect-ratio: 1 / 1;
-  background: transparent;
-  border: 0;
+  background: transparent !important;
+  border: 0 !important;
   border-radius: 50%;
   box-sizing: border-box;
   cursor: grab;
@@ -1002,16 +1009,7 @@
   width: 28px;
   z-index: 3;
 }
-.native-pdf-handwriting-scan-corner::before {
-  background: transparent;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  box-sizing: border-box;
-  content: "";
-  inset: 4px;
-  pointer-events: none;
-  position: absolute;
-}
+.native-pdf-handwriting-scan-corner { box-shadow: none !important; }
 .native-pdf-handwriting-scan-corner:active { cursor: grabbing; }
 .native-pdf-handwriting-scan-controls {
   display: flex;

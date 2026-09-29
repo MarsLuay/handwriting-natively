@@ -34,7 +34,11 @@ export class ScanDocumentModal extends Modal {
   private currentRotation = 0;
   private completedPages: ScanDocumentPage[] = [];
   private preview: HTMLElement | null = null;
-  private cropOutline: { shadow: SVGPolygonElement; line: SVGPolygonElement } | null = null;
+  private cropOutline: {
+    shadow: SVGPolygonElement;
+    line: SVGPolygonElement;
+    corners: Record<Corner, SVGCircleElement>;
+  } | null = null;
   private reviewBody: HTMLElement | null = null;
   private draggingCorner: Corner | null = null;
   private settled = false;
@@ -166,7 +170,7 @@ export class ScanDocumentModal extends Modal {
     this.applyPreviewRotation();
     const outline = this.createCropOutline();
     this.preview.append(outline.svg);
-    this.cropOutline = { shadow: outline.shadow, line: outline.line };
+    this.cropOutline = { shadow: outline.shadow, line: outline.line, corners: outline.corners };
     this.preview.addEventListener("pointermove", (event) => this.moveCorner(event), { signal: this.abort.signal });
     this.preview.addEventListener("pointerup", () => { this.draggingCorner = null; }, { signal: this.abort.signal });
     this.preview.addEventListener("pointercancel", () => { this.draggingCorner = null; }, { signal: this.abort.signal });
@@ -239,8 +243,11 @@ export class ScanDocumentModal extends Modal {
     this.cropOutline?.shadow.setAttribute("points", points);
     this.cropOutline?.line.setAttribute("points", points);
     for (const corner of CORNERS) {
-      const handle = preview.querySelector<HTMLElement>(`[data-corner="${corner}"]`);
       const point = this.currentQuad[corner];
+      const circle = this.cropOutline?.corners[corner];
+      circle?.setAttribute("cx", String(point.x * 100));
+      circle?.setAttribute("cy", String(point.y * 100));
+      const handle = preview.querySelector<HTMLElement>(`[data-corner="${corner}"]`);
       if (handle) {
         handle.style.left = `${point.x * 100}%`;
         handle.style.top = `${point.y * 100}%`;
@@ -252,6 +259,7 @@ export class ScanDocumentModal extends Modal {
     svg: SVGSVGElement;
     shadow: SVGPolygonElement;
     line: SVGPolygonElement;
+    corners: Record<Corner, SVGCircleElement>;
   } {
     const namespace = "http://www.w3.org/2000/svg";
     const svg = this.ownerDocument.createElementNS(namespace, "svg");
@@ -264,8 +272,17 @@ export class ScanDocumentModal extends Modal {
     shadow.classList.add("native-pdf-handwriting-scan-outline-shadow");
     const line = this.ownerDocument.createElementNS(namespace, "polygon");
     line.classList.add("native-pdf-handwriting-scan-outline-line");
+    const corners = {} as Record<Corner, SVGCircleElement>;
     svg.append(shadow, line);
-    return { svg, shadow, line };
+    for (const corner of CORNERS) {
+      const circle = this.ownerDocument.createElementNS(namespace, "circle");
+      circle.classList.add("native-pdf-handwriting-scan-outline-corner");
+      circle.setAttribute("r", "2");
+      circle.setAttribute("aria-hidden", "true");
+      corners[corner] = circle;
+      svg.append(circle);
+    }
+    return { svg, shadow, line, corners };
   }
 
   private async processCurrentPage(): Promise<ScanDocumentPage> {
