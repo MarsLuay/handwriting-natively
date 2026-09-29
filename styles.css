@@ -781,22 +781,25 @@
   appearance: none;
   background: var(--background-primary, #fff);
   border: 1px solid var(--background-modifier-border, #cbd5e1);
-  border-radius: 8px;
+  border-radius: 50%;
   box-sizing: border-box;
   color: var(--text-accent, #7c3aed);
   cursor: pointer;
   display: flex;
   font: inherit;
-  font-size: 0.9em;
+  font-size: 1.25em;
   font-weight: 600;
+  height: 44px;
   justify-content: center;
+  line-height: 1;
   margin: 16px auto 28px;
   min-height: 44px;
-  min-width: 132px;
-  padding: 8px 18px;
+  min-width: 44px;
+  padding: 0;
   position: relative;
   touch-action: manipulation;
   user-select: none;
+  width: 44px;
   z-index: 3;
 }
 

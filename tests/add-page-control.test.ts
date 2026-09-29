@@ -25,7 +25,7 @@ describe("AddPageControl", () => {
 
     expect(last.nextElementSibling?.className).toBe("native-pdf-handwriting-add-page");
     const button = host.querySelector<HTMLButtonElement>("button");
-    expect(button?.textContent).toBe("+ add page");
+    expect(button?.textContent).toBe("+");
     expect(button?.getAttribute("aria-label")).toBe("Add page");
     expect(button?.disabled).toBe(false);
     control.destroy();
@@ -158,7 +158,8 @@ describe("AddPageControl", () => {
     button.click();
     button.click();
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(button.textContent).toBe("Adding…");
+    expect(button.textContent).toBe("+");
+    expect(button.getAttribute("aria-label")).toBe("Adding page…");
     expect(button.getAttribute("aria-busy")).toBe("true");
     expect(button.disabled).toBe(true);
     expect(button.parentElement).toBe(host);
@@ -172,11 +173,13 @@ describe("AddPageControl", () => {
     host.append(replacement);
     control.refresh();
     expect(replacement.nextElementSibling).toBe(button);
-    expect(button.textContent).toBe("Adding…");
+    expect(button.textContent).toBe("+");
+    expect(button.getAttribute("aria-label")).toBe("Adding page…");
 
     resolveCommit!();
     await Promise.resolve();
-    expect(button.textContent).toBe("+ add page");
+    expect(button.textContent).toBe("+");
+    expect(button.getAttribute("aria-label")).toBe("Add page");
     expect(button.disabled).toBe(false);
     expect(host.querySelectorAll(".native-pdf-handwriting-add-page")).toHaveLength(1);
     control.destroy();
