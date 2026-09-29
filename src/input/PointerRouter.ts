@@ -823,8 +823,13 @@ export class PointerRouter {
     const mode = touchInk || ((this.palmPolicy.hasActivePen() && !nativeTouchGesture) || this.touchAxis?.lock === "vertical")
       ? "none"
       : this.manipulation.touchAction();
+    const customPinchGuard = mode === "pan-xy" && this.customPinchAllowed();
     this.element.classList.toggle("native-pdf-handwriting-touch-none", mode === "none");
     this.element.classList.toggle("native-pdf-handwriting-touch-pan-xy", mode === "pan-xy");
+    // Keep one-finger panning but remove `pinch-zoom` from the qualified
+    // custom path. Leaving native pinch enabled prevents WebKit from
+    // delivering the second touch pointer that promotes this router.
+    this.element.classList.toggle("native-pdf-handwriting-touch-custom-pinch", customPinchGuard);
     // Legacy alias from 0.1.42–0.1.45 — keep cleared so only one mode class wins.
     this.element.classList.remove("native-pdf-handwriting-pen-capturing");
   }
@@ -835,6 +840,7 @@ export class PointerRouter {
     manipulationTouchAction: "none" | "pan-xy";
     touchNoneClassPresent: boolean;
     touchPanXyClassPresent: boolean;
+    customPinchGuardClassPresent: boolean;
     computedTouchAction: string;
   } {
     const view = this.element.ownerDocument.defaultView;
@@ -844,6 +850,7 @@ export class PointerRouter {
       manipulationTouchAction: this.manipulation.touchAction(),
       touchNoneClassPresent: this.element.classList.contains("native-pdf-handwriting-touch-none"),
       touchPanXyClassPresent: this.element.classList.contains("native-pdf-handwriting-touch-pan-xy"),
+      customPinchGuardClassPresent: this.element.classList.contains("native-pdf-handwriting-touch-custom-pinch"),
       computedTouchAction: view?.getComputedStyle(this.element).touchAction ?? ""
     };
   }
@@ -1419,7 +1426,8 @@ export class PointerRouter {
       "native-pdf-handwriting-has-draw-cursor",
       "native-pdf-handwriting-pen-capturing",
       "native-pdf-handwriting-touch-none",
-      "native-pdf-handwriting-touch-pan-xy"
+      "native-pdf-handwriting-touch-pan-xy",
+      "native-pdf-handwriting-touch-custom-pinch"
     );
     this.eraserCursor.remove();
     this.drawCursor.remove();
