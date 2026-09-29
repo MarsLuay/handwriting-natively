@@ -12168,6 +12168,7 @@ export class ViewerInkSession {
           width: drawing.width,
           opacity: drawing.opacity,
           inputType: inkInputType(samples[0]?.pointerType ?? event.pointerType),
+          ...(tool === "pen" ? { penType: drawing.penType ?? "fountain" as const } : {}),
           stabilization: drawing.stabilization
         });
         for (const point of this.toPagePoints(surface, samples, surface.simulateMousePressure, surface.pressureConditioner)) surface.builder.add(point);
@@ -14829,7 +14830,8 @@ export class ViewerInkSession {
         false,
         stroke.id,
         "full",
-        stroke.eraseMasks
+        stroke.eraseMasks,
+        stroke.penType
       );
     }
     this.drawImageTextAnnotations(target.context, mapper, target.scaleX, target.scaleY, this.texts.page(1));
@@ -14847,7 +14849,8 @@ export class ViewerInkSession {
     selected = false,
     strokeId?: string,
     graphiteQuality: "full" | "draft" = "full",
-    eraseMasks?: InkStroke["eraseMasks"]
+    eraseMasks?: InkStroke["eraseMasks"],
+    penType?: InkStroke["penType"]
   ): void {
     if (!points.length) return;
     context.save();
@@ -14855,7 +14858,7 @@ export class ViewerInkSession {
       const prefs = this.options.settings.toolPreferences.pencil;
       const viewPoints = points.map((point) => {
         const view = mapper.toViewport(point);
-        return { x: view.x, y: view.y, pressure: point.pressure, tiltX: point.tiltX, tiltY: point.tiltY };
+        return { x: view.x, y: view.y, pressure: point.pressure, tiltX: point.tiltX, tiltY: point.tiltY, time: point.time };
       });
       drawGraphiteStroke(context, viewPoints, {
         color,
@@ -14898,7 +14901,7 @@ export class ViewerInkSession {
       const prefs = this.options.settings.toolPreferences.pen;
       const viewPoints = points.map((point) => {
         const view = mapper.toViewport(point);
-        return { x: view.x, y: view.y, pressure: point.pressure };
+        return { x: view.x, y: view.y, pressure: point.pressure, time: point.time };
       });
       drawPenStroke(context, viewPoints, {
         color,
@@ -14906,6 +14909,7 @@ export class ViewerInkSession {
         opacity,
         pressureSensitivity: prefs.pressureSensitivity,
         thinning: prefs.thinning,
+        penType: penType ?? prefs.penType ?? "fountain",
         coordinateScale: scale
       });
     }
@@ -14997,7 +15001,8 @@ export class ViewerInkSession {
       stroke.id,
       graphiteQuality,
       surface.context,
-      stroke.eraseMasks
+      stroke.eraseMasks,
+      stroke.penType
     );
   }
 
@@ -15012,7 +15017,8 @@ export class ViewerInkSession {
     strokeId?: string,
     graphiteQuality: "full" | "draft" = "full",
     context: CanvasRenderingContext2D = surface.context,
-    eraseMasks?: InkStroke["eraseMasks"]
+    eraseMasks?: InkStroke["eraseMasks"],
+    penType?: InkStroke["penType"]
   ): void {
     this.drawPointsForMapper(
       context,
@@ -15026,7 +15032,8 @@ export class ViewerInkSession {
       selected,
       strokeId,
       graphiteQuality,
-      eraseMasks
+      eraseMasks,
+      penType ?? surface.builder?.style.penType
     );
   }
 

@@ -4,7 +4,9 @@ import {
   DEFAULT_SETTINGS,
   resolveDrawingTool,
   type DrawingTool,
-  type ToolPreferences
+  type PenType,
+  type ToolPreferences,
+  PEN_TYPES
 } from "../model";
 import type { DropdownOption } from "./DropdownController";
 
@@ -20,6 +22,24 @@ const HIGHLIGHTER_WIDTH_LABELS = [
   "Extra Broad",
   "Max"
 ] as const;
+const PEN_TYPE_LABELS: Record<PenType, string> = {
+  fountain: "Fountain Pen",
+  ball: "Ball Pen",
+  brush: "Brush Pen"
+};
+
+export function penTypeOptions(
+  preferences: ToolPreferences,
+  selectType: (type: PenType) => void
+): DropdownOption[] {
+  const active = preferences.pen.penType ?? "fountain";
+  return PEN_TYPES.map((type) => ({
+    id: `pen-type-${type}`,
+    label: PEN_TYPE_LABELS[type],
+    active: active === type,
+    onSelect: () => selectType(type)
+  }));
+}
 
 export function createWidthOptions(
   widths: readonly number[],
