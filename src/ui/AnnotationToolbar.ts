@@ -385,6 +385,11 @@ export class AnnotationToolbar {
     return button;
   }
 
+  /** Select a tool from a non-toolbar gesture while preserving normal change handling. */
+  activateTool(tool: ToolId): void {
+    this.activate(tool);
+  }
+
   private activate(tool: ToolId): void {
     this.preferences.activeTool = tool;
     this.changed("tool");

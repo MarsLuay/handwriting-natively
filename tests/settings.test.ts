@@ -131,6 +131,13 @@ describe("safe defaults", () => {
     });
   });
 
+  it("enables finger double-tap eraser switching by default and preserves an explicit opt-out", () => {
+    expect(DEFAULT_SETTINGS.touchDoubleTapEraser).toBe(true);
+    expect(mergeSettings(undefined).touchDoubleTapEraser).toBe(true);
+    expect(mergeSettings({ touchDoubleTapEraser: false }).touchDoubleTapEraser).toBe(false);
+    expect(mergeSettings({ touchDoubleTapEraser: "false" } as never).touchDoubleTapEraser).toBe(true);
+  });
+
   it("keeps one-finger sidebar and command-palette swipe blocking opt-in and migratable", () => {
     expect(DEFAULT_SETTINGS.disableSidebarSwipe).toBe(false);
     expect(DEFAULT_SETTINGS.disableCommandPaletteSwipe).toBe(false);

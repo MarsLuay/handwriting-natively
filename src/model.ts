@@ -208,6 +208,8 @@ export interface PluginSettings {
   mouseRightDragErase: boolean;
   /** Explicit touch-only/ambiguous-device fallback; never enabled by migration. */
   touchDrawFallback: boolean;
+  /** Allow a finger double-tap on the page to switch to the eraser. */
+  touchDoubleTapEraser: boolean;
   /** Auto uses stylus pressure when available; Pen/Mouse force that input model. */
   pressureProfile: PressureProfile;
   /** Device-pressure tuning; captured when each stroke starts. */
@@ -316,6 +318,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   mouseLeftDragDraw: true,
   mouseRightDragErase: false,
   touchDrawFallback: false,
+  touchDoubleTapEraser: true,
   pressureProfile: "auto",
   pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
   simplifyStrokes: true,
@@ -410,6 +413,7 @@ export function mergeSettings(
     // Legacy `fingerDraw` is removed above; only the new explicit setting may
     // opt into touch ink, and only with the literal boolean value true.
     touchDrawFallback: cleaned.touchDrawFallback === true,
+    touchDoubleTapEraser: cleaned.touchDoubleTapEraser !== false,
     textEscapeAction: "save" as const,
     boostedPdfZoom: cleaned.boostedPdfZoom === true,
     customMobilePdfPinchZoom: cleaned.customMobilePdfPinchZoom === true,
