@@ -520,9 +520,13 @@
 /* Qualified custom pinch keeps one-finger panning but suppresses WebKit's
    native pinch recognizer so the second PointerEvent reaches the page router. */
 .pdf-viewer .page.native-pdf-handwriting-touch-custom-pinch,
+.pdf-viewer .page.native-pdf-handwriting-touch-custom-pinch *,
 .pdfViewer .page.native-pdf-handwriting-touch-custom-pinch,
+.pdfViewer .page.native-pdf-handwriting-touch-custom-pinch *,
 .pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch,
-.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch {
+.pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch *,
+.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch,
+.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch * {
   touch-action: pan-x pan-y;
 }
 /* Legacy finger-draw class (pre-0.1.28). Kept inert so old sessions clear cleanly. */
