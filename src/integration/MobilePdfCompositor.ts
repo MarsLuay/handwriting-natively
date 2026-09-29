@@ -61,6 +61,7 @@ function rectSnapshot(element: HTMLElement): RectSnapshot | null {
 export class MobilePdfCompositor {
   private active = false;
   private initialScale = 1;
+  private initialFocalPoint: MobilePdfCompositorPoint = { x: 0, y: 0 };
   private readonly pages = new Map<number, { page: MobilePdfCompositorPage; rect: RectSnapshot; style: SavedStyle }>();
   private pendingSample: MobilePdfCompositorSample | null = null;
   private animationFrame: number | null = null;
@@ -111,6 +112,7 @@ export class MobilePdfCompositor {
     }
 
     this.initialScale = options.initialScale;
+    this.initialFocalPoint = { ...options.focalPoint };
     this.view = options.root.ownerDocument.defaultView;
     this.onFrame = onFrame;
     this.active = true;
@@ -167,9 +169,13 @@ export class MobilePdfCompositor {
       return;
     }
     const { x: focalX, y: focalY } = sample.focalPoint;
+    const { x: initialFocalX, y: initialFocalY } = this.initialFocalPoint;
     for (const { page, rect } of this.pages.values()) {
-      const offsetX = focalX - (focalX - rect.left) * ratio - rect.left;
-      const offsetY = focalY - (focalY - rect.top) * ratio - rect.top;
+      // Scale around the original content anchor, then translate by the
+      // midpoint movement. Using the latest midpoint as the scale origin
+      // alone makes a held two-finger left/right drag visually stationary.
+      const offsetX = focalX - initialFocalX * ratio + (ratio - 1) * rect.left;
+      const offsetY = focalY - initialFocalY * ratio + (ratio - 1) * rect.top;
       page.element.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${ratio})`;
     }
     const timestampMs = typeof performance === "undefined" ? Date.now() : performance.now();
@@ -197,6 +203,7 @@ export class MobilePdfCompositor {
     this.pendingSample = null;
     this.active = false;
     this.initialScale = 1;
+    this.initialFocalPoint = { x: 0, y: 0 };
     this.view = null;
     this.onFrame = undefined;
   }

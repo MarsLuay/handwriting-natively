@@ -60,6 +60,31 @@ describe("mobile PDF compositor", () => {
     expect(compositor.isActive()).toBe(false);
   });
 
+  it("translates the page when the held pinch midpoint moves", async () => {
+    vi.useFakeTimers();
+    const scrollRoot = document.createElement("div");
+    const viewer = document.createElement("div");
+    const first = page(1, true);
+    scrollRoot.append(viewer);
+    viewer.append(first.element);
+    document.body.append(scrollRoot);
+    const compositor = new MobilePdfCompositor();
+
+    expect(compositor.begin({
+      mode: "custom-mobile",
+      enabled: true,
+      root: viewer,
+      scrollRoot,
+      pages: [first],
+      initialScale: 1,
+      focalPoint: { x: 300, y: 300 }
+    })).toBe(true);
+    compositor.submit({ previewScale: 1, focalPoint: { x: 400, y: 300 } });
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(first.element.style.transform).toBe("translate(100px, 0px) scale(1)");
+  });
+
   it("coalesces sustained samples to the latest display-frame sample", async () => {
     vi.useFakeTimers();
     const scrollRoot = document.createElement("div");
