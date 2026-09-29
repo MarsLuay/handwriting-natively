@@ -51,9 +51,10 @@ describe("MobileSidebarSwipeBlocker", () => {
 
   it("classifies only a downward top-edge gesture as a command-palette swipe", () => {
     expect(classifyCommandPaletteSwipe(100, 20, 104, 60)).toBe(true);
-    expect(classifyCommandPaletteSwipe(100, 60, 104, 100)).toBe(false);
+    expect(classifyCommandPaletteSwipe(100, 64, 104, 76)).toBe(true);
+    expect(classifyCommandPaletteSwipe(100, 97, 104, 140)).toBe(false);
     expect(classifyCommandPaletteSwipe(100, 20, 150, 30)).toBe(false);
-    expect(classifyCommandPaletteSwipe(100, 20, 104, 5)).toBe(false);
+    expect(classifyCommandPaletteSwipe(100, 20, 104, 0)).toBe(false);
   });
 
   it("blocks a one-finger swipe toward a closed left sidebar", () => {
@@ -115,6 +116,18 @@ describe("MobileSidebarSwipeBlocker", () => {
     const pageScroll = touchEvent("touchmove", [touch(2, 104, 180)]);
     document.dispatchEvent(pageScroll);
     expect(pageScroll.defaultPrevented).toBe(false);
+    blocker.destroy();
+  });
+
+  it("blocks pointer-routed command-palette swipes from the safe-area edge", () => {
+    const blocker = new MobileSidebarSwipeBlocker(document);
+    blocker.setEnabled(false, true);
+
+    document.dispatchEvent(pointerEvent("pointerdown", 9, 100, 64));
+    const move = pointerEvent("pointermove", 9, 104, 76);
+    document.dispatchEvent(move);
+
+    expect(move.defaultPrevented).toBe(true);
     blocker.destroy();
   });
 
