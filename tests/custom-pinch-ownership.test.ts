@@ -147,6 +147,21 @@ describe("mobile custom pinch ownership", () => {
     element.remove();
   });
 
+  it("aborts through the existing router ownership on lifecycle replacement", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const ends = vi.fn();
+    const router = customRouter(element, { onCustomPinchEnd: ends });
+    element.dispatchEvent(pointer("pointerdown", "touch", 1));
+    element.dispatchEvent(pointer("pointerdown", "touch", 2, { isPrimary: false }));
+    router.cancelCustomPinch("lifecycle");
+    expect(ends).toHaveBeenCalledWith("lifecycle");
+    expect(router.activeTouchPointerIds()).toEqual([]);
+    expect(router.gesturePolicy().manipulationActiveTouches).toBe(0);
+    router.destroy();
+    element.remove();
+  });
+
   it("keeps desktop and missing-pointer paths native", () => {
     const element = document.createElement("div");
     const routes: string[] = [];
