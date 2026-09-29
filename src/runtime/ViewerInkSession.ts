@@ -71,6 +71,7 @@ import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShor
 import type { PointerSample } from "../input/PointerCapabilities";
 import type { CustomPinchFrame } from "../input/PointerRouter";
 import { MobilePdfCompositor, type MobilePdfCompositorPage } from "../integration/MobilePdfCompositor";
+import { scheduleAfterDisplayFrames } from "../integration/MobilePdfZoomReleaseGate";
 import type { MobilePdfZoomHandoff } from "../integration/MobilePdfZoomHandoff";
 import {
   planMobileCustomPdfZoom,
@@ -805,6 +806,8 @@ interface MobileCustomPinchState {
   initialScale: number;
   latestScale: number;
   releaseTimer: number | null;
+  /** Two display frames let native PDF.js paint before the page-local preview is removed. */
+  releaseFrameCancel: (() => void) | null;
 }
 
 interface PageSurface {
@@ -9532,7 +9535,8 @@ export class ViewerInkSession {
       initialDistance,
       initialScale: viewState.scale,
       latestScale: viewState.scale,
-      releaseTimer: null
+      releaseTimer: null,
+      releaseFrameCancel: null
     };
     extensions.setInkZoomBurstActive?.(true);
   }
@@ -9584,7 +9588,7 @@ export class ViewerInkSession {
       if (surface.mobileCustomPinch !== state) return;
       this.cancelMobileCustomPinch(surface, "stable-geometry-unavailable");
     }, 1500);
-    this.tryReleaseMobileCustomPinch(surface);
+    this.scheduleMobileCustomPinchRelease(surface);
   }
 
   private observeMobileCustomPinch(
@@ -9601,10 +9605,28 @@ export class ViewerInkSession {
           signal === "render" || signal === "mutation"
         );
       }
-      this.tryReleaseMobileCustomPinch(surface);
+      if (phase === "cancelled") this.tryReleaseMobileCustomPinch(surface);
+      else this.scheduleMobileCustomPinchRelease(surface);
     } catch {
       this.cancelMobileCustomPinch(surface, "capability-lost");
     }
+  }
+
+  /**
+   * Keep the page-local preview through two display frames after native
+   * evidence arrives. PDF.js can publish `pagerendered`/geometry before the
+   * corresponding canvas layout is painted; removing the preview in that same
+   * task makes zoom-out visibly snap to the old page bitmap.
+   */
+  private scheduleMobileCustomPinchRelease(surface: PageSurface): void {
+    const state = surface.mobileCustomPinch;
+    if (!state || state.releaseFrameCancel !== null) return;
+    const view = surface.page.element.ownerDocument.defaultView;
+    state.releaseFrameCancel = scheduleAfterDisplayFrames(view, () => {
+      if (surface.mobileCustomPinch !== state) return;
+      state.releaseFrameCancel = null;
+      this.tryReleaseMobileCustomPinch(surface);
+    });
   }
 
   private tryReleaseMobileCustomPinch(surface: PageSurface): void {
@@ -9624,6 +9646,8 @@ export class ViewerInkSession {
       (view?.clearTimeout ?? window.clearTimeout)(state.releaseTimer);
       state.releaseTimer = null;
     }
+    state.releaseFrameCancel?.();
+    state.releaseFrameCancel = null;
     surface.mobileCustomPinch = null;
     state.compositor.cancel();
     if (cancelled) {
@@ -9651,6 +9675,8 @@ export class ViewerInkSession {
       const view = surface.page.element.ownerDocument.defaultView;
       (view?.clearTimeout ?? window.clearTimeout)(state.releaseTimer);
     }
+    state.releaseFrameCancel?.();
+    state.releaseFrameCancel = null;
     surface.mobileCustomPinch = null;
     pdfSurfaceExtensions(this.options.adapter)?.setInkZoomBurstActive?.(false);
   }
