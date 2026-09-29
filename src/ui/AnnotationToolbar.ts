@@ -2,7 +2,7 @@ import type { DrawingTool, SaveStatus, TextStyle, ToolId, ToolPreferences } from
 import { resolveDrawingTool } from "../model";
 import { colorOptions } from "./ColorPicker";
 import { DropdownController, type DropdownOpenOptions, type DropdownOption } from "./DropdownController";
-import { drawingAdvanced, drawingOptions } from "./DrawingToolDropdown";
+import { drawingAdvanced, drawingOptions, penTypeOptions } from "./DrawingToolDropdown";
 import { eraserMenu } from "./EraserDropdown";
 import { laserMenu } from "./LaserDropdown";
 import { lassoOptions } from "./LassoDropdown";
@@ -205,6 +205,12 @@ export class AnnotationToolbar {
       this.preferences[tool].width = width;
       this.changed();
     }, tool);
+    if (tool === "pen") {
+      for (const option of penTypeOptions(this.preferences, (penType) => {
+        this.preferences.pen.penType = penType;
+        this.changed();
+      })) content.append(this.inlineOption(option));
+    }
     for (const option of options) content.append(this.inlineOption(option));
     content.append(drawingAdvanced(this.ownerDocument, this.preferences, () => this.changed(), this.abort.signal));
     return { label: `${DRAWING_LABELS[tool]} options`, content };

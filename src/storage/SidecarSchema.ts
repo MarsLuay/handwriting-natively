@@ -1,4 +1,4 @@
-import type { InkStroke, TextAnnotation, TextRun } from "../model";
+import { isPenType, type InkStroke, type TextAnnotation, type TextRun } from "../model";
 
 export const SIDECAR_SCHEMA_VERSION = 1 as const;
 
@@ -51,6 +51,7 @@ const isStroke = (value: unknown): value is InkStroke => {
     typeof value.color === "string" && isFiniteNumber(value.width) && value.width > 0 &&
     isFiniteNumber(value.opacity) && value.opacity >= 0 && value.opacity <= 1 &&
     (value.inputType === "pen" || value.inputType === "mouse" || value.inputType === "touch") &&
+    (value.penType === undefined || isPenType(value.penType)) &&
     typeof value.createdAt === "string" && typeof value.updatedAt === "string" &&
     (value.eraseMasks === undefined || (Array.isArray(value.eraseMasks) && value.eraseMasks.every(isEraseMask))) &&
     value.points.every((point) => isRecord(point) && isFiniteNumber(point.x) &&

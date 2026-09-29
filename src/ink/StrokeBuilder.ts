@@ -1,4 +1,4 @@
-import type { DrawingTool, InkStroke, PagePoint } from "../model";
+import type { DrawingTool, InkStroke, PagePoint, PenType } from "../model";
 import {
   appendStabilizedPoint,
   simplifyPoints,
@@ -14,6 +14,8 @@ export interface StrokeBuilderOptions {
   width: number;
   opacity: number;
   inputType: InkStroke["inputType"];
+  /** Captured only for pen strokes; legacy strokes omit the field. */
+  penType?: PenType;
   stabilization?: StabilizationLevel;
   simplifyTolerance?: number;
   now?: () => string;
@@ -30,12 +32,13 @@ export class StrokeBuilder {
   }
 
   /** Spawn-time style — live preview must not follow later toolbar color/tool changes. */
-  get style(): Pick<StrokeBuilderOptions, "tool" | "color" | "width" | "opacity"> {
+  get style(): Pick<StrokeBuilderOptions, "tool" | "color" | "width" | "opacity" | "penType"> {
     return {
       tool: this.options.tool,
       color: this.options.color,
       width: this.options.width,
-      opacity: this.options.opacity
+      opacity: this.options.opacity,
+      ...(this.options.penType ? { penType: this.options.penType } : {})
     };
   }
 
@@ -106,7 +109,8 @@ export class StrokeBuilder {
     return {
       id: this.options.id, page: this.options.page, tool: this.options.tool,
       color: this.options.color, width: this.options.width, opacity: this.options.opacity,
-      inputType: this.options.inputType, points, createdAt: now, updatedAt: now
+      inputType: this.options.inputType, points, createdAt: now, updatedAt: now,
+      ...(this.options.penType ? { penType: this.options.penType } : {})
     };
   }
 }

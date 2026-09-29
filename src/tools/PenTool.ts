@@ -1,10 +1,12 @@
-import type { DrawingToolPreferences, PagePoint } from "../model";
+import type { DrawingToolPreferences, PagePoint, PenType } from "../model";
 import { normalizedCoordinateScale } from "../util/math";
+import { brushSegmentWidths, drawBrushStroke } from "./BrushTool";
 
 export interface PenPoint {
   x: number;
   y: number;
   pressure: number;
+  time?: number;
 }
 
 export interface PenStrokeOptions {
@@ -14,13 +16,22 @@ export interface PenStrokeOptions {
   opacity: number;
   pressureSensitivity: boolean;
   thinning: number;
+  penType?: PenType;
   /** Viewport coordinates per PDF-space unit for zoom-stable geometry floors. */
   coordinateScale?: number;
 }
 
-export function penSampleWidth(preferences: DrawingToolPreferences, point: PagePoint, coordinateScale = 1): number {
-  const pressure = preferences.pressureSensitivity ? Math.min(1, Math.max(0, point.pressure)) : 0.5;
+export function penSampleWidth(
+  preferences: DrawingToolPreferences,
+  point: PagePoint,
+  coordinateScale = 1,
+  penType: PenType = preferences.penType ?? "fountain"
+): number {
   const scale = normalizedCoordinateScale(coordinateScale);
+  // A ball pen lays down a steady-width line. Fountain and brush pens retain
+  // the existing pressure law; brush velocity shaping is applied per stroke.
+  if (penType === "ball") return Math.max(0.35 * scale, preferences.width * scale);
+  const pressure = preferences.pressureSensitivity ? Math.min(1, Math.max(0, point.pressure)) : 0.5;
   return Math.max(0.35 * scale, preferences.width * (1 - preferences.thinning + preferences.thinning * pressure * 2));
 }
 
@@ -37,8 +48,9 @@ function widthAt(options: PenStrokeOptions, point: PenPoint): number {
       tiltSensitivity: false,
       simulateMousePressure: true
     },
-    { x: point.x, y: point.y, pressure: point.pressure, time: 0 },
-    options.coordinateScale
+    { x: point.x, y: point.y, pressure: point.pressure, time: point.time ?? 0 },
+    options.coordinateScale,
+    options.penType ?? "fountain"
   );
 }
 
@@ -49,6 +61,10 @@ export function drawPenStroke(
   options: PenStrokeOptions
 ): void {
   if (!points.length) return;
+  if (options.penType === "brush") {
+    drawBrushStroke(context, points, options);
+    return;
+  }
   const coordinateScale = normalizedCoordinateScale(options.coordinateScale);
   context.save();
   context.globalAlpha = options.opacity;
@@ -101,6 +117,9 @@ export function penSegmentWidths(
   points: readonly PenPoint[],
   options: PenStrokeOptions
 ): Array<{ start: PenPoint; end: PenPoint; thickness: number }> {
+  if (options.penType === "brush") {
+    return brushSegmentWidths(points, options);
+  }
   const out: Array<{ start: PenPoint; end: PenPoint; thickness: number }> = [];
   if (points.length < 2) return out;
   for (let i = 1; i < points.length; i += 1) {

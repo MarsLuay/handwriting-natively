@@ -178,18 +178,20 @@ export class PdfExportService {
       }
 
       const pen = DEFAULT_SETTINGS.toolPreferences.pen;
+      const penType = stroke.penType ?? "fountain";
       const penPrefs = {
         ...pen,
         width: strokeWidth,
         opacity: stroke.opacity,
-        color: stroke.color
+        color: stroke.color,
+        penType
       };
       if (stroke.points.length === 1) {
         const point = mapPoint(stroke.points[0]!);
         page.drawCircle({
           x: point.x,
           y: point.y,
-          size: penSampleWidth(penPrefs, stroke.points[0]!) / 2,
+          size: penSampleWidth(penPrefs, stroke.points[0]!, 1, penType) / 2,
           color,
           opacity: stroke.opacity
         });
@@ -197,14 +199,15 @@ export class PdfExportService {
       }
       const mappedPoints = stroke.points.map((point) => {
         const mapped = mapPoint(point);
-        return { x: mapped.x, y: mapped.y, pressure: point.pressure };
+        return { x: mapped.x, y: mapped.y, pressure: point.pressure, time: point.time };
       });
       for (const segment of penSegmentWidths(mappedPoints, {
         color: stroke.color,
         width: strokeWidth,
         opacity: stroke.opacity,
         pressureSensitivity: pen.pressureSensitivity,
-        thinning: pen.thinning
+        thinning: pen.thinning,
+        penType
       })) {
         page.drawLine({
           start: { x: segment.start.x, y: segment.start.y },
