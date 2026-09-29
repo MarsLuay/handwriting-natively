@@ -217,7 +217,7 @@ export interface PluginSettings {
   simplifyStrokes: boolean;
   /** Advanced opt-in: raise Obsidian PDF viewer zoom from 10× to 25×. */
   boostedPdfZoom: boolean;
-  /** Experimental mobile-only replacement for the native two-finger PDF pinch. */
+  /** Experimental mobile-only replacement for the native two-finger PDF pinch; enabled by default with an explicit opt-out. */
   customMobilePdfPinchZoom: boolean;
   /** Advanced accessibility opt-out; the page label remains visible by default. */
   hideStylusAnnotationLabel: boolean;
@@ -323,7 +323,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
   simplifyStrokes: true,
   boostedPdfZoom: false,
-  customMobilePdfPinchZoom: false,
+  customMobilePdfPinchZoom: true,
   hideStylusAnnotationLabel: false,
   disableSidebarSwipe: false,
   disableCommandPaletteSwipe: false,
@@ -416,7 +416,9 @@ export function mergeSettings(
     touchDoubleTapEraser: cleaned.touchDoubleTapEraser !== false,
     textEscapeAction: "save" as const,
     boostedPdfZoom: cleaned.boostedPdfZoom === true,
-    customMobilePdfPinchZoom: cleaned.customMobilePdfPinchZoom === true,
+    customMobilePdfPinchZoom: typeof cleaned.customMobilePdfPinchZoom === "boolean"
+      ? cleaned.customMobilePdfPinchZoom
+      : defaults.customMobilePdfPinchZoom,
     hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,
     disableSidebarSwipe: cleaned.disableSidebarSwipe === true,
     disableCommandPaletteSwipe: cleaned.disableCommandPaletteSwipe === true
