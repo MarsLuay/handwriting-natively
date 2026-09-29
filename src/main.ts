@@ -1459,7 +1459,8 @@ export default class NativePdfInkPlugin extends Plugin {
           destinationPageCount,
           currentPage: afterPage,
           sourceName,
-          destinationName: destination.path
+          destinationName: destination.path,
+          sourceBytes
         },
         resolve,
         () => resolve(null)

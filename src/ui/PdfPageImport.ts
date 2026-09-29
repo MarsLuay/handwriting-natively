@@ -22,6 +22,44 @@ export interface PdfImportOptionsModalConfig {
   readonly currentPage: number;
   readonly sourceName?: string;
   readonly destinationName?: string;
+  /** Source bytes are retained only while the options modal is open for preview. */
+  readonly sourceBytes?: Uint8Array;
+}
+
+interface PdfPreviewViewport {
+  readonly width: number;
+  readonly height: number;
+}
+
+interface PdfPreviewRenderTask {
+  readonly promise: Promise<void>;
+  cancel?(): void;
+}
+
+interface PdfPreviewPage {
+  getViewport(options: { scale: number }): PdfPreviewViewport;
+  render(options: { canvasContext: CanvasRenderingContext2D; viewport: PdfPreviewViewport }): PdfPreviewRenderTask;
+}
+
+interface PdfPreviewDocument {
+  readonly numPages: number;
+  getPage(pageNumber: number): Promise<PdfPreviewPage>;
+  destroy?(): Promise<void> | void;
+}
+
+interface PdfPreviewLoadingTask {
+  readonly promise: Promise<PdfPreviewDocument>;
+}
+
+interface PdfPreviewLibrary {
+  getDocument(options: { data: Uint8Array; disableWorker: boolean }): PdfPreviewLoadingTask;
+}
+
+function resolvePdfPreviewLibrary(ownerDocument: Document): PdfPreviewLibrary | null {
+  const root = ownerDocument.defaultView as (Window & { pdfjsLib?: unknown }) | null;
+  if (!root) return null;
+  const library = root.pdfjsLib as Partial<PdfPreviewLibrary> | undefined;
+  return library && typeof library.getDocument === "function" ? library as PdfPreviewLibrary : null;
 }
 
 /**
@@ -39,6 +77,9 @@ export class PdfImportOptionsModal extends Modal {
   private afterPageEl: HTMLInputElement | null = null;
   private summaryEl: HTMLElement | null = null;
   private errorEl: HTMLElement | null = null;
+  private previewDocument: PdfPreviewDocument | null = null;
+  private previewFallbackUrl: string | null = null;
+  private readonly previewTasks = new Set<PdfPreviewRenderTask>();
   private completed = false;
 
   constructor(
@@ -63,6 +104,7 @@ export class PdfImportOptionsModal extends Modal {
     this.contentEl.createEl("p", {
       text: `Choose what to import${source} and where to place it${destination}.`
     });
+    this.renderSourcePreview();
 
     const pagesHeading = this.contentEl.createEl("h4", { text: "Pages to import" });
     pagesHeading.setAttribute("id", "native-pdf-handwriting-import-pages-heading");
@@ -138,6 +180,7 @@ export class PdfImportOptionsModal extends Modal {
 
   onClose(): void {
     this.abort.abort();
+    this.cleanupSourcePreview();
     this.contentEl.replaceChildren();
     this.pageModeEl = null;
     this.pageRangeEl = null;
@@ -146,6 +189,122 @@ export class PdfImportOptionsModal extends Modal {
     this.summaryEl = null;
     this.errorEl = null;
     if (!this.completed) this.onCancel();
+  }
+
+  private renderSourcePreview(): void {
+    const sourceBytes = this.config.sourceBytes;
+    if (!sourceBytes?.length) return;
+    const preview = this.contentEl.createDiv({ cls: "native-pdf-handwriting-import-preview" });
+    const heading = preview.createDiv({ cls: "native-pdf-handwriting-import-preview-heading" });
+    heading.createEl("strong", { text: "Source PDF preview" });
+    heading.createSpan({ text: `${this.config.sourcePageCount} page${this.config.sourcePageCount === 1 ? "" : "s"}` });
+    const grid = preview.createDiv({ cls: "native-pdf-handwriting-import-preview-grid" });
+    grid.setAttribute("aria-label", "Source PDF page previews");
+    for (let pageNumber = 1; pageNumber <= this.config.sourcePageCount; pageNumber += 1) {
+      const card = grid.createDiv({ cls: "native-pdf-handwriting-import-preview-page" });
+      card.dataset.pageNumber = String(pageNumber);
+      card.setAttribute("aria-label", `Source PDF page ${pageNumber}`);
+      const canvas = card.createEl("canvas");
+      canvas.dataset.pageNumber = String(pageNumber);
+      canvas.setAttribute("aria-label", `Preview of source PDF page ${pageNumber}`);
+      card.createDiv({ cls: "native-pdf-handwriting-import-preview-page-number", text: `Page ${pageNumber}` });
+    }
+
+    const library = resolvePdfPreviewLibrary(this.contentEl.ownerDocument);
+    if (!library) {
+      this.renderNativeSourcePreview(preview, sourceBytes);
+      return;
+    }
+    void this.loadPdfPreview(library, grid, preview, sourceBytes);
+  }
+
+  private async loadPdfPreview(
+    library: PdfPreviewLibrary,
+    grid: HTMLElement,
+    preview: HTMLElement,
+    sourceBytes: Uint8Array
+  ): Promise<void> {
+    try {
+      const loadingTask = library.getDocument({ data: sourceBytes.slice(), disableWorker: true });
+      const pdf = await loadingTask.promise;
+      if (this.abort.signal.aborted) {
+        await pdf.destroy?.();
+        return;
+      }
+      this.previewDocument = pdf;
+      const canvases = [...grid.querySelectorAll<HTMLCanvasElement>("canvas[data-page-number]")];
+      for (const canvas of canvases) {
+        if (this.abort.signal.aborted) return;
+        const pageNumber = Number(canvas.dataset.pageNumber);
+        if (!Number.isInteger(pageNumber) || pageNumber < 1) continue;
+        await this.renderPreviewPage(pageNumber, canvas);
+      }
+    } catch {
+      if (!this.abort.signal.aborted) {
+        this.renderNativeSourcePreview(preview, sourceBytes);
+      }
+    }
+  }
+
+  private async renderPreviewPage(pageNumber: number, canvas: HTMLCanvasElement): Promise<void> {
+    const pdf = this.previewDocument;
+    if (!pdf || this.abort.signal.aborted) return;
+    const page = await pdf.getPage(pageNumber);
+    if (this.abort.signal.aborted) return;
+    const baseViewport = page.getViewport({ scale: 1 });
+    const widthScale = baseViewport.width > 0 ? 156 / baseViewport.width : 1;
+    const heightScale = baseViewport.height > 0 ? 210 / baseViewport.height : 1;
+    const scale = Math.max(0.05, Math.min(1, widthScale, heightScale));
+    const viewport = page.getViewport({ scale });
+    const outputScale = Math.min(2, Math.max(1, this.contentEl.ownerDocument.defaultView?.devicePixelRatio ?? 1));
+    const renderViewport = page.getViewport({ scale: scale * outputScale });
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    canvas.width = Math.max(1, Math.ceil(renderViewport.width));
+    canvas.height = Math.max(1, Math.ceil(renderViewport.height));
+    canvas.style.width = `${Math.ceil(viewport.width)}px`;
+    canvas.style.height = `${Math.ceil(viewport.height)}px`;
+    const task = page.render({ canvasContext: context, viewport: renderViewport });
+    this.previewTasks.add(task);
+    try {
+      await task.promise;
+      canvas.classList.add("is-rendered");
+    } finally {
+      this.previewTasks.delete(task);
+    }
+  }
+
+  private renderNativeSourcePreview(preview: HTMLElement, sourceBytes: Uint8Array): void {
+    if (this.previewFallbackUrl) return;
+    const urlApi = this.contentEl.ownerDocument.defaultView?.URL ?? URL;
+    if (typeof urlApi.createObjectURL !== "function") {
+      preview.createEl("p", {
+        cls: "native-pdf-handwriting-import-preview-unavailable",
+        text: "Page thumbnails are unavailable in this PDF viewer. Page numbers are shown above."
+      });
+      return;
+    }
+    this.previewFallbackUrl = urlApi.createObjectURL(new Blob([sourceBytes], { type: "application/pdf" }));
+    const fallback = preview.createDiv({ cls: "native-pdf-handwriting-import-preview-fallback" });
+    fallback.createEl("p", {
+      cls: "native-pdf-handwriting-import-preview-unavailable",
+      text: "Thumbnail rendering is unavailable in this PDF viewer. Use this preview to inspect the source pages."
+    });
+    const frame = fallback.createEl("iframe", { title: "Source PDF preview" });
+    frame.src = `${this.previewFallbackUrl}#page=1`;
+  }
+
+  private cleanupSourcePreview(): void {
+    for (const task of this.previewTasks) task.cancel?.();
+    this.previewTasks.clear();
+    const pdf = this.previewDocument;
+    this.previewDocument = null;
+    if (pdf?.destroy) void Promise.resolve(pdf.destroy()).catch(() => undefined);
+    if (this.previewFallbackUrl) {
+      const urlApi = this.contentEl.ownerDocument.defaultView?.URL ?? URL;
+      urlApi.revokeObjectURL(this.previewFallbackUrl);
+      this.previewFallbackUrl = null;
+    }
   }
 
   private addLocationOption(value: PdfImportLocation, text: string): void {

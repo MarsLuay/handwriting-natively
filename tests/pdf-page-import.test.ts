@@ -15,6 +15,26 @@ describe("PDF page import selection", () => {
     expect(parsePdfPageSelection("2-6", 5)).toBeNull();
   });
 
+  it("shows numbered source-page preview cards in the import options", () => {
+    const modal = new PdfImportOptionsModal(
+      {} as never,
+      {
+        sourcePageCount: 3,
+        destinationPageCount: 5,
+        currentPage: 3,
+        sourceBytes: new Uint8Array([0x25, 0x50, 0x44, 0x46])
+      },
+      vi.fn(),
+      vi.fn()
+    );
+    modal.open();
+
+    expect([...modal.contentEl.querySelectorAll<HTMLElement>(".native-pdf-handwriting-import-preview-page-number")]
+      .map((element) => element.textContent)).toEqual(["Page 1", "Page 2", "Page 3"]);
+    expect(modal.contentEl.querySelector(".native-pdf-handwriting-import-preview")?.textContent).toContain("3 pages");
+    modal.close();
+  });
+
   it("chooses all source pages and inserts them at the beginning", () => {
     const chosen = vi.fn();
     const cancelled = vi.fn();
