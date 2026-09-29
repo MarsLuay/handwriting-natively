@@ -130,6 +130,7 @@ export function stylusIdentityRegression(input: {
 }
 
 export interface LastZoomDiagnosis {
+  mode: "native" | "custom-mobile";
   zoomBurstId: string | null;
   beganAt: string | null;
   settledAt: string | null;
@@ -225,6 +226,8 @@ export function pointerHandledForGeneration(
 
 export class PostZoomInputTrace {
   private serial = 0;
+  private mode: "native" | "custom-mobile" = "native";
+  private pendingMode: "native" | "custom-mobile" = "native";
   private activeId: string | null = null;
   private settledId: string | null = null;
   private settledAt = 0;
@@ -239,6 +242,7 @@ export class PostZoomInputTrace {
   private readonly anomalyContacts = new Set<string>();
   private readonly ring: PostZoomLifecycleEvent[] = [];
   private readonly diagnosisState: LastZoomDiagnosis = {
+    mode: "native",
     zoomBurstId: null,
     beganAt: null,
     settledAt: null,
@@ -261,7 +265,14 @@ export class PostZoomInputTrace {
     return this.activeId ?? (this.correlationOpen ? this.settledId : null);
   }
 
-  begin(at = new Date().toISOString()): string {
+  setMode(mode: "native" | "custom-mobile"): void {
+    this.pendingMode = mode;
+    if (!this.activeId) this.mode = mode;
+  }
+
+  begin(at = new Date().toISOString(), mode = this.pendingMode): string {
+    this.mode = mode;
+    this.pendingMode = "native";
     this.serial += 1;
     this.activeId = `zoom-${this.serial}`;
     this.settledId = null;
@@ -270,6 +281,7 @@ export class PostZoomInputTrace {
     this.correlationOpen = false;
     this.admitted.clear();
     this.anomalyContacts.clear();
+    this.diagnosisState.mode = this.mode;
     this.diagnosisState.zoomBurstId = this.activeId;
     this.diagnosisState.beganAt = at;
     this.diagnosisState.settledAt = null;

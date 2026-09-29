@@ -1,5 +1,7 @@
 /** Bounded, local-only stage evidence for the complete native pinch pipeline. */
 
+import type { MobilePdfZoomTraceMode } from "./MobilePdfZoomDiagnostics";
+
 const MAX_RETAINED_FRAMES = 32;
 const MAX_REPRESENTATIVE_FRAMES = 6;
 const MAX_WORST_FRAMES = 8;
@@ -35,6 +37,7 @@ export interface ZoomPipelineStageTiming {
 }
 
 export interface ZoomPipelineFrame {
+  mode: MobilePdfZoomTraceMode;
   frameIndex: number;
   timestampMs: number;
   deltaMs: number;
@@ -61,6 +64,7 @@ export interface ZoomPipelineFrame {
 
 export interface ZoomPipelineSummary {
   event: "zoom-frame-pipeline";
+  mode: MobilePdfZoomTraceMode;
   zoomBurstId: string | null;
   framesObserved: number;
   slowFrameCount: number;
@@ -141,6 +145,8 @@ export class ZoomPipelineTrace {
   private readonly clock: Clock;
   private readonly enabled: () => boolean;
   private active = false;
+  private mode: MobilePdfZoomTraceMode = "native";
+  private pendingMode: MobilePdfZoomTraceMode = "native";
   private burstId: string | null = null;
   private frameIndex = 0;
   private lastFrameAt: number | null = null;
@@ -163,9 +169,15 @@ export class ZoomPipelineTrace {
     return this.active;
   }
 
-  begin(zoomBurstId: string | null, at = this.clock.now()): void {
+  setMode(mode: MobilePdfZoomTraceMode): void {
+    this.pendingMode = mode;
+  }
+
+  begin(zoomBurstId: string | null, at = this.clock.now(), mode = this.pendingMode): void {
     if (!this.enabled()) return;
     this.active = true;
+    this.mode = mode;
+    this.pendingMode = "native";
     this.burstId = zoomBurstId;
     this.frameIndex = 0;
     this.lastFrameAt = at;
@@ -227,6 +239,7 @@ export class ZoomPipelineTrace {
 
     const eventCount = this.eventCount;
     const frame: ZoomPipelineFrame = {
+      mode: this.mode,
       frameIndex: this.frameIndex,
       timestampMs: roundMs(timestampMs),
       deltaMs: roundMs(deltaMs),
@@ -287,6 +300,7 @@ export class ZoomPipelineTrace {
   private buildSummary(): ZoomPipelineSummary {
     return {
       event: "zoom-frame-pipeline",
+      mode: this.mode,
       zoomBurstId: this.burstId,
       framesObserved: this.frameIndex,
       slowFrameCount: this.frames.filter((frame) => frame.deltaMs >= frame.runtimeBudgetMs * 1.5 || frame.totalPluginWorkMs >= frame.runtimeBudgetMs).length,

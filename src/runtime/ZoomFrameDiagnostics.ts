@@ -1,6 +1,7 @@
 /** Bounded, opt-in diagnostics for zoom frame gaps. No probe is armed until a zoom burst starts. */
 
 import { EffectiveFrameBudget, type RuntimeFrameProfile } from "../logging/PerformanceMetrics";
+import type { MobilePdfZoomTraceMode } from "./MobilePdfZoomDiagnostics";
 
 /** Strict synchronous plugin-work budget; presentation cadence is runtime-measured. */
 export const ZOOM_FRAME_SLOW_MS = 8;
@@ -58,6 +59,7 @@ export interface KnownOperationTiming {
 
 export interface ZoomFrameRecord {
   event: "perf-unattributed-frame-gap";
+  mode: MobilePdfZoomTraceMode;
   zoomBurstId: string | null;
   phase: ZoomDiagnosticPhase;
   frameDeltaMs: number;
@@ -84,6 +86,8 @@ export interface ZoomFrameRecord {
 }
 
 export interface FrameAttributionSummary {
+  mode: MobilePdfZoomTraceMode | "mixed";
+  modes: Record<string, number>;
   slowFrameCount: number;
   byAttribution: Record<string, number>;
   limitations: FrameTelemetryLimitation[];
@@ -165,6 +169,8 @@ export class ZoomFrameDiagnostics {
   /** Retain bounded evidence from recent bursts so a short follow-up tap cannot hide a stall. */
   private readonly completedBursts: CompletedBurst[] = [];
   private phase: ZoomDiagnosticPhase = "settled";
+  private mode: MobilePdfZoomTraceMode = "native";
+  private pendingMode: MobilePdfZoomTraceMode = "native";
   private zoomBurstId: string | null = null;
   private previousRafCallbackAt: number | null = null;
   private lastEventLoopDelayMs = 0;
@@ -182,9 +188,15 @@ export class ZoomFrameDiagnostics {
     this.capability = performanceObserverCapability();
   }
 
-  begin(zoomBurstId: string | null, at = this.clock.now()): void {
+  setMode(mode: MobilePdfZoomTraceMode): void {
+    this.pendingMode = mode;
+  }
+
+  begin(zoomBurstId: string | null, at = this.clock.now(), mode = this.pendingMode): void {
     this.stopProbe();
     this.active = true;
+    this.mode = mode;
+    this.pendingMode = "native";
     this.zoomBurstId = zoomBurstId;
     this.phase = "active-pinch";
     this.previousRafCallbackAt = null;
@@ -274,6 +286,7 @@ export class ZoomFrameDiagnostics {
     });
     const record: ZoomFrameRecord = {
       event: "perf-unattributed-frame-gap",
+      mode: this.mode,
       zoomBurstId: this.zoomBurstId,
       phase: this.phase,
       frameDeltaMs: rounded(frameDeltaMs),
@@ -339,7 +352,14 @@ export class ZoomFrameDiagnostics {
         knownOperations.set(name, existing);
       }
     }
+    const modes: Record<string, number> = {};
+    for (const summary of summaries) {
+      modes[summary.mode] = (modes[summary.mode] ?? 0) + 1;
+    }
+    const modeNames = Object.keys(modes);
     return {
+      mode: modeNames.length === 1 ? modeNames[0] as MobilePdfZoomTraceMode : "mixed",
+      modes,
       slowFrameCount: summaries.reduce((total, summary) => total + summary.slowFrameCount, 0),
       byAttribution,
       limitations: [...limitations],
@@ -376,6 +396,8 @@ export class ZoomFrameDiagnostics {
 
   private currentSummary(): FrameAttributionSummary {
     return {
+      mode: this.mode,
+      modes: { [this.mode]: 1 },
       slowFrameCount: this.frameGaps.length,
       byAttribution: Object.fromEntries(this.byAttribution),
       limitations: this.currentLimitations(),

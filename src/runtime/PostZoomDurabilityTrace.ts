@@ -69,6 +69,7 @@ export interface PostZoomPageDragContact {
 }
 
 export interface LastPostZoomDurabilityTrace {
+  mode: "native" | "custom-mobile";
   zoomBurstId: string | null;
   zoomSettledAt: string | null;
   firstSuccessfulPostZoomPenAt: string | null;
@@ -102,6 +103,8 @@ export function durabilitySuccessfulPen(contact: Pick<PostZoomDurabilityContact,
 }
 
 export class PostZoomDurabilityTrace {
+  private mode: "native" | "custom-mobile" = "native";
+  private pendingMode: "native" | "custom-mobile" = "native";
   private zoomBurstId: string | null = null;
   private settledAtMs: number | null = null;
   private firstSuccessfulPostZoomPenAt: string | null = null;
@@ -113,7 +116,13 @@ export class PostZoomDurabilityTrace {
   private readonly contacts: PostZoomDurabilityContact[] = [];
   private readonly claimedTools = new Map<string, "apple-pencil">();
 
-  onZoomBegin(zoomBurstId: string): void {
+  setMode(mode: "native" | "custom-mobile"): void {
+    this.pendingMode = mode;
+  }
+
+  onZoomBegin(zoomBurstId: string, mode = this.pendingMode): void {
+    this.mode = mode;
+    this.pendingMode = "native";
     this.zoomBurstId = zoomBurstId;
     this.settledAtMs = null;
     this.firstSuccessfulPostZoomPenAt = null;
@@ -201,6 +210,7 @@ export class PostZoomDurabilityTrace {
   snapshot(atMs: number): LastPostZoomDurabilityTrace {
     const age = this.settledAtMs === null ? null : Math.max(0, atMs - this.settledAtMs);
     return {
+      mode: this.mode,
       zoomBurstId: this.zoomBurstId,
       zoomSettledAt: this.settledAtMs === null ? null : new Date(this.settledAtMs).toISOString(),
       firstSuccessfulPostZoomPenAt: this.firstSuccessfulPostZoomPenAt,

@@ -32,6 +32,9 @@ export interface MobilePdfCompositorFrame {
   previewScale: number;
   focalPoint: MobilePdfCompositorPoint;
   pageNumbers: readonly number[];
+  /** Bounded timing for the page-local transform batch, not a raw frame log. */
+  timestampMs: number;
+  transformDurationMs: number;
 }
 
 type RectSnapshot = Pick<DOMRect, "left" | "top" | "width" | "height">;
@@ -151,6 +154,7 @@ export class MobilePdfCompositor {
   }
 
   private apply(sample: MobilePdfCompositorSample): void {
+    const startedAt = typeof performance === "undefined" ? Date.now() : performance.now();
     const ratio = sample.previewScale / this.initialScale;
     if (!Number.isFinite(ratio) || ratio <= 0) {
       this.cancel();
@@ -164,10 +168,13 @@ export class MobilePdfCompositor {
       page.element.style.willChange = "transform";
       page.element.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${ratio})`;
     }
+    const timestampMs = typeof performance === "undefined" ? Date.now() : performance.now();
     this.onFrame?.({
       previewScale: sample.previewScale,
       focalPoint: { ...sample.focalPoint },
-      pageNumbers: this.activePageNumbers()
+      pageNumbers: this.activePageNumbers(),
+      timestampMs,
+      transformDurationMs: Math.max(0, timestampMs - startedAt)
     });
   }
 
