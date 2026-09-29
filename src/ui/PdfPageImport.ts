@@ -388,6 +388,10 @@ export class PdfImportFilePicker extends FuzzySuggestModal<PdfImportItem> {
       this.close();
       return;
     }
+    // Close before resolving the picker promise. The caller immediately opens
+    // the follow-up options modal; leaving this modal active can cover it or
+    // cause Obsidian's modal stack to close the newly opened modal.
+    this.close();
     this.onChoose(item);
   }
 

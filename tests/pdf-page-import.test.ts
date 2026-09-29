@@ -183,6 +183,22 @@ describe("PDF page import selection", () => {
     })).rejects.toThrow("The selected PDF could not be read.");
   });
 
+  it("closes the vault picker before resolving the source callback", () => {
+    const chosen = vi.fn();
+    const picker = new PdfImportFilePicker(
+      { vault: { getFiles: () => [{ path: "source.pdf", extension: "pdf" }] } } as never,
+      "destination.pdf",
+      chosen,
+      vi.fn()
+    );
+    const close = vi.spyOn(picker, "close");
+    const source = picker.getItems()[0]!;
+    picker.onChooseItem(source);
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(chosen).toHaveBeenCalledWith(source);
+  });
+
   it("reports picker cancellation for vault selection", () => {
     const cancelled = vi.fn();
     const picker = new PdfImportFilePicker(
