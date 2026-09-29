@@ -1,5 +1,7 @@
 import {
   loadAnnotationFileWithQuarantine,
+  mergeAnnotationDocumentIdentity,
+  migrateDuplicateAnnotationFiles,
   validateAnnotationIdentity,
   writeAnnotationBackup,
   type AnnotationRepositoryOptions,
@@ -119,6 +121,7 @@ export class RecoveryRepository {
     const matches: Array<{ data: SidecarSchemaV1; path: string; matchedBy: DocumentIdentityMatch["matchedBy"] }> = [];
     let quarantined: AnnotationLoadResult<SidecarSchemaV1>["quarantined"] = null;
     let repaired: AnnotationLoadResult<SidecarSchemaV1>["repaired"];
+    let migrated: AnnotationLoadResult<SidecarSchemaV1>["migrated"];
 
     for (const candidate of candidates) {
       const result = await this.loadWithStatus(candidate.identity.id);
@@ -149,24 +152,47 @@ export class RecoveryRepository {
     }
 
     if (!matches.length) return { data: null, quarantined, ...(repaired ? { repaired } : {}) };
-    const distinctPaths = [...new Set(matches.map((match) => match.path))];
-    if (distinctPaths.length > 1) {
-      const first = matches[0]!.data;
-      const samePayload = matches.slice(1).every((match) => annotationPayload(match.data) === annotationPayload(first));
-      const aliasesAccountForExtras = matches.slice(1).every((match) =>
+    const distinctMatches = matches.filter((match, index, all) =>
+      all.findIndex((candidate) => candidate.path === match.path) === index
+    );
+    const distinctPaths = distinctMatches.map((match) => match.path);
+    if (distinctMatches.length > 1) {
+      const first = distinctMatches[0]!.data;
+      const samePayload = distinctMatches.slice(1).every((match) => annotationPayload(match.data) === annotationPayload(first));
+      const aliasesAccountForExtras = distinctMatches.slice(1).every((match) =>
+        normalizeVaultPath(match.data.document.vaultPath) === normalizeVaultPath(first.document.vaultPath) ||
         first.document.aliases?.some((alias) => normalizeVaultPath(alias) === normalizeVaultPath(match.data.document.vaultPath)) === true
       );
-      if (!samePayload || !aliasesAccountForExtras) {
+      const stableIdentity = Boolean(input.contentHash?.trim() || input.fingerprint?.trim());
+      if (!samePayload || (!stableIdentity && !aliasesAccountForExtras)) {
         return { data: null, quarantined, ...(repaired ? { repaired } : {}), conflict: { paths: distinctPaths, reason: "duplicate-content" } };
       }
+
+      const canonical = mergeAnnotationDocumentIdentity(first, distinctMatches.slice(1));
+      migrated = await migrateDuplicateAnnotationFiles(
+        this.files,
+        distinctMatches,
+        distinctMatches[0]!.path,
+        canonical,
+        serializeSidecar,
+        (contents) => this.migration.migrate(contents),
+        (data) => validateAnnotationIdentity(data, canonical.document.id),
+        this.options,
+        "recovery"
+      ) ?? undefined;
+      if (!migrated) {
+        return { data: null, quarantined, ...(repaired ? { repaired } : {}), conflict: { paths: distinctPaths, reason: "duplicate-content" } };
+      }
+      distinctMatches[0]!.data = canonical;
     }
 
-    const match = matches[0]!;
+    const match = distinctMatches[0]!;
     const stored = match.data.document;
     return {
       data: match.data,
       quarantined,
       ...(repaired ? { repaired } : {}),
+      ...(migrated ? { migrated } : {}),
       identity: {
         requested,
         stored,
