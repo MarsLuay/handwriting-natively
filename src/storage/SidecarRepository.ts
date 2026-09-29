@@ -35,6 +35,12 @@ export interface RepairedAnnotationFile {
   backupPath: string;
 }
 
+export interface MigratedAnnotationFiles {
+  store: AnnotationStoreKind;
+  canonicalPath: string;
+  archivedPaths: string[];
+}
+
 export interface DocumentIdentityMatch {
   requested: SidecarDocumentIdentity;
   stored: SidecarDocumentIdentity;
@@ -53,6 +59,7 @@ export interface AnnotationLoadResult<T> {
   data: T | null;
   quarantined: QuarantinedAnnotationFile | null;
   repaired?: RepairedAnnotationFile;
+  migrated?: MigratedAnnotationFiles;
   identity?: DocumentIdentityMatch;
   conflict?: IdentityConflict;
 }
@@ -237,6 +244,79 @@ export async function writeAnnotationBackup(
   await writeValidatedFile(files, backupPath, contents, parse, validate, ".tmp");
 }
 
+/**
+ * Consolidate identical snapshots left behind by an identity migration. The
+ * canonical copy is validated first; redundant files are archived rather than
+ * deleted so this repair is reversible and never discards annotation bytes.
+ * A null result means the adapter could not complete the safe migration.
+ */
+export async function migrateDuplicateAnnotationFiles(
+  files: TextFileAdapter,
+  matches: ReadonlyArray<{ path: string; data: SidecarSchemaV1 }>,
+  canonicalPath: string,
+  canonicalData: SidecarSchemaV1,
+  serialize: (data: SidecarSchemaV1) => string,
+  parse: (contents: string) => SidecarSchemaV1,
+  validate: (data: unknown) => void,
+  options: AnnotationRepositoryOptions,
+  store: AnnotationStoreKind
+): Promise<MigratedAnnotationFiles | null> {
+  const duplicates = matches.filter((match, index, all) =>
+    match.path !== canonicalPath && all.findIndex((candidate) => candidate.path === match.path) === index
+  );
+  if (!duplicates.length || (!files.rename && !files.remove)) return null;
+
+  try {
+    const canonicalContents = serialize(canonicalData);
+    if (await files.exists(canonicalPath) && await files.read(canonicalPath) !== canonicalContents) {
+      await writeValidatedFile(
+        files,
+        canonicalPath,
+        canonicalContents,
+        parse,
+        validate,
+        ".duplicate.tmp"
+      );
+    }
+
+    const archivedPaths: string[] = [];
+    for (const duplicate of duplicates) {
+      if (!await files.exists(duplicate.path)) continue;
+      const contents = await files.read(duplicate.path);
+      const observed = parse(contents);
+      validate(observed);
+      if (annotationPayload(observed) !== annotationPayload(duplicate.data) ||
+        observed.document.id !== duplicate.data.document.id) {
+        return null;
+      }
+      const archivePath = await nextMigratedPath(files, duplicate.path, options.now?.() ?? new Date());
+      await moveWithoutOverwrite(files, duplicate.path, archivePath, contents);
+      archivedPaths.push(archivePath);
+    }
+
+    await writeAnnotationBackup(
+      files,
+      canonicalPath,
+      canonicalContents,
+      parse,
+      validate,
+      options,
+      store
+    ).catch(() => undefined);
+    return { store, canonicalPath, archivedPaths };
+  } catch {
+    return null;
+  }
+}
+
+async function nextMigratedPath(files: TextFileAdapter, path: string, now: Date): Promise<string> {
+  const base = `${path}.migrated-duplicate-${safeTimestamp(now)}`;
+  let candidate = base;
+  let suffix = 2;
+  while (await files.exists(candidate)) candidate = `${base}-${suffix++}`;
+  return candidate;
+}
+
 function safeTimestamp(date: Date): string {
   return date.toISOString().replace(/[-:.]/g, "");
 }
@@ -331,8 +411,9 @@ export class SidecarRepository {
 
   /**
    * Look up content identity first, then the optional fingerprint and finally
-   * the legacy path key. A content match at another path is returned with an
-   * explicit rebind marker; it is never silently treated as a duplicate.
+   * the legacy path key. Identical snapshots left by an identity migration are
+   * consolidated into the strongest candidate; differing snapshots remain a
+   * hard conflict.
    */
   async loadForDocument(input: DocumentIdentityInput): Promise<SidecarSchemaV1 | null> {
     return (await this.loadForDocumentWithStatus(input)).data;
@@ -345,6 +426,7 @@ export class SidecarRepository {
     const matches: Array<{ data: SidecarSchemaV1; path: string; matchedBy: DocumentIdentityMatch["matchedBy"] }> = [];
     let quarantined: QuarantinedAnnotationFile | null = null;
     let repaired: RepairedAnnotationFile | undefined;
+    let migrated: MigratedAnnotationFiles | undefined;
 
     for (const candidate of candidates) {
       const path = this.pathFor(candidate.identity.id);
@@ -380,15 +462,20 @@ export class SidecarRepository {
     }
 
     if (!matches.length) return { data: null, quarantined, ...(repaired ? { repaired } : {}) };
-    const distinctPaths = [...new Set(matches.map((match) => match.path))];
-    if (distinctPaths.length > 1) {
-      const primary = matches[0]!.data.document;
-      const aliasesAccountForExtras = matches.slice(1).every((match) =>
+    const distinctMatches = matches.filter((match, index, all) =>
+      all.findIndex((candidate) => candidate.path === match.path) === index
+    );
+    const distinctPaths = distinctMatches.map((match) => match.path);
+    if (distinctMatches.length > 1) {
+      const primary = distinctMatches[0]!.data.document;
+      const aliasesAccountForExtras = distinctMatches.slice(1).every((match) =>
+        normalizeVaultPath(match.data.document.vaultPath) === normalizeVaultPath(primary.vaultPath) ||
         primary.aliases?.some((alias) => normalizeVaultPath(alias) === normalizeVaultPath(match.data.document.vaultPath)) === true
       );
-      const payload = annotationPayload(matches[0]!.data);
-      const samePayload = matches.slice(1).every((match) => annotationPayload(match.data) === payload);
-      if (!samePayload || !aliasesAccountForExtras) {
+      const payload = annotationPayload(distinctMatches[0]!.data);
+      const samePayload = distinctMatches.slice(1).every((match) => annotationPayload(match.data) === payload);
+      const stableIdentity = Boolean(input.contentHash?.trim() || input.fingerprint?.trim());
+      if (!samePayload || (!stableIdentity && !aliasesAccountForExtras)) {
         return {
           data: null,
           quarantined,
@@ -396,9 +483,32 @@ export class SidecarRepository {
           conflict: { paths: distinctPaths, reason: "duplicate-content" }
         };
       }
+
+      const canonical = mergeAnnotationDocumentIdentity(distinctMatches[0]!.data, distinctMatches.slice(1));
+      migrated = await migrateDuplicateAnnotationFiles(
+        this.files,
+        distinctMatches,
+        distinctMatches[0]!.path,
+        canonical,
+        serializeSidecar,
+        (contents) => this.migration.migrate(contents),
+        (data) => validateAnnotationIdentity(data, canonical.document.id),
+        this.options,
+        "sidecar"
+      ) ?? undefined;
+      if (!migrated) {
+        return {
+          data: null,
+          quarantined,
+          ...(repaired ? { repaired } : {}),
+          conflict: { paths: distinctPaths, reason: "duplicate-content" }
+        };
+      }
+      distinctMatches[0]!.data = canonical;
+      this.knownContents.set(distinctMatches[0]!.path, await this.files.read(distinctMatches[0]!.path));
     }
 
-    const match = matches[0]!;
+    const match = distinctMatches[0]!;
     const stored = match.data.document;
     const requiresPathRebind = normalizeVaultPath(stored.vaultPath) !== normalizeVaultPath(requested.vaultPath) &&
       !(stored.aliases ?? []).some((alias) => normalizeVaultPath(alias) === normalizeVaultPath(requested.vaultPath));
@@ -406,6 +516,7 @@ export class SidecarRepository {
       data: match.data,
       quarantined,
       ...(repaired ? { repaired } : {}),
+      ...(migrated ? { migrated } : {}),
       identity: {
         requested,
         stored,
@@ -605,6 +716,36 @@ function annotationPayload(sidecar: SidecarSchemaV1): string {
     updatedAt: sidecar.updatedAt,
     ...(sidecar.extensions === undefined ? {} : { extensions: sidecar.extensions })
   });
+}
+
+export function mergeAnnotationDocumentIdentity(
+  primary: SidecarSchemaV1,
+  extras: ReadonlyArray<{ data: SidecarSchemaV1 }>
+): SidecarSchemaV1 {
+  const primaryPath = normalizeVaultPath(primary.document.vaultPath);
+  const aliases = new Set((primary.document.aliases ?? []).map(normalizeVaultPath));
+  const legacyIds = new Set(primary.document.legacyIds ?? []);
+  for (const extra of extras) {
+    const document = extra.data.document;
+    const extraPath = normalizeVaultPath(document.vaultPath);
+    if (extraPath !== primaryPath) aliases.add(extraPath);
+    for (const alias of document.aliases ?? []) {
+      const normalized = normalizeVaultPath(alias);
+      if (normalized !== primaryPath) aliases.add(normalized);
+    }
+    if (document.id !== primary.document.id) legacyIds.add(document.id);
+    for (const legacyId of document.legacyIds ?? []) {
+      if (legacyId !== primary.document.id) legacyIds.add(legacyId);
+    }
+  }
+  return {
+    ...primary,
+    document: {
+      ...primary.document,
+      ...(aliases.size ? { aliases: [...aliases] } : {}),
+      ...(legacyIds.size ? { legacyIds: [...legacyIds] } : {})
+    }
+  };
 }
 
 export function validateAnnotationIdentity(data: unknown, documentId: string): void {
