@@ -67,6 +67,7 @@ const requiredProfileCapabilities = [
 function isMobilePlatform(platform: PlatformCapabilityReport): boolean | null {
   if (platform.platform === "desktop") return false;
   if (platform.platform !== "android" && platform.platform !== "ipad") return null;
+  if (platform.platform === "ipad" && platform.isPhone === true) return null;
   if (platform.isMobile === false) return false;
   if (platform.isMobile !== true) return null;
   return true;
