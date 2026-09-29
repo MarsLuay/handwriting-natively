@@ -61,7 +61,7 @@ Close, note switching, plugin unload, and adapter teardown run the same cleanup 
 
 ## Diagnostics and compatibility targets
 
-Copied session diagnostics expose only bounded mode evidence: `settingEnabled`, `mode` (`custom-mobile` or `native-fallback`), fallback reasons, and the active handoff phase. They do not expose private viewer objects, raw pointer streams, document contents, or telemetry. A `native-fallback` result is expected for disabled settings, desktop/unknown hosts, missing capability evidence, unsafe page generations, and unavailable native scale commits.
+Copied session diagnostics expose only bounded mode evidence: `settingEnabled`, `mode` (`custom-mobile` or `native-fallback`), fallback reasons, the active handoff phase, and the last observed trace mode/phase. Copy Logs always appends a compact per-session status after the log tail, including whether a custom gesture was observed and bounded transform/native-commit timing; this remains available even when the log tail is truncated. They do not expose private viewer objects, raw pointer streams, document contents, or network telemetry. A `native-fallback` result is expected for disabled settings, desktop/unknown hosts, missing capability evidence, unsafe page generations, and unavailable native scale commits.
 
 Physical validation remains separate from the gate. A diagnostic mode is evidence of the selected branch, not a device support claim.
 

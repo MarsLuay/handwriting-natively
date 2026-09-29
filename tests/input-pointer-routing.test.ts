@@ -327,6 +327,26 @@ describe("PointerRouter", () => {
   });
 
 
+  it("does not repeat document terminal diagnostics for an untracked page router", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const lifecycle = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true,
+      onTouchLifecycle: lifecycle
+    });
+
+    const touchEnd = new Event("touchend", { bubbles: true, cancelable: true }) as TouchEvent;
+    Object.defineProperty(touchEnd, "touches", { value: [] });
+    Object.defineProperty(touchEnd, "changedTouches", { value: [{ identifier: 80 }] });
+    document.dispatchEvent(touchEnd);
+
+    expect(lifecycle).not.toHaveBeenCalled();
+    router.destroy();
+    element.remove();
+  });
+
   it("clears tracked fingers on document touchend when pointerup was stolen by capture", () => {
     const element = document.createElement("div");
     document.body.append(element);

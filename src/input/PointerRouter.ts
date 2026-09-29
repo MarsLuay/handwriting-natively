@@ -760,6 +760,12 @@ export class PointerRouter {
    */
   private readonly handleTouchTerminal = (event: TouchEvent): void => {
     const trackedBefore = this.touchCount();
+    const hadTouchAxis = this.touchAxis !== null;
+    const hadActivePen = this.palmPolicy.hasActivePen();
+    // Every page router observes document terminals. Once the owning router
+    // clears shared touch state, the remaining page routers have no work and
+    // must not repeat the same bookkeeping or diagnostic record.
+    if (trackedBefore === 0 && !hadTouchAxis && !hadActivePen) return;
     for (const touch of Array.from(event.changedTouches)) {
       const terminal = this.syntheticPointerEvent(touch.identifier, event.type === "touchcancel" ? "pointercancel" : "pointerup");
       this.releaseGestureOwnership(terminal, event.type === "touchcancel" ? "pointercancel" : "pointerup");
@@ -794,6 +800,7 @@ export class PointerRouter {
     const stalePenCleared = this.palmPolicy.reconcileStalePenOnTouch();
     if (this.touchAxis) this.clearTouchAxisGesture("touch-all-clear");
     this.syncTouchActionMode();
+    if (trackedBefore === 0 && !hadTouchAxis && !hadActivePen && !stalePenCleared) return;
     this.callbacks.onTouchLifecycle?.(
       event.type === "touchcancel" ? "touchcancel" : "touchend",
       event,

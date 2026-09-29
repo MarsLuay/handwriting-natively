@@ -33,6 +33,34 @@ const diagnostics = {
 };
 
 describe("safe defaults", () => {
+  it("appends the current mobile PDF pinch gate and observed mode", () => {
+    const copied = buildCopiedLogDiagnostics({
+      ...diagnostics,
+      mobilePdfZoom: [{
+        sessionNumber: 1,
+        settingEnabled: true,
+        gateMode: "custom-mobile",
+        fallbackReason: null,
+        active: false,
+        activePhase: null,
+        traceMode: "custom-mobile",
+        tracePhase: "settled",
+        observedCustomGesture: true,
+        gestureBeginCount: 1,
+        transformFrameCount: 12,
+        transformTotalMs: 4.8,
+        transformMaxMs: 0.9,
+        nativeCommitWaitMs: 38.2,
+        releaseReason: "stable"
+      }]
+    });
+
+    expect(copied).toContain("Mobile PDF pinch zoom:");
+    expect(copied).toContain("setting=on gate=custom-mobile active=no phase=none observed=yes");
+    expect(copied).toContain("trace=custom-mobile/settled begins=1 transformFrames=12");
+    expect(copied).toContain("nativeCommitWaitMs=38.2 release=stable fallback=none");
+  });
+
   it("appends copy-time diagnostics while retaining the full short log", () => {
     const copied = getCopiedLogText("short log", diagnostics);
 

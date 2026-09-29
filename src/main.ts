@@ -887,6 +887,33 @@ export default class NativePdfInkPlugin extends Plugin {
       : Platform.isMobileApp
         ? "Capacitor mobile"
         : "Obsidian WebView";
+    const mobilePdfZoom = [...this.sessions.values()]
+      .slice(0, 8)
+      .flatMap((session, index) => {
+        try {
+          const status = session.getMobilePdfZoomDiagnostics();
+          const trace = status.trace;
+          return [{
+            sessionNumber: index + 1,
+            settingEnabled: status.settingEnabled,
+            gateMode: status.mode,
+            fallbackReason: status.fallbackReasons[0] ?? trace.fallbackReason ?? null,
+            active: status.active,
+            activePhase: status.activePhase,
+            traceMode: trace.mode,
+            tracePhase: trace.phase,
+            observedCustomGesture: trace.mode === "custom-mobile" && trace.gesture.beginCount > 0,
+            gestureBeginCount: trace.gesture.beginCount,
+            transformFrameCount: trace.transform.frameCount,
+            transformTotalMs: trace.transform.totalMs,
+            transformMaxMs: trace.transform.maxMs,
+            nativeCommitWaitMs: trace.nativeCommitWaitMs,
+            releaseReason: trace.releaseReason
+          }];
+        } catch {
+          return [];
+        }
+      });
     const devicePixelRatio = typeof window !== "undefined" ? window.devicePixelRatio : undefined;
     return {
       pluginVersion: this.manifest.version,
@@ -895,6 +922,7 @@ export default class NativePdfInkPlugin extends Plugin {
       appMode,
       runtime,
       profileSchemaVersion: PROFILE_SCHEMA_VERSION,
+      mobilePdfZoom,
       ...(typeof devicePixelRatio === "number" && Number.isFinite(devicePixelRatio) ? { devicePixelRatio } : {})
     };
   }
