@@ -783,6 +783,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousMouseLeftDragDraw = this.inkSettings.mouseLeftDragDraw;
     const previousMouseRightDragErase = this.inkSettings.mouseRightDragErase;
     const previousTouchDrawFallback = this.inkSettings.touchDrawFallback;
+    const previousTouchDoubleTapEraser = this.inkSettings.touchDoubleTapEraser;
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
     await this.saveData(settings);
@@ -814,7 +815,8 @@ export default class NativePdfInkPlugin extends Plugin {
         ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
         ...(previousMouseLeftDragDraw !== settings.mouseLeftDragDraw ? ["mouseLeftDragDraw"] : []),
         ...(previousMouseRightDragErase !== settings.mouseRightDragErase ? ["mouseRightDragErase"] : []),
-        ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : [])
+        ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : []),
+        ...(previousTouchDoubleTapEraser !== settings.touchDoubleTapEraser ? ["touchDoubleTapEraser"] : [])
       ]
     });
     if (previousPlacement !== settings.toolbarPlacement) {
@@ -1459,6 +1461,7 @@ export default class NativePdfInkPlugin extends Plugin {
       mouseLeftDragDrawEnabled: () => this.inkSettings.mouseLeftDragDraw,
       mouseRightDragEraseEnabled: () => this.inkSettings.mouseRightDragErase,
       touchDrawFallbackEnabled: () => this.inkSettings.touchDrawFallback,
+      touchDoubleTapEraserEnabled: () => this.inkSettings.touchDoubleTapEraser,
       pressureProfile: () => this.inkSettings.pressureProfile,
       pressureCalibration: () => this.inkSettings.pressureCalibration,
       simplifyStrokesEnabled: () => this.inkSettings.simplifyStrokes,

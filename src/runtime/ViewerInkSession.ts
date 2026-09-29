@@ -78,6 +78,7 @@ import {
   type MobileCustomPdfZoomMode
 } from "../integration/MobileCustomPdfZoom";
 import { OpenInkStrokeGeometry, type InkStrokeGeometryRecord } from "../input/InkStrokeGeometry";
+import { consumeTouchDoubleTap, type TouchDoubleTapState } from "../input/TouchDoubleTap";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
 import { InkSession, type InkLifecycleEvent } from "../ink/InkSession";
 import { DamageLedger } from "../ink/DamageLedger";
@@ -548,6 +549,8 @@ export interface ViewerInkSessionOptions {
   mouseRightDragEraseEnabled?(): boolean;
   /** Reads the live explicit touch-only/ambiguous-device fallback. */
   touchDrawFallbackEnabled?(): boolean;
+  /** Reads whether a finger double-tap should switch to the eraser. */
+  touchDoubleTapEraserEnabled?(): boolean;
   /** Reads the current pressure profile; it is captured when a new stroke starts. */
   pressureProfile?(): PressureProfile;
   /** Reads the current calibration; it is captured when a new stroke starts. */
@@ -1044,6 +1047,9 @@ export class ViewerInkSession {
   private readonly penScrollEvidence = new Map<number, PenScrollEvidence>();
   private postUiProbeTimer: number | null = null;
   private lastUiInputPointerType = "programmatic";
+  private touchDoubleTapState: TouchDoubleTapState | null = null;
+  private touchDoubleTapPreviousTool: ToolId | null = null;
+  private touchDoubleTapChangingTool = false;
   private lastUiSurfaceCloseAt: number | null = null;
   private lastZoomSettleAt: number | null = null;
   private lastTouchPanAt: number | null = null;
@@ -1342,6 +1348,9 @@ export class ViewerInkSession {
       ],
       callbacks: {
         onPreferencesChange: (preferences, reason = "general") => {
+          if (reason === "tool" && !this.touchDoubleTapChangingTool) {
+            this.touchDoubleTapPreviousTool = null;
+          }
           const previousTool = this.lastObservedTool;
           if (preferences.activeTool !== previousTool) {
             const at = Date.now();
@@ -9646,6 +9655,32 @@ export class ViewerInkSession {
     pdfSurfaceExtensions(this.options.adapter)?.setInkZoomBurstActive?.(false);
   }
 
+  private handleTouchDoubleTap(event: PointerEvent): void {
+    const enabled = this.options.touchDoubleTapEraserEnabled?.()
+      ?? this.options.settings.touchDoubleTapEraser;
+    if (!enabled || this.hasAnyLiveInkInput() || this.temporaryStylusEraserPointers > 0) {
+      this.touchDoubleTapState = null;
+      return;
+    }
+    const at = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const result = consumeTouchDoubleTap(this.touchDoubleTapState, event, at);
+    this.touchDoubleTapState = result.next;
+    if (!result.doubleTap) return;
+
+    const active = this.activeTool();
+    const next = active === "eraser"
+      ? (this.touchDoubleTapPreviousTool ?? "pen")
+      : "eraser";
+    this.touchDoubleTapPreviousTool = active === "eraser" ? null : active;
+    this.lastUiInputPointerType = "touch";
+    this.touchDoubleTapChangingTool = true;
+    try {
+      this.toolbar.activateTool(next);
+    } finally {
+      this.touchDoubleTapChangingTool = false;
+    }
+  }
+
   private createPageRouter(surface: PageSurface): PointerRouter {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
@@ -9806,13 +9841,17 @@ export class ViewerInkSession {
       onTouchPointerDown: (event) => {
         const editor = this.activeTextEditor;
         const target = event.target;
-        if (!editor || (target instanceof Node && editor.element.contains(target))) return;
+        if (!editor || (target instanceof Node && editor.element.contains(target))) {
+          this.handleTouchDoubleTap(event);
+          return;
+        }
         this.logText(editor.surface, "outside-touch-close", {
           annotationId: editor.draft.id,
           existing: Boolean(editor.existing),
           pointerId: event.pointerId
         });
         this.commitActiveTextEditor("outside-touch");
+        this.handleTouchDoubleTap(event);
       },
       touchTextTarget: (event) => this.isTouchTextTarget(surface, event),
       onRouterReceived: (event, generation) => {

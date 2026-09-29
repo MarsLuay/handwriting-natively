@@ -345,6 +345,17 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             }
           },
           {
+            name: "Finger double-tap switches to eraser",
+            desc: "Double-tap the PDF page with one finger to switch to the eraser, like Apple Pencil double-tap in Goodnotes. Enabled by default.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.touchDoubleTapEraser).onChange(async (value) => {
+                  await this.persistPatch({ touchDoubleTapEraser: value });
+                })
+              );
+            }
+          },
+          {
             name: "Experimental mobile PDF pinch zoom",
             desc: "Opt in to the experimental mobile-only custom PDF pinch path. Pencil, one-finger navigation, PDF links/search, and unsupported hosts keep their native behavior; unsafe or unavailable hosts fall back to native zoom. This may use more memory during the temporary preview and is independent of the 25× zoom limit.",
             render: (setting: Setting) => {
