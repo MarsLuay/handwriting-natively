@@ -131,6 +131,7 @@ describe("mobile custom pinch ownership", () => {
       pointerInputCapabilities: () => ({ pointerEvents: true, pointerCapture: false, touchEvents: true }),
       onCustomPinchEnd: ends
     });
+    expect(router.gesturePolicy().customPinchGuardClassPresent).toBe(true);
     element.dispatchEvent(pointer("pointerdown", "touch", 1));
     element.dispatchEvent(pointer("pointerdown", "touch", 2, { isPrimary: false }));
     window.dispatchEvent(new Event("blur"));
@@ -142,6 +143,7 @@ describe("mobile custom pinch ownership", () => {
     enabled = false;
     router.syncToolState();
     expect(ends).toHaveBeenCalledWith("disabled");
+    expect(router.gesturePolicy().customPinchGuardClassPresent).toBe(false);
     expect(router.activeTouchPointerIds()).toEqual([3, 4]);
     router.destroy();
     element.remove();
