@@ -6871,10 +6871,14 @@ export class ViewerInkSession {
   }
 
   private cancelCustomPinches(reason: "lifecycle" | "disabled" = "lifecycle"): void {
+<<<<<<< HEAD
     for (const surface of this.surfaces.values()) {
       surface.router?.cancelCustomPinch(reason);
       if (surface.mobileCustomPinch) this.cancelMobileCustomPinch(surface, "capability-lost");
     }
+=======
+    for (const surface of this.surfaces.values()) surface.router?.cancelCustomPinch(reason);
+>>>>>>> origin/main
   }
 
   onPageLifecycleChange(change: AnnotationPageLifecycleChange): void {
