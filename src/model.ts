@@ -6,6 +6,14 @@ export type ToolbarPlacement = "main" | "left" | "right";
 export type MouseInputMode = "pan" | "annotate" | "native";
 /** Which input source supplies pressure for new ink strokes. */
 export type PressureProfile = "auto" | "pen" | "mouse";
+/** The physical-style simulation used by the pen tool. */
+export type PenType = "fountain" | "ball" | "brush";
+export const PEN_TYPES = ["fountain", "ball", "brush"] as const;
+
+export function isPenType(value: unknown): value is PenType {
+  return value === "fountain" || value === "ball" || value === "brush";
+}
+
 /** Compact, device-agnostic controls applied to future pen strokes. */
 export interface PressureCalibration {
   /** Visible start width when a pen reports near-zero pressure. */
@@ -59,6 +67,8 @@ export interface InkStroke {
   opacity: number;
   inputType: "pen" | "mouse" | "touch";
   points: PagePoint[];
+  /** Captured pen style; omitted by legacy strokes, which render as fountain pen. */
+  penType?: PenType;
   /** Highlighter-only subtractive eraser paths in page-local coordinates. */
   eraseMasks?: InkEraseMask[];
   createdAt: string;
@@ -117,6 +127,8 @@ export interface DrawingToolPreferences {
   textureStrength: number;
   tiltSensitivity: boolean;
   simulateMousePressure: boolean;
+  /** Pen-only nib simulation; absent on pencil/highlighter preferences. */
+  penType?: PenType;
 }
 
 /** Ephemeral laser pointer — never written to sidecar. */
@@ -233,7 +245,8 @@ export function createDefaultToolPreferences(): ToolPreferences {
     thinning: 0.55,
     textureStrength: 0,
     tiltSensitivity: false,
-    simulateMousePressure: true
+    simulateMousePressure: true,
+    penType: "fountain"
   };
   const pencil: DrawingToolPreferences = {
     color: "#4b5563",
@@ -412,7 +425,12 @@ export function mergeSettings(
       ...defaults.toolPreferences,
       ...savedToolPreferences,
       activeTool,
-      pen: migratedDrawingPreferences.pen,
+      pen: {
+        ...migratedDrawingPreferences.pen,
+        penType: isPenType(migratedDrawingPreferences.pen.penType)
+          ? migratedDrawingPreferences.pen.penType
+          : "fountain"
+      },
       pencil: migratedDrawingPreferences.pencil,
       highlighter: migratedDrawingPreferences.highlighter,
       shape: {

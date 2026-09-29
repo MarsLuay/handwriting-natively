@@ -1,4 +1,5 @@
 import type { InkStroke, PdfPoint } from "../model";
+import { brushSampleWidths } from "../tools/BrushTool";
 import { escapeXml } from "../util/escapeXml";
 
 export interface SvgInkExportPageMetrics {
@@ -177,7 +178,15 @@ function validStroke(stroke: InkStroke, pressureAware: boolean): ValidStroke | n
   const points = stroke.points.filter(isFinitePoint);
   if (!points.length) return null;
   const width = positiveFinite(stroke.width) ? stroke.width : 1;
-  const radii = points.map((point) => strokeRadius(stroke, point, width, pressureAware));
+  const radii = stroke.penType === "brush" && pressureAware
+    ? brushSampleWidths(points, {
+      color: stroke.color,
+      width,
+      opacity: stroke.opacity,
+      pressureSensitivity: pressureAware,
+      thinning: 0.55
+    }).map((sample) => Math.max(0.125, sample / 2))
+    : points.map((point) => strokeRadius(stroke, point, width, pressureAware));
   const minX = Math.min(...points.map((point, index) => point.x - radii[index]!));
   const minY = Math.min(...points.map((point, index) => point.y - radii[index]!));
   const maxX = Math.max(...points.map((point, index) => point.x + radii[index]!));
@@ -192,7 +201,7 @@ function validStroke(stroke: InkStroke, pressureAware: boolean): ValidStroke | n
 }
 
 function strokeRadius(stroke: InkStroke, point: PdfPoint, width: number, pressureAware: boolean): number {
-  if (!pressureAware || stroke.tool === "highlighter") return Math.max(0.125, width / 2);
+  if (!pressureAware || stroke.tool === "highlighter" || stroke.penType === "ball") return Math.max(0.125, width / 2);
   const pressure = clamp01(Number.isFinite(point.pressure) ? point.pressure : 0.5);
   const floor = stroke.tool === "pencil" ? 0.35 : 0.15;
   return Math.max(0.125, width * (floor + (1 - floor) * pressure) / 2);

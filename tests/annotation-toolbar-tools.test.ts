@@ -49,6 +49,29 @@ describe("AnnotationToolbar drawing tools", () => {
     toolbar.destroy();
   });
 
+  it("places the three pen types above pen thickness controls", () => {
+    const preferences = createDefaultToolPreferences();
+    const toolbar = new AnnotationToolbar({
+      preferences,
+      autosave: true,
+      callbacks: { onPreferencesChange: vi.fn() }
+    });
+    document.body.append(toolbar.element);
+
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='pen']")?.click();
+    const options = [...document.querySelectorAll<HTMLButtonElement>("[data-option-id]")];
+    expect(options.slice(0, 3).map((option) => option.textContent)).toEqual([
+      "Fountain Pen",
+      "Ball Pen",
+      "Brush Pen"
+    ]);
+    expect(options.slice(3, 10).every((option) => option.dataset.optionId?.startsWith("width-"))).toBe(true);
+
+    document.querySelector<HTMLButtonElement>("[data-option-id='pen-type-brush']")?.click();
+    expect(preferences.pen.penType).toBe("brush");
+    toolbar.destroy();
+  });
+
   it("edits only the active tool and keeps its settings when switching away and back", () => {
     const preferences = createDefaultToolPreferences();
     const toolbar = new AnnotationToolbar({
