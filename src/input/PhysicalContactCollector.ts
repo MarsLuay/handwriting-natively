@@ -18,6 +18,8 @@ const REGISTRATION_SCOPE = "document-capture" as const;
 const REGISTRATION_SOURCE = "ViewerInkSession.installPointerProbe" as const;
 const HOT_PATH_LONG_TASK_MS = 2;
 const HOT_PATH_LONG_TASK_INTERVAL_MS = 1_000;
+const HOT_PATH_PERCENTILE_INTERVAL = 16;
+const HOT_PATH_SAMPLE_LIMIT = 200;
 const HOT_PATH_PHASES = ["owner-selection", "deduplication", "tracking", "dispatch"] as const;
 
 export interface PhysicalContactHotPathStats {
@@ -31,6 +33,7 @@ export interface PhysicalContactHotPathStats {
 }
 
 const hotPathMoveSamples: number[] = [];
+let hotPathMoveCount = 0;
 const hotPathStats: PhysicalContactHotPathStats = {
   pointerMoveCount: 0,
   touchMoveCount: 0,
@@ -48,6 +51,7 @@ export function physicalContactHotPathStats(): PhysicalContactHotPathStats {
 
 export function resetPhysicalContactHotPathStats(): void {
   hotPathMoveSamples.length = 0;
+  hotPathMoveCount = 0;
   lastHotPathLongTaskAt = 0;
   resetRawSampleCloneCount();
   Object.assign(hotPathStats, {
@@ -62,6 +66,7 @@ export function resetPhysicalContactHotPathStats(): void {
 }
 
 const SEEN_EVENT_TTL_MS = 30_000;
+const SEEN_EVENT_PRUNE_INTERVAL_MS = 1_000;
 const MAX_SEEN_EVENTS = 512;
 const MAX_DUPLICATE_ANOMALIES = 96;
 
@@ -173,6 +178,7 @@ class PhysicalContactCollector {
   private readonly seenEvents = new WeakSet<Event>();
   private readonly seenKeys = new Map<string, number>();
   private readonly duplicateAnomalies = new Map<string, number>();
+  private lastSeenPruneAt = 0;
 
   constructor(private readonly document: Document) {
     const captureOptions = { capture: true, signal: this.abort.signal };
@@ -225,6 +231,7 @@ class PhysicalContactCollector {
   }
 
   private handlePointer(event: PointerEvent, eventType: PointerEventType): void {
+    if (!this.hasEnabledOwner()) return;
     const started = performance.now();
     const selectionStarted = started;
     const observers = this.activeObservers(event.target);
@@ -271,6 +278,7 @@ class PhysicalContactCollector {
   }
 
   private handleTouch(event: TouchEvent, eventType: TouchEventType): void {
+    if (!this.hasEnabledOwner()) return;
     const started = performance.now();
     const selectionStarted = started;
     const observers = this.activeObservers(event.target);
@@ -329,11 +337,21 @@ class PhysicalContactCollector {
     if (eventType !== "pointermove" && eventType !== "touchmove") return;
     if (eventType === "pointermove") hotPathStats.pointerMoveCount += 1;
     else hotPathStats.touchMoveCount += 1;
-    hotPathMoveSamples.push(collectorWorkMs);
-    if (hotPathMoveSamples.length > 200) hotPathMoveSamples.shift();
+    hotPathMoveCount += 1;
+    if (hotPathMoveSamples.length < HOT_PATH_SAMPLE_LIMIT) {
+      hotPathMoveSamples.push(collectorWorkMs);
+    } else {
+      // Order does not matter to the percentile calculation; overwrite the
+      // oldest slot instead of shifting the whole bounded window per move.
+      hotPathMoveSamples[(hotPathMoveCount - 1) % HOT_PATH_SAMPLE_LIMIT] = collectorWorkMs;
+    }
     hotPathStats.maxCollectorMoveMs = Math.max(hotPathStats.maxCollectorMoveMs, collectorWorkMs);
-    const sorted = [...hotPathMoveSamples].sort((a, b) => a - b);
-    hotPathStats.p95CollectorMoveMs = percentile(sorted, 0.95);
+    // The sample window is diagnostic-only. Sorting it for every move adds
+    // avoidable work to the same high-frequency path being measured.
+    if (hotPathMoveCount <= 4 || hotPathMoveCount % HOT_PATH_PERCENTILE_INTERVAL === 0) {
+      const sorted = [...hotPathMoveSamples].sort((a, b) => a - b);
+      hotPathStats.p95CollectorMoveMs = percentile(sorted, 0.95);
+    }
     if (collectorWorkMs <= HOT_PATH_LONG_TASK_MS) return;
     const now = Date.now();
     if (now - lastHotPathLongTaskAt < HOT_PATH_LONG_TASK_INTERVAL_MS) return;
@@ -457,6 +475,13 @@ class PhysicalContactCollector {
     }
   }
 
+  private hasEnabledOwner(): boolean {
+    for (const owner of this.owners.values()) {
+      if (owner.isEnabled()) return true;
+    }
+    return false;
+  }
+
   private activeObservers(target: EventTarget | null): PhysicalContactCollectorOwner[] {
     return [...this.owners.values()].filter((owner) => owner.isEnabled() && owner.withinTarget(target));
   }
@@ -477,6 +502,8 @@ class PhysicalContactCollector {
   }
 
   private pruneSeen(now: number): void {
+    if (this.lastSeenPruneAt !== 0 && now - this.lastSeenPruneAt < SEEN_EVENT_PRUNE_INTERVAL_MS) return;
+    this.lastSeenPruneAt = now;
     for (const [key, seenAt] of this.seenKeys) {
       if (now - seenAt > SEEN_EVENT_TTL_MS) this.seenKeys.delete(key);
     }
