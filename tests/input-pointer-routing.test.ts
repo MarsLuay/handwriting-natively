@@ -13,6 +13,7 @@ function pointer(type: string, pointerId: number, extra: Record<string, unknown>
     tiltX: { value: extra.tiltX ?? 0 }, tiltY: { value: extra.tiltY ?? 0 },
     width: { value: extra.width ?? 1 }, height: { value: extra.height ?? 1 },
     clientX: { value: extra.clientX ?? 10 }, clientY: { value: extra.clientY ?? 20 },
+    timeStamp: { configurable: true, value: extra.timeStamp ?? event.timeStamp },
     getCoalescedEvents: { value: extra.getCoalescedEvents ?? (() => []) }
   });
   return event;
@@ -834,11 +835,19 @@ describe("PointerRouter", () => {
     const onMove = vi.fn();
     const router = new PointerRouter(element, { activeTool: () => "pencil", canAnnotatePointer: () => true, onMove });
     element.dispatchEvent(pointer("pen", 4));
-    const a = pointer("pen", 4, { pressure: 0.2 });
-    const b = pointer("pen", 4, { pressure: 0.9 });
-    const move = pointer("pen", 4, { eventType: "pointermove", pressure: 0.9, getCoalescedEvents: () => [a, b] });
+    const a = pointer("pen", 4, { pressure: 0.2, timeStamp: 1 });
+    const b = pointer("pen", 4, { pressure: 0.9, timeStamp: 2 });
+    const move = pointer("pen", 4, {
+      eventType: "pointermove",
+      pressure: 0.9,
+      timeStamp: 3,
+      getCoalescedEvents: () => [a, b]
+    });
     element.dispatchEvent(move);
-    expect(onMove.mock.calls[0]?.[0].map((sample: { pressure: number }) => sample.pressure)).toEqual([0.2, 0.9]);
+    // The dispatched event is retained after the coalesced batch when its
+    // timestamp differs from the batch tail, so the latest tip sample is not
+    // lost on browsers that report a separate terminal event.
+    expect(onMove.mock.calls[0]?.[0].map((sample: { pressure: number }) => sample.pressure)).toEqual([0.2, 0.9, 0.9]);
     router.destroy();
   });
 
