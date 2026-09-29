@@ -33,6 +33,7 @@ import { PDF_PAGE_SELECTOR } from "./pdfPageSelectors";
 import { installPdfZoomBoost, type PdfZoomBoostHandle } from "./PdfZoomBoost";
 import { getDebugNodeId } from "../dom/debugNodeId";
 import { LayoutWorkTrace, type LayoutOperationResult } from "../runtime/LayoutWorkTrace";
+import { MobilePdfZoomHandoff } from "./MobilePdfZoomHandoff";
 
 export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   abstract readonly kind: "direct" | "embedded";
@@ -226,6 +227,16 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     }
   }
 
+  createMobilePdfZoomHandoff(): MobilePdfZoomHandoff {
+    return new MobilePdfZoomHandoff({
+      viewerGeneration: () => this.viewerGeneration,
+      getViewState: () => this.getViewState(),
+      page: (pageNumber) => this.page(pageNumber),
+      scrollElement: () => this.scrollElement(),
+      commitScale: (scale) => this.commitNativeScale(scale)
+    });
+  }
+
   getViewState(): PdfViewState {
     const page = this.locator.page(this.locator.currentPage()) ?? this.pages()[0];
     const scroller = this.scrollElement();
@@ -243,6 +254,23 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       rotation: page?.rotation ?? 0,
       ...(typeof scaleMode === "string" || typeof scaleMode === "number" ? { scaleMode } : {})
     };
+  }
+
+  private commitNativeScale(scale: number): boolean {
+    if (!Number.isFinite(scale) || scale <= 0) return false;
+    const viewer = this.compatibility.privateViewer;
+    if (!viewer) return false;
+    try {
+      if (typeof viewer.updateScale === "function") {
+        viewer.updateScale({ scaleFactor: scale, origin: null });
+        return true;
+      }
+      if (typeof viewer.currentScale !== "number") return false;
+      viewer.currentScale = scale;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   restoreViewState(state: PdfViewState): void {

@@ -3,6 +3,7 @@ import type { ToolbarPlacement } from "../model";
 import type { PdfFindControllerLike, PdfIntegrationProfile, PdfJsEventBus } from "./PdfViewerCompatibility";
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import type { PdfPageInfo } from "./PdfPageLocator";
+import type { MobilePdfZoomHandoff } from "./MobilePdfZoomHandoff";
 
 /** Compatibility aliases for PDF-only adapters and integrations. */
 export type PdfViewState = AnnotationViewState;
@@ -17,6 +18,8 @@ export interface PdfSurfaceExtensions {
   eventBus?(): PdfJsEventBus | null;
   onPdfEvent?(name: string, handler: (event: unknown) => void): () => void;
   setInkZoomBurstActive?(next: boolean): void;
+  /** Adapter-owned native handoff; private viewer objects stay behind this boundary. */
+  createMobilePdfZoomHandoff?(): MobilePdfZoomHandoff;
   consumeSidebarFollowZoomMetrics?(): {
     sidebarFollowActiveDuringZoom: boolean;
     sidebarFollowFramesDuringBurst: number;
