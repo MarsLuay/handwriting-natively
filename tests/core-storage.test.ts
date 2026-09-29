@@ -283,19 +283,55 @@ describe("sidecar storage", () => {
     expect(result.identity).toBeUndefined();
   });
 
-  it("checks listed duplicates even when the canonical content candidate exists", async () => {
+  it("auto-consolidates identical listed sidecars under the canonical content key", async () => {
     const files = new MemoryFiles();
-    const repository = new SidecarRepository(files, "annotations");
+    const now = () => new Date("2026-02-01T03:04:05.678Z");
+    const repository = new SidecarRepository(files, "annotations", { now });
     const canonical = sidecar();
     canonical.document = createDocumentIdentity({ vaultPath: "one.pdf", contentHash: "same" });
     const duplicate = structuredClone(canonical);
-    duplicate.document = { ...createDocumentIdentity({ vaultPath: "two.pdf", contentHash: "same" }), legacyIds: [createLegacyPathIdentity("two.pdf").id] };
+    const duplicateId = createLegacyPathIdentity("two.pdf").id;
+    duplicate.document = { ...createDocumentIdentity({ vaultPath: "two.pdf", contentHash: "same" }), legacyIds: [duplicateId] };
     await files.write(repository.pathFor(canonical.document.id), serializeSidecar(canonical));
-    await files.write(repository.pathFor(createLegacyPathIdentity("two.pdf").id), serializeSidecar(duplicate));
+    const duplicatePath = repository.pathFor(duplicateId);
+    await files.write(duplicatePath, serializeSidecar(duplicate));
 
     const result = await repository.loadForDocumentWithStatus({ vaultPath: "one.pdf", contentHash: "same" });
-    expect(result.data).toBeNull();
-    expect(result.conflict).toMatchObject({ reason: "duplicate-content" });
+
+    expect(result.conflict).toBeUndefined();
+    expect(result.data?.document.aliases).toContain("two.pdf");
+    expect(result.migrated).toMatchObject({
+      store: "sidecar",
+      canonicalPath: repository.pathFor(canonical.document.id),
+      archivedPaths: [`${duplicatePath}.migrated-duplicate-20260201T030405678Z`]
+    });
+    expect(files.data.has(duplicatePath)).toBe(false);
+    expect(files.data.has(`${duplicatePath}.migrated-duplicate-20260201T030405678Z`)).toBe(true);
+  });
+
+  it("auto-consolidates identical recovery snapshots left by content identity migration", async () => {
+    const files = new MemoryFiles();
+    const now = () => new Date("2026-02-01T03:04:05.678Z");
+    const repository = new RecoveryRepository(files, "annotations/recovery", { now });
+    const canonical = sidecar();
+    canonical.document = createDocumentIdentity({ vaultPath: "one.pdf", contentHash: "same" });
+    const duplicate = structuredClone(canonical);
+    const duplicateId = createLegacyPathIdentity("two.pdf").id;
+    duplicate.document = { ...createDocumentIdentity({ vaultPath: "two.pdf", contentHash: "same" }), legacyIds: [duplicateId] };
+    await files.write(repository.pathFor(canonical.document.id), serializeSidecar(canonical));
+    const duplicatePath = repository.pathFor(duplicateId);
+    await files.write(duplicatePath, serializeSidecar(duplicate));
+
+    const result = await repository.loadForDocumentWithStatus({ vaultPath: "one.pdf", contentHash: "same" });
+
+    expect(result.conflict).toBeUndefined();
+    expect(result.data?.document.aliases).toContain("two.pdf");
+    expect(result.migrated).toMatchObject({
+      store: "recovery",
+      canonicalPath: repository.pathFor(canonical.document.id),
+      archivedPaths: [`${duplicatePath}.migrated-duplicate-20260201T030405678Z`]
+    });
+    expect(files.data.has(duplicatePath)).toBe(false);
   });
 
   it("preserves an external sidecar change in a conflict file instead of overwriting it", async () => {
