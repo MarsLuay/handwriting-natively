@@ -79,6 +79,29 @@ describe("mobile PDF native zoom handoff", () => {
     expect(handoff.currentPhase()).toBe("settled");
   });
 
+  it("preserves the focal point when native handoff zooms out", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const page = pageInfo(element);
+    const fixture = hostFor(page, { left: 100, top: 100, width: 1200, height: 1600 });
+    fixture.setScale(2);
+    fixture.scroll.scrollLeft = 300;
+    fixture.scroll.scrollTop = 300;
+    const handoff = new MobilePdfZoomHandoff(fixture.host);
+
+    expect(handoff.begin({ pageNumber: 1, focalPoint: { x: 500, y: 500 } })).toBe(true);
+    expect(handoff.commit(1)).toEqual({ phase: "committing", accepted: true });
+    fixture.setRect({ left: 100, top: 100, width: 600, height: 800 });
+    handoff.observe("render");
+    handoff.observe("scale-settled");
+
+    const result = handoff.release();
+    expect(result.released).toBe(true);
+    expect(result.scrollDelta).toEqual({ left: -200, top: -200 });
+    expect(fixture.scroll.scrollLeft).toBeCloseTo(100);
+    expect(fixture.scroll.scrollTop).toBeCloseTo(100);
+  });
+
   it("handles rotated page geometry without mutating page-space annotations", () => {
     const element = document.createElement("div");
     document.body.append(element);
