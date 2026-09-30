@@ -65,7 +65,6 @@ function gateInput(overrides: Partial<MobileCustomPdfZoomGateInput> = {}): Mobil
     }),
     profile: profile(),
     page: { geometrySafe: true, identitySafe: true },
-    nativeScaleCommitAvailable: true,
     ...overrides
   };
 }
@@ -126,7 +125,7 @@ describe("mobile custom PDF zoom contract", () => {
     expect(plan.fallbackReasons).toContain(reason);
   });
 
-  it("fails closed when pointer/touch pairing, page evidence, or native commit is unavailable", () => {
+  it("fails closed when pointer/touch pairing or page evidence is unavailable", () => {
     const input = gateInput();
     input.platform = probePlatformCapabilities({
       platform: "ipad",
@@ -136,8 +135,6 @@ describe("mobile custom PDF zoom contract", () => {
     });
     input.profile.capabilities.privateViewer = false;
     input.page = { geometrySafe: false, identitySafe: false };
-    input.nativeScaleCommitAvailable = false;
-
     const plan = planMobileCustomPdfZoom(input);
 
     expect(plan.mode).toBe("native-fallback");
@@ -146,8 +143,7 @@ describe("mobile custom PDF zoom contract", () => {
       "touch-events-unavailable",
       "private-viewer-unavailable",
       "page-geometry-unsafe",
-      "page-identity-unsafe",
-      "native-scale-commit-unavailable"
+      "page-identity-unsafe"
     ]));
   });
 

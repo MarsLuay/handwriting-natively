@@ -22,17 +22,15 @@ export type MobileCustomPdfZoomFallbackReason =
   | "page-geometry-unsafe"
   | "page-identity-unsafe"
   | "private-viewer-unavailable"
-  | "scale-unavailable"
-  | "native-scale-commit-unavailable";
+  | "scale-unavailable";
 
 export type MobileCustomPdfZoomSignalSource = "event-bus" | "dom-geometry";
 
 /**
  * The explicit evidence needed before a session may own mobile PDF pinch.
  *
- * `nativeScaleCommitAvailable` is supplied by the adapter after probing the
- * private viewer. Keeping it separate from the profile prevents this policy
- * from guessing that a readable scale is also writable.
+ * The custom path owns only the visual container zoom. PDF.js remains the
+ * renderer, but a writable native scale operation is intentionally not needed.
  */
 export interface MobileCustomPdfZoomGateInput {
   enabled: boolean;
@@ -40,7 +38,6 @@ export interface MobileCustomPdfZoomGateInput {
   platform: PlatformCapabilityReport;
   profile: PdfIntegrationProfile;
   page: Pick<AnnotationPageInfo, "geometrySafe" | "identitySafe"> | null;
-  nativeScaleCommitAvailable: boolean;
 }
 
 export interface MobileCustomPdfZoomPlan {
@@ -76,6 +73,8 @@ function isMobilePlatform(platform: PlatformCapabilityReport): boolean | null {
 /**
  * Resolve the feature gate without inspecting user-agent, viewport, or DOM
  * shape. The native fallback is the safe result for every unknown condition.
+ * A writable PDF.js scale is not part of this gate because custom mobile zoom
+ * remains CSS/container-owned through the entire gesture.
  */
 export function planMobileCustomPdfZoom(input: MobileCustomPdfZoomGateInput): MobileCustomPdfZoomPlan {
   const fallbackReasons: MobileCustomPdfZoomFallbackReason[] = [];
@@ -102,10 +101,6 @@ export function planMobileCustomPdfZoom(input: MobileCustomPdfZoomGateInput): Mo
     if (input.page.geometrySafe === false) fallbackReasons.push("page-geometry-unsafe");
     if (input.page.identitySafe === false) fallbackReasons.push("page-identity-unsafe");
   }
-  if (!input.nativeScaleCommitAvailable) {
-    fallbackReasons.push("native-scale-commit-unavailable");
-  }
-
   const uniqueReasons = [...new Set(fallbackReasons)];
   const hasEventBus = input.profile.capabilities.eventBus === true;
   const hasPageRenderEvent = input.profile.capabilities.pageRenderEvent === true;

@@ -72,8 +72,8 @@ import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShor
 import type { PointerSample } from "../input/PointerCapabilities";
 import type { CustomPinchFrame } from "../input/PointerRouter";
 import { MobilePinchZoomController, type MobilePinchZoomFocalPoint, type MobilePinchZoomFrame } from "../input/MobilePinchZoomController";
-import { MobilePdfCompositor, type MobilePdfCompositorPage } from "../integration/MobilePdfCompositor";
-import { MobilePdfPinchTransaction } from "../integration/MobilePdfPinchTransaction";
+import { MobilePdfCssZoom, type MobilePdfCssZoomPage } from "../integration/MobilePdfCssZoom";
+import { MobilePdfCssZoomTransaction } from "../integration/MobilePdfCssZoomTransaction";
 import type {
   MobilePdfZoomHandoffCancelReason,
   MobilePdfZoomHandoffSignal
@@ -832,7 +832,7 @@ interface PageSurface {
   /** Neighbor zoom settle used blit-stretch / lower backing; needs idle HQ upgrade. */
   settleUpgradePending: boolean;
   router: PointerRouter | null;
-  mobileCustomPinch: MobilePdfPinchTransaction | null;
+  mobileCustomPinch: MobilePdfCssZoomTransaction | null;
   pendingRouterHandoff: PointerRouterHandoff | null;
   livePaintFrame: number | null;
   /** One short watchdog lets visible ink paint if the browser misses the next rAF. */
@@ -1022,6 +1022,10 @@ export class ViewerInkSession {
   private readonly temporaryModifierEraserKeys = new Set<"Control" | "Meta">();
   private debugState: DebugState = {};
   private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
+  /** Visual mobile PDF zoom is persistent CSS/container state, not PDF.js scale. */
+  private mobileCssZoomScale = 1;
+  private mobileCssZoomTarget: HTMLElement | null = null;
+  private mobileCssZoomPreviousInlineValue: string | null = null;
   private destroyed = false;
   private detachNotified = false;
   /** Last Obsidian drawer/modal/menu class mutation — occlusion anomaly telemetry. */
@@ -1515,7 +1519,10 @@ export class ViewerInkSession {
       maxScale: options.settings.boostedPdfZoom ? 25 : 10,
       getScale: () => {
         try {
-          return adapter.getViewState().scale;
+          const surface = this.mobilePinchSurfaceAt(null, null);
+          return surface && this.customMobilePdfPinchZoomEnabled(surface)
+            ? this.mobileCssZoomScale
+            : adapter.getViewState().scale;
         } catch {
           return 1;
         }
@@ -6921,9 +6928,9 @@ export class ViewerInkSession {
     const bounds = shapeBounds(this.selectionShape);
     const mapper = this.mapper(surface);
     const topCenterView = mapper.toViewport({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.maxY });
-    const overlayRect = surface.overlay.getBoundingClientRect();
-    const clientCenterX = overlayRect.left + topCenterView.x;
-    const clientTopY = overlayRect.top + topCenterView.y;
+    const clientPoint = this.overlayClientFromViewport(surface, topCenterView);
+    const clientCenterX = clientPoint.x;
+    const clientTopY = clientPoint.y;
     const visible = clientCenterX >= rootRect.left && clientCenterX <= rootRect.right
       && clientTopY >= rootRect.top && clientTopY <= rootRect.bottom;
     if (!visible) return defaultAnchor;
@@ -6939,6 +6946,7 @@ export class ViewerInkSession {
       surface.router?.cancelCustomPinch(reason);
       if (surface.mobileCustomPinch) this.cancelMobileCustomPinch(surface, "capability-lost");
     }
+    this.clearMobileCssZoom();
   }
 
   onPageLifecycleChange(change: AnnotationPageLifecycleChange): void {
@@ -6970,6 +6978,8 @@ export class ViewerInkSession {
   }
 
   onZoomChange(change: AnnotationZoomChange): void {
+    const hasCustomCssPinch = [...this.surfaces.values()].some((surface) => surface.mobileCustomPinch);
+    if (!hasCustomCssPinch) this.clearMobileCssZoom();
     const adapterGeneration = "viewerGeneration" in this.options.adapter
       ? this.options.adapter.viewerGeneration
       : change.viewerGeneration;
@@ -8367,8 +8377,7 @@ export class ViewerInkSession {
         surfaceType,
         platform: report.platform,
         profile: report.profile,
-        page,
-        nativeScaleCommitAvailable: extensions?.nativeScaleCommitAvailable?.() === true
+        page
       });
       mode = plan.mode;
       fallbackReasons = [...plan.fallbackReasons];
@@ -9009,6 +9018,7 @@ export class ViewerInkSession {
     this.textContextMenuTargetId = null;
     this.textContextMenu.destroy();
     this.mobilePinchZoom.destroy();
+    this.clearMobileCssZoom();
     if (this.mobilePinchIndicatorFadeTimer !== null) {
       const view = this.options.adapter.host.ownerDocument.defaultView;
       (view?.clearTimeout ?? window.clearTimeout)(this.mobilePinchIndicatorFadeTimer);
@@ -9461,14 +9471,13 @@ export class ViewerInkSession {
         ?? this.options.settings.customMobilePdfPinchZoom === true;
       const extensions = pdfSurfaceExtensions(this.options.adapter);
       const report = extensions?.compatibilityReport?.();
-      if (!extensions || !extensions.createMobilePdfZoomHandoff || !report?.profile || !report.platform) return false;
+      if (!extensions || !report?.profile || !report.platform) return false;
       return planMobileCustomPdfZoom({
         enabled,
         surfaceType: this.options.adapter.surfaceType ?? "image",
         platform: report.platform,
         profile: report.profile,
-        page: surface.page,
-        nativeScaleCommitAvailable: extensions.nativeScaleCommitAvailable?.() === true
+        page: surface.page
       }).mode === "custom-mobile";
     } catch {
       return false;
@@ -9518,8 +9527,8 @@ export class ViewerInkSession {
   }
 
   private persistMobilePinchScale(_scale: number): void {
-    // PDF.js owns the durable view scale. The controller callback exists so
-    // scale state in the handwriting sidecar.
+    // CSS/container zoom is already retained by the compositor. Do not mirror
+    // it into PDF.js currentScale or the handwriting sidecar.
   }
 
   private mobilePinchSurfaceAt(clientX: number | null, clientY: number | null): PageSurface | null {
@@ -9585,22 +9594,76 @@ export class ViewerInkSession {
     }
   }
 
+  private rememberMobileCssZoomTarget(target: HTMLElement): void {
+    if (this.mobileCssZoomTarget === target) return;
+    this.clearMobileCssZoom();
+    this.mobileCssZoomTarget = target;
+    this.mobileCssZoomPreviousInlineValue = target.style.getPropertyValue("zoom");
+  }
+
+  private mobilePdfCssZoomFactor(): number {
+    const target = this.mobileCssZoomTarget;
+    if (!target?.isConnected) return 1;
+    try {
+      const inline = Number.parseFloat(target.style.getPropertyValue("zoom"));
+      if (Number.isFinite(inline) && inline > 0) return inline;
+      const computed = target.ownerDocument.defaultView?.getComputedStyle(target).getPropertyValue("zoom");
+      const parsed = Number.parseFloat(computed ?? "");
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  private overlayViewportFromClient(
+    surface: PageSurface,
+    clientX: number,
+    clientY: number,
+    rect = surface.overlay.getBoundingClientRect()
+  ): { x: number; y: number } {
+    const zoom = this.mobilePdfCssZoomFactor();
+    return {
+      x: (clientX - rect.left) / zoom,
+      y: (clientY - rect.top) / zoom
+    };
+  }
+
+  private overlayClientFromViewport(
+    surface: PageSurface,
+    viewport: { x: number; y: number },
+    rect = surface.overlay.getBoundingClientRect()
+  ): { x: number; y: number } {
+    const zoom = this.mobilePdfCssZoomFactor();
+    return {
+      x: rect.left + viewport.x * zoom,
+      y: rect.top + viewport.y * zoom
+    };
+  }
+
+  private clearMobileCssZoom(): void {
+    const target = this.mobileCssZoomTarget;
+    if (target && this.mobileCssZoomPreviousInlineValue !== null) {
+      if (this.mobileCssZoomPreviousInlineValue) target.style.setProperty("zoom", this.mobileCssZoomPreviousInlineValue);
+      else target.style.removeProperty("zoom");
+    }
+    this.mobileCssZoomTarget = null;
+    this.mobileCssZoomPreviousInlineValue = null;
+    this.mobileCssZoomScale = 1;
+  }
+
   private startMobileCustomPinch(surface: PageSurface, frame: CustomPinchFrame): void {
     if (surface.mobileCustomPinch || frame.points.length < 2) return;
     const extensions = pdfSurfaceExtensions(this.options.adapter);
-    const handoff = extensions?.createMobilePdfZoomHandoff?.();
     let scrollRoot: HTMLElement;
-    let viewState: AnnotationViewState;
     try {
       scrollRoot = this.options.adapter.scrollElement();
-      viewState = this.options.adapter.getViewState();
     } catch {
       surface.router?.cancelCustomPinch("disabled");
       return;
     }
     const first = frame.points[0];
     const second = frame.points[1];
-    if (!extensions || !handoff || !first || !second) {
+    if (!extensions || !first || !second) {
       surface.router?.cancelCustomPinch("disabled");
       return;
     }
@@ -9621,7 +9684,7 @@ export class ViewerInkSession {
       return;
     }
     const hasViewport = rootRect.width > 1 && rootRect.height > 1;
-    let pages: MobilePdfCompositorPage[];
+    let pages: MobilePdfCssZoomPage[];
     try {
       pages = this.options.adapter.pages()
         .filter((page) => page.element.isConnected)
@@ -9643,14 +9706,16 @@ export class ViewerInkSession {
       surface.router?.cancelCustomPinch("disabled");
       return;
     }
-    const compositor = new MobilePdfCompositor();
+    const zoomTarget = this.options.adapter.root;
+    this.rememberMobileCssZoomTarget(zoomTarget);
+    const initialScale = this.mobileCssZoomScale;
+    const compositor = new MobilePdfCssZoom();
     let started = false;
-    let handoffStarted = false;
     const traceStarted = this.mobilePdfZoomTrace.begin({
       mode: "custom-mobile",
       at: typeof performance === "undefined" ? Date.now() : performance.now(),
       pageCount: pages.filter((page) => page.visible).length,
-      initialScale: viewState.scale,
+      initialScale,
       midpoint: focalPoint
     });
     if (traceStarted) {
@@ -9662,29 +9727,22 @@ export class ViewerInkSession {
     }
     try {
       started = traceStarted && compositor.begin({
-        mode: "custom-mobile",
-        enabled: true,
-        root: this.options.adapter.root,
+        root: zoomTarget,
         scrollRoot,
         pages,
-        initialScale: viewState.scale,
+        initialScale,
         focalPoint,
         maxVisiblePages: 4
       }, (frame) => {
         this.mobilePdfZoomTrace.noteSample(frame.focalPoint, frame.previewScale);
-        this.mobilePdfZoomTrace.noteTransformFrame(frame.transformDurationMs);
-      });
-      handoffStarted = started && handoff.begin({
-        pageNumber: surface.page.pageNumber,
-        focalPoint,
-        compositor
+        this.mobilePdfZoomTrace.noteTransformFrame(frame.zoomDurationMs);
       });
     } catch {
       // A changing PDF page is native-owned until a later qualified gesture.
     }
-    if (!started || !handoffStarted) {
+    if (!started) {
       compositor.cancel();
-      this.mobilePdfZoomTrace.cancel("handoff-failed");
+      this.mobilePdfZoomTrace.cancel("css-zoom-unavailable");
       this.zoomPipelineTrace.setMode("native");
       this.zoomFrameDiagnostics.setMode("native");
       this.zoomNativeHandoffTrace.setMode("native");
@@ -9694,29 +9752,21 @@ export class ViewerInkSession {
       return;
     }
     this.mobilePdfZoomTrace.notePromote();
-    let transaction: MobilePdfPinchTransaction | null = null;
-    transaction = new MobilePdfPinchTransaction({
+    let transaction: MobilePdfCssZoomTransaction | null = null;
+    transaction = new MobilePdfCssZoomTransaction({
       compositor,
-      handoff,
-      initialScale: viewState.scale,
-      view: surface.page.element.ownerDocument.defaultView,
+      initialScale,
       onPreview: (scale, point) => this.mobilePdfZoomTrace.noteSample(point, scale),
-      onNativeCommit: () => this.mobilePdfZoomTrace.noteNativeCommit(
-        typeof performance === "undefined" ? Date.now() : performance.now()
-      ),
-      onNativeSignal: (signal) => this.mobilePdfZoomTrace.noteNativeSignal(
-        typeof performance === "undefined" ? Date.now() : performance.now(),
-        signal === "render" || signal === "mutation"
-      ),
       onComplete: (completion) => {
         if (surface.mobileCustomPinch === transaction) surface.mobileCustomPinch = null;
         if (completion.phase === "cancelled") {
           this.mobilePdfZoomTrace.cancel(completion.reason);
         } else {
+          this.mobileCssZoomScale = completion.scale;
           this.mobilePdfZoomTrace.release({
             at: typeof performance === "undefined" ? Date.now() : performance.now(),
-            focalAnchorErrorPx: Math.hypot(completion.result.scrollDelta.left, completion.result.scrollDelta.top),
-            canonicalRenderWork: true
+            focalAnchorErrorPx: 0,
+            canonicalRenderWork: false
           });
         }
         extensions.setInkZoomBurstActive?.(false);
@@ -11265,8 +11315,9 @@ export class ViewerInkSession {
     if (!canvas.width || !canvas.height || !stroke.points.length) return null;
     const layout = this.pageLayout(surface);
     const rect = surface.overlay.getBoundingClientRect();
-    const cssWidth = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
-    const cssHeight = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
+    const zoom = this.mobilePdfCssZoomFactor();
+    const cssWidth = Math.max(1, rect.width >= 8 ? rect.width / zoom : layout.contentWidth || 1);
+    const cssHeight = Math.max(1, rect.height >= 8 ? rect.height / zoom : layout.contentHeight || 1);
     const scaleX = canvas.width / cssWidth;
     const scaleY = canvas.height / cssHeight;
     const mapper = this.mapper(surface);
@@ -13826,8 +13877,8 @@ export class ViewerInkSession {
   }
 
   private textPointerToPagePoint(surface: PageSurface, event: PointerEvent): Pick<PagePoint, "x" | "y"> {
-    const rect = surface.overlay.getBoundingClientRect();
-    return this.mapper(surface).toPage({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+    const viewport = this.overlayViewportFromClient(surface, event.clientX, event.clientY);
+    return this.mapper(surface).toPage(viewport);
   }
 
   private resizeTextAnnotation(before: TextAnnotation, handle: TextBoxHandle, point: Pick<PagePoint, "x" | "y">): TextAnnotation {
@@ -15237,7 +15288,7 @@ export class ViewerInkSession {
     const mapper = this.mapper(surface);
     let previous = pressureConditioner ? surface.pressureLastPagePoint : undefined;
     const points = samples.map((sample) => {
-      const viewport = { x: sample.clientX - overlayRect.left, y: sample.clientY - overlayRect.top };
+      const viewport = this.overlayViewportFromClient(surface, sample.clientX, sample.clientY, overlayRect);
       const point = mapper.toPage(viewport);
       // Pen zero on pointerdown is meaningful (conditioner floor). Move-path hover
       // (pressure ≤ PEN_HOVER_PRESSURE_EPSILON) is filtered in PointerRouter.
@@ -15265,10 +15316,10 @@ export class ViewerInkSession {
 
   private projectInkScreenPoint(surface: PageSurface, clientX: number, clientY: number): { x: number; y: number } {
     const overlayRect = surface.overlay.getBoundingClientRect();
-    const viewport = { x: clientX - overlayRect.left, y: clientY - overlayRect.top };
+    const viewport = this.overlayViewportFromClient(surface, clientX, clientY, overlayRect);
     const mapper = this.mapper(surface);
     const projected = mapper.toViewport(mapper.toPage(viewport));
-    return { x: overlayRect.left + projected.x, y: overlayRect.top + projected.y };
+    return this.overlayClientFromViewport(surface, projected, overlayRect);
   }
 
   private logPositionAlign(
@@ -15281,7 +15332,7 @@ export class ViewerInkSession {
     const overlayRect = surface.overlay.getBoundingClientRect();
     const layout = this.pageLayout(surface);
     const contentRect = pdfRenderCanvas(surface.page.element)?.getBoundingClientRect();
-    const viewport = { x: sample.clientX - overlayRect.left, y: sample.clientY - overlayRect.top };
+    const viewport = this.overlayViewportFromClient(surface, sample.clientX, sample.clientY, overlayRect);
     const mapper = this.mapper(surface);
     const pdf = mapper.toPage(viewport);
     const inkScreen = this.projectInkScreenPoint(surface, sample.clientX, sample.clientY);
@@ -15374,8 +15425,9 @@ export class ViewerInkSession {
       width: layout.contentWidth,
       height: layout.contentHeight
     };
-    const overlayWidth = overlayRect.width >= 8 ? overlayRect.width : layout.contentWidth;
-    const overlayHeight = overlayRect.height >= 8 ? overlayRect.height : layout.contentHeight;
+    const zoom = this.mobilePdfCssZoomFactor();
+    const overlayWidth = overlayRect.width >= 8 ? overlayRect.width / zoom : layout.contentWidth;
+    const overlayHeight = overlayRect.height >= 8 ? overlayRect.height / zoom : layout.contentHeight;
     const firstStroke = this.ink.page(surface.page.pageNumber)[0];
     const anchorPoint = firstStroke?.points[0];
     const mapped = anchorPoint ? this.mapper(surface, layout).toViewport(anchorPoint) : null;
@@ -15506,13 +15558,30 @@ export class ViewerInkSession {
 
   private pageLayout(surface: PageSurface): PageCoordinateLayout {
     const cached = this.zoomLayoutCache?.get(surface.page.pageNumber);
-    if (cached) return cached;
+    if (cached) return this.unscalePageLayoutForMobileCssZoom(cached);
     const metrics = this.metricsFor(surface);
-    return resolvePageCoordinateLayout({
+    return this.unscalePageLayoutForMobileCssZoom(resolvePageCoordinateLayout({
       ...surface.page,
       width: metrics.width,
       height: metrics.height
-    });
+    }));
+  }
+
+  private unscalePageLayoutForMobileCssZoom(layout: PageCoordinateLayout): PageCoordinateLayout {
+    const zoom = this.mobilePdfCssZoomFactor();
+    if (zoom === 1) return layout;
+    return {
+      ...layout,
+      offsetX: layout.offsetX / zoom,
+      offsetY: layout.offsetY / zoom,
+      contentWidth: layout.contentWidth / zoom,
+      contentHeight: layout.contentHeight / zoom,
+      scale: layout.scale / zoom,
+      scaleX: layout.scaleX / zoom,
+      scaleY: layout.scaleY / zoom,
+      hostWidth: layout.hostWidth / zoom,
+      hostHeight: layout.hostHeight / zoom
+    };
   }
 
   /** Canonical PDF-space page bounds for indexed paint queries. */

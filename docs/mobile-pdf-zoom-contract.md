@@ -1,6 +1,6 @@
-# Mobile-only hybrid PDF pinch-zoom contract
+# Mobile-only CSS-owned PDF pinch-zoom contract
 
-This document defines the experimental replacement path for mobile PDF pinch zoom. The persisted `customMobilePdfPinchZoom` setting defaults to `true`, can be explicitly disabled, is independent of `boostedPdfZoom`, and does not change desktop behavior.
+This document defines the experimental replacement path for mobile PDF pinch zoom. The persisted `customMobilePdfPinchZoom` setting defaults to `true`, can be explicitly disabled, is independent of `boostedPdfZoom`, and does not change desktop behavior. PDF.js remains the renderer and keeps its canonical scale; the custom path owns only the visual container zoom.
 
 ## Activation gate
 
@@ -10,10 +10,9 @@ This document defines the experimental replacement path for mobile PDF pinch zoo
 - the surface is a PDF and the adapter is identified separately as `direct` or `embedded`;
 - `PlatformCapabilityReport` identifies Android or iPad, reports `isMobile: true`, and reports both Pointer Events and Touch Events as available;
 - the PDF compatibility profile has a viewer root, rendered page elements, a scroll root, readable geometry, trustworthy page numbers, a private viewer, a readable scale, and an observable page replacement path;
-- the current page has safe geometry and identity; and
-- the adapter has positively probed a native scale commit operation.
+- the current page has safe geometry and identity.
 
-Desktop, an unknown platform, an unknown mobile flag, an unknown runtime capability, a missing private viewer, or an unavailable native scale commit always selects `native-fallback`. No user-agent, viewport, CSS class, or guessed tablet classification may opt in. A missing optional EventBus or page-render event does **not** by itself disable the path: the existing DOM geometry/mutation fallback is selected and recorded.
+Desktop, an unknown platform, an unknown mobile flag, an unknown runtime capability, or a missing private viewer always selects `native-fallback`. A writable PDF.js scale is not required because the custom path never commits `currentScale`. No user-agent, viewport, CSS class, or guessed tablet classification may opt in. A missing optional EventBus or page-render event does **not** by itself disable the path: the existing DOM geometry/mutation fallback is selected and recorded.
 
 The gate is evaluated again when the viewer, page mount, or compatibility generation changes. A failed evaluation leaves native Obsidian/PDF.js ownership intact.
 
@@ -25,8 +24,8 @@ The owner is selected before any temporary compositor transform is applied:
 | --- | --- | --- | --- |
 | `native-idle` | gate is disabled, unsupported, or no active custom gesture | Obsidian/PDF.js | qualified two-touch candidate, or ordinary native navigation |
 | `candidate` | first finger is observed on a qualified PDF page | native one-finger navigation | second touch with no pen promotes to `active`; release/cancel returns native |
-| `active` | two touch contacts, no active pen, and a valid page generation | plugin compositor | pointer/touch cancel, pen admission, page replacement, hidden view, or release of a touch |
-| `settling` | last pinch contact ends | native handoff coordinator | committed scale and geometry settle, or cancellation |
+| `active` | two touch contacts, no active pen, and a valid page generation | CSS/container compositor | pointer/touch cancel, pen admission, page replacement, hidden view, or release of a touch |
+| `settled` | last pinch contact ends | CSS/container zoom | final visual zoom remains until reset, native zoom, page replacement, or teardown |
 | `cancelled` | any unsafe or ambiguous condition | native fallback | temporary state removed, then `native-idle` |
 
 One finger remains native. A confirmed pen owns annotation immediately; a companion finger remains native and cannot promote to pinch. Ineligible surfaces and disabled mode never enter `candidate` for custom ownership. The implementation may observe both Pointer Events and Touch Events, but must reconcile them by contact identity and must not count a paired browser event twice.
@@ -38,30 +37,31 @@ The page surface may use the narrow mobile policy needed to keep native one-fing
 During `active`:
 
 1. Capture the two admitted contact IDs and their midpoint in the PDF viewport coordinate system.
-2. Measure the initial distance and page/scroll geometry. Accumulate preview scale from distance ratios, bounded by the same scale limits used by native PDF.js.
-3. Transform the PDF page visual layer and the matching handwriting overlays together around the captured content anchor. Do not transform the scroll root, sidebar, toolbar, or outer Obsidian shell.
-4. Convert viewport midpoint to page-local coordinates using the current page geometry and scroll offset. Compensate scroll position so the same page point remains under the midpoint while the preview scale changes.
-5. Coalesce visual updates to one animation frame. No annotation model mutation, sidecar write, PDF rewrite, or raw pointer stream is part of the preview.
+2. Measure the initial distance and page/scroll geometry. Accumulate a visual zoom factor from distance ratios.
+3. Apply the browser `zoom` property to the validated PDF viewer root so PDF pixels and child handwriting overlays remain in one visual coordinate system. Do not zoom the scroll root, sidebar, toolbar, or outer Obsidian shell.
+4. Solve scroll coordinates from the original root/focal geometry so the same content point remains under the moving midpoint.
+5. Normalize pointer/page-layout coordinates by the active root zoom; child overlays and canvas backing sizes remain in their unzoomed PDF coordinate space while screen projections multiply the root zoom.
+6. Coalesce visual updates to one animation frame. No annotation model mutation, sidecar write, PDF rewrite, or PDF.js scale commit is part of the gesture.
 
-The transform is temporary. The canonical scale remains PDF.js/Obsidian's scale, and page-space ink remains unchanged.
+The final CSS/container zoom remains after `settled`; cancellation restores the pre-gesture zoom and scroll. PDF.js continues rendering and keeps its own canonical scale unchanged.
 
-## Native handoff boundary
+## PDF.js boundary
 
-At `settling`, the coordinator must verify the captured viewer generation, page identity, page geometry, and current compatibility report. It then commits the final scale through the positively probed private viewer operation (`updateScale` or an equivalent writable native operation), using the midpoint/scroll anchor supported by that operation. EventBus events are preferred for observing the resulting scale and render completion, but are not assumed to exist.
+There is no release-time native scale handoff. The coordinator does not call `updateScale`, write `currentScale`, or wait for PDF.js canvas replacement before releasing the gesture. This is intentional: keeping one CSS/container owner removes the visible transform-to-PDF.js resize seam.
 
-If the viewer, native scale operation, page identity, geometry, render lifecycle, or generation evidence is unavailable, the coordinator removes the temporary transform and returns to native ownership. It must not leave a permanently CSS-scaled low-resolution page, guess a private viewer path, or apply a handoff to a stale page shell. DOM geometry/mutation evidence may confirm a settle when the EventBus is missing; unsafe geometry cancels instead.
+PDF.js remains responsible for rendering, text, links, search, and its own explicit toolbar/native zoom actions. An explicit native zoom event clears the CSS zoom so the two owners never compound. Page identity, geometry, and viewer-generation checks still gate custom input and cancellation; unsafe geometry cancels instead of leaving a partial CSS zoom.
 
 A viewer-generation change always cancels the temporary transform. The new generation must be reconciled and re-gated before a later gesture can start. A page identity change or unsafe geometry has the same result. This prevents a replacement page from inheriting a previous page's transform or anchor.
 
 ## Cancellation and lifecycle
 
-Cancellation removes the compositor transform, releases captures/listeners, clears contact and anchor state, and restores the last native scroll/scale observation. It covers pointer cancel, TouchEvent cancel, lost capture, visibility/pagehide/background, viewer or page replacement, capability loss, native scrolling observed before admission, and handoff failure. Cancellation is fail-closed: native navigation resumes rather than leaving a half-owned gesture.
+Cancellation removes the temporary CSS zoom, releases captures/listeners, clears contact and anchor state, and restores the pre-gesture scroll/zoom. It covers pointer cancel, TouchEvent cancel, lost capture, visibility/pagehide/background, viewer or page replacement, capability loss, native scrolling observed before admission, and CSS-zoom setup failure. Cancellation is fail-closed: native navigation resumes rather than leaving a half-owned gesture.
 
 Close, note switching, plugin unload, and adapter teardown run the same cleanup even if no final touch event arrives. A stale listener or old adapter must not receive the next generation's contacts.
 
 ## Diagnostics and compatibility targets
 
-Copied session diagnostics expose only bounded mode evidence: `settingEnabled`, `mode` (`custom-mobile` or `native-fallback`), fallback reasons, the active handoff phase, and the last observed trace mode/phase. Copy Logs always appends a compact per-session status after the log tail, including whether a custom gesture was observed and bounded transform/native-commit timing; this remains available even when the log tail is truncated. They do not expose private viewer objects, raw pointer streams, document contents, or network telemetry. A `native-fallback` result is expected for disabled settings, desktop/unknown hosts, missing capability evidence, unsafe page generations, and unavailable native scale commits.
+Copied session diagnostics expose only bounded mode evidence: `settingEnabled`, `mode` (`custom-mobile` or `native-fallback`), fallback reasons, the active CSS-zoom phase, and the last observed trace mode/phase. Copy Logs always appends a compact per-session status after the log tail, including whether a custom gesture was observed and bounded CSS-zoom timing; native commit wait and canonical PDF.js render work remain absent for this path. They do not expose private viewer objects, raw pointer streams, document contents, or network telemetry. A `native-fallback` result is expected for disabled settings, desktop/unknown hosts, missing capability evidence, or unsafe page generations.
 
 Physical validation remains separate from the gate. A diagnostic mode is evidence of the selected branch, not a device support claim.
 
