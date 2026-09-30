@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { brushSampleWidths, drawBrushStroke } from "../src/tools/BrushTool";
+import { brushRibbonSamples, brushSampleWidths, drawBrushStroke } from "../src/tools/BrushTool";
 
 const options = {
   color: "#111827",
@@ -43,5 +43,39 @@ describe("brush pen", () => {
     expect(operations).toContain("lineTo");
     expect(operations).toContain("arc");
     expect(operations.at(-1)).toBe("restore");
+  });
+
+  it("shares the smoothed ribbon samples with export geometry", () => {
+    const ribbon = brushRibbonSamples([
+      { x: 0, y: 0, pressure: 0.8, time: 0 },
+      { x: 20, y: 0, pressure: 0.8, time: 16 },
+      { x: 20, y: 20, pressure: 0.8, time: 32 }
+    ], options);
+    expect(ribbon.length).toBeGreaterThan(3);
+    expect(ribbon.every((sample) => sample.radius > 0)).toBe(true);
+  });
+
+  it("uses a smoothed centerline for corners instead of one raw quad per sample", () => {
+    const operations: string[] = [];
+    const context = {
+      save: () => operations.push("save"),
+      restore: () => operations.push("restore"),
+      beginPath: () => operations.push("beginPath"),
+      moveTo: () => operations.push("moveTo"),
+      lineTo: () => operations.push("lineTo"),
+      arc: () => operations.push("arc"),
+      fill: () => operations.push("fill"),
+      globalAlpha: 1,
+      fillStyle: ""
+    } as unknown as CanvasRenderingContext2D;
+
+    drawBrushStroke(context, [
+      { x: 0, y: 0, pressure: 0.8, time: 0 },
+      { x: 20, y: 0, pressure: 0.8, time: 16 },
+      { x: 20, y: 20, pressure: 0.8, time: 32 }
+    ], options);
+
+    expect(operations.filter((operation) => operation === "fill")).toHaveLength(1);
+    expect(operations.filter((operation) => operation === "lineTo").length).toBeGreaterThan(6);
   });
 });
