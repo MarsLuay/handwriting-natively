@@ -170,13 +170,17 @@ export class MobilePdfZoomHandoff {
   }
 
   observe(signal: MobilePdfZoomHandoffSignal): MobilePdfZoomHandoffPhase {
-    if (this.phase !== "committing") return this.phase;
+    // Page-structure notifications can arrive while the fingers are still
+    // down, before the native scale commit. Validate the anchor in preview too
+    // so an unrelated virtualized-page addition does not cancel the gesture,
+    // while an actual anchor replacement still fails closed.
+    if (this.phase !== "preview" && this.phase !== "committing") return this.phase;
     const reason = this.validateGenerationAndPage();
     if (reason) {
       this.cancelWith(reason);
       return this.phase;
     }
-    this.signals.add(signal);
+    if (this.phase === "committing") this.signals.add(signal);
     return this.phase;
   }
 
