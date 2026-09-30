@@ -1027,6 +1027,33 @@
 }
 .native-pdf-handwriting-scan-error { color: var(--text-error, #b91c1c); }
 
+.native-pdf-handwriting-mobile-zoom-indicator {
+  align-items: center;
+  background: var(--background-secondary-alt, rgba(30, 30, 30, 0.85));
+  border: 0;
+  border-radius: 16px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 64px);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+  color: var(--text-normal, #fff);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  font-weight: 500;
+  justify-content: center;
+  min-height: 32px;
+  min-width: 56px;
+  opacity: 0.85;
+  padding: 6px 12px;
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 12px);
+  transition: opacity 0.25s ease, transform 0.12s ease;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  z-index: 45;
+}
+.native-pdf-handwriting-mobile-zoom-indicator:active { opacity: 1; transform: scale(0.96); }
+.native-pdf-handwriting-mobile-zoom-indicator.is-faded { opacity: 0; pointer-events: none; }
+
 @media (min-width: 700px) {
   .native-pdf-handwriting-dropdown { max-width: 360px; }
 }

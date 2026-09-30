@@ -3,6 +3,16 @@
   "targetProject": "native-pdf-handwriting",
   "inspirations": [
     {
+      "path": "inspirations/hata-suriiken-obsidian-mobile-pinch-zoom",
+      "ownerRepo": "hata-suriiken/obsidian-mobile-pinch-zoom",
+      "remoteUrl": "https://github.com/hata-suriiken/obsidian-mobile-pinch-zoom.git",
+      "targetProject": "native-pdf-handwriting",
+      "license": "MIT",
+      "purpose": "Absorb donor mobile pinch-zoom behavior: midpoint anchoring, frame coalescing, trackpad pinch, snap, animation, persistence, reset indicator, and gesture exclusions for the native PDF handwriting viewer; attribution and license are retained in the pinned checkout.",
+      "persistence": "persistent",
+      "revision": "8fe3152eb82c2084fbb847e1c445312145134b66"
+    },
+    {
       "path": "inspirations/ellimist-afk-handwriting",
       "ownerRepo": "ellimist-afk/handwriting",
       "remoteUrl": "https://github.com/ellimist-afk/handwriting.git",
