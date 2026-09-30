@@ -1,6 +1,6 @@
 import type { DrawingToolPreferences, PagePoint, PenType } from "../model";
 import { normalizedCoordinateScale } from "../util/math";
-import { brushSegmentWidths, drawBrushStroke } from "./BrushTool";
+import { brushSampleWidths, brushSegmentWidths, drawBrushStroke } from "./BrushTool";
 
 export interface PenPoint {
   x: number;
@@ -28,8 +28,23 @@ export function penSampleWidth(
   penType: PenType = preferences.penType ?? "fountain"
 ): number {
   const scale = normalizedCoordinateScale(coordinateScale);
-  // A ball pen lays down a steady-width line. Fountain and brush pens retain
-  // the existing pressure law; brush velocity shaping is applied per stroke.
+  if (penType === "brush") {
+    return brushSampleWidths([{
+      x: point.x,
+      y: point.y,
+      pressure: point.pressure,
+      time: point.time
+    }], {
+      color: preferences.color,
+      width: preferences.width,
+      opacity: preferences.opacity,
+      pressureSensitivity: preferences.pressureSensitivity,
+      thinning: preferences.thinning,
+      coordinateScale: scale
+    })[0] ?? Math.max(0.35 * scale, preferences.width * scale);
+  }
+  // A ball pen lays down a steady-width line. Fountain pens retain the
+  // existing pressure law; brush shaping is handled by BrushTool.
   if (penType === "ball") return Math.max(0.35 * scale, preferences.width * scale);
   const pressure = preferences.pressureSensitivity ? Math.min(1, Math.max(0, point.pressure)) : 0.5;
   return Math.max(0.35 * scale, preferences.width * (1 - preferences.thinning + preferences.thinning * pressure * 2));

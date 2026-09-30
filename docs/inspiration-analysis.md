@@ -4,7 +4,7 @@
 
 This analysis uses ten local, read-only, depth-1 clones under `Inspiration/`. Paths below are primary-source citations into those clones. “Verified” statements describe the inspected commit; “Adopt” and “Do not adopt” are design inferences for Handwriting Natively. Obsidian PDF internals are undocumented and must be runtime-guarded even when PDF++ currently types them.
 
-No source code has been copied or adapted from any inspiration repository. Direct code reuse: **none**. If that changes, record the exact source range, commit, modifications, copyright notice, and license obligations here before merging it.
+Most inspiration repositories remain concept-only. The brush renderer is the one intentional adaptation: it takes the owned MIT inspiration's pen-shaping concepts and adapts them to `native-pdf-handwriting`'s `BrushPoint`/`BrushStrokeOptions` API. Direct code reuse remains limited to that renderer seam; the adaptation record is below.
 
 | Repository | Inspected commit | License finding |
 | --- | --- | --- |
@@ -18,6 +18,13 @@ No source code has been copied or adapted from any inspiration repository. Direc
 | `obsidian-handwrite` | `ff1330f7931edaa44a8cb09d4b1908e537b8eadd` | MIT (`Inspiration/obsidian-handwrite/LICENSE`). |
 | `pdf-lib` | `93dd36e85aa659a3bca09867d2d8fac172501fbe` | MIT (`Inspiration/pdf-lib/LICENSE.md`). |
 | `monkey-around` | `0884a1003f4c4840c60d000ac86284b5a4b84e8b` | `package.json` declares ISC, but this clone has no standalone license text (`Inspiration/monkey-around/package.json`). Obtain and retain the complete ISC notice before distributing copied or vendored source. |
+
+### Brush renderer adaptation record
+
+- **Source:** the owned MIT checkout at `inspirations/handwriting-inspiration-folder`, pinned in `inspirations/manifest.json` as revision `a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0`.
+- **Source ranges:** `src/ink/InkShape.ts` (pressure settling, velocity thinning, endpoint taper), `src/ink/Smoothing.ts` (midpoint-quadratic centerline), `src/ink/Ribbon.ts` (curve flattening, side offsets, joint detection), and `src/ink/RibbonRenderer.ts` (single-fill ribbon/cap strategy).
+- **Adaptation:** `src/tools/BrushTool.ts` ports those render-time concepts into the existing viewport-space `BrushPoint` API, keeps the app's pressure/thinning preferences and segment-export API, and leaves canonical stroke points/persistence unchanged. It does not import the donor's camera, stroke model, wet-layer lifecycle, or global settings.
+- **License/notice:** the donor is owned by MarsLuay and recorded as MIT in the inspiration manifest. The attribution is retained in `BrushTool.ts`; no third-party notice was present in the pinned owned checkout.
 
 ## PDF++: Obsidian PDF integration
 

@@ -1,5 +1,5 @@
 import type { InkStroke, PdfPoint } from "../model";
-import { brushSampleWidths } from "../tools/BrushTool";
+import { brushRibbonSamples } from "../tools/BrushTool";
 import { escapeXml } from "../util/escapeXml";
 
 export interface SvgInkExportPageMetrics {
@@ -175,18 +175,23 @@ function layoutPages(pages: readonly SourcePage[], padding: number, pageGap: num
 }
 
 function validStroke(stroke: InkStroke, pressureAware: boolean): ValidStroke | null {
-  const points = stroke.points.filter(isFinitePoint);
+  let points = stroke.points.filter(isFinitePoint);
   if (!points.length) return null;
   const width = positiveFinite(stroke.width) ? stroke.width : 1;
-  const radii = stroke.penType === "brush" && pressureAware
-    ? brushSampleWidths(points, {
+  let radii: number[];
+  if (stroke.penType === "brush" && pressureAware) {
+    const ribbon = brushRibbonSamples(points, {
       color: stroke.color,
       width,
       opacity: stroke.opacity,
       pressureSensitivity: pressureAware,
       thinning: 0.55
-    }).map((sample) => Math.max(0.125, sample / 2))
-    : points.map((point) => strokeRadius(stroke, point, width, pressureAware));
+    });
+    points = ribbon.map((sample) => ({ x: sample.x, y: sample.y, pressure: 0.5, time: 0 }));
+    radii = ribbon.map((sample) => sample.radius);
+  } else {
+    radii = points.map((point) => strokeRadius(stroke, point, width, pressureAware));
+  }
   const minX = Math.min(...points.map((point, index) => point.x - radii[index]!));
   const minY = Math.min(...points.map((point, index) => point.y - radii[index]!));
   const maxX = Math.max(...points.map((point, index) => point.x + radii[index]!));
