@@ -652,11 +652,6 @@
 /* Let the pinch handoff own the single post-commit scroll rebase instead of
    allowing browser scroll anchoring to reposition the page independently. */
 .native-pdf-handwriting-pinch-overflow-anchor-off { overflow-anchor: none !important; }
-/* Preserve a negative top scroll correction as real viewer content space when
-   PDF.js has already clamped the scroll root to zero. */
-.native-pdf-handwriting-pinch-top-void {
-  padding-top: calc(var(--native-pdf-handwriting-pinch-top-void-base, 0px) + var(--native-pdf-handwriting-pinch-top-void, 0px));
-}
 /* Keep the annotation overlay in its own compositor layer while PDF.js replaces
    its underlying canvas/text layers after a pinch zoom. */
 .native-pdf-handwriting-page-overlay.native-pdf-handwriting-zoom-compositing {
