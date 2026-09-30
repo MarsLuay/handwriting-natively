@@ -25,6 +25,7 @@ function hostFor(page: AnnotationPageInfo, rect: { left: number; top: number; wi
   let state: AnnotationViewState = { pageNumber: 1, scrollFraction: 0, scale: 1, rotation: page.rotation };
   const scroll = document.createElement("div");
   let committed = true;
+  const committedOrigins: Array<{ x: number; y: number } | undefined> = [];
   let currentPage = page;
   let currentRect = { ...rect };
   Object.defineProperty(page.element, "getBoundingClientRect", { configurable: true, value: () => ({
@@ -40,8 +41,9 @@ function hostFor(page: AnnotationPageInfo, rect: { left: number; top: number; wi
     getViewState: () => state,
     page: () => currentPage,
     scrollElement: () => scroll,
-    commitScale: (scale) => {
+    commitScale: (scale, focalPoint) => {
       if (!committed) return false;
+      committedOrigins.push(focalPoint);
       state = { ...state, scale };
       return true;
     }
@@ -49,6 +51,7 @@ function hostFor(page: AnnotationPageInfo, rect: { left: number; top: number; wi
   return {
     host,
     scroll,
+    committedOrigins,
     setGeneration: (value: number) => { generation = value; },
     setPage: (value: AnnotationPageInfo) => { currentPage = value; },
     setRect: (value: typeof rect) => { currentRect = { ...value }; },
@@ -69,6 +72,7 @@ describe("mobile PDF native zoom handoff", () => {
     expect(handoff.begin({ pageNumber: 1, focalPoint: { x: 300, y: 300 }, compositor: { cancel: () => { cancelled += 1; } } })).toBe(true);
     expect(fixture.scroll.classList.contains("native-pdf-handwriting-pinch-overflow-anchor-off")).toBe(true);
     expect(handoff.commit(2)).toEqual({ phase: "committing", accepted: true });
+    expect(fixture.committedOrigins).toEqual([{ x: 300, y: 300 }]);
     fixture.setRect({ left: 100, top: 100, width: 1200, height: 1600 });
     handoff.observe("scale-settled");
     expect(handoff.release().released).toBe(false);
@@ -141,6 +145,33 @@ describe("mobile PDF native zoom handoff", () => {
     expect(page.width).toBe(originalPageGeometry.width);
     expect(page.height).toBe(originalPageGeometry.height);
     expect(page.rotation).toBe(originalPageGeometry.rotation);
+  });
+
+  it("retains intentional top void when the browser clamps a negative correction", () => {
+    const wrapper = document.createElement("div");
+    const element = document.createElement("div");
+    wrapper.append(element);
+    document.body.append(wrapper);
+    const page = pageInfo(element);
+    const fixture = hostFor(page, { left: 0, top: 200, width: 600, height: 800 });
+    let scrollTop = 0;
+    Object.defineProperty(fixture.scroll, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = Math.max(0, value); }
+    });
+    const handoff = new MobilePdfZoomHandoff(fixture.host);
+
+    expect(handoff.begin({ pageNumber: 1, focalPoint: { x: 100, y: 100 } })).toBe(true);
+    expect(handoff.commit(0.5).accepted).toBe(true);
+    fixture.setRect({ left: 0, top: 0, width: 300, height: 400 });
+    handoff.observe("scale-settled");
+    handoff.observe("render");
+
+    expect(handoff.release().released).toBe(true);
+    expect(scrollTop).toBe(0);
+    expect(wrapper.classList.contains("native-pdf-handwriting-pinch-top-void")).toBe(true);
+    expect(wrapper.style.getPropertyValue("--native-pdf-handwriting-pinch-top-void")).toBe("150px");
   });
 
   it("cancels the compositor before a stale generation can commit or release", () => {

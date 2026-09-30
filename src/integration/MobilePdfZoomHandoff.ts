@@ -24,7 +24,7 @@ export interface MobilePdfZoomHandoffHost {
   getViewState(): AnnotationViewState;
   page(pageNumber: number): AnnotationPageInfo | undefined;
   scrollElement(): HTMLElement;
-  commitScale(scale: number): boolean;
+  commitScale(scale: number, focalPoint?: ViewportPoint): boolean;
 }
 
 export interface MobilePdfZoomHandoffBeginOptions {
@@ -59,6 +59,9 @@ interface Anchor {
 
 const SCALE_EPSILON = 0.02;
 const PINCH_OVERFLOW_ANCHOR_OFF_CLASS = "native-pdf-handwriting-pinch-overflow-anchor-off";
+const PINCH_TOP_VOID_CLASS = "native-pdf-handwriting-pinch-top-void";
+const PINCH_TOP_VOID_VARIABLE = "--native-pdf-handwriting-pinch-top-void";
+const PINCH_TOP_VOID_BASE_VARIABLE = "--native-pdf-handwriting-pinch-top-void-base";
 const STRUCTURAL_SIGNALS = new Set<MobilePdfZoomHandoffSignal>(["render", "mutation", "resize", "geometry"]);
 
 function finitePoint(point: ViewportPoint): boolean {
@@ -85,6 +88,30 @@ function samePageMount(page: AnnotationPageInfo, anchor: Anchor): boolean {
     && (page.mountGeneration === undefined
       || anchor.mountGeneration === undefined
       || page.mountGeneration === anchor.mountGeneration);
+}
+
+/**
+ * PDF.js and the browser clamp scrollTop at zero. When a focal point is above
+ * the page, zooming out can therefore require a negative scroll correction;
+ * preserve that intentional top void as content padding instead of dropping it
+ * when the temporary compositor transform is removed.
+ */
+function preserveTopVoid(anchor: Anchor, missingScrollPx: number): void {
+  if (!Number.isFinite(missingScrollPx) || missingScrollPx <= 0) return;
+  const host = anchor.pageElement.parentElement;
+  if (!host || host === anchor.pageElement.ownerDocument.body || !host.isConnected) return;
+  const view = host.ownerDocument.defaultView;
+  const computedPadding = Number.parseFloat(view?.getComputedStyle(host).paddingTop ?? "0");
+  const currentVoid = Number.parseFloat(host.style.getPropertyValue(PINCH_TOP_VOID_VARIABLE));
+  const basePadding = Number.isFinite(computedPadding) && Number.isFinite(currentVoid)
+    ? Math.max(0, computedPadding - currentVoid)
+    : Number.isFinite(computedPadding) ? Math.max(0, computedPadding) : 0;
+  const nextVoid = (Number.isFinite(currentVoid) ? currentVoid : 0) + missingScrollPx;
+  host.classList.add(PINCH_TOP_VOID_CLASS);
+  if (!host.style.getPropertyValue(PINCH_TOP_VOID_BASE_VARIABLE)) {
+    host.style.setProperty(PINCH_TOP_VOID_BASE_VARIABLE, `${basePadding}px`);
+  }
+  host.style.setProperty(PINCH_TOP_VOID_VARIABLE, `${nextVoid}px`);
 }
 
 /**
@@ -150,7 +177,9 @@ export class MobilePdfZoomHandoff {
     }
     const reason = this.validateGenerationAndPage();
     if (reason) return this.cancelWith(reason);
-    if (!this.host.commitScale(finalScale)) return this.cancelWith("native-scale-commit-unavailable");
+    if (!this.host.commitScale(finalScale, this.anchor?.focalPoint)) {
+      return this.cancelWith("native-scale-commit-unavailable");
+    }
     this.finalScale = finalScale;
     this.signals.clear();
     this.signals.add("scale-changing");
@@ -238,7 +267,13 @@ export class MobilePdfZoomHandoff {
       return { phase: this.phase, released: false, reason: "stable-geometry-unavailable", scrollDelta: empty };
     }
     scroll.scrollLeft += delta.left;
+    const scrollTopBefore = scroll.scrollTop;
     scroll.scrollTop += delta.top;
+    const appliedScrollTop = scroll.scrollTop - scrollTopBefore;
+    const missingTopCorrection = delta.top - appliedScrollTop;
+    if (missingTopCorrection < -0.5) {
+      preserveTopVoid(anchor, -missingTopCorrection);
+    }
     this.restoreOverflowAnchor(anchor);
     this.phase = "settled";
     this.anchor = null;
