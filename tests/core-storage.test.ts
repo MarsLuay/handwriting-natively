@@ -292,6 +292,8 @@ describe("sidecar storage", () => {
     const duplicate = structuredClone(canonical);
     const duplicateId = createLegacyPathIdentity("two.pdf").id;
     duplicate.document = { ...createDocumentIdentity({ vaultPath: "two.pdf", contentHash: "same" }), legacyIds: [duplicateId] };
+    duplicate.createdAt = "2025-01-01";
+    duplicate.updatedAt = "2025-01-02";
     await files.write(repository.pathFor(canonical.document.id), serializeSidecar(canonical));
     const duplicatePath = repository.pathFor(duplicateId);
     await files.write(duplicatePath, serializeSidecar(duplicate));
@@ -318,6 +320,8 @@ describe("sidecar storage", () => {
     const duplicate = structuredClone(canonical);
     const duplicateId = createLegacyPathIdentity("two.pdf").id;
     duplicate.document = { ...createDocumentIdentity({ vaultPath: "two.pdf", contentHash: "same" }), legacyIds: [duplicateId] };
+    duplicate.createdAt = "2025-01-01";
+    duplicate.updatedAt = "2025-01-02";
     await files.write(repository.pathFor(canonical.document.id), serializeSidecar(canonical));
     const duplicatePath = repository.pathFor(duplicateId);
     await files.write(duplicatePath, serializeSidecar(duplicate));

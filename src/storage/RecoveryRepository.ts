@@ -252,10 +252,11 @@ function matchesRecoveryCandidate(
 }
 
 function annotationPayload(sidecar: SidecarSchemaV1): string {
+  // Identity migration can leave an older copy with different bookkeeping
+  // timestamps. They are not annotation content and must not turn an
+  // otherwise safe duplicate consolidation into a storage conflict.
   return JSON.stringify({
     pages: sidecar.pages,
-    createdAt: sidecar.createdAt,
-    updatedAt: sidecar.updatedAt,
     ...(sidecar.extensions === undefined ? {} : { extensions: sidecar.extensions })
   });
 }
