@@ -53,9 +53,12 @@ interface Anchor {
   pagePoint: ViewportPoint;
   focalPoint: ViewportPoint;
   initialScroll: { left: number; top: number };
+  scrollElement: HTMLElement;
+  hadOverflowAnchorClass: boolean;
 }
 
 const SCALE_EPSILON = 0.02;
+const PINCH_OVERFLOW_ANCHOR_OFF_CLASS = "native-pdf-handwriting-pinch-overflow-anchor-off";
 const STRUCTURAL_SIGNALS = new Set<MobilePdfZoomHandoffSignal>(["render", "mutation", "resize", "geometry"]);
 
 function finitePoint(point: ViewportPoint): boolean {
@@ -115,13 +118,20 @@ export class MobilePdfZoomHandoff {
     const pagePoint = pageMapper(page, rect).toPage(localPoint);
     if (!finitePoint(pagePoint)) return false;
     const scroll = this.host.scrollElement();
+    const hadOverflowAnchorClass = scroll.classList.contains(PINCH_OVERFLOW_ANCHOR_OFF_CLASS);
+    // PDF.js changes page geometry during the native commit. Disable the
+    // browser's independent scroll anchoring for this bounded handoff so the
+    // focal-point rebase below is the only post-pinch scroll adjustment.
+    scroll.classList.add(PINCH_OVERFLOW_ANCHOR_OFF_CLASS);
     this.anchor = {
       pageNumber: options.pageNumber,
       pageElement: page.element,
       mountGeneration: page.mountGeneration,
       pagePoint,
       focalPoint: { ...options.focalPoint },
-      initialScroll: { left: scroll.scrollLeft, top: scroll.scrollTop }
+      initialScroll: { left: scroll.scrollLeft, top: scroll.scrollTop },
+      scrollElement: scroll,
+      hadOverflowAnchorClass
     };
     this.expectedViewerGeneration = this.host.viewerGeneration();
     this.finalScale = null;
@@ -225,6 +235,7 @@ export class MobilePdfZoomHandoff {
     }
     scroll.scrollLeft += delta.left;
     scroll.scrollTop += delta.top;
+    this.restoreOverflowAnchor(anchor);
     this.phase = "settled";
     this.anchor = null;
     this.expectedViewerGeneration = null;
@@ -241,6 +252,7 @@ export class MobilePdfZoomHandoff {
     }
     this.compositor?.cancel();
     this.compositor = undefined;
+    if (this.anchor) this.restoreOverflowAnchor(this.anchor);
     this.anchor = null;
     this.expectedViewerGeneration = null;
     this.finalScale = null;
@@ -255,6 +267,11 @@ export class MobilePdfZoomHandoff {
 
   currentCancelReason(): MobilePdfZoomHandoffCancelReason | undefined {
     return this.cancelReason;
+  }
+
+  private restoreOverflowAnchor(anchor: Anchor): void {
+    if (anchor.hadOverflowAnchorClass) return;
+    anchor.scrollElement.classList.remove(PINCH_OVERFLOW_ANCHOR_OFF_CLASS);
   }
 
   private validateGenerationAndPage(): MobilePdfZoomHandoffCancelReason | undefined {

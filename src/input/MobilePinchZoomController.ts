@@ -192,6 +192,13 @@ export class MobilePinchZoomController {
       return;
     }
     const active = this.active;
+    // A physical pinch ends at the scale the user chose. Snapping or easing
+    // here creates a second zoom gesture after the fingers leave the page;
+    // command and ctrl/meta-wheel sessions retain their existing settle policy.
+    if (this.wheelTarget === null) {
+      this.finish(active.lastScale, reason);
+      return;
+    }
     const target = Math.abs(active.lastScale - this.snapScale) <= this.snapRange
       ? this.snapScale
       : active.lastScale;

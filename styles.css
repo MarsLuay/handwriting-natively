@@ -649,6 +649,9 @@
 .native-pdf-handwriting-text-style-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
 .native-pdf-handwriting-text-style-buttons button[aria-pressed="true"] { background: var(--interactive-accent, #2563eb); color: var(--text-on-accent, #fff); }
 .native-pdf-handwriting-text-menu-note { color: var(--text-muted); font-size: .85em; line-height: 1.35; margin: 0; }
+/* Let the pinch handoff own the single post-commit scroll rebase instead of
+   allowing browser scroll anchoring to reposition the page independently. */
+.native-pdf-handwriting-pinch-overflow-anchor-off { overflow-anchor: none !important; }
 /* Keep the annotation overlay in its own compositor layer while PDF.js replaces
    its underlying canvas/text layers after a pinch zoom. */
 .native-pdf-handwriting-page-overlay.native-pdf-handwriting-zoom-compositing {
