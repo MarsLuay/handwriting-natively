@@ -253,7 +253,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       getViewState: () => this.getViewState(),
       page: (pageNumber) => this.page(pageNumber),
       scrollElement: () => this.scrollElement(),
-      commitScale: (scale) => this.commitNativeScale(scale)
+      commitScale: (scale, focalPoint) => this.commitNativeScale(scale, focalPoint)
     });
   }
 
@@ -276,7 +276,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     };
   }
 
-  private commitNativeScale(scale: number): boolean {
+  private commitNativeScale(scale: number, focalPoint?: { x: number; y: number }): boolean {
     if (!Number.isFinite(scale) || scale <= 0) return false;
     const viewer = this.compatibility.privateViewer;
     if (!viewer) return false;
@@ -285,8 +285,24 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       if (typeof currentScale === "number" && Number.isFinite(currentScale) && currentScale > 0) {
         try {
           // PDF.js treats scaleFactor as a relative multiplier, while the
-          // handoff receives the requested absolute canonical scale.
-          viewer.updateScale({ scaleFactor: scale / currentScale });
+          // handoff receives the requested absolute canonical scale. Passing
+          // the pinch midpoint lets PDF.js preserve its native focal origin
+          // instead of applying a release-time center adjustment.
+          viewer.updateScale({
+            scaleFactor: scale / currentScale,
+            ...(focalPoint && Number.isFinite(focalPoint.x) && Number.isFinite(focalPoint.y)
+              ? { origin: [focalPoint.x, focalPoint.y] }
+              : {})
+          });
+          const committedScale = viewer.currentScale;
+          if (typeof committedScale !== "number"
+            || !Number.isFinite(committedScale)
+            || Math.abs(committedScale - scale) <= Math.max(0.005, scale * 0.005)) return true;
+          // A few Obsidian builds round updateScale to a preset step. When a
+          // writable canonical scale exists, restore the exact pinch release
+          // value before the handoff's final geometry rebase.
+          if (!hasWritableCurrentScale(viewer)) return true;
+          viewer.currentScale = scale;
           return true;
         } catch {
           // Some Obsidian mobile builds expose updateScale but reject calls

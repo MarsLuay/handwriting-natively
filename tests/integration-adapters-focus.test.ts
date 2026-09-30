@@ -243,7 +243,7 @@ describe("PDF adapters", () => {
     expect(adapter.nativeScaleCommitAvailable?.()).toBe(true);
     expect(handoff.begin({ pageNumber: 1, focalPoint: { x: 100, y: 100 } })).toBe(true);
     expect(handoff.commit(3)).toMatchObject({ accepted: true });
-    expect(updateScale).toHaveBeenCalledWith({ scaleFactor: 1.5 });
+    expect(updateScale).toHaveBeenCalledWith({ scaleFactor: 1.5, origin: [100, 100] });
     adapter.destroy();
 
     const fallbackHost = compatibleHost();
