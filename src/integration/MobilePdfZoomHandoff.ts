@@ -98,8 +98,17 @@ function samePageMount(page: AnnotationPageInfo, anchor: Anchor): boolean {
  */
 function preserveTopVoid(anchor: Anchor, missingScrollPx: number): void {
   if (!Number.isFinite(missingScrollPx) || missingScrollPx <= 0) return;
-  const host = anchor.pageElement.parentElement;
-  if (!host || host === anchor.pageElement.ownerDocument.body || !host.isConnected) return;
+  const body = anchor.pageElement.ownerDocument.body;
+  let host = anchor.pageElement.parentElement;
+  for (let candidate = host; candidate && candidate !== body; candidate = candidate.parentElement) {
+    if (candidate === anchor.scrollElement
+      || candidate.classList.contains("pdfViewer")
+      || candidate.classList.contains("pdf-viewer")) {
+      host = candidate;
+      break;
+    }
+  }
+  if (!host || host === body || !host.isConnected) return;
   const view = host.ownerDocument.defaultView;
   const computedPadding = Number.parseFloat(view?.getComputedStyle(host).paddingTop ?? "0");
   const currentVoid = Number.parseFloat(host.style.getPropertyValue(PINCH_TOP_VOID_VARIABLE));
