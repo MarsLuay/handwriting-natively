@@ -143,6 +143,18 @@ function pointer(
   return event as unknown as PointerEvent;
 }
 
+function touchStart(target: HTMLElement, identifier: number, clientX: number, clientY: number): TouchEvent {
+  const event = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
+  const touch = { identifier, clientX, clientY, target } as unknown as Touch;
+  Object.defineProperties(event, {
+    touches: { value: [touch] },
+    changedTouches: { value: [touch] },
+    targetTouches: { value: [touch] }
+  });
+  target.dispatchEvent(event);
+  return event;
+}
+
 describe("viewer runtime tracer", () => {
   beforeEach(() => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
@@ -230,6 +242,35 @@ describe("viewer runtime tracer", () => {
     await opened[0].destroy();
     await opened[1].destroy();
     expect(getPhysicalContactCollectorSnapshot(document)?.activeOwnerCount ?? 0).toBe(0);
+  });
+
+  it("switches to the eraser from native mobile touchstart double taps", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings,
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: false, ipad: true })
+    });
+    const textLayer = document.createElement("div");
+    textLayer.className = "textLayer";
+    adapter.pageElement.append(textLayer);
+
+    const first = touchStart(textLayer, 11, 120, 180);
+    const second = touchStart(textLayer, 12, 124, 184);
+
+    expect(first.defaultPrevented).toBe(false);
+    expect(second.defaultPrevented).toBe(false);
+    expect(settings.toolPreferences.activeTool).toBe("eraser");
+    await session.destroy();
   });
 
   it("draws a stylus stroke, saves sidecar, exports copy, and cleans up", async () => {
