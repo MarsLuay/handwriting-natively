@@ -330,6 +330,32 @@ describe("zoom ink compositing", () => {
     await session.destroy();
   });
 
+  it("does not schedule a mobile refresh when pinch scroll leaves the mount set unchanged", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter, new MemoryFiles(), { mobile: true, phone: true });
+    const overlay = overlayOf(adapter);
+    const internal = session as unknown as {
+      pendingMobileScrollRemount: boolean;
+      zoomCompositeSettledAt: number;
+      releaseZoomCompositeLayers(): void;
+    };
+    vi.useFakeTimers();
+
+    overlay.classList.add("native-pdf-handwriting-zoom-compositing");
+    internal.pendingMobileScrollRemount = true;
+    internal.zoomCompositeSettledAt = performance.now();
+    internal.releaseZoomCompositeLayers();
+
+    expect(internal.pendingMobileScrollRemount).toBe(false);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+    expect(debugCalls("session refresh").filter((call) => {
+      const details = call[2] as { reason?: string };
+      return details.reason === "view-scroll-mobile" || details.reason === "post-zoom-scroll-mobile";
+    })).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(32);
+    await session.destroy();
+  });
+
   it("defers expensive stroke paint during zoom burst and repaints after settle", async () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
