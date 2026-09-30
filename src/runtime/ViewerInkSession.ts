@@ -70,6 +70,7 @@ import { AddPageTiming } from "../ui/AddPageTiming";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, inkHotkeyCommand, type InkHotkeyCommand, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
 import type { CustomPinchFrame } from "../input/PointerRouter";
+import { MobilePinchZoomController, type MobilePinchZoomFocalPoint, type MobilePinchZoomFrame } from "../input/MobilePinchZoomController";
 import { MobilePdfCompositor, type MobilePdfCompositorPage } from "../integration/MobilePdfCompositor";
 import { scheduleAfterDisplayFrames } from "../integration/MobilePdfZoomReleaseGate";
 import type { MobilePdfZoomHandoff } from "../integration/MobilePdfZoomHandoff";
@@ -1242,6 +1243,10 @@ export class ViewerInkSession {
   private readonly logger: SessionLogger;
   private readonly ipadInputTrace: IpadPointerTouchTrace | null;
   private readonly viewerMousePan: ViewerMousePan;
+  private readonly mobilePinchZoom: MobilePinchZoomController;
+  private activeMobilePinchSurface: PageSurface | null = null;
+  private mobilePinchIndicator: HTMLElement | null = null;
+  private mobilePinchIndicatorFadeTimer: number | null = null;
   /** Shared contact owner for document pan and every page router. */
   private readonly gestureOwnership = new GestureOwnership();
   private readonly addPageControl: AddPageControl | null;
@@ -1512,6 +1517,30 @@ export class ViewerInkSession {
       });
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
+    this.mobilePinchZoom = new MobilePinchZoomController({
+      minScale: 0.1,
+      maxScale: options.settings.boostedPdfZoom ? 25 : 10,
+      getScale: () => {
+        try {
+          return adapter.getViewState().scale;
+        } catch {
+          return 1;
+        }
+      },
+      getViewportCenter: () => {
+        const rect = adapter.root.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0
+          ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+          : null;
+      },
+      onStart: (frame) => this.startActiveMobilePinch(frame),
+      onPreview: (scale, focalPoint) => this.previewActiveMobilePinch(scale, focalPoint),
+      onEnd: (scale, reason) => this.endActiveMobilePinch(scale, reason),
+      onCancel: (reason) => this.cancelActiveMobilePinch(reason),
+      onSettled: (scale) => this.persistMobilePinchScale(scale),
+      onEligibility: (target) => this.mobilePinchWheelEligible(target, adapter),
+      onIndicator: (scale, reset) => this.updateMobilePinchIndicator(scale, reset, adapter.host.ownerDocument)
+    });
     this.viewerMousePan = new ViewerMousePan(adapter.host.ownerDocument, {
         enabled: () => mousePanEnabled(this.mouseInputMode()),
       // Fingers: native PDF viewer only. Custom touch pan fights pinch/scroll remounts on phone.
@@ -3151,6 +3180,10 @@ export class ViewerInkSession {
     doc.addEventListener("wheel", (e: WheelEvent) => {
       if (isReplayingWheelPan(doc)) return;
       if (e.ctrlKey || e.metaKey) {
+        if (this.mobilePinchZoom.handleWheel(e)) {
+          e.preventDefault();
+          return;
+        }
         const now = performance.now();
         wheelPinchCount += 1;
         if (wheelPinchCount > 1 && now - lastWheelLogAt < 80) return;
@@ -8961,6 +8994,14 @@ export class ViewerInkSession {
     this.textContextMenuSuppressTimer = null;
     this.textContextMenuTargetId = null;
     this.textContextMenu.destroy();
+    this.mobilePinchZoom.destroy();
+    if (this.mobilePinchIndicatorFadeTimer !== null) {
+      const view = this.options.adapter.host.ownerDocument.defaultView;
+      (view?.clearTimeout ?? window.clearTimeout)(this.mobilePinchIndicatorFadeTimer);
+      this.mobilePinchIndicatorFadeTimer = null;
+    }
+    this.mobilePinchIndicator?.remove();
+    this.mobilePinchIndicator = null;
     this.viewerMousePan.destroy();
     this.addPageControl?.destroy();
     this.thumbnailSidebarActions?.destroy();
@@ -9420,6 +9461,116 @@ export class ViewerInkSession {
     }
   }
 
+  private startActiveMobilePinch(frame: MobilePinchZoomFrame): { accepted: boolean; scale?: number } {
+    let surface = frame.generation === 0 ? null : this.activeMobilePinchSurface;
+    if (!surface) {
+      const first = frame.points[0];
+      const second = frame.points[1];
+      const clientX = first && second ? (first.clientX + second.clientX) / 2 : null;
+      const clientY = first && second ? (first.clientY + second.clientY) / 2 : null;
+      surface = this.mobilePinchSurfaceAt(clientX, clientY);
+    }
+    if (!surface || !this.customMobilePdfPinchZoomEnabled(surface)) return { accepted: false };
+    if (surface.mobileCustomPinch) this.cancelMobileCustomPinch(surface, "capability-lost");
+    this.activeMobilePinchSurface = surface;
+    this.startMobileCustomPinch(surface, frame);
+    const state = surface.mobileCustomPinch;
+    return state
+      ? { accepted: true, scale: state.initialScale }
+      : { accepted: false };
+  }
+
+  private previewActiveMobilePinch(scale: number, focalPoint: MobilePinchZoomFocalPoint): void {
+    const surface = this.activeMobilePinchSurface;
+    if (!surface) return;
+    this.previewMobileCustomPinch(surface, scale, focalPoint);
+  }
+
+  private endActiveMobilePinch(
+    scale: number,
+    reason: "pointerup" | "pointercancel" | "lostpointercapture" | "pen-contact" | "lifecycle" | "disabled"
+  ): void {
+    const surface = this.activeMobilePinchSurface;
+    if (!surface) return;
+    this.endMobileCustomPinch(surface, reason, scale);
+    if (reason !== "pointerup") this.activeMobilePinchSurface = null;
+  }
+
+  private cancelActiveMobilePinch(reason: string): void {
+    const surface = this.activeMobilePinchSurface;
+    if (surface?.mobileCustomPinch) this.cancelMobileCustomPinch(surface, "capability-lost");
+    this.activeMobilePinchSurface = null;
+    this.logger.inputLifecycleEvent("mobile-pinch-cancel", { reason });
+  }
+
+  private persistMobilePinchScale(_scale: number): void {
+    // PDF.js owns the durable view scale. The controller callback exists so
+    // scale state in the handwriting sidecar.
+  }
+
+  private mobilePinchSurfaceAt(clientX: number | null, clientY: number | null): PageSurface | null {
+    const candidates = [...this.surfaces.values()];
+    if (clientX !== null && clientY !== null) {
+      for (const surface of candidates) {
+        const rect = surface.page.element.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0
+          && clientX >= rect.left && clientX <= rect.right
+          && clientY >= rect.top && clientY <= rect.bottom) return surface;
+      }
+    }
+    let currentPage: number | null = null;
+    try {
+      currentPage = this.options.adapter.getViewState().pageNumber;
+    } catch {
+      // Native viewer may be between page generations.
+    }
+    return candidates.find((surface) => surface.page.pageNumber === currentPage)
+      ?? candidates[0]
+      ?? null;
+  }
+
+  private mobilePinchWheelEligible(target: EventTarget | null, adapter: ViewerInkSessionOptions["adapter"]): boolean {
+    if (adapter.surfaceType !== "pdf") return false;
+    if (!(target instanceof Element) || !adapter.root.contains(target)) return false;
+    if (target.closest(
+      ".pdf-sidebar-container, .pdf-sidebar, .pdf-thumbnail-view, .pdf-outline-view, "
+      + ".canvas-wrapper, .excalidraw, .excalidraw-wrapper, "
+      + ".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown, "
+      + ".native-pdf-handwriting-selection-toolbar"
+    )) return false;
+    return Boolean(this.mobilePinchSurfaceAt(null, null));
+  }
+
+  private updateMobilePinchIndicator(
+    scale: number,
+    reset: () => void,
+    ownerDocument: Document
+  ): void {
+    if (!this.mobilePinchIndicator) {
+      const indicator = createDetachedEl(ownerDocument, "button");
+      indicator.type = "button";
+      indicator.className = "native-pdf-handwriting-mobile-zoom-indicator";
+      indicator.setAttribute("aria-label", "Tap to reset PDF zoom to 100%");
+      indicator.addEventListener("click", () => reset(), { signal: this.pointerProbeAbort.signal });
+      ownerDocument.body?.append(indicator);
+      this.mobilePinchIndicator = indicator;
+    }
+    const percent = Math.round(scale * 100);
+    this.mobilePinchIndicator.textContent = `🔍 ${percent}%`;
+    this.mobilePinchIndicator.classList.toggle("is-faded", percent === 100);
+    if (this.mobilePinchIndicatorFadeTimer !== null) {
+      const view = ownerDocument.defaultView;
+      (view?.clearTimeout ?? window.clearTimeout)(this.mobilePinchIndicatorFadeTimer);
+      this.mobilePinchIndicatorFadeTimer = null;
+    }
+    if (percent === 100) {
+      const view = ownerDocument.defaultView;
+      this.mobilePinchIndicatorFadeTimer = (view?.setTimeout ?? window.setTimeout)(() => {
+        this.mobilePinchIndicator?.classList.add("is-faded");
+      }, 1500);
+    }
+  }
+
   private startMobileCustomPinch(surface: PageSurface, frame: CustomPinchFrame): void {
     if (surface.mobileCustomPinch || frame.points.length < 2) return;
     const extensions = pdfSurfaceExtensions(this.options.adapter);
@@ -9549,28 +9700,40 @@ export class ViewerInkSession {
     if (!first || !second) return;
     const distance = Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
     if (!Number.isFinite(distance) || distance <= 1) return;
-    const focalPoint = {
-      x: (first.clientX + second.clientX) / 2,
-      y: (first.clientY + second.clientY) / 2
-    };
+    this.previewMobileCustomPinch(surface,
+      state.initialScale * distance / state.initialDistance,
+      {
+        x: (first.clientX + second.clientX) / 2,
+        y: (first.clientY + second.clientY) / 2
+      });
+  }
+
+  private previewMobileCustomPinch(
+    surface: PageSurface,
+    previewScale: number,
+    focalPoint: MobilePinchZoomFocalPoint
+  ): void {
+    const state = surface.mobileCustomPinch;
+    if (!state || !Number.isFinite(previewScale)) return;
     if (!state.handoff.updateFocalPoint(focalPoint)) {
       this.cancelMobileCustomPinch(surface, state.handoff.currentCancelReason() ?? "capability-lost");
       return;
     }
     const maxScale = this.options.settings.boostedPdfZoom ? 25 : 10;
-    const previewScale = Math.max(0.1, Math.min(maxScale,
-      state.initialScale * distance / state.initialDistance));
-    state.latestScale = previewScale;
-    this.mobilePdfZoomTrace.noteSample(focalPoint, previewScale);
-    state.compositor.submit({ previewScale, focalPoint });
+    const boundedScale = Math.max(0.1, Math.min(maxScale, previewScale));
+    state.latestScale = boundedScale;
+    this.mobilePdfZoomTrace.noteSample(focalPoint, boundedScale);
+    state.compositor.submit({ previewScale: boundedScale, focalPoint });
   }
 
   private endMobileCustomPinch(
     surface: PageSurface,
-    reason: "pointerup" | "pointercancel" | "lostpointercapture" | "pen-contact" | "lifecycle" | "disabled"
+    reason: "pointerup" | "pointercancel" | "lostpointercapture" | "pen-contact" | "lifecycle" | "disabled",
+    latestScale?: number
   ): void {
     const state = surface.mobileCustomPinch;
     if (!state) return;
+    if (Number.isFinite(latestScale)) state.latestScale = latestScale as number;
     if (reason !== "pointerup") {
       this.cancelMobileCustomPinch(surface, "capability-lost");
       return;
@@ -9858,9 +10021,21 @@ export class ViewerInkSession {
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-cancel");
       },
       customPinchEnabled: () => this.customMobilePdfPinchZoomEnabled(surface),
-      onCustomPinchStart: (frame) => this.startMobileCustomPinch(surface, frame),
-      onCustomPinchFrame: (frame) => this.updateMobileCustomPinch(surface, frame),
-      onCustomPinchEnd: (reason) => this.endMobileCustomPinch(surface, reason),
+      onCustomPinchStart: (frame) => {
+        if (this.activeMobilePinchSurface && this.activeMobilePinchSurface !== surface) {
+          this.cancelMobileCustomPinch(this.activeMobilePinchSurface, "capability-lost");
+        }
+        this.activeMobilePinchSurface = surface;
+        if (!this.mobilePinchZoom.start(frame)) this.activeMobilePinchSurface = null;
+      },
+      onCustomPinchFrame: (frame) => {
+        if (this.activeMobilePinchSurface !== surface) return;
+        this.mobilePinchZoom.frame(frame);
+      },
+      onCustomPinchEnd: (reason) => {
+        if (this.activeMobilePinchSurface !== surface) return;
+        this.mobilePinchZoom.end(reason);
+      },
       onTouchStart: (event) => {
         this.notePointerTypeOrigin(event, "page-touch-router", "capture");
         this.logger.inputLifecycleEvent("touchstart", this.inputLifecycleDetails(surface, event, {
