@@ -73,8 +73,11 @@ import type { PointerSample } from "../input/PointerCapabilities";
 import type { CustomPinchFrame } from "../input/PointerRouter";
 import { MobilePinchZoomController, type MobilePinchZoomFocalPoint, type MobilePinchZoomFrame } from "../input/MobilePinchZoomController";
 import { MobilePdfCompositor, type MobilePdfCompositorPage } from "../integration/MobilePdfCompositor";
-import { scheduleAfterDisplayFrames } from "../integration/MobilePdfZoomReleaseGate";
-import type { MobilePdfZoomHandoff } from "../integration/MobilePdfZoomHandoff";
+import { MobilePdfPinchTransaction } from "../integration/MobilePdfPinchTransaction";
+import type {
+  MobilePdfZoomHandoffCancelReason,
+  MobilePdfZoomHandoffSignal
+} from "../integration/MobilePdfZoomHandoff";
 import {
   planMobileCustomPdfZoom,
   type MobileCustomPdfZoomFallbackReason,
@@ -801,20 +804,6 @@ interface ToolChangeMarker {
   }>;
 }
 
-type MobileCustomPinchPhase = "preview" | "committing" | "settled" | "cancelled";
-
-interface MobileCustomPinchState {
-  phase: MobileCustomPinchPhase;
-  compositor: MobilePdfCompositor;
-  handoff: MobilePdfZoomHandoff;
-  initialDistance: number;
-  initialScale: number;
-  latestScale: number;
-  releaseTimer: number | null;
-  /** Two display frames let native PDF.js paint before the page-local preview is removed. */
-  releaseFrameCancel: (() => void) | null;
-}
-
 interface PageSurface {
   page: AnnotationPageInfo;
   overlay: HTMLElement;
@@ -843,7 +832,7 @@ interface PageSurface {
   /** Neighbor zoom settle used blit-stretch / lower backing; needs idle HQ upgrade. */
   settleUpgradePending: boolean;
   router: PointerRouter | null;
-  mobileCustomPinch: MobileCustomPinchState | null;
+  mobileCustomPinch: MobilePdfPinchTransaction | null;
   pendingRouterHandoff: PointerRouterHandoff | null;
   livePaintFrame: number | null;
   /** One short watchdog lets visible ink paint if the browser misses the next rAF. */
@@ -8394,7 +8383,7 @@ export class ViewerInkSession {
       mode,
       fallbackReasons,
       active: Boolean(active),
-      activePhase: active?.mobileCustomPinch?.handoff.currentPhase() ?? null,
+      activePhase: active?.mobileCustomPinch?.nativePhase() ?? null,
       trace: this.mobilePdfZoomTrace.summary()
     };
   }
@@ -9502,7 +9491,7 @@ export class ViewerInkSession {
     this.startMobileCustomPinch(surface, frame);
     const state = surface.mobileCustomPinch;
     return state
-      ? { accepted: true, scale: state.initialScale }
+      ? { accepted: true, scale: state.initialScale() }
       : { accepted: false };
   }
 
@@ -9707,33 +9696,36 @@ export class ViewerInkSession {
       return;
     }
     this.mobilePdfZoomTrace.notePromote();
-    surface.mobileCustomPinch = {
-      phase: "preview",
+    let transaction: MobilePdfPinchTransaction | null = null;
+    transaction = new MobilePdfPinchTransaction({
       compositor,
       handoff,
-      initialDistance,
       initialScale: viewState.scale,
-      latestScale: viewState.scale,
-      releaseTimer: null,
-      releaseFrameCancel: null
-    };
+      view: surface.page.element.ownerDocument.defaultView,
+      onPreview: (scale, point) => this.mobilePdfZoomTrace.noteSample(point, scale),
+      onNativeCommit: () => this.mobilePdfZoomTrace.noteNativeCommit(
+        typeof performance === "undefined" ? Date.now() : performance.now()
+      ),
+      onNativeSignal: (signal) => this.mobilePdfZoomTrace.noteNativeSignal(
+        typeof performance === "undefined" ? Date.now() : performance.now(),
+        signal === "render" || signal === "mutation"
+      ),
+      onComplete: (completion) => {
+        if (surface.mobileCustomPinch === transaction) surface.mobileCustomPinch = null;
+        if (completion.phase === "cancelled") {
+          this.mobilePdfZoomTrace.cancel(completion.reason);
+        } else {
+          this.mobilePdfZoomTrace.release({
+            at: typeof performance === "undefined" ? Date.now() : performance.now(),
+            focalAnchorErrorPx: Math.hypot(completion.result.scrollDelta.left, completion.result.scrollDelta.top),
+            canonicalRenderWork: true
+          });
+        }
+        extensions.setInkZoomBurstActive?.(false);
+      }
+    });
+    surface.mobileCustomPinch = transaction;
     extensions.setInkZoomBurstActive?.(true);
-  }
-
-  private updateMobileCustomPinch(surface: PageSurface, frame: CustomPinchFrame): void {
-    const state = surface.mobileCustomPinch;
-    if (!state || frame.points.length < 2 || frame.generation !== surface.router?.generation) return;
-    const first = frame.points[0];
-    const second = frame.points[1];
-    if (!first || !second) return;
-    const distance = Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
-    if (!Number.isFinite(distance) || distance <= 1) return;
-    this.previewMobileCustomPinch(surface,
-      state.initialScale * distance / state.initialDistance,
-      {
-        x: (first.clientX + second.clientX) / 2,
-        y: (first.clientY + second.clientY) / 2
-      });
   }
 
   private previewMobileCustomPinch(
@@ -9742,16 +9734,10 @@ export class ViewerInkSession {
     focalPoint: MobilePinchZoomFocalPoint
   ): void {
     const state = surface.mobileCustomPinch;
-    if (!state || state.phase !== "preview" || !Number.isFinite(previewScale)) return;
-    if (!state.handoff.updateFocalPoint(focalPoint)) {
-      this.cancelMobileCustomPinch(surface, state.handoff.currentCancelReason() ?? "capability-lost");
-      return;
-    }
+    if (!state || !Number.isFinite(previewScale)) return;
     const maxScale = this.options.settings.boostedPdfZoom ? 25 : 10;
     const boundedScale = Math.max(0.1, Math.min(maxScale, previewScale));
-    state.latestScale = boundedScale;
-    this.mobilePdfZoomTrace.noteSample(focalPoint, boundedScale);
-    state.compositor.submit({ previewScale: boundedScale, focalPoint });
+    state.preview(boundedScale, focalPoint);
   }
 
   private endMobileCustomPinch(
@@ -9761,127 +9747,25 @@ export class ViewerInkSession {
   ): void {
     const state = surface.mobileCustomPinch;
     if (!state) return;
-    if (Number.isFinite(latestScale)) state.latestScale = latestScale as number;
     if (reason !== "pointerup") {
-      this.cancelMobileCustomPinch(surface, "capability-lost");
+      state.cancel("capability-lost");
       return;
     }
-    if (state.phase !== "preview") return;
-    // Inspiration-style final settle: apply the last coalesced compositor
-    // sample before PDF.js becomes the canonical scale owner.
-    state.compositor.flush();
-    let result: ReturnType<MobilePdfZoomHandoff["commit"]>;
-    try {
-      result = state.handoff.commit(state.latestScale);
-    } catch {
-      this.cancelMobileCustomPinch(surface, "capability-lost");
-      return;
-    }
-    if (!result.accepted) {
-      this.cancelMobileCustomPinch(surface, result.reason ?? "native-scale-commit-unavailable");
-      return;
-    }
-    state.phase = "committing";
-    this.mobilePdfZoomTrace.noteNativeCommit(typeof performance === "undefined" ? Date.now() : performance.now());
-    const view = surface.page.element.ownerDocument.defaultView;
-    state.releaseTimer = (view?.setTimeout ?? window.setTimeout)(() => {
-      if (surface.mobileCustomPinch !== state) return;
-      this.cancelMobileCustomPinch(surface, "stable-geometry-unavailable");
-    }, 1500);
-    this.scheduleMobileCustomPinchRelease(surface);
+    state.commit(Number.isFinite(latestScale) ? latestScale : undefined);
   }
 
   private observeMobileCustomPinch(
     surface: PageSurface,
-    signal: Parameters<MobilePdfZoomHandoff["observe"]>[0]
+    signal: MobilePdfZoomHandoffSignal
   ): void {
-    const state = surface.mobileCustomPinch;
-    if (!state) return;
-    try {
-      const phase = state.handoff.observe(signal);
-      if (phase === "committing") {
-        this.mobilePdfZoomTrace.noteNativeSignal(
-          typeof performance === "undefined" ? Date.now() : performance.now(),
-          signal === "render" || signal === "mutation"
-        );
-      }
-      if (phase === "cancelled") this.tryReleaseMobileCustomPinch(surface);
-      else this.scheduleMobileCustomPinchRelease(surface);
-    } catch {
-      this.cancelMobileCustomPinch(surface, "capability-lost");
-    }
-  }
-
-  /**
-   * Keep the page-local preview through two display frames after native
-   * evidence arrives. PDF.js can publish `pagerendered`/geometry before the
-   * corresponding canvas layout is painted; removing the preview in that same
-   * task makes zoom-out visibly snap to the old page bitmap.
-   */
-  private scheduleMobileCustomPinchRelease(surface: PageSurface): void {
-    const state = surface.mobileCustomPinch;
-    if (!state || state.releaseFrameCancel !== null) return;
-    const view = surface.page.element.ownerDocument.defaultView;
-    state.releaseFrameCancel = scheduleAfterDisplayFrames(view, () => {
-      if (surface.mobileCustomPinch !== state) return;
-      state.releaseFrameCancel = null;
-      this.tryReleaseMobileCustomPinch(surface);
-    });
-  }
-
-  private tryReleaseMobileCustomPinch(surface: PageSurface): void {
-    const state = surface.mobileCustomPinch;
-    const handoffPhase = state?.handoff.currentPhase();
-    if (!state || (state.phase !== "committing" && handoffPhase !== "cancelled")) return;
-    let result: ReturnType<MobilePdfZoomHandoff["release"]>;
-    try {
-      result = state.handoff.release();
-    } catch {
-      this.cancelMobileCustomPinch(surface, "capability-lost");
-      return;
-    }
-    const cancelled = state.handoff.currentPhase() === "cancelled";
-    if (!result.released && !cancelled) return;
-    state.phase = cancelled ? "cancelled" : "settled";
-    if (state.releaseTimer !== null) {
-      const view = surface.page.element.ownerDocument.defaultView;
-      (view?.clearTimeout ?? window.clearTimeout)(state.releaseTimer);
-      state.releaseTimer = null;
-    }
-    state.releaseFrameCancel?.();
-    state.releaseFrameCancel = null;
-    surface.mobileCustomPinch = null;
-    state.compositor.cancel();
-    if (cancelled) {
-      this.mobilePdfZoomTrace.cancel(state.handoff.currentCancelReason() ?? "capability-lost");
-    } else {
-      this.mobilePdfZoomTrace.release({
-        at: typeof performance === "undefined" ? Date.now() : performance.now(),
-        focalAnchorErrorPx: Math.hypot(result.scrollDelta.left, result.scrollDelta.top),
-        canonicalRenderWork: true
-      });
-    }
-    pdfSurfaceExtensions(this.options.adapter)?.setInkZoomBurstActive?.(false);
+    surface.mobileCustomPinch?.observe(signal);
   }
 
   private cancelMobileCustomPinch(
     surface: PageSurface,
-    reason: Parameters<MobilePdfZoomHandoff["cancel"]>[0]
+    reason: MobilePdfZoomHandoffCancelReason
   ): void {
-    const state = surface.mobileCustomPinch;
-    if (!state) return;
-    state.phase = "cancelled";
-    state.handoff.cancel(reason);
-    this.mobilePdfZoomTrace.cancel(reason ?? "capability-lost");
-    state.compositor.cancel();
-    if (state.releaseTimer !== null) {
-      const view = surface.page.element.ownerDocument.defaultView;
-      (view?.clearTimeout ?? window.clearTimeout)(state.releaseTimer);
-    }
-    state.releaseFrameCancel?.();
-    state.releaseFrameCancel = null;
-    surface.mobileCustomPinch = null;
-    pdfSurfaceExtensions(this.options.adapter)?.setInkZoomBurstActive?.(false);
+    surface.mobileCustomPinch?.cancel(reason);
   }
 
   private handleTouchDoubleTap(point: TouchDoubleTapPoint): void {
