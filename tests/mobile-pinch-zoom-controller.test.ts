@@ -90,21 +90,20 @@ describe("MobilePinchZoomController", () => {
     expect(h.ends).toHaveLength(0);
   });
 
-  it("snaps near 100% and commits only after the eased animation", () => {
+  it("commits the exact pinch scale immediately without release snapping or animation", () => {
     const h = harness();
 
     h.controller.start(frame(100));
     h.controller.frame(frame(103));
     h.flushFrame();
     h.controller.end("pointerup");
-    expect(h.ends).toHaveLength(0);
 
-    h.setNow(0);
-    h.flushFrame(0);
+    expect(h.ends).toEqual([{ scale: 1.03, reason: "pointerup" }]);
+    expect(h.getScale()).toBeCloseTo(1.03);
+    expect(h.cancels).toEqual([]);
     h.setNow(180);
     h.flushFrame(180);
-    expect(h.ends).toEqual([{ scale: 1, reason: "pointerup" }]);
-    expect(h.getScale()).toBe(1);
+    expect(h.ends).toHaveLength(1);
   });
 
   it("keeps ctrl-wheel events in one anchored session and settles after the gap", () => {

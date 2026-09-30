@@ -67,6 +67,7 @@ describe("mobile PDF native zoom handoff", () => {
     let cancelled = 0;
 
     expect(handoff.begin({ pageNumber: 1, focalPoint: { x: 300, y: 300 }, compositor: { cancel: () => { cancelled += 1; } } })).toBe(true);
+    expect(fixture.scroll.classList.contains("native-pdf-handwriting-pinch-overflow-anchor-off")).toBe(true);
     expect(handoff.commit(2)).toEqual({ phase: "committing", accepted: true });
     fixture.setRect({ left: 100, top: 100, width: 1200, height: 1600 });
     handoff.observe("scale-settled");
@@ -75,6 +76,7 @@ describe("mobile PDF native zoom handoff", () => {
     expect(handoff.release().released).toBe(true);
     expect(fixture.scroll.scrollLeft).toBeCloseTo(200);
     expect(fixture.scroll.scrollTop).toBeCloseTo(200);
+    expect(fixture.scroll.classList.contains("native-pdf-handwriting-pinch-overflow-anchor-off")).toBe(false);
     expect(cancelled).toBe(1);
     expect(handoff.currentPhase()).toBe("settled");
   });
