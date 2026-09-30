@@ -160,6 +160,21 @@ describe("mobile PDF native zoom handoff", () => {
     expect(handoff.release().released).toBe(false);
   });
 
+  it("keeps preview alive for unrelated page virtualization but cancels an anchored replacement", () => {
+    const element = document.createElement("div");
+    const replacement = document.createElement("div");
+    document.body.append(element, replacement);
+    const page = pageInfo(element);
+    const fixture = hostFor(page, { left: 0, top: 0, width: 600, height: 800 });
+    const handoff = new MobilePdfZoomHandoff(fixture.host);
+
+    expect(handoff.begin({ pageNumber: 1, focalPoint: { x: 100, y: 100 } })).toBe(true);
+    expect(handoff.observe("mutation")).toBe("preview");
+    fixture.setPage({ ...page, element: replacement, mountGeneration: 2 });
+    expect(handoff.observe("mutation")).toBe("cancelled");
+    expect(handoff.currentCancelReason()).toBe("page-identity-changed");
+  });
+
   it("rejects page replacement, unsafe geometry, and unavailable native commits", () => {
     const element = document.createElement("div");
     const replacement = document.createElement("div");

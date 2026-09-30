@@ -6935,10 +6935,17 @@ export class ViewerInkSession {
   }
 
   onPageLifecycleChange(change: AnnotationPageLifecycleChange): void {
-    // Replacement/reload is a hard boundary for custom ownership. Cancel the
-    // existing router state before maintenance can detach its page shell; the
-    // canonical handoff still receives render/mutation evidence after release.
-    if (change.kind === "replace" || change.kind === "reload" || change.kind === "viewer-replaced" || change.kind === "unmount") {
+    // PDF.js also reports a replace when it virtualizes an unrelated page.
+    // Validate the active anchor first: additions below the viewport must not
+    // cancel a live pinch, while replacement of the anchored page still fails
+    // closed before page maintenance can detach its shell.
+    if (change.kind === "replace") {
+      for (const surface of this.surfaces.values()) {
+        if (!surface.mobileCustomPinch) continue;
+        this.observeMobileCustomPinch(surface, "mutation");
+        if (!surface.mobileCustomPinch) surface.router?.cancelCustomPinch("lifecycle");
+      }
+    } else if (change.kind === "reload" || change.kind === "viewer-replaced" || change.kind === "unmount") {
       this.cancelCustomPinches("lifecycle");
     }
     const adapterGeneration = "viewerGeneration" in this.options.adapter
