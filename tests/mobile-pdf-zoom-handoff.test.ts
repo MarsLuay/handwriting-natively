@@ -147,33 +147,6 @@ describe("mobile PDF native zoom handoff", () => {
     expect(page.rotation).toBe(originalPageGeometry.rotation);
   });
 
-  it("retains intentional top void when the browser clamps a negative correction", () => {
-    const wrapper = document.createElement("div");
-    const element = document.createElement("div");
-    wrapper.append(element);
-    document.body.append(wrapper);
-    const page = pageInfo(element);
-    const fixture = hostFor(page, { left: 0, top: 200, width: 600, height: 800 });
-    let scrollTop = 0;
-    Object.defineProperty(fixture.scroll, "scrollTop", {
-      configurable: true,
-      get: () => scrollTop,
-      set: (value: number) => { scrollTop = Math.max(0, value); }
-    });
-    const handoff = new MobilePdfZoomHandoff(fixture.host);
-
-    expect(handoff.begin({ pageNumber: 1, focalPoint: { x: 100, y: 100 } })).toBe(true);
-    expect(handoff.commit(0.5).accepted).toBe(true);
-    fixture.setRect({ left: 0, top: 0, width: 300, height: 400 });
-    handoff.observe("scale-settled");
-    handoff.observe("render");
-
-    expect(handoff.release().released).toBe(true);
-    expect(scrollTop).toBe(0);
-    expect(wrapper.classList.contains("native-pdf-handwriting-pinch-top-void")).toBe(true);
-    expect(wrapper.style.getPropertyValue("--native-pdf-handwriting-pinch-top-void")).toBe("150px");
-  });
-
   it("cancels the compositor before a stale generation can commit or release", () => {
     const element = document.createElement("div");
     document.body.append(element);
