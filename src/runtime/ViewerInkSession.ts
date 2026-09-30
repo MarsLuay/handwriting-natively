@@ -43,6 +43,7 @@ import {
 } from "./InkVisibility";
 import { deferredRenderDisposition } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRoute, type PointerRouterHandoff } from "../input/PointerRouter";
+import { classifyInputTarget } from "../input/InputTargetClassification";
 import { detectPointerInputCapabilities } from "../input/PointerInputCapabilities";
 import { GestureOwnership } from "../input/GestureOwnership";
 import { PostUiInputProbe, POST_UI_INPUT_PHASE_THRESHOLD_MS, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
@@ -80,7 +81,7 @@ import {
   type MobileCustomPdfZoomMode
 } from "../integration/MobileCustomPdfZoom";
 import { OpenInkStrokeGeometry, type InkStrokeGeometryRecord } from "../input/InkStrokeGeometry";
-import { consumeTouchDoubleTap, type TouchDoubleTapState } from "../input/TouchDoubleTap";
+import { consumeTouchDoubleTap, type TouchDoubleTapPoint, type TouchDoubleTapState } from "../input/TouchDoubleTap";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
 import { InkSession, type InkLifecycleEvent } from "../ink/InkSession";
 import { DamageLedger } from "../ink/DamageLedger";
@@ -9855,7 +9856,7 @@ export class ViewerInkSession {
     pdfSurfaceExtensions(this.options.adapter)?.setInkZoomBurstActive?.(false);
   }
 
-  private handleTouchDoubleTap(event: PointerEvent): void {
+  private handleTouchDoubleTap(point: TouchDoubleTapPoint): void {
     const enabled = this.options.touchDoubleTapEraserEnabled?.()
       ?? this.options.settings.touchDoubleTapEraser;
     if (!enabled || this.hasAnyLiveInkInput() || this.temporaryStylusEraserPointers > 0) {
@@ -9863,7 +9864,7 @@ export class ViewerInkSession {
       return;
     }
     const at = typeof performance !== "undefined" ? performance.now() : Date.now();
-    const result = consumeTouchDoubleTap(this.touchDoubleTapState, event, at);
+    const result = consumeTouchDoubleTap(this.touchDoubleTapState, point, at);
     this.touchDoubleTapState = result.next;
     if (!result.doubleTap) return;
 
@@ -9879,6 +9880,27 @@ export class ViewerInkSession {
     } finally {
       this.touchDoubleTapChangingTool = false;
     }
+  }
+
+  /**
+   * WebKit's PDF text layer can publish the TouchEvent stream while its
+   * promoting PointerEvents are retargeted/reused. Recognize the gesture from
+   * the native touchstart stream so the feature does not depend on a
+   * pointerdown reaching the same page router twice.
+   */
+  private handleTouchDoubleTapStart(event: TouchEvent, surface: PageSurface): void {
+    if (classifyInputTarget(event.target).targetClass !== "page"
+      || event.touches.length !== 1
+      || this.hasActivePenCapability()) {
+      this.touchDoubleTapState = null;
+      return;
+    }
+    const touch = event.changedTouches[0] ?? event.touches[0];
+    if (!touch || !(touch.target instanceof Node) || !surface.page.element.contains(touch.target)) {
+      this.touchDoubleTapState = null;
+      return;
+    }
+    this.handleTouchDoubleTap(touch);
   }
 
   private createPageRouter(surface: PageSurface): PointerRouter {
@@ -10049,21 +10071,27 @@ export class ViewerInkSession {
           page: surface.page.pageNumber,
           reason: "touchstart-capture"
         }));
+        // Touch fallback is an annotation route, so recognize before its
+        // pointerdown can create a live stroke. Native finger navigation uses
+        // the TouchEvent path below instead.
+        if (!this.touchAnnotationEnabled()) this.handleTouchDoubleTapStart(event, surface);
       },
       onTouchPointerDown: (event) => {
         const editor = this.activeTextEditor;
         const target = event.target;
-        if (!editor || (target instanceof Node && editor.element.contains(target))) {
-          this.handleTouchDoubleTap(event);
-          return;
+        if (editor && !(target instanceof Node && editor.element.contains(target))) {
+          this.logText(editor.surface, "outside-touch-close", {
+            annotationId: editor.draft.id,
+            existing: Boolean(editor.existing),
+            pointerId: event.pointerId
+          });
+          this.commitActiveTextEditor("outside-touch");
         }
-        this.logText(editor.surface, "outside-touch-close", {
-          annotationId: editor.draft.id,
-          existing: Boolean(editor.existing),
-          pointerId: event.pointerId
-        });
-        this.commitActiveTextEditor("outside-touch");
-        this.handleTouchDoubleTap(event);
+        // With the explicit touch-drawing fallback, pointerdown is the only
+        // safe pre-stroke point to switch tools; TouchEvent recognition is
+        // intentionally skipped for that route to avoid counting one tap
+        // twice.
+        if (this.touchAnnotationEnabled()) this.handleTouchDoubleTap(event);
       },
       touchTextTarget: (event) => this.isTouchTextTarget(surface, event),
       onRouterReceived: (event, generation) => {
