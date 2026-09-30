@@ -3380,11 +3380,26 @@ export class ViewerInkSession {
     this.postZoomTrace.remember("pending-mobile-remount", { pendingMobileScrollRemount: true });
   }
 
-  private flushPendingMobileScrollRemount(): void {
+  private flushPendingMobileScrollRemount(underHandoff = false): void {
     if (!this.pendingMobileScrollRemount || this.destroyed) return;
     this.pendingMobileScrollRemount = false;
     this.postZoomTrace.remember("pending-mobile-remount-cleared", { pendingMobileScrollRemount: false });
     if (!this.runtimePlatform().mobile) return;
+    const pages = this.pagesForInkMount();
+    if (this.mobileMountSetUnchanged(pages)) {
+      this.postZoomTrace.remember("pending-mobile-remount-skipped", {
+        reason: "mount-set-unchanged",
+        mountPages: pages.map((page) => page.pageNumber)
+      });
+      return;
+    }
+    if (underHandoff) {
+      this.refresh("post-zoom-scroll-mobile");
+      // A changed mount set may have created fresh overlays; put those new
+      // surfaces under the same mask before this task yields to the browser.
+      this.syncZoomOverlayLayouts("native-content");
+      return;
+    }
     this.scheduleMobileScrollRefresh();
   }
 
@@ -5792,6 +5807,11 @@ export class ViewerInkSession {
     }
     this.recordInkVisibility("before-final-canonical");
     this.rebaseZoomAfterNativeRender();
+    // Native scale correction can publish a scroll/pagechanging signal while
+    // the handoff is still masked. Reconcile only when the mobile mount set
+    // actually changed, and do that work under the compositor so it cannot
+    // become a second visible refresh after the overlay is removed.
+    this.flushPendingMobileScrollRemount(true);
     this.recordInkVisibility("after-final-canonical");
     if (!this.replacementInkReady() && !this.destroyed) {
       this.logger.zoomComposite("release-scheduled", {
@@ -5859,8 +5879,6 @@ export class ViewerInkSession {
     this.zoomCompositeSettledAt = 0;
     this.zoomHandoffNeedsFinalRebase = false;
     this.lastZoomFrameAttributionSummary = this.zoomFrameDiagnostics.finish();
-    // Scroll/pagechanging during pinch deferred remount until CSS handoff ends.
-    this.flushPendingMobileScrollRemount();
     // Strict settle may have deferred off-screen pages; idle-margin prefetch once handoff ends.
     this.scheduleViewportPaint();
   }
