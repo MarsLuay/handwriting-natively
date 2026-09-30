@@ -3380,7 +3380,7 @@ export class ViewerInkSession {
     this.postZoomTrace.remember("pending-mobile-remount", { pendingMobileScrollRemount: true });
   }
 
-  private flushPendingMobileScrollRemount(underHandoff = false): void {
+  private flushPendingMobileScrollRemount(): void {
     if (!this.pendingMobileScrollRemount || this.destroyed) return;
     this.pendingMobileScrollRemount = false;
     this.postZoomTrace.remember("pending-mobile-remount-cleared", { pendingMobileScrollRemount: false });
@@ -3393,14 +3393,10 @@ export class ViewerInkSession {
       });
       return;
     }
-    if (underHandoff) {
-      this.refresh("post-zoom-scroll-mobile");
-      // A changed mount set may have created fresh overlays; put those new
-      // surfaces under the same mask before this task yields to the browser.
-      this.syncZoomOverlayLayouts("native-content");
-      return;
-    }
-    this.scheduleMobileScrollRefresh();
+    this.refresh("post-zoom-scroll-mobile");
+    // A changed mount set may have created fresh overlays; put those new
+    // surfaces under the same mask before this task yields to the browser.
+    this.syncZoomOverlayLayouts("native-content");
   }
 
   private zoomBurstSnapshot(): Record<string, unknown> {
@@ -5811,7 +5807,7 @@ export class ViewerInkSession {
     // the handoff is still masked. Reconcile only when the mobile mount set
     // actually changed, and do that work under the compositor so it cannot
     // become a second visible refresh after the overlay is removed.
-    this.flushPendingMobileScrollRemount(true);
+    this.flushPendingMobileScrollRemount();
     this.recordInkVisibility("after-final-canonical");
     if (!this.replacementInkReady() && !this.destroyed) {
       this.logger.zoomComposite("release-scheduled", {
