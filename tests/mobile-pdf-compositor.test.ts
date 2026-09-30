@@ -114,6 +114,35 @@ describe("mobile PDF compositor", () => {
     expect(frames[0]?.pageNumbers).toEqual([1]);
   });
 
+  it("flushes the final coalesced preview before native scale commit", () => {
+    vi.useFakeTimers();
+    const scrollRoot = document.createElement("div");
+    const viewer = document.createElement("div");
+    const first = page(1, true);
+    scrollRoot.append(viewer);
+    viewer.append(first.element);
+    document.body.append(scrollRoot);
+    const frames: number[] = [];
+    const compositor = new MobilePdfCompositor();
+    compositor.begin({
+      mode: "custom-mobile",
+      enabled: true,
+      root: viewer,
+      scrollRoot,
+      pages: [first],
+      initialScale: 1,
+      focalPoint: { x: 300, y: 300 }
+    }, (frame) => frames.push(frame.previewScale));
+
+    compositor.submit({ previewScale: 1.7, focalPoint: { x: 300, y: 300 } });
+    expect(first.element.style.transform).toBe("");
+    compositor.flush();
+
+    expect(first.element.style.transform).toContain("scale(1.7)");
+    expect(frames).toEqual([1.7]);
+    compositor.cancel();
+  });
+
   it("bounds a large document to visible pages without per-sample full-document work", async () => {
     vi.useFakeTimers();
     const scrollRoot = document.createElement("div");

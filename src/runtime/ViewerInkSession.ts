@@ -801,7 +801,10 @@ interface ToolChangeMarker {
   }>;
 }
 
+type MobileCustomPinchPhase = "preview" | "committing" | "settled" | "cancelled";
+
 interface MobileCustomPinchState {
+  phase: MobileCustomPinchPhase;
   compositor: MobilePdfCompositor;
   handoff: MobilePdfZoomHandoff;
   initialDistance: number;
@@ -9703,6 +9706,7 @@ export class ViewerInkSession {
     }
     this.mobilePdfZoomTrace.notePromote();
     surface.mobileCustomPinch = {
+      phase: "preview",
       compositor,
       handoff,
       initialDistance,
@@ -9736,7 +9740,7 @@ export class ViewerInkSession {
     focalPoint: MobilePinchZoomFocalPoint
   ): void {
     const state = surface.mobileCustomPinch;
-    if (!state || !Number.isFinite(previewScale)) return;
+    if (!state || state.phase !== "preview" || !Number.isFinite(previewScale)) return;
     if (!state.handoff.updateFocalPoint(focalPoint)) {
       this.cancelMobileCustomPinch(surface, state.handoff.currentCancelReason() ?? "capability-lost");
       return;
@@ -9760,6 +9764,9 @@ export class ViewerInkSession {
       this.cancelMobileCustomPinch(surface, "capability-lost");
       return;
     }
+    if (state.phase !== "preview") return;
+    // sample before PDF.js becomes the canonical scale owner.
+    state.compositor.flush();
     let result: ReturnType<MobilePdfZoomHandoff["commit"]>;
     try {
       result = state.handoff.commit(state.latestScale);
@@ -9771,6 +9778,7 @@ export class ViewerInkSession {
       this.cancelMobileCustomPinch(surface, result.reason ?? "native-scale-commit-unavailable");
       return;
     }
+    state.phase = "committing";
     this.mobilePdfZoomTrace.noteNativeCommit(typeof performance === "undefined" ? Date.now() : performance.now());
     const view = surface.page.element.ownerDocument.defaultView;
     state.releaseTimer = (view?.setTimeout ?? window.setTimeout)(() => {
@@ -9820,7 +9828,8 @@ export class ViewerInkSession {
 
   private tryReleaseMobileCustomPinch(surface: PageSurface): void {
     const state = surface.mobileCustomPinch;
-    if (!state) return;
+    const handoffPhase = state?.handoff.currentPhase();
+    if (!state || (state.phase !== "committing" && handoffPhase !== "cancelled")) return;
     let result: ReturnType<MobilePdfZoomHandoff["release"]>;
     try {
       result = state.handoff.release();
@@ -9830,6 +9839,7 @@ export class ViewerInkSession {
     }
     const cancelled = state.handoff.currentPhase() === "cancelled";
     if (!result.released && !cancelled) return;
+    state.phase = cancelled ? "cancelled" : "settled";
     if (state.releaseTimer !== null) {
       const view = surface.page.element.ownerDocument.defaultView;
       (view?.clearTimeout ?? window.clearTimeout)(state.releaseTimer);
@@ -9857,6 +9867,7 @@ export class ViewerInkSession {
   ): void {
     const state = surface.mobileCustomPinch;
     if (!state) return;
+    state.phase = "cancelled";
     state.handoff.cancel(reason);
     this.mobilePdfZoomTrace.cancel(reason ?? "capability-lost");
     state.compositor.cancel();

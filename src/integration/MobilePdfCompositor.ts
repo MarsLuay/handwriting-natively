@@ -132,10 +132,7 @@ export class MobilePdfCompositor {
 
     const flush = (): void => {
       this.animationFrame = null;
-      const pending = this.pendingSample;
-      this.pendingSample = null;
-      if (!this.active || !pending) return;
-      this.apply(pending);
+      this.flushPendingSample();
     };
     if (this.view?.requestAnimationFrame) {
       this.animationFrame = this.view.requestAnimationFrame(flush);
@@ -143,6 +140,17 @@ export class MobilePdfCompositor {
       this.animationFrame = (this.view?.setTimeout ?? window.setTimeout)(flush, 16);
     }
     return true;
+  }
+
+  /** Apply the last preview before the native scale commit owns the frame. */
+  flush(): void {
+    if (!this.active) return;
+    if (this.animationFrame !== null) {
+      if (this.view?.cancelAnimationFrame) this.view.cancelAnimationFrame(this.animationFrame);
+      else (this.view?.clearTimeout ?? window.clearTimeout)(this.animationFrame);
+      this.animationFrame = null;
+    }
+    this.flushPendingSample();
   }
 
   settle(): void {
@@ -159,6 +167,13 @@ export class MobilePdfCompositor {
 
   activePageNumbers(): number[] {
     return [...this.pages.keys()];
+  }
+
+  private flushPendingSample(): void {
+    const pending = this.pendingSample;
+    this.pendingSample = null;
+    if (!this.active || !pending) return;
+    this.apply(pending);
   }
 
   private apply(sample: MobilePdfCompositorSample): void {
