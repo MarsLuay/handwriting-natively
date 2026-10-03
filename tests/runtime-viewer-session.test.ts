@@ -4440,4 +4440,35 @@ describe("viewer runtime tracer", () => {
     expect(internal.ink.all().map((stroke) => stroke.page)).toEqual([1]);
     await session.destroy();
   });
+
+  it("applies draw-hit-page to newly mounted pages when draw mode is active", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: false })
+    });
+
+    // Enter active draw mode (e.g. by observing a pen contact)
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 100, { pointerType: "pen", pointerId: 1 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 100, { pointerType: "pen", pointerId: 1 }));
+
+    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-draw-hit-page")).toBe(true);
+
+    // Simulate replacing the page elements without remounting the entire session
+    adapter.replacePageElementKeepingOldPageConnected();
+    (session as unknown as { onPagesChanged(reason: string): void }).onPagesChanged("pages-dom");
+
+    // After the event bus signals DOM replacement, the new page should inherit the active draw hit policy
+    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-draw-hit-page")).toBe(true);
+
+    await session.destroy();
+  });
 });
