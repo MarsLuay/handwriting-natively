@@ -95,7 +95,17 @@ export async function loadAnnotationFileWithQuarantine<T>(
   parse: (contents: string) => T,
   options: AnnotationLoadOptions
 ): Promise<AnnotationLoadResult<T>> {
-  if (!await files.exists(path)) return { data: null, quarantined: null };
+  const sourceExists = await files.exists(path);
+  if (!sourceExists) {
+    // A first save can be interrupted after the validated temp/backup is
+    // written but before the canonical destination is committed. Recover that
+    // staged snapshot instead of treating the missing primary as an empty
+    // document.
+    const repaired = options.automaticRecovery === false
+      ? null
+      : await restoreFromBackup(files, path, parse, options);
+    return { data: repaired?.data ?? null, quarantined: null };
+  }
   // Do not classify I/O failures as corruption: the source has not been read
   // and must remain authoritative until the adapter error is resolved.
   const contents = await files.read(path);
@@ -149,30 +159,59 @@ async function restoreFromBackup<T>(
   parse: (contents: string) => T,
   options: AnnotationLoadOptions
 ): Promise<{ data: T; backupPath: string } | null> {
-  const candidates = recoveryCandidates(path, options);
-  for (const backupPath of candidates) {
+  const validCandidates: Array<{ path: string; contents: string; data: T }> = [];
+  for (const backupPath of recoveryCandidates(path, options)) {
     if (!await files.exists(backupPath)) continue;
     try {
       const contents = await files.read(backupPath);
-      const restored = await writeValidatedFile(
-        files,
-        path,
-        contents,
-        parse,
-        options.validate,
-        ".restore.tmp"
-      );
-      return { data: restored, backupPath };
+      const data = parse(contents);
+      options.validate?.(data);
+      validCandidates.push({ path: backupPath, contents, data });
     } catch {
       // A stale or malformed backup is not allowed to block a later valid
       // backup candidate, and is never promoted over the quarantined bytes.
     }
   }
-  return null;
+  const selected = validCandidates.reduce<typeof validCandidates[number] | null>(
+    (newest, candidate) => newest === null || compareSnapshotFreshness(candidate.data, newest.data) > 0
+      ? candidate
+      : newest,
+    null
+  );
+  if (!selected) return null;
+  try {
+    const restored = await writeValidatedFile(
+      files,
+      path,
+      selected.contents,
+      parse,
+      options.validate,
+      ".restore.tmp"
+    );
+    return { data: restored, backupPath: selected.path };
+  } catch {
+    return null;
+  }
+}
+
+function compareSnapshotFreshness(a: unknown, b: unknown): number {
+  const aUpdatedAt = isRecord(a) && typeof a.updatedAt === "string" ? a.updatedAt : "";
+  const bUpdatedAt = isRecord(b) && typeof b.updatedAt === "string" ? b.updatedAt : "";
+  const aTime = Date.parse(aUpdatedAt);
+  const bTime = Date.parse(bUpdatedAt);
+  if (Number.isFinite(aTime) && Number.isFinite(bTime)) return aTime === bTime ? 0 : aTime > bTime ? 1 : -1;
+  return aUpdatedAt === bUpdatedAt ? 0 : aUpdatedAt > bUpdatedAt ? 1 : -1;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function recoveryCandidates(path: string, options: AnnotationLoadOptions): string[] {
   return [
+    // These are the newest candidates when a process died during a commit.
+    `${path}.emergency.tmp`,
+    `${path}.tmp`,
     annotationBackupPath(options.backupFolder, path, options.store),
     `${path}.last-good`
   ].filter((candidate, index, all): candidate is string => Boolean(candidate) && all.indexOf(candidate) === index);
@@ -600,6 +639,19 @@ export class SidecarRepository {
       }
     }
 
+    // Keep a validated copy of the incoming snapshot before touching the
+    // canonical destination. If Obsidian is terminated while its overwrite is
+    // in progress, the loader can promote this backup on the next open.
+    await writeAnnotationBackup(
+      this.files,
+      path,
+      next,
+      (contents) => this.migration.migrate(contents),
+      (data) => validateAnnotationIdentity(data, sidecar.document.id),
+      this.options,
+      "sidecar"
+    ).catch(() => undefined);
+
     // Stage + validate via temp, then commit. Obsidian's adapter.rename throws
     // "Destination file already exists!" when replacing, so overwriting dest uses
     // write (not rename) whenever the sidecar path is already present.
@@ -623,15 +675,6 @@ export class SidecarRepository {
         throw error;
       }
       this.knownContents.set(path, next);
-      await writeAnnotationBackup(
-        this.files,
-        path,
-        next,
-        (contents) => this.migration.migrate(contents),
-        (data) => validateAnnotationIdentity(data, sidecar.document.id),
-        this.options,
-        "sidecar"
-      ).catch(() => undefined);
       return;
     }
 
@@ -639,15 +682,6 @@ export class SidecarRepository {
       await this.files.write(path, next);
       this.migration.migrate(await this.files.read(path));
       this.knownContents.set(path, next);
-      await writeAnnotationBackup(
-        this.files,
-        path,
-        next,
-        (contents) => this.migration.migrate(contents),
-        (data) => validateAnnotationIdentity(data, sidecar.document.id),
-        this.options,
-        "sidecar"
-      ).catch(() => undefined);
     } catch (error) {
       if (previous !== null) await this.files.write(path, previous).catch(() => undefined);
       throw error;

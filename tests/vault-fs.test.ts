@@ -93,7 +93,7 @@ describe("vault fs sidecar I/O", () => {
     const path = "annotations/doc.json";
     const next = JSON.stringify({ updatedAt: "2026-07-13T22:08:34.000Z", strokes: 1 });
     writeSync!(path, next);
-    for (let i = 0; i < 10 && !files.has(path); i += 1) {
+    for (let i = 0; i < 30 && !files.has(path); i += 1) {
       await Promise.resolve();
     }
     expect(files.has(path)).toBe(true);
@@ -101,6 +101,54 @@ describe("vault fs sidecar I/O", () => {
 
     await text.write(path, JSON.stringify({ updatedAt: "later", strokes: 0 }));
     expect(JSON.parse(await text.read(path)).strokes).toBe(0);
+  });
+
+  it("leaves a recoverable staged snapshot when emergency replacement is interrupted", async () => {
+    const files = new Map([["annotations/doc.json", "old"]]);
+    const vault = vaultWith({
+      files,
+      write: async (path, data) => {
+        if (path === "annotations/doc.json" && data === "new") {
+          files.set(path, "");
+          throw new Error("process terminated during canonical write");
+        }
+        files.set(path, data);
+      }
+    });
+    const writeSync = createVaultSyncWriter(vault);
+    expect(writeSync).not.toBeNull();
+
+    writeSync!("annotations/doc.json", "new");
+    for (let i = 0; i < 30 && files.get("annotations/doc.json") !== ""; i += 1) {
+      await Promise.resolve();
+    }
+
+    expect(files.get("annotations/doc.json.last-good")).toBe("old");
+    expect(files.get("annotations/doc.json.emergency.tmp")).toBe("new");
+    expect(files.get("annotations/doc.json")).toBe("");
+  });
+
+  it("does not replace a newer canonical snapshot observed during staging", async () => {
+    const older = JSON.stringify({ updatedAt: "2026-01-01T00:00:00.000Z" });
+    const newer = JSON.stringify({ updatedAt: "2026-02-01T00:00:00.000Z" });
+    const files = new Map([["annotations/doc.json", older]]);
+    const vault = vaultWith({
+      files,
+      write: async (path, data) => {
+        files.set(path, data);
+        if (path === "annotations/doc.json.emergency.tmp") files.set("annotations/doc.json", newer);
+      }
+    });
+    const writeSync = createVaultSyncWriter(vault);
+    expect(writeSync).not.toBeNull();
+
+    writeSync!("annotations/doc.json", older);
+    for (let i = 0; i < 30 && !files.has("annotations/doc.json.emergency.tmp"); i += 1) {
+      await Promise.resolve();
+    }
+
+    expect(files.get("annotations/doc.json")).toBe(newer);
+    expect(files.get("annotations/doc.json.emergency.tmp")).toBe(older);
   });
 
   it("treats a missing annotations directory as an empty sidecar and recovery store", async () => {

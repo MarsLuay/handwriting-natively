@@ -156,6 +156,47 @@ type MutableAdapter = DataAdapter & {
   list?: (path: string) => Promise<{ files: string[]; folders: string[] }>;
 };
 
+const vaultSyncLocks = new WeakMap<MutableAdapter, Map<string, Promise<void>>>();
+
+function comparePersistedSnapshotFreshness(incoming: string, current: string): number {
+  try {
+    const incomingValue = JSON.parse(incoming) as { updatedAt?: unknown };
+    const currentValue = JSON.parse(current) as { updatedAt?: unknown };
+    if (typeof incomingValue.updatedAt !== "string" || typeof currentValue.updatedAt !== "string") return 0;
+    const incomingTime = Date.parse(incomingValue.updatedAt);
+    const currentTime = Date.parse(currentValue.updatedAt);
+    if (Number.isFinite(incomingTime) && Number.isFinite(currentTime)) {
+      return incomingTime === currentTime ? 0 : incomingTime > currentTime ? 1 : -1;
+    }
+    return incomingValue.updatedAt === currentValue.updatedAt
+      ? 0
+      : incomingValue.updatedAt > currentValue.updatedAt ? 1 : -1;
+  } catch {
+    return 0;
+  }
+}
+
+function enqueueVaultSyncWrite(
+  adapter: MutableAdapter,
+  path: string,
+  write: () => Promise<void>
+): void {
+  let locks = vaultSyncLocks.get(adapter);
+  if (!locks) {
+    locks = new Map();
+    vaultSyncLocks.set(adapter, locks);
+  }
+  const previous = locks.get(path) ?? Promise.resolve();
+  const operation = previous
+    .catch(() => undefined)
+    .then(write)
+    .catch(() => undefined);
+  locks.set(path, operation);
+  void operation.then(() => {
+    if (locks?.get(path) === operation) locks.delete(path);
+  });
+}
+
 /**
  * Sync unload writer using only the Obsidian vault adapter (no Node `fs`).
  * Fire-and-forget write; prefer normal async saves while the plugin is alive.
@@ -165,10 +206,35 @@ export function createVaultSyncWriter(vault: Vault): VaultSyncWriter | null {
   if (typeof adapter.write !== "function") return null;
   return (relativePath, contents) => {
     const normalized = normalizeVaultRelativePath(relativePath);
-    void (async () => {
+    enqueueVaultSyncWrite(adapter, normalized, async () => {
       await ensureVaultFolder(vault, parentPath(normalized));
+
+      // beforeunload/onunload cannot await the vault adapter. Stage the exact
+      // snapshot first and retain the previous primary before replacing it so
+      // a process termination during the final write leaves a recoverable
+      // candidate instead of a blank/truncated JSON document.
+      const emergencyTemp = `${normalized}.emergency.tmp`;
+      const lastGood = `${normalized}.last-good`;
+      const hadPrevious = await adapter.exists(normalized);
+      const previous = hadPrevious ? await adapter.read(normalized) : null;
+      if (previous !== null) await adapter.write(lastGood, previous);
+      await adapter.write(emergencyTemp, contents);
+      if (await adapter.read(emergencyTemp) !== contents) throw new Error("Emergency annotation staging verification failed");
+
+      // A normal autosave or another live session may have committed while
+      // this fire-and-forget unload write was staging. Never replace a newer
+      // canonical snapshot with an older stale session; leave the staged
+      // bytes for recovery instead.
+      const currentExists = await adapter.exists(normalized);
+      const current = currentExists ? await adapter.read(normalized) : null;
+      if (current !== previous && current !== contents) {
+        if (current === null || comparePersistedSnapshotFreshness(contents, current) <= 0) return;
+      }
+
       await adapter.write(normalized, contents);
-    })().catch(() => undefined);
+      if (await adapter.read(normalized) !== contents) throw new Error("Emergency annotation commit verification failed");
+      await adapter.remove(emergencyTemp);
+    });
   };
 }
 
