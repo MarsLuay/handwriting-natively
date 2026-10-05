@@ -5,6 +5,7 @@ import {
   type DocumentIdentityInput
 } from "./DocumentIdentity";
 import { MigrationManager } from "./MigrationManager";
+import { withAnnotationWriteLock } from "./AnnotationWriteLock";
 import { serializeSidecar, type SidecarDocumentIdentity, type SidecarSchemaV1 } from "./SidecarSchema";
 
 export interface TextFileAdapter {
@@ -15,6 +16,8 @@ export interface TextFileAdapter {
   remove?(path: string): Promise<void>;
   /** Optional vault listing used only to find a moved legacy sidecar. */
   list?(folder: string): Promise<string[]>;
+  /** Shared identity for all adapters backed by the same vault DataAdapter. */
+  lockOwner?: object;
 }
 
 export type AnnotationStoreKind = "sidecar" | "recovery";
@@ -404,6 +407,11 @@ export interface SaveForDocumentOptions {
   allowPathRebind?: boolean;
 }
 
+export interface AnnotationWriteOptions {
+  /** Internal page-mutation transaction already owns the document lock. */
+  alreadyLocked?: boolean;
+}
+
 export class SidecarRepository {
   private readonly migration = new MigrationManager();
   /** Raw bytes last observed by this repository; used as an optimistic lock. */
@@ -566,7 +574,11 @@ export class SidecarRepository {
     };
   }
 
-  async save(sidecar: SidecarSchemaV1): Promise<void> {
+  async save(sidecar: SidecarSchemaV1, options: AnnotationWriteOptions = {}): Promise<void> {
+    if (options.alreadyLocked) {
+      await this.saveAtPathUnlocked(sidecar, this.pathFor(sidecar.document.id), false);
+      return;
+    }
     await this.saveAtPath(sidecar, this.pathFor(sidecar.document.id), false);
   }
 
@@ -594,11 +606,19 @@ export class SidecarRepository {
 
   async remove(documentId: string): Promise<void> {
     const path = this.pathFor(documentId);
-    if (this.files.remove && await this.files.exists(path)) await this.files.remove(path);
-    this.knownContents.delete(path);
+    await withAnnotationWriteLock(this.files.lockOwner ?? this.files, documentId, async () => {
+      if (this.files.remove && await this.files.exists(path)) await this.files.remove(path);
+      this.knownContents.delete(path);
+    });
   }
 
   private async saveAtPath(sidecar: SidecarSchemaV1, path: string, allowPathRebind: boolean): Promise<void> {
+    await withAnnotationWriteLock(this.files.lockOwner ?? this.files, sidecar.document.id, () =>
+      this.saveAtPathUnlocked(sidecar, path, allowPathRebind)
+    );
+  }
+
+  private async saveAtPathUnlocked(sidecar: SidecarSchemaV1, path: string, allowPathRebind: boolean): Promise<void> {
     const next = serializeSidecar(sidecar);
     const previous = await this.files.exists(path) ? await this.files.read(path) : null;
     const expected = this.knownContents.get(path);

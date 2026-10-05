@@ -1,3 +1,4 @@
+import { withAnnotationWriteLock } from "../storage/AnnotationWriteLock";
 import type { SidecarSchemaV1 } from "../storage/SidecarSchema";
 
 export interface AtomicPdfPageMutation {
@@ -10,28 +11,39 @@ export interface AtomicPdfPageMutation {
   writePdf(bytes: Uint8Array): Promise<void>;
   saveSidecar(sidecar: SidecarSchemaV1): Promise<void>;
   saveRecovery(recovery: SidecarSchemaV1): Promise<void>;
+  /** Optional vault/document lane shared with normal annotation persistence. */
+  lockOwner?: object;
+  documentId?: string;
   onStage?(stage: "pdf" | "sidecar" | "recovery"): void;
 }
 
 /** Replaces a source PDF and its page stores with best-effort compensation. */
 export async function writePdfAndAnnotationStoresAtomic(options: AtomicPdfPageMutation): Promise<void> {
-  let pdfWriteAttempted = false;
-  try {
-    options.onStage?.("pdf");
-    pdfWriteAttempted = true;
-    await options.writePdf(options.updatedBytes.slice());
-    if (options.sidecarAfter) {
-      options.onStage?.("sidecar");
-      await options.saveSidecar(options.sidecarAfter);
+  const execute = async (): Promise<void> => {
+    let pdfWriteAttempted = false;
+    try {
+      options.onStage?.("pdf");
+      pdfWriteAttempted = true;
+      await options.writePdf(options.updatedBytes.slice());
+      if (options.sidecarAfter) {
+        options.onStage?.("sidecar");
+        await options.saveSidecar(options.sidecarAfter);
+      }
+      if (options.recoveryAfter) {
+        options.onStage?.("recovery");
+        await options.saveRecovery(options.recoveryAfter);
+      }
+    } catch (error) {
+      if (pdfWriteAttempted) await options.writePdf(options.sourceBytes.slice()).catch(() => undefined);
+      if (options.sidecarBefore) await options.saveSidecar(options.sidecarBefore).catch(() => undefined);
+      if (options.recoveryBefore) await options.saveRecovery(options.recoveryBefore).catch(() => undefined);
+      throw error;
     }
-    if (options.recoveryAfter) {
-      options.onStage?.("recovery");
-      await options.saveRecovery(options.recoveryAfter);
-    }
-  } catch (error) {
-    if (pdfWriteAttempted) await options.writePdf(options.sourceBytes.slice()).catch(() => undefined);
-    if (options.sidecarBefore) await options.saveSidecar(options.sidecarBefore).catch(() => undefined);
-    if (options.recoveryBefore) await options.saveRecovery(options.recoveryBefore).catch(() => undefined);
-    throw error;
+  };
+
+  if (options.lockOwner && options.documentId) {
+    await withAnnotationWriteLock(options.lockOwner, options.documentId, execute);
+  } else {
+    await execute();
   }
 }

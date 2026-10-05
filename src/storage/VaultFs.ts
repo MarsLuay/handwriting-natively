@@ -1,4 +1,5 @@
 import type { DataAdapter, Vault } from "obsidian";
+import { withAnnotationWriteLock } from "./AnnotationWriteLock";
 import type { TextFileAdapter } from "./SidecarRepository";
 
 export type VaultSyncWriter = (relativePath: string, contents: string) => void;
@@ -156,7 +157,10 @@ type MutableAdapter = DataAdapter & {
   list?: (path: string) => Promise<{ files: string[]; folders: string[] }>;
 };
 
-const vaultSyncLocks = new WeakMap<MutableAdapter, Map<string, Promise<void>>>();
+function annotationDocumentLockKey(path: string): string {
+  const filename = path.split("/").at(-1) ?? path;
+  return filename.replace(/\.recovery\.json$/i, "").replace(/\.json$/i, "");
+}
 
 function comparePersistedSnapshotFreshness(incoming: string, current: string): number {
   try {
@@ -176,27 +180,6 @@ function comparePersistedSnapshotFreshness(incoming: string, current: string): n
   }
 }
 
-function enqueueVaultSyncWrite(
-  adapter: MutableAdapter,
-  path: string,
-  write: () => Promise<void>
-): void {
-  let locks = vaultSyncLocks.get(adapter);
-  if (!locks) {
-    locks = new Map();
-    vaultSyncLocks.set(adapter, locks);
-  }
-  const previous = locks.get(path) ?? Promise.resolve();
-  const operation = previous
-    .catch(() => undefined)
-    .then(write)
-    .catch(() => undefined);
-  locks.set(path, operation);
-  void operation.then(() => {
-    if (locks?.get(path) === operation) locks.delete(path);
-  });
-}
-
 /**
  * Sync unload writer using only the Obsidian vault adapter (no Node `fs`).
  * Fire-and-forget write; prefer normal async saves while the plugin is alive.
@@ -206,7 +189,7 @@ export function createVaultSyncWriter(vault: Vault): VaultSyncWriter | null {
   if (typeof adapter.write !== "function") return null;
   return (relativePath, contents) => {
     const normalized = normalizeVaultRelativePath(relativePath);
-    enqueueVaultSyncWrite(adapter, normalized, async () => {
+    void withAnnotationWriteLock(adapter, annotationDocumentLockKey(normalized), async () => {
       await ensureVaultFolder(vault, parentPath(normalized));
 
       // beforeunload/onunload cannot await the vault adapter. Stage the exact
@@ -234,7 +217,7 @@ export function createVaultSyncWriter(vault: Vault): VaultSyncWriter | null {
       await adapter.write(normalized, contents);
       if (await adapter.read(normalized) !== contents) throw new Error("Emergency annotation commit verification failed");
       await adapter.remove(emergencyTemp);
-    });
+    }).catch(() => undefined);
   };
 }
 
@@ -242,6 +225,7 @@ export function createVaultSyncWriter(vault: Vault): VaultSyncWriter | null {
 export function createVaultFsTextAdapter(vault: Vault, probe?: VaultFsProbe): TextFileAdapter {
   const adapter = vault.adapter as MutableAdapter;
   return {
+    lockOwner: adapter,
     exists: (path) => pathExists(adapter, normalizeVaultRelativePath(path), probe),
     async read(path) {
       const normalized = normalizeVaultRelativePath(path);

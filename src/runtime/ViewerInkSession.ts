@@ -1005,6 +1005,8 @@ export class ViewerInkSession {
   private readonly wetRenderer = new WetInkRenderer();
   private readonly autosave: AutosaveQueue<SidecarSchemaV1>;
   private readonly saveCoordinator: SaveCoordinator;
+  /** One document-local lane for autosave, manual-save, and page-remap persistence. */
+  private persistTail: Promise<void> = Promise.resolve();
   private selected: InkStroke[] = [];
   private selectedTexts: TextAnnotation[] = [];
   private selectionShape: SelectionShape | null = null;
@@ -7695,6 +7697,9 @@ export class ViewerInkSession {
     this.toolbar.setSaveStatus("saving");
     try {
       await this.saveCoordinator.manualSave();
+      // A pending debounce may contain the pre-manual-save snapshot. Marking it
+      // clean cancels that stale timer instead of replaying it after this save.
+      this.autosave.markClean(this.identity.id);
       this.toolbar.setSaveStatus("saved", new Date());
       this.options.notice("Annotations saved.");
       this.logger.textTool("manual-save-complete", { textCount: this.texts.all().length, dirty: this.isDirty() });
@@ -15672,7 +15677,15 @@ export class ViewerInkSession {
     return true;
   }
 
-  private async persist(snapshot: SidecarSchemaV1, reason = "autosave"): Promise<void> {
+  private persist(snapshot: SidecarSchemaV1, reason = "autosave"): Promise<void> {
+    const operation = this.persistTail
+      .catch(() => undefined)
+      .then(() => this.persistNow(snapshot, reason));
+    this.persistTail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async persistNow(snapshot: SidecarSchemaV1, reason = "autosave"): Promise<void> {
     const strokeCount = countSidecarStrokes(snapshot);
     const textCount = countSidecarTexts(snapshot);
     const started = performance.now();
@@ -15770,7 +15783,7 @@ export class ViewerInkSession {
       this.recordStrokeSerialization(snapshot, "recovery", reason);
       if (!this.stillOwnsPersist()) {
         const recoveryClearStarted = performance.now();
-        await this.options.recovery.clear(this.identity.id).catch(() => undefined);
+        await this.options.recovery.clear(this.identity.id, snapshot).catch(() => undefined);
         recoveryClearMs = roundMs(performance.now() - recoveryClearStarted);
         this.logger.sidecarPersist({
           reason,
@@ -15802,7 +15815,7 @@ export class ViewerInkSession {
         return;
       }
       const recoveryClearStarted = performance.now();
-      await this.options.recovery.clear(this.identity.id);
+      await this.options.recovery.clear(this.identity.id, snapshot);
       recoveryClearMs = roundMs(performance.now() - recoveryClearStarted);
       this.recordStrokePersisted(snapshot, reason);
       this.logger.sidecarPersist({
