@@ -1064,3 +1064,145 @@
 @media (max-width: 480px) {
   .native-pdf-handwriting-toolbar-button { padding-inline: 7px; }
 }
+
+/* Plugin-owned PDF.js viewer (#460). Keep the page shell and ink overlay in
+   one coordinate space while allowing PDF.js raster/text/link layers to be
+   evicted and rebuilt independently. */
+.hn-owned-pdf-view-container,
+.hn-owned-pdf-viewer {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.hn-owned-pdf-viewer {
+  background: var(--background-primary);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+.hn-owned-pdf-toolbar-host {
+  align-items: center;
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  min-height: 38px;
+  overflow-x: auto;
+  padding: 4px 8px;
+  position: relative;
+  z-index: 20;
+}
+.hn-owned-pdf-navigation {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  white-space: nowrap;
+}
+.hn-owned-pdf-navigation button,
+.hn-owned-pdf-outline button {
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-normal);
+  min-height: 28px;
+  padding: 2px 8px;
+}
+.hn-owned-pdf-navigation button:hover,
+.hn-owned-pdf-outline button:hover { background: var(--background-modifier-hover); }
+.hn-owned-pdf-page-indicator { min-width: 72px; text-align: center; }
+.hn-owned-pdf-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px;
+  scroll-behavior: smooth;
+  touch-action: pan-x pan-y;
+}
+.hn-owned-pdf-pages {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  min-width: max-content;
+}
+.hn-owned-pdf-page {
+  background: white;
+  box-shadow: 0 1px 8px rgb(0 0 0 / 22%);
+  contain: layout paint style;
+  flex: 0 0 auto;
+  overflow: hidden;
+  position: relative;
+}
+.hn-owned-pdf-canvas {
+  display: block;
+  height: 100%;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 100%;
+  z-index: 1;
+}
+.hn-owned-pdf-text-layer,
+.hn-owned-pdf-annotation-layer {
+  height: 100%;
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 100%;
+}
+.hn-owned-pdf-text-layer { color: transparent; user-select: text; z-index: 3; }
+.hn-owned-pdf-text-layer span {
+  color: transparent;
+  cursor: text;
+  display: block;
+  position: absolute;
+  transform-origin: 0 0;
+  white-space: pre;
+}
+.hn-owned-pdf-text-layer ::selection { background: rgb(0 120 255 / 28%); }
+.hn-owned-pdf-annotation-layer { pointer-events: none; z-index: 4; }
+.hn-owned-pdf-annotation-layer a,
+.hn-owned-pdf-annotation-layer div {
+  border-radius: 2px;
+  pointer-events: auto;
+  position: absolute;
+}
+.hn-owned-pdf-annotation-layer a:hover { background: rgb(50 130 255 / 16%); }
+.hn-owned-pdf-outline {
+  background: var(--background-secondary);
+  border-right: 1px solid var(--background-modifier-border);
+  bottom: 0;
+  max-width: min(320px, 80vw);
+  overflow: auto;
+  padding: 8px;
+  position: absolute;
+  top: 39px;
+  width: 280px;
+  z-index: 25;
+}
+.hn-owned-pdf-outline ol { margin: 0; padding-left: 20px; }
+.hn-owned-pdf-outline li { margin: 3px 0; }
+.hn-owned-pdf-outline button { text-align: left; width: 100%; }
+.hn-owned-pdf-ink-rail {
+  bottom: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 39px;
+  z-index: 30;
+}
+.hn-owned-pdf-ink-rail.is-left { left: 8px; }
+.hn-owned-pdf-ink-rail.is-right { right: 8px; }
+.hn-owned-pdf-ink-rail > * { pointer-events: auto; }
+.hn-owned-pdf-error {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: auto;
+  max-width: 560px;
+  padding: 32px;
+}
+.hn-owned-pdf-error button { padding: 8px 14px; }

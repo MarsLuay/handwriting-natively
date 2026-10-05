@@ -28,6 +28,10 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 3. Select any release you desire! (the latest pre-release is my pick..)
 4. Press install and enjoy
 
+### PDF viewer ownership
+
+PDF leaves are opened by the plugin-owned public `ItemView`. The viewer keeps PDF.js for parsing, text, annotation, and raster rendering, while the plugin owns the page shells, scroll/zoom state, and same-DOM handwriting overlays. The pinned PDF.js runtime and worker are packaged under `pdfjs/` at build time; no CDN or Obsidian private viewer DOM is required. If the packaged runtime cannot load, the view fails closed and offers the native Obsidian PDF viewer as a reversible fallback.
+
 ## If you want..
 
 If you like what I've made, I would deeply appreciate a donation to my https://buymeacoffee.com/marwanluaye! I need to support a coffee addiction but have to spend my spare money on silly things like a college education

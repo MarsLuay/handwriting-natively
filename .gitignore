@@ -1,5 +1,7 @@
 # Dependencies and local analyzer state.
 node_modules/
+# Staged PDF.js runtime assets are generated from the pinned dependency at build time.
+pdfjs/
 .code-analysis/
 .serena/
 coverage/

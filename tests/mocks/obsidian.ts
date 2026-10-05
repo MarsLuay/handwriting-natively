@@ -9,6 +9,16 @@ function textElement(tag: string): HTMLElement {
 
 export type App = unknown;
 
+export class ItemView {
+  readonly containerEl = document.createElement("div");
+  readonly contentEl = document.createElement("div");
+  icon = "";
+  constructor(readonly leaf: unknown) {}
+  getViewType(): string { return "mock-item-view"; }
+  getDisplayText(): string { return ""; }
+  getIcon(): string { return this.icon; }
+}
+
 export class Modal {
   readonly titleEl = textElement("h2");
   readonly contentEl = document.createElement("div");

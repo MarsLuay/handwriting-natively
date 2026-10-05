@@ -16,6 +16,8 @@ import { getPhysicalContactCollectorSnapshot, type PhysicalContactCollectorSnaps
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
+import { PLUGIN_PDF_VIEW_TYPE, PluginPdfView } from "./integration/PluginPdfView";
+import { PdfJsViewAdapter } from "./integration/PdfJsViewAdapter";
 import { isSupportedImageFile } from "./integration/ImageFileTypes";
 import type { AnnotationSurface, AnnotationSurfaceCallbacks } from "./runtime/AnnotationSurface";
 import { pdfSurfaceExtensions } from "./integration/ObsidianPdfAdapter";
@@ -230,6 +232,33 @@ export default class NativePdfInkPlugin extends Plugin {
       await this.loadData() as Partial<PluginSettings> | null,
       this.app.vault.configDir
     );
+    this.registerView(PLUGIN_PDF_VIEW_TYPE, (leaf) => new PluginPdfView(leaf, {
+      pluginDir: this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`,
+      createAdapter: (file, host, callbacks) => PdfJsViewAdapter.create({
+        app: this.app,
+        file,
+        host,
+        callbacks,
+        pluginDir: this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`
+      }),
+      createSession: (file, adapter) => this.createInkSession(file, adapter),
+      onSessionAttached: (view, session) => this.registerSession(view.leaf, session, "owned-pdf-view"),
+      onSessionDetached: (view, session, reason) => {
+        this.removeSessionFromRegistry(view.leaf, session, `owned-pdf-${reason}`);
+      },
+      onFallbackToNative: (view, file, error) => {
+        void this.vaultDebugLog.writeUrgent("warn", "owned-pdf-fallback", {
+          document: file.path,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        void view.leaf.setViewState({ type: "pdf", state: { file: file.path }, active: true });
+      },
+      onDiagnostic: (event, payload) => this.vaultDebugLog.write("info", event, payload)
+    }));
+    // Explicit registration keeps the replacement reversible through Obsidian's
+    // public extension mapping API. Existing native leaves are adopted after
+    // layout-ready; failed owned-view initialization can still select type pdf.
+    this.registerExtensions(["pdf"], PLUGIN_PDF_VIEW_TYPE);
     await this.vaultDebugLog.clear();
     this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(document);
     this.updateSidebarSwipeBlocker();
@@ -313,7 +342,7 @@ export default class NativePdfInkPlugin extends Plugin {
         mobile: Platform.isMobile,
         phone: Platform.isPhone
       });
-      this.scheduleDebouncedScan();
+      void this.adoptExistingNativePdfLeaves().finally(() => this.scheduleDebouncedScan());
     });
     this.registerDomEvent(window, "beforeunload", () => {
       this.emergencyPersistAllSessions();
@@ -371,7 +400,10 @@ export default class NativePdfInkPlugin extends Plugin {
 
   private async logWorkspacePulse(reason: string, leaf?: WorkspaceLeaf | null): Promise<void> {
     if (!this.inkSettings.vaultDebugLog) return;
-    const pdfLeaves = this.app.workspace.getLeavesOfType("pdf");
+    const pdfLeaves = [
+      ...this.app.workspace.getLeavesOfType("pdf"),
+      ...this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE)
+    ];
     if (pdfLeaves.length === 0 && reason === "layout-change") return;
     const leafFile = leaf?.view instanceof FileView ? leaf.view.file : null;
     const file = leafFile ?? this.app.workspace.getActiveFile();
@@ -531,7 +563,10 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private pdfSessionRegistrySnapshot(): HandwritingSessionRegistrySnapshot {
-    const pdfLeaves = this.app.workspace.getLeavesOfType("pdf");
+    const pdfLeaves = [
+      ...this.app.workspace.getLeavesOfType("pdf"),
+      ...this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE)
+    ];
     const mostRecent = this.app.workspace.getMostRecentLeaf();
     const activeFile = this.app.workspace.getActiveFile();
     const activePdfLeaf = (mostRecent && pdfLeaves.includes(mostRecent) ? mostRecent : undefined)
@@ -677,7 +712,8 @@ export default class NativePdfInkPlugin extends Plugin {
         winners.set(id, session);
       }
     }
-    const openPdfLeaves = this.app.workspace.getLeavesOfType("pdf").length;
+    const openPdfLeaves = this.app.workspace.getLeavesOfType("pdf").length
+      + this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE).length;
     this.vaultDebugLog.write("info", "emergency persist begin", {
       sessions: sessions.length,
       documents: winners.size,
@@ -963,6 +999,21 @@ export default class NativePdfInkPlugin extends Plugin {
     });
   }
 
+  private async adoptExistingNativePdfLeaves(): Promise<void> {
+    if (this.unloaded) return;
+    for (const leaf of this.app.workspace.getLeavesOfType("pdf")) {
+      const file = this.fileForLeaf(leaf);
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
+      const current = leaf.getViewState();
+      if (current.type === PLUGIN_PDF_VIEW_TYPE) continue;
+      await leaf.setViewState({
+        ...current,
+        type: PLUGIN_PDF_VIEW_TYPE,
+        state: { ...(current.state ?? {}), file: file.path }
+      });
+    }
+  }
+
   private async scanPdfViews(): Promise<void> {
     if (this.unloaded) return;
     if (this.scanInProgress) {
@@ -985,10 +1036,12 @@ export default class NativePdfInkPlugin extends Plugin {
   private async scanPdfLeaves(): Promise<void> {
     const leaves = [...new Set([
       ...this.app.workspace.getLeavesOfType("pdf"),
+      ...this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE),
       ...this.app.workspace.getLeavesOfType("image")
     ])];
     await this.vaultDebugLog.writeUrgent("info", "scan-pdf-leaves", {
-      pdfLeafCount: this.app.workspace.getLeavesOfType("pdf").length,
+      pdfLeafCount: this.app.workspace.getLeavesOfType("pdf").length
+        + this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE).length,
       imageLeafCount: this.app.workspace.getLeavesOfType("image").length,
       sessions: this.sessions.size,
       attachingLeaves: this.attachingLeaves.size,
@@ -1041,9 +1094,11 @@ export default class NativePdfInkPlugin extends Plugin {
       const file = this.fileForLeaf(leaf);
       if (!(file instanceof TFile)) continue;
       const isPdf = file.extension.toLowerCase() === "pdf";
+      const isOwnedPdf = isPdf && view.getViewType?.() === PLUGIN_PDF_VIEW_TYPE;
       const isImage = isSupportedImageFile(file);
       if (!isPdf && !isImage) continue;
       livePaths.add(file.path);
+      if (isOwnedPdf) continue;
       if (isPdf && !this.inkSettings.enabledSurfaces.pdf) {
         await this.vaultDebugLog.writeUrgent("info", "pdf session disabled", {
           document: file.path,
@@ -1551,8 +1606,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) return undefined;
     for (const [leaf, session] of this.sessions) {
-      const view = leaf.view;
-      if (view instanceof FileView && view.file?.path === activeFile.path) return session;
+      if (this.fileForLeaf(leaf)?.path === activeFile.path) return session;
     }
     return undefined;
   }
