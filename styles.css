@@ -1102,6 +1102,8 @@
   white-space: nowrap;
 }
 .hn-owned-pdf-navigation button,
+.hn-owned-pdf-navigation select,
+.hn-owned-pdf-navigation input,
 .hn-owned-pdf-outline button {
   background: var(--background-modifier-form-field);
   border: 1px solid var(--background-modifier-border);
@@ -1112,7 +1114,49 @@
 }
 .hn-owned-pdf-navigation button:hover,
 .hn-owned-pdf-outline button:hover { background: var(--background-modifier-hover); }
-.hn-owned-pdf-page-indicator { min-width: 72px; text-align: center; }
+.hn-owned-pdf-page-indicator {
+  align-items: center;
+  display: inline-flex;
+  gap: 3px;
+  justify-content: center;
+  min-width: 84px;
+  text-align: center;
+}
+.hn-owned-pdf-page-indicator input {
+  border: 0;
+  min-height: 26px;
+  padding: 2px 4px;
+  text-align: right;
+  width: 42px;
+}
+.hn-owned-pdf-navigation select {
+  min-height: 28px;
+  padding: 2px 4px;
+}
+.hn-owned-pdf-find-bar {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.hn-owned-pdf-find-bar input {
+  min-height: 28px;
+  min-width: 170px;
+  padding: 3px 7px;
+}
+.hn-owned-pdf-find-status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  min-width: 74px;
+}
+.hn-owned-pdf-text-layer span.is-find-match {
+  background: rgb(255 210 0 / 62%);
+  color: transparent;
+}
+.hn-owned-pdf-viewer.is-hand-tool .hn-owned-pdf-page { cursor: grab; }
+.hn-owned-pdf-viewer:fullscreen { background: var(--background-primary); }
 .hn-owned-pdf-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -1171,7 +1215,8 @@
   position: absolute;
 }
 .hn-owned-pdf-annotation-layer a:hover { background: rgb(50 130 255 / 16%); }
-.hn-owned-pdf-outline {
+.hn-owned-pdf-outline,
+.hn-owned-pdf-thumbnails {
   background: var(--background-secondary);
   border-right: 1px solid var(--background-modifier-border);
   bottom: 0;
@@ -1186,6 +1231,22 @@
 .hn-owned-pdf-outline ol { margin: 0; padding-left: 20px; }
 .hn-owned-pdf-outline li { margin: 3px 0; }
 .hn-owned-pdf-outline button { text-align: left; width: 100%; }
+.hn-owned-pdf-thumbnails { display: flex; flex-direction: column; gap: 8px; }
+.hn-owned-pdf-thumbnail {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px;
+  width: 100%;
+}
+.hn-owned-pdf-thumbnail:hover,
+.hn-owned-pdf-thumbnail:focus-visible { background: var(--background-modifier-hover); color: var(--text-normal); }
+.hn-owned-pdf-thumbnail canvas { background: white; display: block; max-width: 100%; }
+.hn-owned-pdf-thumbnail span { font-size: var(--font-ui-small); }
 .hn-owned-pdf-ink-rail {
   bottom: 0;
   pointer-events: none;
