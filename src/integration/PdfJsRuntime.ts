@@ -35,7 +35,7 @@ export interface PdfJsAnnotation {
 
 export interface PdfJsPageProxy {
   getViewport(options: { scale: number; rotation?: number }): PdfJsViewport;
-  render(options: { canvasContext: CanvasRenderingContext2D; viewport: PdfJsViewport }): PdfJsRenderTask;
+  render(options: { canvasContext: CanvasRenderingContext2D; viewport: PdfJsViewport; transform?: readonly number[] }): PdfJsRenderTask;
   getTextContent?(): Promise<PdfJsTextContent>;
   getAnnotations?(options?: { intent?: string }): Promise<readonly PdfJsAnnotation[]>;
   cleanup?(): void;

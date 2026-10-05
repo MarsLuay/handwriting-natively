@@ -251,7 +251,12 @@ export default class NativePdfInkPlugin extends Plugin {
           document: file.path,
           error: error instanceof Error ? error.message : String(error)
         });
-        void view.leaf.setViewState({ type: "pdf", state: { file: file.path }, active: true });
+        void view.leaf.setViewState({ type: "pdf", state: { file: file.path }, active: true }).catch((fallbackError: unknown) => {
+          void this.vaultDebugLog.writeUrgent("error", "owned-pdf-native-fallback-failed", {
+            document: file.path,
+            error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+          });
+        });
       },
       onDiagnostic: (event, payload) => this.vaultDebugLog.write("info", event, payload)
     }));
