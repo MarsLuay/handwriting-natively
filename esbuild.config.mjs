@@ -1,5 +1,5 @@
 import esbuild from "esbuild";
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
@@ -35,10 +35,55 @@ function stagePdfJsAssets() {
     version: packageJson.version,
     core: "pdf.mjs",
     worker: "pdf.worker.mjs",
+    pdfLib: "pdf-lib.mjs",
+    thumbnailActions: "pdf-thumbnail-actions.mjs",
+    postZoomInput: "post-zoom-input.mjs",
     cMaps: "cmaps/",
     standardFonts: "standard_fonts/",
     wasm: "wasm/"
   }, null, 2) + "\n");
+}
+
+async function stagePdfLibAsset() {
+  await esbuild.build({
+    entryPoints: [resolve(root, "src/pdf/PdfLibAsset.ts")],
+    bundle: true,
+    external: ["obsidian", "electron", ...builtinModules],
+    format: "esm",
+    target: "es2021",
+    minify: true,
+    outfile: resolve(pdfJsOutputDir, "pdf-lib.mjs"),
+    logLevel: "silent"
+  });
+  await esbuild.build({
+    entryPoints: [resolve(root, "src/integration/PdfThumbnailAsset.ts")],
+    bundle: true,
+    external: ["obsidian", "electron", ...builtinModules],
+    format: "esm",
+    target: "es2021",
+    minify: true,
+    outfile: resolve(pdfJsOutputDir, "pdf-thumbnail-actions.mjs"),
+    logLevel: "silent"
+  });
+  await esbuild.build({
+    entryPoints: [resolve(root, "src/runtime/PostZoomInputAsset.ts")],
+    bundle: true,
+    external: ["obsidian", "electron", ...builtinModules],
+    format: "esm",
+    target: "es2021",
+    minify: true,
+    outfile: resolve(pdfJsOutputDir, "post-zoom-input.mjs"),
+    logLevel: "silent"
+  });
+}
+
+function enforceProductionBundleBudget() {
+  const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+  const budget = packageJson.codeAnalysis?.pluginBundleBudgetBytes;
+  if (typeof budget !== "number") return;
+  const bytes = statSync(resolve(root, "main.js")).size;
+  console.log(`[bundle] main.js ${bytes} bytes (budget ${budget})`);
+  if (bytes > budget) throw new Error(`main.js is ${bytes} bytes, above the ${budget}-byte bundle budget`);
 }
 
 function deployToVaultPlugin() {
@@ -55,13 +100,15 @@ function deployToVaultPlugin() {
 }
 
 stagePdfJsAssets();
+await stagePdfLibAsset();
 
 const context = await esbuild.context({
   entryPoints: ["src/main.ts"],
   bundle: true,
-  external: ["obsidian", "electron", ...builtinModules],
+  external: ["obsidian", "electron", "pdf-lib", ...builtinModules],
   format: "cjs",
-  target: "es2021",
+  target: "esnext",
+  charset: "utf8",
   sourcemap: production ? false : "inline",
   minify: production,
   treeShaking: true,
@@ -84,6 +131,7 @@ const context = await esbuild.context({
 
 if (production) {
   await context.rebuild();
+  enforceProductionBundleBudget();
   await context.dispose();
 } else {
   await context.watch();

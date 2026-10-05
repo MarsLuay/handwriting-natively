@@ -1,6 +1,7 @@
 import {
   FileView,
   MarkdownView,
+  Menu,
   Modal,
   Platform,
   Plugin,
@@ -33,6 +34,9 @@ import { AttachRetryPolicy } from "./runtime/AttachRetryPolicy";
 import { ScanDebounce } from "./runtime/ScanDebounce";
 import { VaultDebugLog } from "./logging/VaultDebugLog";
 import { PROFILE_SCHEMA_VERSION } from "./logging/SessionLogger";
+import { configurePdfLibRuntime } from "./pdf/PdfLibRuntime";
+import { configurePdfThumbnailRuntime } from "./integration/PdfThumbnailRuntime";
+import { configurePostZoomInputRuntime } from "./runtime/PostZoomInputRuntime";
 import {
   createGoodNotesNotebook,
   createPdfFromTemplate,
@@ -228,18 +232,22 @@ export default class NativePdfInkPlugin extends Plugin {
   );
 
   async onload(): Promise<void> {
+    const pluginDir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    configurePdfLibRuntime(this.app, pluginDir);
+    configurePdfThumbnailRuntime(this.app, pluginDir, Menu);
+    configurePostZoomInputRuntime(this.app, pluginDir);
     this.inkSettings = mergeSettings(
       await this.loadData() as Partial<PluginSettings> | null,
       this.app.vault.configDir
     );
     this.registerView(PLUGIN_PDF_VIEW_TYPE, (leaf) => new PluginPdfView(leaf, {
-      pluginDir: this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`,
+      pluginDir,
       createAdapter: (file, host, callbacks) => PdfJsViewAdapter.create({
         app: this.app,
         file,
         host,
         callbacks,
-        pluginDir: this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`
+        pluginDir
       }),
       createSession: (file, adapter) => this.createInkSession(file, adapter),
       onSessionAttached: (view, session) => this.registerSession(view.leaf, session, "owned-pdf-view"),

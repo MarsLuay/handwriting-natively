@@ -1,5 +1,17 @@
-import { Menu } from "obsidian";
+import type { Menu as ObsidianMenu } from "obsidian";
 import { isElement, isHTMLElement } from "../dom/typeGuards";
+
+type MenuConstructor = new () => ObsidianMenu;
+let menuConstructor: MenuConstructor | undefined;
+
+export function configurePdfThumbnailMenu(constructor: MenuConstructor): void {
+  menuConstructor = constructor;
+}
+
+function createThumbnailMenu(): ObsidianMenu {
+  if (!menuConstructor) throw new Error("Obsidian Menu runtime has not been configured");
+  return new menuConstructor();
+}
 
 const THUMBNAIL_VIEW_SELECTOR = ".pdf-thumbnail-view, #thumbnailView, .thumbnailView";
 const THUMBNAIL_RANGE_SELECTED_CLASS = "native-pdf-handwriting-thumbnail-range-selected";
@@ -688,13 +700,13 @@ export class PdfThumbnailSidebarActions {
   }
 
   private showStandaloneAddMenu(event: MouseEvent, pageNumber: number): void {
-    const menu = new Menu();
+    const menu = createThumbnailMenu();
     this.addPageAction(menu, pageNumber);
     menu.showAtMouseEvent(event);
     this.callbacks.onMenuEvent?.("standalone-add", { kind: "add", pageNumber });
   }
 
-  private addPageAction(menu: Menu, pageNumber: number): void {
+  private addPageAction(menu: ObsidianMenu, pageNumber: number): void {
     menu.addItem((item) => item
       .setTitle("Add page")
       .setIcon("plus")
@@ -703,7 +715,7 @@ export class PdfThumbnailSidebarActions {
     );
   }
 
-  private addDeleteAction(menu: Menu, pageNumber: number): void {
+  private addDeleteAction(menu: ObsidianMenu, pageNumber: number): void {
     menu.addItem((item) => item
       .setTitle("Delete page")
       .setIcon("trash-2")

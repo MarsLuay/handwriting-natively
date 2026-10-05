@@ -13,24 +13,45 @@ import { imageSurfaceExtensions, pdfSurfaceExtensions } from "../integration/Obs
 import { describeTarget } from "../dom/describeElement";
 import { PointerTypeOriginLog, pointerTypeOrigin, type PointerTypeListenerPhase } from "../input/PointerTypeOrigin";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
-import { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
+import { loadPdfThumbnailRuntime } from "../integration/PdfThumbnailRuntime";
+import type { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
 import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
+type PdfThumbnailRuntimeModule = Awaited<ReturnType<typeof loadPdfThumbnailRuntime>>;
+let pdfThumbnailRuntime: PdfThumbnailRuntimeModule | undefined;
+
+async function ensurePdfThumbnailRuntime(): Promise<PdfThumbnailRuntimeModule> {
+  pdfThumbnailRuntime ??= await loadPdfThumbnailRuntime();
+  return pdfThumbnailRuntime;
+}
+
+function requirePdfThumbnailRuntime(): PdfThumbnailRuntimeModule {
+  if (!pdfThumbnailRuntime) throw new Error("PDF thumbnail runtime has not been loaded");
+  return pdfThumbnailRuntime;
+}
+
 import {
   PINCH_CLEANUP_MAX_WAIT_MS,
   ZOOM_BURST_STUCK_MS,
   decideZoomBurstWatchdog,
-  PinchGestureCleanup,
-  pointerHandledForGeneration,
-  PostZoomInputTrace,
-  postZoomFinalDisposition,
-  stylusIdentityFromClassification,
-  stylusIdentityRegression,
-  validPhysicalDisplacementPx,
   type PostZoomContactObservation,
   type StylusIdentity
 } from "./PostZoomInputTrace";
+import { loadPostZoomInputRuntime } from "./PostZoomInputRuntime";
+import type { PostZoomInputRuntimeModule } from "./PostZoomInputRuntime";
+
+let postZoomInputRuntime: PostZoomInputRuntimeModule | undefined;
+
+async function ensurePostZoomInputRuntime(): Promise<PostZoomInputRuntimeModule> {
+  postZoomInputRuntime ??= await loadPostZoomInputRuntime();
+  return postZoomInputRuntime;
+}
+
+function requirePostZoomInputRuntime(): PostZoomInputRuntimeModule {
+  if (!postZoomInputRuntime) throw new Error("post-zoom input runtime has not been loaded");
+  return postZoomInputRuntime;
+}
 import { PostZoomDurabilityTrace } from "./PostZoomDurabilityTrace";
 import { SLOW_SPAN_SYNC_MS, SlowSpanTrace, type InkLatencyBreakdown } from "./SlowSpanTrace";
 import {
@@ -1114,7 +1135,7 @@ export class ViewerInkSession {
   /** Last few finished pinches, for Copy Logs. One record per zoom, not per frame. */
   private readonly recentZoomGesturePerformance: Array<Record<string, unknown>> = [];
   private zoomSequence = 0;
-  private readonly postZoomTrace = new PostZoomInputTrace();
+  private readonly postZoomTrace = new (requirePostZoomInputRuntime().PostZoomInputTrace)();
   private readonly postZoomDurability = new PostZoomDurabilityTrace();
   private readonly slowSpans = new SlowSpanTrace();
   private readonly frameBudget: EffectiveFrameBudget;
@@ -1142,7 +1163,7 @@ export class ViewerInkSession {
   private inGestureResetCount = 0;
   private settleResetReasons: Record<string, number> = {};
   private readonly pointerTypeOrigins = new PointerTypeOriginLog();
-  private readonly pinchCleanup = new PinchGestureCleanup();
+  private readonly pinchCleanup = new (requirePostZoomInputRuntime().PinchGestureCleanup)();
   private pinchCleanupFrame: number | null = null;
   private readonly postZoomStrokePointers = new Set<number>();
   private readonly postZoomRouterByPointer = new Map<number, {
@@ -1603,7 +1624,7 @@ export class ViewerInkSession {
       }, adapter.host.ownerDocument)
       : null;
     this.thumbnailSidebarActions = options.onDeletePage && options.onInsertPage
-      ? new PdfThumbnailSidebarActions(adapter.host, {
+      ? new (requirePdfThumbnailRuntime().PdfThumbnailSidebarActions)(adapter.host, {
         onAddPage: (pageNumber) => this.addPageAt(pageNumber),
         onDeletePage: (pageNumber) => this.deletePage(pageNumber),
         ...(options.onDeletePages
@@ -2453,7 +2474,7 @@ export class ViewerInkSession {
       touchForce: touch?.force ?? null,
       firstPoint: contact.firstPoint,
       lastValidPoint: contact.lastValidPoint,
-      validPhysicalDisplacementPx: validPhysicalDisplacementPx(contact),
+      validPhysicalDisplacementPx: requirePostZoomInputRuntime().validPhysicalDisplacementPx(contact),
       pointerCaptureLost: contact.pointerCaptureLost,
       terminalPointRejectReason: contact.terminalPointRejectReason,
       pageNumber,
@@ -2592,14 +2613,14 @@ export class ViewerInkSession {
     const route = record.contact.pointerIds
       .map((pointerId) => this.postZoomRouterByPointer.get(pointerId))
       .find((entry) => entry);
-    const validPhysicalDisplacement = validPhysicalDisplacementPx(record.contact);
+    const validPhysicalDisplacement = requirePostZoomInputRuntime().validPhysicalDisplacementPx(record.contact);
     const scroll = this.options.adapter.scrollElement();
     const startLeft = typeof retained?.scrollLeftAtStart === "number" ? retained.scrollLeftAtStart : null;
     const startTop = typeof retained?.scrollTopAtStart === "number" ? retained.scrollTopAtStart : null;
     const nativeScrollDeltaPx = startLeft === null || startTop === null
       ? null
       : Math.hypot(scroll.scrollLeft - startLeft, scroll.scrollTop - startTop);
-    const stylusIdentity = stylusIdentityFromClassification(record.contact);
+    const stylusIdentity = requirePostZoomInputRuntime().stylusIdentityFromClassification(record.contact);
     const observation: PostZoomContactObservation = {
       overAnnotatablePage: overPage,
       stylusIdentity,
@@ -2645,7 +2666,7 @@ export class ViewerInkSession {
     });
     const anomaly = overPage ? this.postZoomTrace.anomaly(observation, Date.now()) : null;
     this.postZoomTrace.completeAdmittedContact(record.contact.physicalContactId, Date.now());
-    const disposition = postZoomFinalDisposition({
+    const disposition = requirePostZoomInputRuntime().postZoomFinalDisposition({
       penToolActive: isDrawingTool(this.activeTool()),
       stylusIdentity,
       strokeStarted,
@@ -2683,7 +2704,7 @@ export class ViewerInkSession {
       });
       const previousStroke = this.logger.lastSuccessfulStroke();
       const settleSnapshot = this.postZoomTrace.diagnosis().settleSnapshot;
-      const regression = this.postZoomTrace.noteStylusIdentityRegression(stylusIdentityRegression({
+      const regression = this.postZoomTrace.noteStylusIdentityRegression(requirePostZoomInputRuntime().stylusIdentityRegression({
         zoomBurstId: this.postZoomTrace.currentBurstId(),
         preZoomPointerType: previousStroke.pointerType,
         preZoomPointerEventPenSeen: previousStroke.pointerEventPenSeen,
@@ -6333,6 +6354,8 @@ export class ViewerInkSession {
       else sink.write("info", event, payload);
     };
     const platform = options.runtimePlatform?.() ?? { mobile: false, phone: false };
+    await ensurePostZoomInputRuntime();
+    if (options.onDeletePage && options.onInsertPage) await ensurePdfThumbnailRuntime();
     const domPageCount = options.adapter.pages().length;
     await urgent("session create begin", {
       document: options.documentPath,
@@ -10296,7 +10319,7 @@ export class ViewerInkSession {
 
   private wasDrawPointerHandled(pointerId: number, generation?: number): boolean {
     if (generation === undefined) return this.handledDrawPointers.has(pointerId);
-    return pointerHandledForGeneration(this.handledDrawPointers, pointerId, generation);
+    return requirePostZoomInputRuntime().pointerHandledForGeneration(this.handledDrawPointers, pointerId, generation);
   }
 
   private releaseDrawPointerOwner(generation: number, handoff?: PointerRouterHandoff): void {

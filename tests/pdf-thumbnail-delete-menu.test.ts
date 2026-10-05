@@ -48,11 +48,14 @@ vi.mock("obsidian", () => {
 
 import { Menu } from "obsidian";
 import {
+  configurePdfThumbnailMenu,
   PdfThumbnailSidebarActions,
   selectedThumbnailPageNumber,
   thumbnailActionAtPoint,
   thumbnailPageNumber
 } from "../src/integration/PdfThumbnailDeleteMenu";
+
+configurePdfThumbnailMenu(Menu);
 
 afterEach(() => {
   vi.useRealTimers();

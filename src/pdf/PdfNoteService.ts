@@ -1,5 +1,12 @@
-import { PDFDocument, PDFName } from "pdf-lib";
+import { loadPdfLib, type PdfLibModule } from "./PdfLibRuntime";
+import type { PDFDocument as PdfDocument } from "pdf-lib";
 import type { ScanDocumentPage } from "../scanning/ScanDocument";
+let loadedPdfLib: PdfLibModule | undefined;
+
+async function ensurePdfLib(): Promise<PdfLibModule> {
+  loadedPdfLib ??= await loadPdfLib();
+  return loadedPdfLib;
+}
 
 export const ENCRYPTED_PDF_MUTATION_ERROR = "Encrypted PDF cannot be rewritten.";
 export const SIGNED_PDF_MUTATION_ERROR = "Signed PDF cannot be rewritten. Saving it would invalidate the digital signature.";
@@ -11,20 +18,20 @@ function trailerDeclaresEncryption(bytes: Uint8Array): boolean {
   return /\/Encrypt\b/.test(trailerAt >= 0 ? tail.slice(trailerAt) : tail);
 }
 
-function hasDigitalSignature(pdf: PDFDocument): boolean {
+function hasDigitalSignature(pdf: PdfDocument, lib: PdfLibModule): boolean {
   for (const [, object] of pdf.context.enumerateIndirectObjects()) {
     if (!object || typeof object !== "object" || !("get" in object)) continue;
-    const type = (object as { get(name: ReturnType<typeof PDFName.of>): { toString(): string } | undefined })
-      .get(PDFName.of("Type"));
+    const type = (object as { get(name: ReturnType<PdfLibModule["PDFName"]["of"]>): { toString(): string } | undefined })
+      .get(lib.PDFName.of("Type"));
     if (type?.toString() === "/Sig") return true;
   }
   return false;
 }
 
-async function loadPdfBytes(bytes: Uint8Array): Promise<PDFDocument> {
+async function loadPdfBytes(bytes: Uint8Array, lib: PdfLibModule): Promise<PdfDocument> {
   if (trailerDeclaresEncryption(bytes)) throw new Error(ENCRYPTED_PDF_MUTATION_ERROR);
   try {
-    return await PDFDocument.load(bytes);
+    return await lib.PDFDocument.load(bytes);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/encrypt/i.test(message)) throw new Error(ENCRYPTED_PDF_MUTATION_ERROR);
@@ -33,9 +40,9 @@ async function loadPdfBytes(bytes: Uint8Array): Promise<PDFDocument> {
 }
 
 /** Loads a PDF that this plugin is allowed to save. Signed and encrypted files stay untouched. */
-async function loadRewrittenPdf(bytes: Uint8Array): Promise<PDFDocument> {
-  const pdf = await loadPdfBytes(bytes);
-  if (hasDigitalSignature(pdf)) throw new Error(SIGNED_PDF_MUTATION_ERROR);
+async function loadRewrittenPdf(bytes: Uint8Array, lib: PdfLibModule): Promise<PdfDocument> {
+  const pdf = await loadPdfBytes(bytes, lib);
+  if (hasDigitalSignature(pdf, lib)) throw new Error(SIGNED_PDF_MUTATION_ERROR);
   return pdf;
 }
 
@@ -48,12 +55,12 @@ export const US_LETTER_PAGE_SIZE: readonly [number, number] = [612, 792];
  */
 export const GOODNOTES_STANDARD_PAGE_SIZE: readonly [number, number] = [455.04, 588.41];
 
-async function appendFirstTemplatePage(pdfDocument: PDFDocument, templateBytes?: Uint8Array): Promise<void> {
+async function appendFirstTemplatePage(pdfDocument: PdfDocument, templateBytes: Uint8Array | undefined, lib: PdfLibModule): Promise<void> {
   if (!templateBytes) {
     pdfDocument.addPage([...US_LETTER_PAGE_SIZE]);
     return;
   }
-  const template = await PDFDocument.load(templateBytes);
+  const template = await lib.PDFDocument.load(templateBytes);
   if (template.getPageCount() === 0) throw new Error("The configured PDF template has no pages.");
   const [templatePage] = await pdfDocument.copyPages(template, [0]);
   pdfDocument.addPage(templatePage);
@@ -61,14 +68,16 @@ async function appendFirstTemplatePage(pdfDocument: PDFDocument, templateBytes?:
 
 /** Creates a new one-page handwritten PDF from template page one, or blank Letter paper. */
 export async function createPdfFromTemplate(templateBytes?: Uint8Array): Promise<Uint8Array> {
-  const pdfDocument = await PDFDocument.create();
-  await appendFirstTemplatePage(pdfDocument, templateBytes);
+  const lib = await ensurePdfLib();
+  const pdfDocument = await lib.PDFDocument.create();
+  await appendFirstTemplatePage(pdfDocument, templateBytes, lib);
   return pdfDocument.save();
 }
 
 /** Creates a fresh one-page blank PDF at GoodNotes Standard paper size. */
 export async function createGoodNotesNotebook(): Promise<Uint8Array> {
-  const pdfDocument = await PDFDocument.create();
+  const lib = await ensurePdfLib();
+  const pdfDocument = await lib.PDFDocument.create();
   pdfDocument.addPage([...GOODNOTES_STANDARD_PAGE_SIZE]);
   return pdfDocument.save();
 }
@@ -105,7 +114,8 @@ export interface ReorderedPdfPage {
 
 /** Returns the page count after validating that the bytes are a readable PDF. */
 export async function getPdfPageCount(bytes: Uint8Array): Promise<number> {
-  const pdf = await PDFDocument.load(bytes);
+  const lib = await ensurePdfLib();
+  const pdf = await lib.PDFDocument.load(bytes);
   return pdf.getPageCount();
 }
 
@@ -126,8 +136,9 @@ export async function importPdfPages(
   afterPage: number,
   requestedPageNumbers: readonly number[]
 ): Promise<ImportedPdfPages> {
-  const destination = await loadRewrittenPdf(destinationBytes);
-  const source = await loadPdfBytes(sourceBytes);
+  const lib = await ensurePdfLib();
+  const destination = await loadRewrittenPdf(destinationBytes, lib);
+  const source = await loadPdfBytes(sourceBytes, lib);
   const destinationCount = destination.getPageCount();
   const sourceCount = source.getPageCount();
   if (!destinationCount) throw new Error("Cannot import pages into a PDF with no pages.");
@@ -158,7 +169,8 @@ export async function reorderPdfPage(
   fromPage: number,
   toPage: number
 ): Promise<ReorderedPdfPage> {
-  const source = await loadRewrittenPdf(sourceBytes);
+  const lib = await ensurePdfLib();
+  const source = await loadRewrittenPdf(sourceBytes, lib);
   const pageCount = source.getPageCount();
   if (!Number.isInteger(fromPage) || fromPage < 1 || fromPage > pageCount) {
     throw new Error(`PDF page ${fromPage} does not exist.`);
@@ -194,7 +206,8 @@ export async function insertScannedPages(
   scannedPages: readonly ScanDocumentPage[]
 ): Promise<InsertedPdfPages> {
   if (!scannedPages.length) throw new Error("Capture at least one document page.");
-  const source = await loadRewrittenPdf(sourceBytes);
+  const lib = await ensurePdfLib();
+  const source = await loadRewrittenPdf(sourceBytes, lib);
   const pageCount = source.getPageCount();
   if (!pageCount) throw new Error("Cannot add a page to a PDF with no pages.");
   const requested = Number.isFinite(requestedPageNumber)
@@ -224,7 +237,8 @@ export async function insertMatchingBlankPage(
   requestedPageNumber: number,
   report?: (stage: string) => void
 ): Promise<InsertedPdfPage> {
-  const source = await loadRewrittenPdf(sourceBytes);
+  const lib = await ensurePdfLib();
+  const source = await loadRewrittenPdf(sourceBytes, lib);
   report?.("pdf-lib-load-complete");
   const pages = source.getPages();
   if (!pages.length) throw new Error("Cannot add a page to a PDF with no pages.");
@@ -258,7 +272,8 @@ export async function deletePdfPages(
   sourceBytes: Uint8Array,
   requestedPageNumbers: readonly number[]
 ): Promise<DeletedPdfPages> {
-  const source = await loadRewrittenPdf(sourceBytes);
+  const lib = await ensurePdfLib();
+  const source = await loadRewrittenPdf(sourceBytes, lib);
   const count = source.getPageCount();
   const pageNumbers = [...new Set(requestedPageNumbers)].sort((left, right) => right - left);
   if (!pageNumbers.length) throw new Error("Select at least one PDF page.");
