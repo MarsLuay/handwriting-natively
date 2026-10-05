@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createVaultFsTextAdapter, createVaultSyncWriter, resolveVaultAbsolutePath, type VaultFsOperationRecord } from "../src/storage/VaultFs";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository } from "../src/storage/SidecarRepository";
+import { serializeSidecar, type SidecarSchemaV1 } from "../src/storage/SidecarSchema";
 import type { Vault } from "obsidian";
 
 const MISSING_FOLDER = "The file “annotations” couldn’t be opened because there is no such file.";
@@ -126,6 +127,40 @@ describe("vault fs sidecar I/O", () => {
     expect(files.get("annotations/doc.json.last-good")).toBe("old");
     expect(files.get("annotations/doc.json.emergency.tmp")).toBe("new");
     expect(files.get("annotations/doc.json")).toBe("");
+  });
+
+  it("serializes emergency and normal writes for one document", async () => {
+    const initial: SidecarSchemaV1 = {
+      schemaVersion: 1,
+      document: { id: "doc", vaultPath: "note.pdf" },
+      pages: [],
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01"
+    };
+    const emergency = { ...initial, updatedAt: "2026-01-02" };
+    const normal = { ...initial, updatedAt: "2026-01-03" };
+    const files = new Map([["annotations/doc.json", serializeSidecar(initial)]]);
+    let activeWrites = 0;
+    let maxConcurrentWrites = 0;
+    const vault = vaultWith({
+      files,
+      write: async (path, data) => {
+        activeWrites += 1;
+        maxConcurrentWrites = Math.max(maxConcurrentWrites, activeWrites);
+        await Promise.resolve();
+        files.set(path, data);
+        activeWrites -= 1;
+      }
+    });
+    const writeSync = createVaultSyncWriter(vault);
+    expect(writeSync).not.toBeNull();
+    const sidecars = new SidecarRepository(createVaultFsTextAdapter(vault), "annotations");
+
+    writeSync!("annotations/doc.json", serializeSidecar(emergency));
+    await sidecars.save(normal);
+
+    expect(maxConcurrentWrites).toBe(1);
+    expect(JSON.parse(files.get("annotations/doc.json")!).updatedAt).toBe(normal.updatedAt);
   });
 
   it("does not replace a newer canonical snapshot observed during staging", async () => {
