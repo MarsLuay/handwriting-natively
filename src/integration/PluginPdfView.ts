@@ -70,7 +70,7 @@ export class PluginPdfView extends ItemView {
     await this.closeDocument("view-close");
   }
 
-  onResize(): void { /* logical PDF geometry is independent of the host size */ }
+  onResize(): void { this.adapter?.onResize(); }
 
   private async loadFile(path: string, reason: string): Promise<void> {
     const generation = ++this.loadGeneration;
