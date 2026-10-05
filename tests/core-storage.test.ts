@@ -138,6 +138,63 @@ describe("sidecar storage", () => {
     expect(files.data.has("annotations/doc.json.tmp")).toBe(false);
   });
 
+  it("recovers a missing primary from an interrupted staged snapshot", async () => {
+    const files = new MemoryFiles();
+    const repository = new SidecarRepository(files, "annotations", {
+      now: () => new Date("2026-02-01T03:04:05.678Z")
+    });
+    const path = repository.pathFor("doc");
+    files.data.set(`${path}.emergency.tmp`, serializeSidecar(sidecar()));
+
+    const result = await repository.loadWithStatus("doc");
+
+    expect(result.data).toMatchObject({
+      pages: sidecar().pages,
+      createdAt: sidecar().createdAt,
+      updatedAt: sidecar().updatedAt,
+      document: { vaultPath: sidecar().document.vaultPath }
+    });
+    expect(await files.read(path)).toBe(await files.read(`${path}.emergency.tmp`));
+  });
+
+  it("prefers an interrupted staged snapshot over an older last-good copy", async () => {
+    const files = new MemoryFiles();
+    const repository = new SidecarRepository(files, "annotations", {
+      now: () => new Date("2026-02-01T03:04:05.678Z")
+    });
+    const path = repository.pathFor("doc");
+    const older = sidecar();
+    older.updatedAt = "older";
+    const staged = sidecar();
+    staged.updatedAt = "staged";
+    files.data.set(path, "");
+    files.data.set(`${path}.last-good`, serializeSidecar(older));
+    files.data.set(`${path}.emergency.tmp`, serializeSidecar(staged));
+
+    const result = await repository.loadWithStatus("doc");
+
+    expect(result.data?.updatedAt).toBe("staged");
+    expect(files.data.has(`${path}.corrupt-20260201T030405678Z`)).toBe(true);
+  });
+
+  it("does not restore a stale emergency file over a newer validated backup", async () => {
+    const files = new MemoryFiles();
+    const repository = new SidecarRepository(files, "annotations");
+    const path = repository.pathFor("doc");
+    const stale = sidecar();
+    stale.updatedAt = "2026-01-01T00:00:00.000Z";
+    const newest = sidecar();
+    newest.updatedAt = "2026-02-01T00:00:00.000Z";
+    files.data.set(path, "");
+    files.data.set(`${path}.emergency.tmp`, serializeSidecar(stale));
+    files.data.set(`${path}.last-good`, serializeSidecar(newest));
+
+    const result = await repository.loadWithStatus("doc");
+
+    expect(result.data?.updatedAt).toBe(newest.updatedAt);
+    expect(await files.read(path)).toBe(await files.read(`${path}.last-good`));
+  });
+
   it("writes validated sidecar and recovery backups to the configured folder", async () => {
     const files = new MemoryFiles();
     const options = { backupFolder: "debug" };

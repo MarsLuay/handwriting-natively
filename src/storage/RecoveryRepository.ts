@@ -54,6 +54,19 @@ export class RecoveryRepository {
         throw new Error(`Could not validate last-good recovery backup: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    // Keep a validated copy before replacing the recovery snapshot. A
+    // termination during the canonical overwrite can then be repaired from
+    // the backup or the staged emergency candidate on the next open.
+    await writeAnnotationBackup(
+      this.files,
+      path,
+      next,
+      (contents) => this.migration.migrate(contents),
+      (value) => validateAnnotationIdentity(value, data.document.id),
+      this.options,
+      "recovery"
+    ).catch(() => undefined);
+
     const temp = `${path}.tmp`;
     if (this.files.rename || this.files.remove) {
       await this.files.write(temp, next);
@@ -73,29 +86,11 @@ export class RecoveryRepository {
         if (previous !== null) await this.files.write(path, previous).catch(() => undefined);
         throw error;
       }
-      await writeAnnotationBackup(
-        this.files,
-        path,
-        next,
-        (contents) => this.migration.migrate(contents),
-        (value) => validateAnnotationIdentity(value, data.document.id),
-        this.options,
-        "recovery"
-      ).catch(() => undefined);
       return;
     }
     try {
       await this.files.write(path, next);
       this.migration.migrate(await this.files.read(path));
-      await writeAnnotationBackup(
-        this.files,
-        path,
-        next,
-        (contents) => this.migration.migrate(contents),
-        (value) => validateAnnotationIdentity(value, data.document.id),
-        this.options,
-        "recovery"
-      ).catch(() => undefined);
     } catch (error) {
       if (previous !== null) await this.files.write(path, previous).catch(() => undefined);
       throw error;
