@@ -1,7 +1,11 @@
-import { FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder } from "obsidian";
+import { FuzzySuggestModal, Plugin, PluginSettingTab, Setting, TFile, TFolder } from "obsidian";
 import { DEFAULT_SETTINGS, mergeSettings, type PluginSettings } from "./model";
 
 export { mergeSettings, DEFAULT_SETTINGS };
+
+function suppressUserNotification(_message: string): void {
+  // Diagnostics remain available through the configured log and clipboard actions.
+}
 
 export interface SettingsHost {
   inkSettings: PluginSettings;
@@ -616,14 +620,14 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             const diagnostics = this.host.getCopiedLogDiagnostics();
             const logs = await this.host.readAllLogs();
             if (!logs) {
-              new Notice("No vault debug logs are available. Enable vault debug log and reproduce the issue first.");
+              suppressUserNotification("No vault debug logs are available. Enable vault debug log and reproduce the issue first.");
               return;
             }
             await navigator.clipboard.writeText(getCopiedLogText(logs, diagnostics));
-            new Notice("Debug logs and current diagnostics copied.");
+            suppressUserNotification("Debug logs and current diagnostics copied.");
           } catch (error) {
             console.error("Handwriting Natively could not copy logs", error);
-            new Notice("Could not copy logs. Check clipboard permission and try again.");
+            suppressUserNotification("Could not copy logs. Check clipboard permission and try again.");
           }
         })
       );

@@ -2,7 +2,6 @@ import {
   FileView,
   MarkdownView,
   Modal,
-  Notice,
   Platform,
   Plugin,
   TFile,
@@ -70,6 +69,10 @@ import {
   needsMissingHandwritingSessionRecovery,
   type HandwritingSessionRegistrySnapshot
 } from "./runtime/HandwritingSessionRegistry";
+
+function suppressUserNotification(_message: string): void {
+  // User-facing notices are intentionally disabled; diagnostics remain in the configured log.
+}
 
 class UnsavedChangesModal extends Modal {
   private readonly abort = new AbortController();
@@ -149,7 +152,7 @@ class PageRangePromptModal extends Modal {
   private submit(): void {
     const pages = parsePageRanges(this.inputEl?.value ?? "");
     if (!pages) {
-      new Notice("Enter valid page numbers or ranges (example: 1, 3-5).");
+      suppressUserNotification("Enter valid page numbers or ranges (example: 1, 3-5).");
       return;
     }
     this.onSubmit(pages);
@@ -273,7 +276,7 @@ export default class NativePdfInkPlugin extends Plugin {
         if (!session?.canExportSelectedInkSvg()) return false;
         if (!checking) {
           void session.exportSelectedInkSvg().catch((error) => {
-            new Notice(`SVG export failed: ${error instanceof Error ? error.message : String(error)}`);
+            suppressUserNotification(`SVG export failed: ${error instanceof Error ? error.message : String(error)}`);
           });
         }
         return true;
@@ -1455,7 +1458,7 @@ export default class NativePdfInkPlugin extends Plugin {
         onReorderPage: (fromPage: number, toPage: number) => this.reorderPageInPlace(file, fromPage, toPage),
         writeSvgExport: async (name: string, svg: string) => this.writeSvgExport(file, name, svg)
       } : {}),
-      notice: (message) => new Notice(message),
+      notice: suppressUserNotification,
       decideUnsaved: () => this.decideUnsaved(),
       mouseDragScrollEnabled: () => this.inkSettings.mouseDragScroll,
       mouseLeftDragDrawEnabled: () => this.inkSettings.mouseLeftDragDraw,
@@ -1486,7 +1489,7 @@ export default class NativePdfInkPlugin extends Plugin {
         destination.path,
         resolve,
         () => resolve(null),
-        (message) => new Notice(`Could not import PDF: ${message}`)
+        suppressUserNotification
       ).open();
     });
     if (!source) return null;
@@ -1538,7 +1541,7 @@ export default class NativePdfInkPlugin extends Plugin {
         document: file.path,
         error: error instanceof Error ? error.message : String(error)
       });
-      new Notice(`Could not open PDF: ${error instanceof Error ? error.message : String(error)}`);
+      suppressUserNotification(`Could not open PDF: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -1643,12 +1646,12 @@ export default class NativePdfInkPlugin extends Plugin {
     const runClear = (scope: "all" | "selected" | readonly number[]): void => {
       const session = this.activeSession();
       if (!session?.canClearFreehandDrawings()) {
-        new Notice("Open a PDF with handwriting annotations first.");
+        suppressUserNotification("Open a PDF with handwriting annotations first.");
         return;
       }
       const cleared = session.clearFreehandDrawings(scope);
-      if (cleared === 0) new Notice("No freehand drawings to clear.");
-      else new Notice(`Cleared ${cleared} freehand drawing${cleared === 1 ? "" : "s"}.`);
+      if (cleared === 0) suppressUserNotification("No freehand drawings to clear.");
+      else suppressUserNotification(`Cleared ${cleared} freehand drawing${cleared === 1 ? "" : "s"}.`);
     };
 
     this.addCommand({
@@ -2018,13 +2021,13 @@ export default class NativePdfInkPlugin extends Plugin {
         template,
         resultBytes: bytes.byteLength
       });
-      new Notice("New handwritten PDF created.");
+      suppressUserNotification("New handwritten PDF created.");
     } catch (error) {
       await this.vaultDebugLog.writeUrgent("error", "pdf-create-failed", {
         template,
         error: error instanceof Error ? error.message : String(error)
       });
-      new Notice(`Could not create handwritten PDF: ${error instanceof Error ? error.message : String(error)}`);
+      suppressUserNotification(`Could not create handwritten PDF: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -2047,12 +2050,12 @@ export default class NativePdfInkPlugin extends Plugin {
         document: created.path,
         resultBytes: bytes.byteLength
       });
-      new Notice("New notebook created.");
+      suppressUserNotification("New notebook created.");
     } catch (error) {
       await this.vaultDebugLog.writeUrgent("error", "notebook-create-failed", {
         error: error instanceof Error ? error.message : String(error)
       });
-      new Notice(`Could not create notebook: ${error instanceof Error ? error.message : String(error)}`);
+      suppressUserNotification(`Could not create notebook: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
