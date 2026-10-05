@@ -13,6 +13,38 @@ function store(page: number): SidecarSchemaV1 {
 }
 
 describe("atomic PDF page mutation", () => {
+  it("serializes page mutations with normal annotation writes for one document", async () => {
+    const owner = {};
+    let active = 0;
+    let maxActive = 0;
+    const writePdf = async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await Promise.resolve();
+      active -= 1;
+    };
+    const options = (value: number) => ({
+      sourceBytes: new Uint8Array([0]),
+      updatedBytes: new Uint8Array([value]),
+      sidecarBefore: null,
+      sidecarAfter: null,
+      recoveryBefore: null,
+      recoveryAfter: null,
+      lockOwner: owner,
+      documentId: "pdf-a",
+      writePdf,
+      saveSidecar: async () => undefined,
+      saveRecovery: async () => undefined
+    });
+
+    await Promise.all([
+      writePdfAndAnnotationStoresAtomic(options(1)),
+      writePdfAndAnnotationStoresAtomic(options(2))
+    ]);
+
+    expect(maxActive).toBe(1);
+  });
+
   it("restores the PDF and both stores when a later write fails", async () => {
     const source = new Uint8Array([1, 2, 3]);
     const updated = new Uint8Array([4, 5, 6]);

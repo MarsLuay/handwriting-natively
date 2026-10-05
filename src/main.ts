@@ -1810,9 +1810,11 @@ export default class NativePdfInkPlugin extends Plugin {
         sidecarAfter,
         recoveryBefore,
         recoveryAfter,
+        lockOwner: files.lockOwner ?? files,
+        documentId: sidecarBefore?.document.id ?? createDocumentIdentity(identityInput).id,
         writePdf: async (bytes) => this.app.vault.modifyBinary(file, bytes.slice().buffer),
-        saveSidecar: (value) => sidecars.save(value),
-        saveRecovery: (value) => recovery.save(value),
+        saveSidecar: (value) => sidecars.save(value, { alreadyLocked: true }),
+        saveRecovery: (value) => recovery.save(value, { alreadyLocked: true }),
         onStage: (stage) => { writeStage = stage; }
       });
       report?.("pdf-write-complete");
@@ -1877,9 +1879,11 @@ export default class NativePdfInkPlugin extends Plugin {
         sidecarAfter,
         recoveryBefore,
         recoveryAfter,
+        lockOwner: files.lockOwner ?? files,
+        documentId,
         writePdf: async (bytes) => this.app.vault.modifyBinary(file, bytes.slice().buffer),
-        saveSidecar: (value) => sidecars.save(value),
-        saveRecovery: (value) => recovery.save(value),
+        saveSidecar: (value) => sidecars.save(value, { alreadyLocked: true }),
+        saveRecovery: (value) => recovery.save(value, { alreadyLocked: true }),
         onStage: (stage) => { writeStage = stage; }
       });
       await this.vaultDebugLog.writeUrgent("info", "pdf-scan-insert-complete", {
@@ -1940,9 +1944,11 @@ export default class NativePdfInkPlugin extends Plugin {
         sidecarAfter,
         recoveryBefore,
         recoveryAfter,
+        lockOwner: files.lockOwner ?? files,
+        documentId: sidecarBefore?.document.id ?? createDocumentIdentity(identityInput).id,
         writePdf: async (bytes) => this.app.vault.modifyBinary(file, bytes.slice().buffer),
-        saveSidecar: (value) => sidecars.save(value),
-        saveRecovery: (value) => recovery.save(value),
+        saveSidecar: (value) => sidecars.save(value, { alreadyLocked: true }),
+        saveRecovery: (value) => recovery.save(value, { alreadyLocked: true }),
         onStage: (stage) => { writeStage = stage; }
       });
       await this.vaultDebugLog.writeUrgent("info", "pdf-page-reorder-complete", {
@@ -2017,9 +2023,11 @@ export default class NativePdfInkPlugin extends Plugin {
         sidecarAfter,
         recoveryBefore,
         recoveryAfter,
+        lockOwner: files.lockOwner ?? files,
+        documentId: sidecarBefore?.document.id ?? createDocumentIdentity(identityInput).id,
         writePdf: async (bytes) => this.app.vault.modifyBinary(file, bytes.slice().buffer),
-        saveSidecar: (value) => sidecars.save(value),
-        saveRecovery: (value) => recovery.save(value),
+        saveSidecar: (value) => sidecars.save(value, { alreadyLocked: true }),
+        saveRecovery: (value) => recovery.save(value, { alreadyLocked: true }),
         onStage: (stage) => { writeStage = stage; }
       });
       await this.vaultDebugLog.writeUrgent("info", `${eventPrefix}-complete`, {

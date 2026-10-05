@@ -40,6 +40,18 @@ class MemoryFiles implements TextFileAdapter {
   }
 }
 
+class TrackingFiles extends MemoryFiles {
+  activeWrites = 0;
+  maxConcurrentWrites = 0;
+  async write(path: string, contents: string) {
+    this.activeWrites += 1;
+    this.maxConcurrentWrites = Math.max(this.maxConcurrentWrites, this.activeWrites);
+    await Promise.resolve();
+    await super.write(path, contents);
+    this.activeWrites -= 1;
+  }
+}
+
 describe("sidecar storage", () => {
   it("round-trips schema v1 and rejects invalid JSON", () => {
     expect(parseSidecar(serializeSidecar(sidecar()))).toEqual(sidecar());
@@ -193,6 +205,30 @@ describe("sidecar storage", () => {
 
     expect(result.data?.updatedAt).toBe(newest.updatedAt);
     expect(await files.read(path)).toBe(await files.read(`${path}.last-good`));
+  });
+
+  it("serializes sidecar and recovery writes for one document across repository instances", async () => {
+    const files = new TrackingFiles();
+    const sidecars = new SidecarRepository(files, "annotations");
+    const recovery = new RecoveryRepository(files, "annotations/recovery");
+
+    await Promise.all([sidecars.save(sidecar()), recovery.save(sidecar())]);
+
+    expect(files.maxConcurrentWrites).toBe(1);
+  });
+
+  it("clears recovery only when the expected snapshot is still current", async () => {
+    const files = new MemoryFiles();
+    const repository = new RecoveryRepository(files, "annotations/recovery");
+    const first = sidecar();
+    await repository.save(first);
+    const second = structuredClone(first);
+    second.updatedAt = "later";
+
+    expect(await repository.clear("doc", second)).toBe(false);
+    expect(await files.exists(repository.pathFor("doc"))).toBe(true);
+    expect(await repository.clear("doc", first)).toBe(true);
+    expect(await files.exists(repository.pathFor("doc"))).toBe(false);
   });
 
   it("writes validated sidecar and recovery backups to the configured folder", async () => {

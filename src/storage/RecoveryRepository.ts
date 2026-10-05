@@ -6,6 +6,7 @@ import {
   writeAnnotationBackup,
   type AnnotationRepositoryOptions,
   type AnnotationRecoveryOptions,
+  type AnnotationWriteOptions,
   type AnnotationLoadResult,
   type DocumentIdentityMatch,
   type TextFileAdapter
@@ -17,6 +18,7 @@ import {
   type DocumentIdentityInput
 } from "./DocumentIdentity";
 import { MigrationManager } from "./MigrationManager";
+import { withAnnotationWriteLock } from "./AnnotationWriteLock";
 import { serializeSidecar, type SidecarDocumentIdentity, type SidecarSchemaV1 } from "./SidecarSchema";
 
 export type RecoveryRepositoryOptions = AnnotationRepositoryOptions;
@@ -41,7 +43,17 @@ export class RecoveryRepository {
 
   private path(id: string): string { return this.pathFor(id); }
 
-  async save(data: SidecarSchemaV1): Promise<void> {
+  async save(data: SidecarSchemaV1, options: AnnotationWriteOptions = {}): Promise<void> {
+    if (options.alreadyLocked) {
+      await this.saveUnlocked(data);
+      return;
+    }
+    await withAnnotationWriteLock(this.files.lockOwner ?? this.files, data.document.id, () =>
+      this.saveUnlocked(data)
+    );
+  }
+
+  private async saveUnlocked(data: SidecarSchemaV1): Promise<void> {
     const path = this.path(data.document.id);
     const next = serializeSidecar(data);
     const previous = await this.files.exists(path) ? await this.files.read(path) : null;
@@ -213,9 +225,14 @@ export class RecoveryRepository {
       }
     );
   }
-  async clear(id: string): Promise<void> {
+  async clear(id: string, expected?: SidecarSchemaV1): Promise<boolean> {
     const path = this.path(id);
-    if (this.files.remove && await this.files.exists(path)) await this.files.remove(path);
+    return withAnnotationWriteLock(this.files.lockOwner ?? this.files, id, async () => {
+      if (!this.files.remove || !await this.files.exists(path)) return true;
+      if (expected !== undefined && await this.files.read(path) !== serializeSidecar(expected)) return false;
+      await this.files.remove(path);
+      return true;
+    });
   }
 }
 
