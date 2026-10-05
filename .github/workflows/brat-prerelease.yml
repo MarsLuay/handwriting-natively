@@ -71,6 +71,9 @@ jobs:
           test -f pdfjs/manifest.json
           test -f pdfjs/pdf.mjs
           test -f pdfjs/pdf.worker.mjs
+          test -f pdfjs/pdf-lib.mjs
+          test -f pdfjs/pdf-thumbnail-actions.mjs
+          test -f pdfjs/post-zoom-input.mjs
 
       - name: Publish BRAT prerelease
         uses: softprops/action-gh-release@v3

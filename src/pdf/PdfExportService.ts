@@ -1,10 +1,24 @@
 import { createDetachedEl } from "../vendor/createDetached";
-import { LineCapStyle, PDFDict, PDFDocument, PDFHexString, PDFImage, PDFName, PDFString, rgb } from "pdf-lib";
+import { loadPdfLib, type PdfLibModule } from "./PdfLibRuntime";
+import type { PDFDocument as PdfDocument, PDFDict as PdfDict, PDFHexString as PdfHexString, PDFImage as PdfImage } from "pdf-lib";
 import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation, type PdfTextRun } from "../model";
 import { highlighterSampleWidth, highlighterSegmentWidths } from "../tools/HighlighterTool";
 import { graphiteStampCircles, seedFromId } from "../tools/PencilTool";
 import { penSampleWidth, penSegmentWidths } from "../tools/PenTool";
 import { escapeXml } from "../util/escapeXml";
+
+type PdfPage = ReturnType<PdfDocument["getPages"]>[number];
+let loadedPdfLib: PdfLibModule | undefined;
+
+async function ensurePdfLib(): Promise<PdfLibModule> {
+  loadedPdfLib ??= await loadPdfLib();
+  return loadedPdfLib;
+}
+
+function requirePdfLib(): PdfLibModule {
+  if (!loadedPdfLib) throw new Error("pdf-lib runtime has not been loaded");
+  return loadedPdfLib;
+}
 
 export interface PdfExportPageMetrics {
   page: number;
@@ -32,7 +46,8 @@ interface MappedTextAnnotation {
   fontScale: number;
 }
 
-function parseColor(value: string): ReturnType<typeof rgb> {
+function parseColor(value: string): ReturnType<PdfLibModule["rgb"]> {
+  const rgb = requirePdfLib().rgb;
   const match = /^#([0-9a-f]{6})$/i.exec(value);
   if (!match) return rgb(0, 0, 0);
   const hex = match[1]!;
@@ -72,12 +87,13 @@ export function mapInkWidthToPdfPage(
 
 export class PdfExportService {
   async export(input: PdfExportInput): Promise<Uint8Array> {
+    await ensurePdfLib();
     await input.flush?.();
     const strokes = input.getStrokes?.() ?? input.strokes ?? [];
     const texts = input.getTexts?.() ?? input.texts ?? [];
     const mode = input.mode ?? "flattened";
     const sourceSnapshot = input.sourceBytes.slice();
-    const pdfDoc = await PDFDocument.load(sourceSnapshot);
+    const pdfDoc = await requirePdfLib().PDFDocument.load(sourceSnapshot);
     const metricsByPage = new Map(
       (input.pageMetrics ?? []).map((page) => [page.page, page] as const)
     );
@@ -171,7 +187,7 @@ export class PdfExportService {
             thickness: segment.thickness,
             color,
             opacity: stroke.opacity,
-            lineCap: LineCapStyle.Round
+            lineCap: requirePdfLib().LineCapStyle.Round
           });
         }
         continue;
@@ -215,7 +231,7 @@ export class PdfExportService {
           thickness: segment.thickness,
           color,
           opacity: stroke.opacity,
-          lineCap: LineCapStyle.Round
+          lineCap: requirePdfLib().LineCapStyle.Round
         });
       }
     }
@@ -239,20 +255,24 @@ export class PdfExportService {
       else await this.drawFlattenedText(pdfDoc, page, mapped);
     }
     const exported = await pdfDoc.save();
-    await PDFDocument.load(exported);
+    await requirePdfLib().PDFDocument.load(exported);
     if (!input.sourceBytes.every((byte, index) => byte === sourceSnapshot[index])) throw new Error("Source PDF bytes changed during export");
     return exported;
   }
 
-  async validate(bytes: Uint8Array): Promise<void> { await PDFDocument.load(bytes); }
+  async validate(bytes: Uint8Array): Promise<void> {
+    await ensurePdfLib();
+    await requirePdfLib().PDFDocument.load(bytes);
+  }
 
   private addInkAnnotation(
-    pdfDoc: PDFDocument,
-    page: ReturnType<PDFDocument["getPages"]>[number],
+    pdfDoc: PdfDocument,
+    page: PdfPage,
     stroke: InkStroke,
     mapped: Array<{ x: number; y: number }>,
     width: number
   ): void {
+    const { PDFHexString } = requirePdfLib();
     if (!mapped.length) return;
     const points = mapped.length === 1 ? [mapped[0]!, { x: mapped[0]!.x + 0.01, y: mapped[0]!.y + 0.01 }] : mapped;
     const padding = Math.max(1, width / 2 + 1);
@@ -287,10 +307,11 @@ export class PdfExportService {
   }
 
   private async addFreeTextAnnotation(
-    pdfDoc: PDFDocument,
-    page: ReturnType<PDFDocument["getPages"]>[number],
+    pdfDoc: PdfDocument,
+    page: PdfPage,
     mapped: MappedTextAnnotation
   ): Promise<void> {
+    const { PDFHexString, PDFName, PDFString } = requirePdfLib();
     const { annotation, x, y, fontScale } = mapped;
     const runs = textRuns(annotation);
     const bounds = textBounds(runs, x, y, fontScale);
@@ -325,13 +346,14 @@ export class PdfExportService {
   }
 
   private async addRasterTextAppearance(
-    pdfDoc: PDFDocument,
-    annotation: PDFDict,
+    pdfDoc: PdfDocument,
+    annotation: PdfDict,
     runs: readonly PdfTextRun[],
     bounds: TextBounds,
     fontScale: number,
-    page: ReturnType<PDFDocument["getPages"]>[number]
+    page: PdfPage
   ): Promise<void> {
+    const { PDFName } = requirePdfLib();
     const width = Math.max(1, bounds.maxX - bounds.minX);
     const height = Math.max(1, bounds.maxY - bounds.minY);
     const image = await this.rasterTextImage(pdfDoc, runs, width, height, fontScale);
@@ -348,8 +370,8 @@ export class PdfExportService {
   }
 
   private async drawFlattenedText(
-    pdfDoc: PDFDocument,
-    page: ReturnType<PDFDocument["getPages"]>[number],
+    pdfDoc: PdfDocument,
+    page: PdfPage,
     mapped: MappedTextAnnotation
   ): Promise<void> {
     const runs = textRuns(mapped.annotation);
@@ -365,12 +387,12 @@ export class PdfExportService {
   }
 
   private async rasterTextImage(
-    pdfDoc: PDFDocument,
+    pdfDoc: PdfDocument,
     runs: readonly PdfTextRun[],
     width: number,
     height: number,
     fontScale: number
-  ): Promise<PDFImage | undefined> {
+  ): Promise<PdfImage | undefined> {
     if (typeof activeDocument === "undefined") return undefined;
     const canvas = createDetachedEl(activeDocument, 'canvas');
     const context = canvas.getContext("2d");
@@ -581,8 +603,8 @@ function textAppearanceStream(
   return ["q", ...text, "ET", ...strikethroughs, "Q"].join("\n");
 }
 
-function asciiPdfText(text: string): PDFHexString {
-  return PDFHexString.of([...text].map((character) => character.charCodeAt(0).toString(16).padStart(2, "0")).join(""));
+function asciiPdfText(text: string): PdfHexString {
+  return requirePdfLib().PDFHexString.of([...text].map((character) => character.charCodeAt(0).toString(16).padStart(2, "0")).join(""));
 }
 
 function fontResourceName(run: Pick<PdfTextRun, "fontFamily" | "bold" | "italic">, fonts: Map<string, string>): string {
@@ -596,7 +618,8 @@ function fontResourceName(run: Pick<PdfTextRun, "fontFamily" | "bold" | "italic"
   return fonts.get(base)!;
 }
 
-function fontResources(pdfDoc: PDFDocument, fonts: ReadonlyMap<string, string>): Record<string, PDFDict> {
+function fontResources(pdfDoc: PdfDocument, fonts: ReadonlyMap<string, string>): Record<string, PdfDict> {
+  const { PDFName } = requirePdfLib();
   return Object.fromEntries([...fonts.entries()].map(([base, resource]) => [resource, pdfDoc.context.obj({
     Type: PDFName.of("Font"),
     Subtype: PDFName.of("Type1"),
