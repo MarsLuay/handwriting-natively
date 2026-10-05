@@ -7615,7 +7615,7 @@ export class ViewerInkSession {
     if (surface.overlay.isConnected) {
       if (!page.element.contains(surface.overlay)) return false;
       this.rememberPageMetrics(page);
-      this.applyTouchDrawPolicy(page.element);
+      this.applyTouchDrawPolicy(page.element, this.touchDrawPolicyEnabled);
       if (syncLayout) this.syncOverlayLayout(surface);
       if (maintainRouter) this.ensurePageRouter(surface);
       return true;
@@ -7623,7 +7623,7 @@ export class ViewerInkSession {
     this.ensurePagePositioning(page.element);
     page.element.append(surface.overlay);
     this.rememberPageMetrics(page);
-    this.applyTouchDrawPolicy(page.element);
+    this.applyTouchDrawPolicy(page.element, this.touchDrawPolicyEnabled);
     if (syncLayout) this.syncOverlayLayout(surface);
     if (maintainRouter) this.ensurePageRouter(surface);
     return true;
@@ -7649,7 +7649,7 @@ export class ViewerInkSession {
     surface.page = page;
     this.claimInputOwner(page.element, page.pageNumber);
     this.rememberPageMetrics(page);
-    this.applyTouchDrawPolicy(page.element);
+    this.applyTouchDrawPolicy(page.element, this.touchDrawPolicyEnabled);
     if (syncLayout) this.syncOverlayLayout(surface);
     surface.router = this.createPageRouter(surface);
   }
@@ -9324,7 +9324,7 @@ export class ViewerInkSession {
     };
     surface.router = this.createPageRouter(surface);
     this.ensurePagePositioning(page.element);
-    this.applyTouchDrawPolicy(page.element);
+    this.applyTouchDrawPolicy(page.element, this.touchDrawPolicyEnabled);
     this.syncOverlayLayout(surface);
     this.logger.inputLifecycleEvent("surface-mount", {
       page: page.pageNumber,
