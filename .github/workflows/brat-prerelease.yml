@@ -68,6 +68,9 @@ jobs:
           test -f main.js
           test -f manifest.json
           test -f styles.css
+          test -f pdfjs/manifest.json
+          test -f pdfjs/pdf.mjs
+          test -f pdfjs/pdf.worker.mjs
 
       - name: Publish BRAT prerelease
         uses: softprops/action-gh-release@v3
@@ -86,3 +89,4 @@ jobs:
             main.js
             manifest.json
             styles.css
+            pdfjs/**
