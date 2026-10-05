@@ -4453,6 +4453,7 @@ describe("viewer runtime tracer", () => {
       saveSettings: async () => undefined,
       readSourcePdf: async () => new Uint8Array(),
       writeExport: async () => undefined,
+      notice: () => undefined,
       runtimePlatform: () => ({ mobile: true, phone: false })
     });
 
