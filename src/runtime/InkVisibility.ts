@@ -119,6 +119,25 @@ export function replacementInkReady(snapshot: InkVisibilitySnapshot): boolean {
   return snapshot.canonicalPaintComplete;
 }
 
+/**
+ * Offscreen PDF pages may not have a connected/non-zero canvas while PDF.js is
+ * virtualizing them. They must not hold the visible page's zoom handoff, but
+ * the active page still fails closed until its replacement is paintable.
+ */
+export function replacementInkReadyForActivePages(
+  snapshots: readonly InkVisibilitySnapshot[],
+  activePageNumber: number
+): boolean {
+  return snapshots.every((snapshot) => {
+    const geometryUnavailable = !snapshot.overlayConnected
+      || !snapshot.canvasConnected
+      || snapshot.canvasWidth <= 0
+      || snapshot.canvasHeight <= 0;
+    if (geometryUnavailable && snapshot.pageNumber !== activePageNumber) return true;
+    return replacementInkReady(snapshot);
+  });
+}
+
 export function inkVisibilityFlash(input: {
   previousHasInk: boolean | null;
   current: InkVisibilitySnapshot;
