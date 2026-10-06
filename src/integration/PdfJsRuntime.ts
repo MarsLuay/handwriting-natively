@@ -1,4 +1,5 @@
 import type { App } from "obsidian";
+import * as bundledPdfJs from "pdfjs-dist";
 
 export interface PdfJsViewport {
   width: number;
@@ -61,6 +62,7 @@ export interface PdfJsModule {
 
 export interface PdfJsAssetResolver {
   readonly root: string;
+  readonly embedded?: boolean;
   resolve(asset: string): string;
 }
 
@@ -70,6 +72,14 @@ export interface PdfJsRuntime {
 }
 
 const ASSET_ROOT = "pdfjs";
+
+const BUNDLED_ASSETS: PdfJsAssetResolver = {
+  root: "embedded",
+  embedded: true,
+  resolve: (asset) => {
+    throw new Error(`PDF.js asset is bundled and cannot be resolved externally: ${asset}`);
+  }
+};
 
 function normalizePath(value: string): string {
   return value.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -90,17 +100,19 @@ export function createPdfJsAssetResolver(app: App, pluginDir: string): PdfJsAsse
   return { root, resolve: (asset) => resourcePath(app, normalizePath(`${root}/${asset}`)) };
 }
 
-/** Load only the version-pinned, locally packaged PDF.js display runtime. */
+/** Load the version-pinned PDF.js display runtime bundled in main.js.
+ *
+ * BRAT installs only main.js, manifest.json, and styles.css from a GitHub
+ * release. Keeping the runtime in a separate pdfjs/ directory therefore makes
+ * every BRAT install fail as soon as the first PDF is opened.
+ */
 export async function loadPdfJsRuntime(app: App, pluginDir: string, supplied?: PdfJsRuntime): Promise<PdfJsRuntime> {
+  void app;
+  void pluginDir;
   if (supplied) return supplied;
-  const assets = createPdfJsAssetResolver(app, pluginDir);
-  // The specifier is derived solely from the plugin manifest directory and is
-  // never user-controlled. Keeping it dynamic prevents esbuild bundling PDF.js.
-  // eslint-disable-next-line no-unsanitized/method -- import is restricted to the packaged plugin asset.
-  const module = await import(/* @vite-ignore */ assets.resolve("pdf.mjs")) as unknown as PdfJsModule;
-  if (!module || typeof module.getDocument !== "function") throw new Error("Packaged PDF.js display runtime is unavailable");
-  if (module.GlobalWorkerOptions) module.GlobalWorkerOptions.workerSrc = assets.resolve("pdf.worker.mjs");
-  return { module, assets };
+  const module = bundledPdfJs as unknown as PdfJsModule;
+  if (!module || typeof module.getDocument !== "function") throw new Error("Bundled PDF.js display runtime is unavailable");
+  return { module, assets: BUNDLED_ASSETS };
 }
 
 function directoryAsset(assets: PdfJsAssetResolver, directory: string): string {
@@ -109,6 +121,18 @@ function directoryAsset(assets: PdfJsAssetResolver, directory: string): string {
 }
 
 export function pdfJsDocumentOptions(assets: PdfJsAssetResolver, data: Uint8Array): Record<string, unknown> {
+  if (assets.embedded) {
+    return {
+      data,
+      // BRAT cannot install sibling worker/cmap/font files. PDF.js's fake
+      // worker keeps the complete runtime self-contained in main.js.
+      disableWorker: true,
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: true,
+      stopAtErrors: false
+    };
+  }
   return {
     data,
     cMapUrl: directoryAsset(assets, "cmaps/"),

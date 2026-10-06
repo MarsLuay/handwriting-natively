@@ -30,7 +30,7 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 
 ### PDF viewer ownership
 
-PDF leaves are opened by the plugin-owned public `ItemView`. The viewer keeps PDF.js for parsing, text, annotation, and raster rendering, while the plugin owns the page shells, scroll/zoom state, and same-DOM handwriting overlays. The toolbar includes page navigation, page-number entry, zoom presets, fit-width, rotation, outline and thumbnail sidebars, document search, hand-pan mode, presentation mode, print, and download. The pinned PDF.js runtime, worker, and auxiliary local runtime assets are packaged under `pdfjs/` at build time; no CDN or Obsidian private viewer DOM is required. If the packaged runtime cannot load, the view fails closed and offers the native Obsidian PDF viewer as a reversible fallback.
+PDF leaves are opened by the plugin-owned public `ItemView`. The viewer keeps PDF.js for parsing, text, annotation, and raster rendering, while the plugin owns the page shells, scroll/zoom state, and same-DOM handwriting overlays. The toolbar includes page navigation, page-number entry, zoom presets, fit-width, rotation, outline and thumbnail sidebars, document search, hand-pan mode, presentation mode, print, and download. The pinned PDF.js and pdf-lib runtimes are bundled into `main.js`, which keeps BRAT installs self-contained because BRAT installs the three standard plugin assets only; no CDN or Obsidian private viewer DOM is required. If the bundled runtime cannot load, the view fails closed and offers the native Obsidian PDF viewer as a reversible fallback.
 
 ## If you want..
 

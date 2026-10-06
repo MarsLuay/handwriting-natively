@@ -1,23 +1,15 @@
 import type { App } from "obsidian";
+import * as bundledPdfLib from "pdf-lib";
 import type * as PdfLib from "pdf-lib";
 
 export type PdfLibModule = typeof PdfLib;
 
-let loader: () => Promise<PdfLibModule> = () => import("pdf-lib") as unknown as Promise<PdfLibModule>;
+let loader: () => Promise<PdfLibModule> = () => Promise.resolve(bundledPdfLib);
 let loaded: Promise<PdfLibModule> | undefined;
 
-function normalizePath(value: string): string {
-  return value.replace(/\\/g, "/").replace(/^\/+/, "");
-}
-
-/** Configure the packaged, local-only pdf-lib runtime used by production builds. */
-export function configurePdfLibRuntime(app: App, pluginDir: string): void {
-  const adapter = app.vault.adapter as unknown as { getResourcePath?: (path: string) => string };
-  if (typeof adapter.getResourcePath !== "function") return;
-  const root = normalizePath(`${pluginDir.replace(/[\\/]$/, "")}/pdfjs/pdf-lib.mjs`);
-  const resource = adapter.getResourcePath(root);
-  if (!resource) return;
-  loader = () => import(/* @vite-ignore */ resource) as unknown as Promise<PdfLibModule>;
+/** Keep the bundled pdf-lib loader explicit at plugin startup. */
+export function configurePdfLibRuntime(_app: App, _pluginDir: string): void {
+  loader = () => Promise.resolve(bundledPdfLib);
   loaded = undefined;
 }
 
