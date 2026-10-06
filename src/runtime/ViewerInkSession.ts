@@ -1352,9 +1352,10 @@ export class ViewerInkSession {
         ...(options.openScanDocument && options.onInsertScannedPages && (options.runtimePlatform?.().mobile ?? false)
           ? ["scan-document" as const]
           : []),
-        ...((options.runtimePlatform?.().mobile ?? false)
-          ? ["toolbar-left", "toolbar-right"] as const
-          : ["toolbar-main", "toolbar-left", "toolbar-right"] as const)
+        // Keep the PDF-bar action available on mobile too. `main` is an
+        // explicit placement now; hiding it here made the setting impossible
+        // to select from the live PDF toolbar on mobile.
+        ...(["toolbar-main", "toolbar-left", "toolbar-right"] as const)
       ],
       callbacks: {
         onPreferencesChange: (preferences, reason = "general") => {
