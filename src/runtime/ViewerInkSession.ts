@@ -877,6 +877,8 @@ interface PageSurface {
   wetDamage: DamageLedger;
   /** Prefix of live stroke preview already stamped on draftCanvas (incremental paint). */
   liveDrawPaintedPoints: number;
+  /** Page-space point bounds accumulated while the active stroke is sampled. */
+  liveDrawPageBounds: Bounds | null;
   /** Stroke whose final-quality pixels currently occupy draftCanvas. */
   liveDrawPreviewStrokeId: string | null;
   /** Browser-predicted pen points rendered only on the disposable prediction layer. */
@@ -9700,6 +9702,7 @@ export class ViewerInkSession {
       wetPreviewUsesCommittedCanvas: false,
       wetDamage: new DamageLedger(),
       liveDrawPaintedPoints: 0,
+      liveDrawPageBounds: null,
       liveDrawPreviewStrokeId: null,
       predictedPreview: [],
       predictedPreviewPainted: false,
@@ -12393,6 +12396,7 @@ export class ViewerInkSession {
     const hadPrediction = surface.predictedPreviewPainted;
     this.endWetPreview(surface);
     surface.liveDrawPaintedPoints = 0;
+    surface.liveDrawPageBounds = null;
     surface.liveDrawPreviewStrokeId = null;
     surface.predictedPreview = [];
     surface.predictedPreviewPainted = false;
@@ -12432,6 +12436,7 @@ export class ViewerInkSession {
     surface.draftCanvas.height = 0;
     surface.predictionCanvas.width = 0;
     surface.predictionCanvas.height = 0;
+    surface.liveDrawPageBounds = null;
     surface.liveDrawPreviewStrokeId = null;
     if (surface.inkLayer) {
       surface.inkLayer.width = 0;
@@ -12489,7 +12494,7 @@ export class ViewerInkSession {
    * O(path)×huge draft backing and slows long strokes (~10ms→45ms in logs).
    * Shape preview still morphs as a whole, so it keeps the full redraw path.
    */
-  private renderLiveDrawPreview(surface: PageSurface, qualityOverride?: "full" | "draft"): {
+  private renderLiveDrawPreview(surface: PageSurface): {
     draftPoints: number;
     incremental: boolean;
     compositeMatched: boolean;
@@ -12552,10 +12557,10 @@ export class ViewerInkSession {
       return { draftPoints: 0, incremental: false, compositeMatched, stabilization, draftResized };
     }
     const style = builder.style;
-    // Pencil draft quality keeps high-frequency input responsive. Pointer-up
-    // explicitly requests full quality before history capture, so the cache and
-    // export still receive deterministic final graphite.
-    const liveGraphiteQuality = qualityOverride ?? (style.tool === "pencil" ? "draft" : "full");
+    // Live and committed pencil paint use the same final-quality renderer. The
+    // draft canvas is incremental, so texture work is distributed over the
+    // gesture instead of being paid as one full-path spike on pointer-up.
+    const liveGraphiteQuality = "full" as const;
     const context = surface.draftContext;
     const predictionContext = surface.predictionContext;
     const shapeMorph = surface.shapePreview !== null;
@@ -12748,6 +12753,22 @@ export class ViewerInkSession {
     };
   }
 
+  private extendLiveDrawPageBounds(surface: PageSurface, points: readonly PagePoint[]): void {
+    if (points.length === 0) return;
+    const existing = surface.liveDrawPageBounds;
+    let minX = existing?.minX ?? Infinity;
+    let minY = existing?.minY ?? Infinity;
+    let maxX = existing?.maxX ?? -Infinity;
+    let maxY = existing?.maxY ?? -Infinity;
+    for (const point of points) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+    surface.liveDrawPageBounds = { minX, minY, maxX, maxY };
+  }
+
   private pointerStart(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void {
     const preferences = this.options.settings.toolPreferences;
     const activeTool = this.activeTool();
@@ -12807,6 +12828,7 @@ export class ViewerInkSession {
         const laserPrefs = preferences.laser;
         surface.laserDraft = true;
         surface.laserDiscardedPoints = 0;
+        surface.liveDrawPageBounds = null;
         surface.builder = new StrokeBuilder({
           id: this.id(),
           page: surface.page.pageNumber,
@@ -12828,6 +12850,7 @@ export class ViewerInkSession {
         this.ensureLaserFadeLoop();
       } else {
         surface.laserDraft = false;
+        surface.liveDrawPageBounds = null;
         const tool = resolveDrawingTool(activeTool);
         const drawing = preferences[tool];
         // Capture the profile once per stroke. Settings changed midway through
@@ -12852,7 +12875,9 @@ export class ViewerInkSession {
           ...(tool === "pen" ? { penType: drawing.penType ?? "fountain" as const } : {}),
           stabilization: drawing.stabilization
         });
-        for (const point of this.toPagePoints(surface, samples, surface.simulateMousePressure, surface.pressureConditioner)) surface.builder.add(point);
+        const startPoints = this.toPagePoints(surface, samples, surface.simulateMousePressure, surface.pressureConditioner);
+        for (const point of startPoints) surface.builder.add(point);
+        this.extendLiveDrawPageBounds(surface, startPoints);
         const first = surface.builder.preview(this.simplifyStrokesEnabled())[0];
         if (first) {
           this.lastPointerPdf = { x: first.x, y: first.y };
@@ -12909,6 +12934,7 @@ export class ViewerInkSession {
       const simulate = surface.laserDraft ? false : surface.simulateMousePressure;
       const points = this.toPagePoints(surface, samples, simulate, surface.laserDraft ? undefined : surface.pressureConditioner);
       for (const point of points) surface.builder.add(point);
+      if (!surface.laserDraft) this.extendLiveDrawPageBounds(surface, points);
       const lastPoint = points.at(-1);
       if (lastPoint) this.resizeLockedShape(surface, lastPoint);
       const last = samples.at(-1);
@@ -13010,13 +13036,14 @@ export class ViewerInkSession {
     const simulate = laserDraft ? false : surface.simulateMousePressure;
     const points = this.toPagePoints(surface, samples, simulate, laserDraft ? undefined : surface.pressureConditioner);
     for (const point of points) builder.add(point);
+    if (!laserDraft) this.extendLiveDrawPageBounds(surface, points);
     const lastPoint = points.at(-1);
     if (lastPoint) this.resizeLockedShape(surface, lastPoint);
     if (laserDraft) this.trimLaserDraft(surface, performance.now());
     // Finish any samples that arrived after the last rAF before transferring
     // the final-quality draft. This is incremental when the draft is warm, not
     // a second full-path reconstruction.
-    if (!laserDraft) this.renderLiveDrawPreview(surface, "full");
+    if (!laserDraft) this.renderLiveDrawPreview(surface);
     // Match live preview geometry — finish()+simplify reshapes the path → visible snap.
     const stroke = builder.finishMatchingPreview(laserDraft ? true : this.simplifyStrokesEnabled());
     if (surface.shapePreview?.length) stroke.points = surface.shapePreview;
@@ -13132,6 +13159,7 @@ export class ViewerInkSession {
     if (route === "draw" && event.pointerType === "pen") this.finishInkStrokeGeometry(event, [], "pointercancel");
     if (route === "draw") this.finishStrokePerformance(surface, "pointercancel");
     surface.builder = undefined;
+    surface.liveDrawPageBounds = null;
     surface.predictedPreview = [];
     surface.predictedPreviewPainted = false;
     surface.pressureConditioner = undefined;
@@ -14874,7 +14902,19 @@ export class ViewerInkSession {
   }
 
   private strokeDamageBounds(surface: PageSurface, stroke: InkStroke): Bounds {
-    const bounds = strokeBounds(stroke);
+    // The active stroke has already accumulated raw page bounds as pointer
+    // samples arrived. Reusing them avoids another full-path scan (and the
+    // spread-based Math.min/Math.max stack cost) on pointer-up.
+    const rawBounds = surface.liveDrawPageBounds;
+    const halfWidth = stroke.width / 2;
+    const bounds = rawBounds
+      ? {
+        minX: rawBounds.minX - halfWidth,
+        minY: rawBounds.minY - halfWidth,
+        maxX: rawBounds.maxX + halfWidth,
+        maxY: rawBounds.maxY + halfWidth
+      }
+      : strokeBounds(stroke);
     const mapper = this.mapper(surface);
     const corners = [
       mapper.toViewport({ x: bounds.minX, y: bounds.minY }),

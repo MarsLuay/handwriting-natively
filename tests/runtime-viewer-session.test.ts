@@ -2183,6 +2183,91 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("keeps pencil texture final-quality throughout a long stroke", async () => {
+    const adapter = new FakeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "pencil";
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/pencil-preview.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      drawPoints: (...args: unknown[]) => void;
+      renderLiveDrawPreview: (surface: unknown) => unknown;
+      surfaces: Map<number, unknown>;
+    };
+    const drawPoints = vi.spyOn(internal, "drawPoints");
+    const surface = internal.surfaces.get(1);
+    expect(surface).toBeDefined();
+
+    const pointerId = 902;
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 80, 140, { pointerId }));
+    internal.renderLiveDrawPreview(surface);
+    for (let index = 1; index <= 240; index += 1) {
+      adapter.pageElement.dispatchEvent(pointer(
+        "pointermove",
+        80 + (index % 480),
+        140 + Math.sin(index / 18) * 90,
+        { pointerId }
+      ));
+      if (index % 20 === 0) internal.renderLiveDrawPreview(surface);
+    }
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 560, 140, { pointerId }));
+
+    const qualityCalls = drawPoints.mock.calls.map((call) => call[8]);
+    expect(qualityCalls.length).toBeGreaterThan(1);
+    expect(qualityCalls.every((quality) => quality === "full")).toBe(true);
+    await session.destroy();
+  });
+
+  it("uses accumulated live bounds instead of rescanning a long stroke on release", async () => {
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/bounds.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      surfaces: Map<number, { liveDrawPageBounds: { minX: number; minY: number; maxX: number; maxY: number } | null }>;
+      strokeDamageBounds: (surface: unknown, stroke: InkStroke) => unknown;
+    };
+    const surface = internal.surfaces.get(1)!;
+    surface.liveDrawPageBounds = { minX: 10, minY: 20, maxX: 590, maxY: 780 };
+    const stroke: InkStroke = {
+      id: "long-bounds",
+      page: 1,
+      tool: "pen",
+      color: "#111827",
+      width: 4,
+      opacity: 1,
+      inputType: "pen",
+      points: Array.from({ length: 100_000 }, (_, index) => ({
+        x: index % 600,
+        y: index % 800,
+        pressure: 0.5,
+        time: index
+      })),
+      createdAt: "now",
+      updatedAt: "now"
+    };
+
+    expect(() => internal.strokeDamageBounds(surface, stroke)).not.toThrow();
+    await session.destroy();
+  });
+
   it("does not turn Cmd or Ctrl into a temporary eraser", async () => {
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
