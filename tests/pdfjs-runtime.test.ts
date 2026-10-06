@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PdfJsViewAdapter } from "../src/integration/PdfJsViewAdapter";
+import type { InkStroke } from "../src/model";
 import { createPdfJsAssetResolver, loadPdfJsRuntime, pdfJsDocumentOptions, type PdfJsRuntime } from "../src/integration/PdfJsRuntime";
 
 describe("plugin-owned PDF.js runtime boundary", () => {
@@ -50,7 +51,13 @@ describe("plugin-owned PDF.js runtime boundary", () => {
   });
 
   it("exposes stock navigation, zoom, rotation, and document search controls", async () => {
-    const context = {} as CanvasRenderingContext2D;
+    const context = {
+      beginPath: vi.fn(),
+      clearRect: vi.fn(),
+      lineTo: vi.fn(),
+      moveTo: vi.fn(),
+      stroke: vi.fn()
+    } as unknown as CanvasRenderingContext2D;
     const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context);
     const page = {
       getViewport: ({ scale, rotation }: { scale: number; rotation?: number }) => ({
@@ -73,7 +80,7 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     const pdfDocument = {
       numPages: 2,
       getPage,
-      getOutline: async () => []
+      getOutline: async () => [{ title: "Chapter 1", dest: [0] }]
     };
     const runtime: PdfJsRuntime = {
       module: { getDocument: () => ({ promise: Promise.resolve(pdfDocument) }) },
@@ -94,6 +101,27 @@ describe("plugin-owned PDF.js runtime boundary", () => {
 
     host.querySelector('button[aria-label="Toggle thumbnails"]')?.dispatchEvent(new Event("click"));
     expect(host.querySelectorAll(".hn-owned-pdf-thumbnail")).toHaveLength(2);
+    const previewStroke: InkStroke = {
+      id: "preview-stroke",
+      page: 1,
+      tool: "pen",
+      color: "#000000",
+      width: 2,
+      opacity: 1,
+      inputType: "pen",
+      points: [{ x: 20, y: 20, pressure: 1, time: 1 }, { x: 100, y: 100, pressure: 1, time: 2 }],
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01"
+    };
+    adapter.setInkPreviewProvider((pageNumber) => ({
+      revision: 1,
+      strokes: pageNumber === 1 ? [previewStroke] : []
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((host.querySelector(".hn-owned-pdf-thumbnail-ink") as HTMLCanvasElement | null)?.hidden).toBe(false);
+    host.querySelector('button[aria-label="Toggle outline"]')?.dispatchEvent(new Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((host.querySelector(".hn-owned-pdf-outline-ink") as HTMLCanvasElement | null)?.hidden).toBe(false);
 
     const pageInput = host.querySelector('input[aria-label="Page number"]') as HTMLInputElement;
     pageInput.value = "2";

@@ -1,5 +1,5 @@
 import type { App, TFile } from "obsidian";
-import type { ToolbarPlacement } from "../model";
+import type { InkStroke, ToolbarPlacement } from "../model";
 import type {
   AnnotationSurfaceCallbacks,
   AnnotationViewState
@@ -7,7 +7,11 @@ import type {
 import { setElementCssProps } from "../dom/typeGuards";
 import type { PdfIntegrationProfile } from "./PdfViewerCompatibility";
 import type { PdfPageInfo } from "./PdfPageLocator";
-import type { PdfSurfaceExtensions } from "./ObsidianPdfAdapter";
+import type {
+  PdfInkPreview,
+  PdfInkPreviewProvider,
+  PdfSurfaceExtensions
+} from "./ObsidianPdfAdapter";
 import {
   loadPdfJsRuntime,
   pdfJsDocumentOptions,
@@ -113,6 +117,87 @@ function safeUrl(value: unknown, baseUrl: string): string | undefined {
   }
 }
 
+const MAX_PREVIEW_POINTS_PER_STROKE = 96;
+const MAX_PREVIEW_PAGES_PER_FRAME = 24;
+
+function previewPoint(
+  x: number,
+  y: number,
+  pageWidth: number,
+  pageHeight: number,
+  rotation: number,
+  previewWidth: number,
+  previewHeight: number
+): [number, number] {
+  const safeWidth = Math.max(1, pageWidth);
+  const safeHeight = Math.max(1, pageHeight);
+  const normalizedRotation = normalizeRotation(rotation);
+  switch (normalizedRotation) {
+    case 90:
+      return [y / safeHeight * previewWidth, x / safeWidth * previewHeight];
+    case 180:
+      return [(safeWidth - x) / safeWidth * previewWidth, y / safeHeight * previewHeight];
+    case 270:
+      return [(safeHeight - y) / safeHeight * previewWidth, (safeWidth - x) / safeWidth * previewHeight];
+    default:
+      return [x / safeWidth * previewWidth, (safeHeight - y) / safeHeight * previewHeight];
+  }
+}
+
+/** Draws a deliberately low-resolution copy of sidecar ink without touching the PDF raster. */
+function drawInkPreview(
+  canvas: HTMLCanvasElement,
+  pageWidth: number,
+  pageHeight: number,
+  rotation: number,
+  strokes: readonly InkStroke[]
+): boolean {
+  const context = canvas.getContext("2d");
+  if (!context || typeof context.clearRect !== "function" || typeof context.beginPath !== "function") return false;
+  const previewWidth = Math.max(1, canvas.width);
+  const previewHeight = Math.max(1, canvas.height);
+  context.clearRect(0, 0, previewWidth, previewHeight);
+  if (!strokes.length) return true;
+  const rotated = normalizeRotation(rotation) % 180 !== 0;
+  const contentWidth = rotated ? pageHeight : pageWidth;
+  const contentHeight = rotated ? pageWidth : pageHeight;
+  const scale = Math.min(previewWidth / Math.max(1, contentWidth), previewHeight / Math.max(1, contentHeight));
+  for (const stroke of strokes) {
+    if (stroke.points.length === 0) continue;
+    const points = stroke.points;
+    const sampled: typeof points = [];
+    if (points.length <= MAX_PREVIEW_POINTS_PER_STROKE) {
+      sampled.push(...points);
+    } else {
+      sampled.push(points[0]!);
+      const step = (points.length - 1) / (MAX_PREVIEW_POINTS_PER_STROKE - 1);
+      for (let index = 1; index < MAX_PREVIEW_POINTS_PER_STROKE - 1; index += 1) {
+        sampled.push(points[Math.round(index * step)]!);
+      }
+      sampled.push(points.at(-1)!);
+    }
+    if (sampled.length === 0) continue;
+    const first = sampled[0];
+    if (!first || !Number.isFinite(first.x) || !Number.isFinite(first.y)) continue;
+    const start = previewPoint(first.x, first.y, pageWidth, pageHeight, rotation, previewWidth, previewHeight);
+    context.beginPath();
+    context.moveTo(start[0], start[1]);
+    for (const point of sampled.slice(1)) {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+      const next = previewPoint(point.x, point.y, pageWidth, pageHeight, rotation, previewWidth, previewHeight);
+      context.lineTo(next[0], next[1]);
+    }
+    context.strokeStyle = stroke.color;
+    context.globalAlpha = Math.max(0.08, Math.min(1, stroke.opacity * (stroke.tool === "highlighter" ? 0.45 : 1)));
+    context.lineWidth = Math.max(0.5, stroke.width * scale);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.stroke();
+  }
+  context.globalAlpha = 1;
+  return true;
+}
+
 /** PDF.js-owned parsing/rendering surface with plugin-owned DOM and ink space. */
 export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   readonly kind = "direct" as const;
@@ -159,6 +244,12 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private readonly thumbnailQueued = new Set<number>();
   private readonly thumbnailRendered = new Set<number>();
   private thumbnailObserver: IntersectionObserver | null = null;
+  private inkPreviewProvider: PdfInkPreviewProvider | null = null;
+  private readonly thumbnailInkCanvases = new Map<number, HTMLCanvasElement>();
+  private readonly outlineInkCanvases = new Map<number, Set<HTMLCanvasElement>>();
+  private readonly inkPreviewQueued = new Set<number>();
+  private inkPreviewFrame: number | null = null;
+  private inkPreviewTimer: number | null = null;
   private readonly textContentByPage = new Map<number, Promise<{ items?: readonly PdfJsTextItem[] }>>();
   private findGeneration = 0;
   private findMatches: Array<{ pageNumber: number; offset: number }> = [];
@@ -627,6 +718,87 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     }
   }
 
+  private scheduleInkPreviewFlush(): void {
+    if (this.destroyed || this.inkPreviewFrame !== null || this.inkPreviewTimer !== null) return;
+    const view = this.root.ownerDocument.defaultView;
+    if (view?.requestAnimationFrame) {
+      this.inkPreviewFrame = view.requestAnimationFrame(() => {
+        this.inkPreviewFrame = null;
+        this.flushInkPreviewQueue();
+      });
+      return;
+    }
+    const setTimeout = view?.setTimeout ?? window.setTimeout;
+    this.inkPreviewTimer = setTimeout(() => {
+      this.inkPreviewTimer = null;
+      this.flushInkPreviewQueue();
+    }, 0);
+  }
+
+  private flushInkPreviewQueue(): void {
+    if (this.destroyed) return;
+    const pages = [...this.inkPreviewQueued].slice(0, MAX_PREVIEW_PAGES_PER_FRAME);
+    for (const pageNumber of pages) {
+      this.inkPreviewQueued.delete(pageNumber);
+      this.renderInkPreviewPage(pageNumber);
+    }
+    if (this.inkPreviewQueued.size > 0) this.scheduleInkPreviewFlush();
+  }
+
+  private queueInkPreviewRender(pageNumber: number): void {
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > this.pdfDocument.numPages) return;
+    this.inkPreviewQueued.add(pageNumber);
+    this.scheduleInkPreviewFlush();
+  }
+
+  private renderInkPreviewPage(pageNumber: number): void {
+    const page = this.pagesByNumber.get(pageNumber);
+    if (!page) return;
+    let preview: PdfInkPreview = { revision: 0, strokes: [] };
+    try {
+      preview = this.inkPreviewProvider?.(pageNumber) ?? preview;
+    } catch {
+      // Preview rendering is optional; sidebar navigation must remain usable.
+    }
+    const canvases = this.outlineInkCanvases.get(pageNumber) ?? [];
+    for (const canvas of canvases) {
+      const rotated = this.rotation % 180 !== 0;
+      const width = 42;
+      const height = Math.max(18, Math.round(width * (rotated ? page.naturalWidth / page.naturalHeight : page.naturalHeight / page.naturalWidth)));
+      canvas.width = width;
+      canvas.height = height;
+      setPixelSize(canvas, width, height);
+      const drawn = drawInkPreview(canvas, page.naturalWidth, page.naturalHeight, this.rotation, preview.strokes);
+      canvas.hidden = !drawn || preview.strokes.length === 0;
+    }
+    const thumbnailCanvas = this.thumbnailInkCanvases.get(pageNumber);
+    if (thumbnailCanvas) {
+      const drawn = drawInkPreview(thumbnailCanvas, page.naturalWidth, page.naturalHeight, this.rotation, preview.strokes);
+      thumbnailCanvas.hidden = !drawn || preview.strokes.length === 0;
+    }
+  }
+
+  setInkPreviewProvider(provider: PdfInkPreviewProvider | null): void {
+    if (this.destroyed) return;
+    this.inkPreviewProvider = provider;
+    this.refreshInkPreviews();
+  }
+
+  refreshInkPreviews(pageNumbers?: readonly number[]): void {
+    if (this.destroyed) return;
+    const pages = pageNumbers
+      ? pageNumbers
+      : [...new Set([
+        ...(this.outlinePanel.hidden ? [] : this.outlineInkCanvases.keys()),
+        ...(this.thumbnailPanel.hidden ? [] : [...this.thumbnailInkCanvases.keys()].filter((page) => this.thumbnailRendered.has(page)))
+      ])];
+    for (const pageNumber of pages) {
+      const outlineReady = !this.outlinePanel.hidden && this.outlineInkCanvases.has(pageNumber);
+      const thumbnailReady = !this.thumbnailPanel.hidden && this.thumbnailRendered.has(pageNumber);
+      if (outlineReady || thumbnailReady) this.queueInkPreviewRender(pageNumber);
+    }
+  }
+
   private toggleSidebar(mode: "outline" | "thumbnails"): void {
     const panel = mode === "outline" ? this.outlinePanel : this.thumbnailPanel;
     const other = mode === "outline" ? this.thumbnailPanel : this.outlinePanel;
@@ -637,6 +809,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     other.hidden = true;
     panel.hidden = false;
     if (mode === "thumbnails" && panel.childElementCount === 0) this.loadThumbnails();
+    this.refreshInkPreviews();
   }
 
   private loadThumbnails(): void {
@@ -644,6 +817,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.thumbnailObserver = null;
     this.thumbnailQueued.clear();
     this.thumbnailRendered.clear();
+    this.thumbnailInkCanvases.clear();
     const ownerDocument = this.thumbnailPanel.ownerDocument;
     const observer = typeof IntersectionObserver === "function"
       ? new IntersectionObserver((entries) => {
@@ -662,9 +836,16 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       button.dataset.pageNumber = String(pageNumber);
       button.setAttribute("aria-label", `Go to page ${pageNumber}`);
       const canvas = createElement(ownerDocument, "canvas");
+      const inkCanvas = createElement(ownerDocument, "canvas", "hn-owned-pdf-thumbnail-ink");
+      inkCanvas.hidden = true;
+      setElementCssProps(inkCanvas, { inset: "0", pointerEvents: "none", position: "absolute", zIndex: "1" });
+      const canvasHost = createElement(ownerDocument, "div", "hn-owned-pdf-thumbnail-canvas");
+      setElementCssProps(canvasHost, { position: "relative" });
+      canvasHost.append(canvas, inkCanvas);
+      this.thumbnailInkCanvases.set(pageNumber, inkCanvas);
       const label = createElement(ownerDocument, "span");
       label.textContent = String(pageNumber);
-      button.append(canvas, label);
+      button.append(canvasHost, label);
       button.addEventListener("click", () => this.focusPage(pageNumber));
       this.thumbnailPanel.append(button);
       if (observer) observer.observe(button);
@@ -688,6 +869,12 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
         canvas.width = Math.max(1, Math.ceil(viewport.width));
         canvas.height = Math.max(1, Math.ceil(viewport.height));
         setElementCssProps(canvas, { width: `${viewport.width}px`, height: `${viewport.height}px` });
+        const inkCanvas = this.thumbnailInkCanvases.get(pageNumber);
+        if (inkCanvas) {
+          inkCanvas.width = canvas.width;
+          inkCanvas.height = canvas.height;
+          setElementCssProps(inkCanvas, { width: `${viewport.width}px`, height: `${viewport.height}px` });
+        }
         const context = canvas.getContext("2d");
         if (!context || !this.isAlive(lifecycleGeneration) || thumbnailGeneration !== this.thumbnailGeneration) return;
         const task = page.page.render({ canvasContext: context, viewport });
@@ -701,7 +888,10 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       } finally {
         if (thumbnailGeneration === this.thumbnailGeneration) {
           this.thumbnailQueued.delete(pageNumber);
-          if (rendered) this.thumbnailRendered.add(pageNumber);
+          if (rendered) {
+            this.thumbnailRendered.add(pageNumber);
+            this.queueInkPreviewRender(pageNumber);
+          }
         }
       }
     })().catch((error: unknown) => {
@@ -715,17 +905,26 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     let outline: readonly unknown[] | null = null;
     try { outline = this.pdfDocument.getOutline ? await this.pdfDocument.getOutline() : null; } catch { outline = null; }
     if (!outline?.length) return;
+    this.outlineInkCanvases.clear();
     const list = createElement(this.outlinePanel.ownerDocument, "ol");
     for (const entry of outline.slice(0, 500)) {
       if (!entry || typeof entry !== "object") continue;
       const item = entry as { title?: unknown; dest?: unknown };
+      const page = Array.isArray(item.dest) && typeof item.dest[0] === "number" ? item.dest[0] + 1 : undefined;
       const button = createElement(this.outlinePanel.ownerDocument, "button");
       button.type = "button";
-      button.textContent = typeof item.title === "string" ? item.title : "Untitled";
-      button.addEventListener("click", () => {
-        const page = Array.isArray(item.dest) && typeof item.dest[0] === "number" ? item.dest[0] + 1 : undefined;
-        if (page) this.focusPage(page);
-      });
+      const title = createElement(this.outlinePanel.ownerDocument, "span");
+      title.textContent = typeof item.title === "string" ? item.title : "Untitled";
+      const preview = createElement(this.outlinePanel.ownerDocument, "canvas", "hn-owned-pdf-outline-ink");
+      preview.hidden = true;
+      preview.setAttribute("aria-hidden", "true");
+      button.append(preview, title);
+      button.addEventListener("click", () => { if (page) this.focusPage(page); });
+      if (page && this.pagesByNumber.has(page)) {
+        const canvases = this.outlineInkCanvases.get(page) ?? new Set<HTMLCanvasElement>();
+        canvases.add(preview);
+        this.outlineInkCanvases.set(page, canvases);
+      }
       const listItem = createElement(this.outlinePanel.ownerDocument, "li");
       listItem.append(button); list.append(listItem);
     }
@@ -798,6 +997,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       this.thumbnailPanel.replaceChildren();
       this.loadThumbnails();
     }
+    this.refreshInkPreviews();
     this.callbacks.onPagesChanged?.("rotationchanging");
     this.emitViewState("rotationchanging");
     for (const pageNumber of this.nearbyPages()) this.queuePageRender(pageNumber);
@@ -1161,6 +1361,14 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.thumbnailObserver = null;
     this.thumbnailQueued.clear();
     this.thumbnailRendered.clear();
+    this.thumbnailInkCanvases.clear();
+    this.outlineInkCanvases.clear();
+    this.inkPreviewQueued.clear();
+    if (this.inkPreviewFrame !== null) view?.cancelAnimationFrame(this.inkPreviewFrame);
+    if (this.inkPreviewTimer !== null) (view?.clearTimeout ?? window.clearTimeout)(this.inkPreviewTimer);
+    this.inkPreviewFrame = null;
+    this.inkPreviewTimer = null;
+    this.inkPreviewProvider = null;
     for (const task of this.thumbnailTasks) task.cancel?.();
     this.thumbnailTasks.clear();
     for (const page of this.pagesByNumber.values()) { page.renderTask?.cancel?.(); page.page?.cleanup?.(); }
