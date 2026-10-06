@@ -3294,7 +3294,7 @@ export class ViewerInkSession {
         job.nextIndex = job.strokes.length;
         break;
       }
-      this.paintCommittedStrokes(surface, layerContext, [stroke], undefined, "full");
+      this.paintCommittedStrokes(surface, layerContext, [stroke]);
       job.nextIndex += 1;
       painted += 1;
     }
@@ -6967,7 +6967,7 @@ export class ViewerInkSession {
       this.recordStrokeRendered(surface, stroke);
       this.finishStrokePixelEvidence(surface, stroke, surface.inkLayer, layerContext);
     } else {
-      this.paintCommittedStrokes(surface, layerContext, [stroke], undefined, "full");
+      this.paintCommittedStrokes(surface, layerContext, [stroke]);
     }
     surface.inkLayerBackingScale = backingScale;
     surface.inkLayerRevision = pageRevision;
@@ -7273,7 +7273,6 @@ export class ViewerInkSession {
         stroke.tool,
         false,
         stroke.id,
-        "full",
         stroke.eraseMasks,
         stroke.penType
       );
@@ -12560,7 +12559,6 @@ export class ViewerInkSession {
     // Live and committed pencil paint use the same final-quality renderer. The
     // draft canvas is incremental, so texture work is distributed over the
     // gesture instead of being paid as one full-path spike on pointer-up.
-    const liveGraphiteQuality = "full" as const;
     const context = surface.draftContext;
     const predictionContext = surface.predictionContext;
     const shapeMorph = surface.shapePreview !== null;
@@ -12587,7 +12585,6 @@ export class ViewerInkSession {
         style.tool,
         false,
         builder.id,
-        liveGraphiteQuality,
         predictionContext
       );
       surface.predictedPreviewPainted = true;
@@ -12608,7 +12605,6 @@ export class ViewerInkSession {
         style.tool,
         false,
         builder.id,
-        liveGraphiteQuality,
         context
       );
       surface.liveDrawPaintedPoints = 0;
@@ -12643,7 +12639,6 @@ export class ViewerInkSession {
         style.tool,
         false,
         builder.id,
-        liveGraphiteQuality,
         context
       );
       surface.liveDrawPaintedPoints = points.length;
@@ -12667,7 +12662,6 @@ export class ViewerInkSession {
       style.tool,
       false,
       builder.id,
-      liveGraphiteQuality,
       context
     );
     surface.liveDrawPaintedPoints = points.length;
@@ -14953,23 +14947,20 @@ export class ViewerInkSession {
     surface: PageSurface,
     context: CanvasRenderingContext2D,
     strokes: readonly InkStroke[],
-    stats?: { strokesRedrawn: number },
-    graphiteQuality: "full" | "draft" = "full"
+    stats?: { strokesRedrawn: number }
   ): void {
-    if (this.zoomProfile && graphiteQuality === "full") this.zoomProfile.vectorRepaints += 1;
-    if (surface.strokePerformance && graphiteQuality === "full") surface.strokePerformance.vectorRepaints += 1;
+    if (this.zoomProfile) this.zoomProfile.vectorRepaints += 1;
+    if (surface.strokePerformance) surface.strokePerformance.vectorRepaints += 1;
     const previous = surface.context;
     surface.context = context;
     const targetCanvas = context === surface.inkLayerContext && surface.inkLayer ? surface.inkLayer : surface.canvas;
     try {
       for (const stroke of strokes) {
         const drawn = this.movePreview?.find((item) => item.id === stroke.id) ?? stroke;
-        if (graphiteQuality === "full") this.beginStrokePixelEvidence(surface, stroke, targetCanvas, context);
-        this.drawStroke(surface, drawn, this.selected.some((item) => item.id === stroke.id), graphiteQuality);
-        if (graphiteQuality === "full") {
-          this.recordStrokeRendered(surface, stroke);
-          this.finishStrokePixelEvidence(surface, stroke, targetCanvas, context);
-        }
+        this.beginStrokePixelEvidence(surface, stroke, targetCanvas, context);
+        this.drawStroke(surface, drawn, this.selected.some((item) => item.id === stroke.id));
+        this.recordStrokeRendered(surface, stroke);
+        this.finishStrokePixelEvidence(surface, stroke, targetCanvas, context);
       }
     } finally {
       surface.context = previous;
@@ -15379,7 +15370,7 @@ export class ViewerInkSession {
       if (!surface.inkLayerValid || canonicalLayerRepaint) {
         const layerPaintStartedAt = performance.now();
         layerContext.clearRect(0, 0, width, height);
-        this.paintCommittedStrokes(surface, layerContext, visibleStrokes, stats, "full");
+        this.paintCommittedStrokes(surface, layerContext, visibleStrokes, stats);
         recordRenderPhase("layer-paint", layerPaintStartedAt);
         surface.inkLayerValid = true;
         surface.inkLayerBackingScale = backingScale;
@@ -15401,7 +15392,7 @@ export class ViewerInkSession {
       surface.rasterFallbackReady = false;
       const directPaintStartedAt = performance.now();
       surface.context.clearRect(0, 0, width, height);
-      this.paintCommittedStrokes(surface, surface.context, visibleStrokes, stats, "full");
+      this.paintCommittedStrokes(surface, surface.context, visibleStrokes, stats);
       recordRenderPhase("direct-paint", directPaintStartedAt);
       if (canonicalZoomSettle) {
         this.logZoomInkRenderer(pageNumber, "settle-canonical", "canonical-pdf-space", visibleStrokes);
@@ -15448,9 +15439,7 @@ export class ViewerInkSession {
           draft.opacity,
           draft.tool,
           false,
-          draftId,
-          // Pencil: full grit while dragging so release does not densify/reseed.
-          draft.tool === "pencil" ? "full" : "draft"
+          draftId
         );
       } else {
         // Canvas/backing may have changed under the tip — rebuild draft once.
@@ -15787,7 +15776,6 @@ export class ViewerInkSession {
         stroke.tool,
         false,
         stroke.id,
-        "full",
         stroke.eraseMasks,
         stroke.penType
       );
@@ -15806,7 +15794,6 @@ export class ViewerInkSession {
     tool: DrawingTool,
     selected = false,
     strokeId?: string,
-    graphiteQuality: "full" | "draft" = "full",
     eraseMasks?: InkStroke["eraseMasks"],
     penType?: InkStroke["penType"]
   ): void {
@@ -15827,7 +15814,6 @@ export class ViewerInkSession {
         tiltSensitivity: prefs.tiltSensitivity,
         thinning: prefs.thinning,
         seed: strokeId ? seedFromId(strokeId) : seedFromId(`${viewPoints[0]!.x}:${viewPoints[0]!.y}`),
-        quality: graphiteQuality,
         coordinateScale: scale
       });
     } else if (tool === "highlighter") {
@@ -15945,8 +15931,7 @@ export class ViewerInkSession {
   private drawStroke(
     surface: PageSurface,
     stroke: InkStroke,
-    selected: boolean,
-    graphiteQuality: "full" | "draft" = "full"
+    selected: boolean
   ): void {
     this.drawPoints(
       surface,
@@ -15957,7 +15942,6 @@ export class ViewerInkSession {
       stroke.tool,
       selected,
       stroke.id,
-      graphiteQuality,
       surface.context,
       stroke.eraseMasks,
       stroke.penType
@@ -15973,7 +15957,6 @@ export class ViewerInkSession {
     tool: DrawingTool,
     selected = false,
     strokeId?: string,
-    graphiteQuality: "full" | "draft" = "full",
     context: CanvasRenderingContext2D = surface.context,
     eraseMasks?: InkStroke["eraseMasks"],
     penType?: InkStroke["penType"]
@@ -15989,7 +15972,6 @@ export class ViewerInkSession {
       tool,
       selected,
       strokeId,
-      graphiteQuality,
       eraseMasks,
       penType ?? surface.builder?.style.penType
     );

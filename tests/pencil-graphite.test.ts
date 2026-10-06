@@ -72,9 +72,9 @@ describe("pencil graphite approximation", () => {
   });
 
   it("keeps spacing proportional to tip so zoom-in does not multiply stamps", () => {
-    expect(graphiteSpacing(4, 0.45, "full")).toBeLessThan(2);
-    expect(graphiteSpacing(28, 0.45, "full")).toBeGreaterThan(graphiteSpacing(4, 0.45, "full") * 3);
-    expect(graphiteSpacing(56, 0.45, "full")).toBeGreaterThan(graphiteSpacing(28, 0.45, "full") * 1.5);
+    expect(graphiteSpacing(4, 0.45)).toBeLessThan(2);
+    expect(graphiteSpacing(28, 0.45)).toBeGreaterThan(graphiteSpacing(4, 0.45) * 3);
+    expect(graphiteSpacing(56, 0.45)).toBeGreaterThan(graphiteSpacing(28, 0.45) * 1.5);
     const size = graphiteGrainSize(14, 0.5, 0.45);
     expect(size.rx).toBeGreaterThan(size.ry * 1.4);
     expect(size.rx).toBeLessThan(4);
@@ -191,26 +191,6 @@ describe("pencil graphite approximation", () => {
       seed: 1
     });
     expect(marks.length).toBeLessThan(12_000);
-  });
-
-  it("draft quality uses fewer marks for live previews", () => {
-    const points = [
-      { x: 0, y: 0, pressure: 0.5 },
-      { x: 120, y: 40, pressure: 0.5 }
-    ];
-    const base = {
-      color: "#111",
-      width: 16,
-      opacity: 0.7,
-      textureStrength: 0.85,
-      pressureSensitivity: false,
-      tiltSensitivity: false,
-      thinning: 0,
-      seed: 3
-    } as const;
-    const full = graphiteStampCircles(points, { ...base, quality: "full" });
-    const draft = graphiteStampCircles(points, { ...base, quality: "draft" });
-    expect(draft.length).toBeLessThan(full.length);
   });
 
   it("draws ribbon + elliptical grit onto a canvas context without throwing", () => {
