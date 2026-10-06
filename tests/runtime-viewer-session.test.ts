@@ -7,7 +7,7 @@ vi.mock("obsidian", async () => {
 import NativePdfInkPlugin, { scheduleSessionRecoveryAfterDestroy } from "../src/main";
 import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from "../src/runtime/AnnotationSurface";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
-import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation } from "../src/model";
+import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation, type ToolbarPlacement } from "../src/model";
 import { AttachRetryPolicy } from "../src/runtime/AttachRetryPolicy";
 import { ScanDebounce } from "../src/runtime/ScanDebounce";
 import { needsMissingHandwritingSessionRecovery, type HandwritingSessionRegistrySnapshot } from "../src/runtime/HandwritingSessionRegistry";
@@ -91,6 +91,25 @@ class FakeAdapter implements AnnotationSurface {
     return { errors: [], warnings: [] };
   }
   destroy(): void { this.destroyed = true; this.root.remove(); }
+}
+
+class OwnedRailAdapter extends FakeAdapter {
+  override mountToolbar(toolbar: HTMLElement, placement: ToolbarPlacement = "main"): void {
+    for (const node of this.root.querySelectorAll<HTMLElement>(".native-pdf-handwriting-toolbar, .hn-owned-pdf-ink-rail")) {
+      if (node !== toolbar) node.remove();
+    }
+    toolbar.remove();
+    toolbar.classList.toggle("is-sidebar-left", placement === "left");
+    toolbar.classList.toggle("is-sidebar-right", placement === "right");
+    if (placement === "main") {
+      this.toolbarHost.append(toolbar);
+      return;
+    }
+    const rail = document.createElement("div");
+    rail.className = `hn-owned-pdf-ink-rail is-${placement}`;
+    rail.append(toolbar);
+    this.root.append(rail);
+  }
 }
 
 class FakePdfSurface extends FakeAdapter {
@@ -216,6 +235,32 @@ describe("viewer runtime tracer", () => {
     expect(pdfToolbarOption?.textContent).toBe("Toolbar: PDF bar");
     pdfToolbarOption?.click();
     expect(settings.toolbarPlacement).toBe("main");
+    await session.destroy();
+  });
+
+  it("remounts the PDF toolbar from a plugin-owned desktop rail", async () => {
+    const files = new MemoryFiles();
+    const adapter = new OwnedRailAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolbarPlacement = "left";
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/desktop-toolbar.pdf",
+      settings,
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: false, phone: false })
+    });
+
+    expect(adapter.root.querySelector(".hn-owned-pdf-ink-rail.is-left")).not.toBeNull();
+    adapter.root.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
+    document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']")?.click();
+    expect(adapter.toolbarHost.querySelector(".native-pdf-handwriting-toolbar")).not.toBeNull();
+    expect(adapter.root.querySelector(".hn-owned-pdf-ink-rail")).toBeNull();
     await session.destroy();
   });
 

@@ -52,6 +52,11 @@ function requirePostZoomInputRuntime(): PostZoomInputRuntimeModule {
   if (!postZoomInputRuntime) throw new Error("post-zoom input runtime has not been loaded");
   return postZoomInputRuntime;
 }
+
+function mountedToolbarRail(toolbar: HTMLElement): HTMLElement | null {
+  return toolbar.closest<HTMLElement>(".native-pdf-handwriting-rail, .hn-owned-pdf-ink-rail");
+}
+
 import { PostZoomDurabilityTrace } from "./PostZoomDurabilityTrace";
 import { SLOW_SPAN_SYNC_MS, SlowSpanTrace, type InkLatencyBreakdown } from "./SlowSpanTrace";
 import {
@@ -7286,7 +7291,7 @@ export class ViewerInkSession {
     if (this.destroyed || !this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) return;
     const placement = this.currentToolbarPlacement();
     const toolbar = this.toolbar.element;
-    const rail = toolbar.closest<HTMLElement>(".native-pdf-handwriting-rail");
+    const rail = mountedToolbarRail(toolbar);
     const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
     const sidebarExpected = placement !== "main";
     const sidebarConnected = sidebarExpected
@@ -7340,7 +7345,7 @@ export class ViewerInkSession {
   private handwritingUiState(reason: string, details: Record<string, unknown> = {}): Record<string, unknown> {
     const placement = this.currentToolbarPlacement();
     const toolbar = this.toolbar.element;
-    const rail = toolbar.closest<HTMLElement>(".native-pdf-handwriting-rail");
+    const rail = mountedToolbarRail(toolbar);
     const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
     const sidebarExpected = placement !== "main";
     const sidebarConnected = sidebarExpected
