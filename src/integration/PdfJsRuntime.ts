@@ -46,6 +46,10 @@ export interface PdfJsDocumentProxy {
   numPages: number;
   getPage(pageNumber: number): Promise<PdfJsPageProxy>;
   getOutline?(): Promise<readonly unknown[] | null>;
+  /** Resolves named outline destinations to PDF.js explicit destinations. */
+  getDestination?(id: string): Promise<readonly unknown[] | null>;
+  /** Maps a PDF.js page reference from an explicit destination to a zero-based page index. */
+  getPageIndex?(ref: unknown): Promise<number>;
   cleanup?(): Promise<void> | void;
   destroy?(): Promise<void> | void;
 }
