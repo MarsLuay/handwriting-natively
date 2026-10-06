@@ -257,9 +257,12 @@ function strokeMatchesSelection(stroke: InkStroke, shape: SelectionShape): boole
   // i/j dots and tap marks: one point inside the lasso is enough.
   if (span <= Math.max(stroke.width * SHORT_STROKE_SPAN_WIDTHS, 8)) return insidePointCount > 0;
   // Require a small painted interval, rather than merely touching a lasso
-  // edge. This retains tiny real selections while rejecting long-stroke
-  // grazing hits caused by one point just inside a boundary.
-  return insideLength >= Math.max(0.75, stroke.width * 0.5);
+  // edge. Highlighters are wide ribbons, so a tiny centerline hit is still a
+  // real paint hit and must select the whole visible highlight.
+  const minimumLength = stroke.tool === "highlighter"
+    ? Math.min(1, Math.max(0.1, stroke.width * 0.25))
+    : Math.max(0.75, stroke.width * 0.5);
+  return insideLength >= minimumLength;
 }
 
 export function selectionShapeArea(shape: SelectionShape): number {

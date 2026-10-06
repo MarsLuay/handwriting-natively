@@ -826,6 +826,8 @@ interface PageSurface {
   predictionCanvas: HTMLCanvasElement;
   /** Selection/lasso chrome is isolated from committed ink so pointer moves do not blit the page. */
   selectionCanvas: HTMLCanvasElement;
+  /** Previous lasso preview bounds in overlay CSS pixels for damage-only clearing. */
+  liveLassoChromeBounds: Bounds | null;
   textLayer: HTMLElement;
   context: CanvasRenderingContext2D;
   draftContext: CanvasRenderingContext2D;
@@ -9692,6 +9694,7 @@ export class ViewerInkSession {
       draftCanvas,
       predictionCanvas,
       selectionCanvas,
+      liveLassoChromeBounds: null,
       textLayer,
       context,
       draftContext,
@@ -12469,6 +12472,7 @@ export class ViewerInkSession {
     surface.predictionCanvas.height = 0;
     surface.selectionCanvas.width = 0;
     surface.selectionCanvas.height = 0;
+    surface.liveLassoChromeBounds = null;
     surface.liveDrawPageBounds = null;
     surface.liveDrawPreviewStrokeId = null;
     if (surface.inkLayer) {
@@ -13292,7 +13296,10 @@ export class ViewerInkSession {
     const shape: SelectionShape = lassoType === "freeform"
       ? { type: "freeform", points: editPath }
       : { type: lassoType, bounds };
-    if (selectionShapeArea(shape) < 16) {
+    // Do not discard tiny but real lasso rectangles/freeforms. A small
+    // lasso is a legitimate way to select a dot or a short paint interval;
+    // only a geometrically degenerate path is an empty selection gesture.
+    if (!(selectionShapeArea(shape) > 0.01)) {
       this.clearSelection();
       return;
     }
@@ -15792,7 +15799,22 @@ export class ViewerInkSession {
     const context = surface.selectionContext;
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, surface.selectionCanvas.width, surface.selectionCanvas.height);
+    surface.liveLassoChromeBounds = null;
     surface.canvas.classList.remove("is-selection-chrome-raised");
+  }
+
+  private clearLiveLassoChromeRegion(surface: PageSurface, scale: number): void {
+    const previous = surface.liveLassoChromeBounds;
+    if (!previous) return;
+    const context = surface.selectionContext;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    const padding = 10 * scale;
+    const left = Math.max(0, Math.floor(previous.minX * scale - padding));
+    const top = Math.max(0, Math.floor(previous.minY * scale - padding));
+    const right = Math.min(surface.selectionCanvas.width, Math.ceil(previous.maxX * scale + padding));
+    const bottom = Math.min(surface.selectionCanvas.height, Math.ceil(previous.maxY * scale + padding));
+    if (right > left && bottom > top) context.clearRect(left, top, right - left, bottom - top);
+    surface.liveLassoChromeBounds = null;
   }
 
   private drawStrokeSelectionChrome(surface: PageSurface, stroke: InkStroke, context: CanvasRenderingContext2D): void {
@@ -15860,12 +15882,25 @@ export class ViewerInkSession {
   }
 
   private renderLiveLassoPreview(surface: PageSurface): void {
-    this.clearSelectionChrome(surface);
-    if (this.activeTool() !== "lasso") return;
+    if (this.activeTool() !== "lasso") {
+      this.clearSelectionChrome(surface);
+      return;
+    }
     const scale = this.prepareSelectionCanvas(surface);
+    this.clearLiveLassoChromeRegion(surface, scale);
     const context = surface.selectionContext;
     context.setTransform(scale, 0, 0, scale, 0, 0);
     this.drawLassoPreview(surface, context);
+    const mapper = this.mapper(surface);
+    const viewPoints = surface.editPath.map((point) => mapper.toViewport(point));
+    if (viewPoints.length) {
+      const xs = viewPoints.map((point) => point.x);
+      const ys = viewPoints.map((point) => point.y);
+      surface.liveLassoChromeBounds = {
+        minX: Math.min(...xs), minY: Math.min(...ys),
+        maxX: Math.max(...xs), maxY: Math.max(...ys)
+      };
+    }
     surface.canvas.classList.add("is-selection-chrome-raised");
   }
 

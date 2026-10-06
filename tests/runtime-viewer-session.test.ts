@@ -3586,6 +3586,45 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("accepts a tiny lasso around a small annotation instead of discarding it", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "lasso";
+    settings.toolPreferences.lasso.type = "rectangle";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/tiny-lasso.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      ink: { add(stroke: InkStroke): void };
+      surfaces: Map<number, { editTool: "lasso"; editPath: PdfPoint[] }>;
+      finishEdit(surface: { editTool: "lasso"; editPath: PdfPoint[] }): void;
+      selected: InkStroke[];
+    };
+    const tiny: InkStroke = {
+      id: "tiny-lasso-stroke", page: 1, tool: "pen", color: "#000000", width: 1,
+      opacity: 1, inputType: "pen", points: [{ x: 100, y: 700, pressure: 1, time: 0 }],
+      createdAt: "now", updatedAt: "now"
+    };
+    internal.ink.add(tiny);
+    const surface = internal.surfaces.get(1)!;
+    surface.editTool = "lasso";
+    surface.editPath = [
+      { x: 99, y: 699, pressure: 1, time: 0 },
+      { x: 101, y: 701, pressure: 1, time: 1 }
+    ];
+    internal.finishEdit(surface);
+    expect(internal.selected.map((stroke) => stroke.id)).toEqual([tiny.id]);
+    await session.destroy();
+  });
+
   it("keeps the shared lasso selection outline after selecting a text box", async () => {
     const context = {
       setTransform: vi.fn(), clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(),
