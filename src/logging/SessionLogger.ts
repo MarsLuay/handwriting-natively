@@ -343,6 +343,8 @@ export class SessionLogger {
       compositeMatched?: boolean;
       stabilization?: string;
       draftResized?: boolean;
+      pointerId?: number | null;
+      editTool?: string | null;
     } = {}
   ): void {
     if (!this.isEnabled() || durationMs < 8) return;
@@ -358,7 +360,9 @@ export class SessionLogger {
       ...(details.incremental !== undefined ? { incremental: details.incremental } : {}),
       ...(details.compositeMatched !== undefined ? { compositeMatched: details.compositeMatched } : {}),
       ...(details.stabilization !== undefined ? { stabilization: details.stabilization } : {}),
-      ...(details.draftResized !== undefined ? { draftResized: details.draftResized } : {})
+      ...(details.draftResized !== undefined ? { draftResized: details.draftResized } : {}),
+      ...(details.pointerId !== undefined ? { pointerId: details.pointerId } : {}),
+      ...(details.editTool !== undefined ? { editTool: details.editTool } : {})
     });
   }
 
