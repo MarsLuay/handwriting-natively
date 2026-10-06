@@ -366,30 +366,42 @@ function eraseHighlighterStroke(
     radius: eraserRadius
   };
   const allMasks = [...existingMasks, nextMask];
-  let fullyCovered = paintRadius <= eraserRadius
+  // Keep the old broad-phase guard for a first erase pass. Re-check the union
+  // when prior masks exist, because their combined coverage can remove the
+  // remaining stroke even when the latest path cannot cover it by itself.
+  const latestMaskCouldCover = paintRadius <= eraserRadius
     && paintBounds.minX >= eraserBounds.minX
     && paintBounds.maxX <= eraserBounds.maxX
     && paintBounds.minY >= eraserBounds.minY
     && paintBounds.maxY <= eraserBounds.maxY;
-  if (fullyCovered) {
-    const innerRadius = eraserRadius - paintRadius;
-    for (let index = 0; index < stroke.points.length; index += 1) {
-      const start = stroke.points[index]!;
-      if (!pointHitsEraserPath(start, path, innerRadius, pathIndex)) {
-        fullyCovered = false;
-        break;
-      }
-      const end = stroke.points[index + 1];
-      if (end && !pointHitsEraserPath({
-        x: (start.x + end.x) / 2,
-        y: (start.y + end.y) / 2
-      }, path, innerRadius, pathIndex)) {
-        fullyCovered = false;
-        break;
+  if (existingMasks.length > 0 || latestMaskCouldCover) {
+    const coverage = allMasks.map((mask) => ({
+      mask,
+      pathIndex: createEraserPathIndex(mask.points, Math.max(mask.radius - paintRadius, 0))
+    }));
+    const fullyCovers = (point: Point): boolean => coverage.some(({ mask, pathIndex: maskPathIndex }) =>
+      pointHitsEraserPath(point, mask.points, mask.radius - paintRadius, maskPathIndex)
+    );
+    let fullyCovered = allMasks.some((mask) => mask.radius >= paintRadius);
+    if (fullyCovered) {
+      for (let index = 0; index < stroke.points.length; index += 1) {
+        const start = stroke.points[index]!;
+        if (!fullyCovers(start)) {
+          fullyCovered = false;
+          break;
+        }
+        const end = stroke.points[index + 1];
+        if (end && !fullyCovers({
+          x: (start.x + end.x) / 2,
+          y: (start.y + end.y) / 2
+        })) {
+          fullyCovered = false;
+          break;
+        }
       }
     }
+    if (fullyCovered) return { fragments: [] };
   }
-  if (fullyCovered) return { fragments: [] };
 
   const updatedAt = options.now?.() ?? new Date().toISOString();
   return {
