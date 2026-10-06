@@ -1,5 +1,5 @@
 import type { InkStroke, PagePoint, TextAnnotation } from "../model";
-import { strokeBounds, type Bounds } from "../ink/StrokeHitTesting";
+import { distanceToSegment, strokeBounds, type Bounds } from "../ink/StrokeHitTesting";
 
 const OVERLAY_MARGIN_PX = 4;
 /** Strokes whose span is at most this many stroke-widths count as tap/dot marks. */
@@ -51,10 +51,32 @@ function strokeBoundsCenter(stroke: InkStroke): Point {
   return { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
 }
 
+/** Return whether a point is covered by a highlighter's destination-out mask. */
+function pointErasedByMask(point: Point, mask: NonNullable<InkStroke["eraseMasks"]>[number]): boolean {
+  const radius = Math.max(0, mask.radius);
+  if (mask.points.length === 1) return distanceToSegment(point, mask.points[0]!, mask.points[0]!) <= radius;
+  for (let index = 1; index < mask.points.length; index += 1) {
+    if (distanceToSegment(point, mask.points[index - 1]!, mask.points[index]!) <= radius) return true;
+  }
+  return false;
+}
+
+function pointErasedByMasks(point: Point, masks: InkStroke["eraseMasks"]): boolean {
+  return masks?.some((mask) => pointErasedByMask(point, mask)) ?? false;
+}
+
 function strokeMatchesSelection(stroke: InkStroke, shape: SelectionShape): boolean {
   if (!stroke.points.length) return false;
-  if (contains(shape, strokeBoundsCenter(stroke))) return true;
-  const insideCount = stroke.points.filter((point) => contains(shape, point)).length;
+  // Highlighter erasing keeps the original centerline and records holes as
+  // masks. Do not let points (or the bounds-center fallback) inside one of
+  // those holes make the whole highlighter selectable again.
+  const visiblePoints = stroke.eraseMasks?.length
+    ? stroke.points.filter((point) => !pointErasedByMasks(point, stroke.eraseMasks))
+    : stroke.points;
+  if (!visiblePoints.length) return false;
+  const center = strokeBoundsCenter(stroke);
+  if (contains(shape, center) && !pointErasedByMasks(center, stroke.eraseMasks)) return true;
+  const insideCount = visiblePoints.filter((point) => contains(shape, point)).length;
   if (insideCount === 0) return false;
   if (stroke.points.length === 1) return true;
   const bounds = strokeBounds(stroke);
