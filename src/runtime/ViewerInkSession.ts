@@ -1470,6 +1470,10 @@ export class ViewerInkSession {
         onEraserSizePreview: () => {
           this.refreshSurfaceCursors();
         },
+        onLassoCopyAll: () => {
+          this.selectAllOnCurrentPage();
+          this.copySelection();
+        },
         onTextStyleChange: (change) => this.applyTextStyleToActiveEditor(change),
         onTextFormatPointerDown: () => this.captureActiveTextSelection("toolbar-pointerdown"),
         activeTextStyle: () => this.activeTextStyle(),

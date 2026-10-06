@@ -102,6 +102,25 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
+  it("offers Copy All from the lasso menu", () => {
+    const copyAll = vi.fn();
+    const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    preferences.activeTool = "lasso";
+    const toolbar = new AnnotationToolbar({
+      preferences,
+      autosave: true,
+      callbacks: { onPreferencesChange: vi.fn(), onLassoCopyAll: copyAll },
+      ownerDocument: document
+    });
+    document.body.append(toolbar.element);
+    toolbar.element.querySelector<HTMLButtonElement>("[data-control='lasso']")?.click();
+    const option = document.querySelector<HTMLButtonElement>("[data-option-id='copy-all']");
+    expect(option?.textContent).toBe("Copy All");
+    option?.click();
+    expect(copyAll).toHaveBeenCalledOnce();
+    toolbar.destroy();
+  });
+
   it("persists selected drawing preference, updates icon, and exposes manual save only when needed", () => {
     const preferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
     const changed = vi.fn();

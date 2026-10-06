@@ -12,6 +12,7 @@ import { AttachRetryPolicy } from "../src/runtime/AttachRetryPolicy";
 import { ScanDebounce } from "../src/runtime/ScanDebounce";
 import { needsMissingHandwritingSessionRecovery, type HandwritingSessionRegistrySnapshot } from "../src/runtime/HandwritingSessionRegistry";
 import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
+import { StrokeClipboard } from "../src/ink/StrokeClipboard";
 import { documentInputOwnershipSnapshot } from "../src/input/DocumentInputOwnership";
 import { getPhysicalContactCollectorSnapshot } from "../src/input/PhysicalContactCollector";
 import { HN_DEV_PROBE_ACTIVE_KEY, HN_DEV_PROBE_EVENT, type HnDevProbeDiagnostic } from "../src/runtime/DevProbeDiagnostics";
@@ -3743,6 +3744,40 @@ describe("viewer runtime tracer", () => {
     expect(session.handleKeyDown(new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true }))).toBe(false);
 
     await session.destroy();
+  });
+
+  it("copies all current-page ink from the lasso menu", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/copy-all.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const stroke: InkStroke = {
+      id: "copy-all-ink", page: 1, tool: "pen", color: "#000000", width: 2, opacity: 1,
+      inputType: "pen", points: [{ x: 100, y: 680, pressure: 1, time: 0 }], createdAt: "now", updatedAt: "now"
+    };
+    try {
+      const internal = session as unknown as { ink: { add(value: InkStroke): void } };
+      internal.ink.add(stroke);
+      settings.toolPreferences.activeTool = "lasso";
+      session.selectTool("lasso");
+      adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='lasso']")?.click();
+      const copyAll = document.querySelector<HTMLButtonElement>("[data-option-id='copy-all']");
+      expect(copyAll?.textContent).toBe("Copy All");
+      copyAll?.click();
+      expect(StrokeClipboard.peek()).toMatchObject({ sourcePage: 1, strokes: [{ id: "copy-all-ink" }] });
+    } finally {
+      StrokeClipboard.clear();
+      await session.destroy();
+    }
   });
 
   it("selects all active text before native typing while leaving delete native", async () => {

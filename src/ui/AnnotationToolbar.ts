@@ -33,6 +33,7 @@ export type PreferenceChangeReason = "general" | "text-style" | "tool";
 export interface AnnotationToolbarCallbacks {
   onPreferencesChange(preferences: ToolPreferences, reason?: PreferenceChangeReason): void;
   onEraserSizePreview?(size: number): void;
+  onLassoCopyAll?(): void;
   onTextStyleChange?(change: TextStyleChange): void;
   /** Runs before the toolbar takes focus, preserving a contenteditable range. */
   onTextFormatPointerDown?(): void;
@@ -277,7 +278,7 @@ export class AnnotationToolbar {
       this.preferences.activeTool = "lasso";
       this.preferences.lasso.type = type;
       this.changed("tool");
-    });
+    }, this.callbacks.onLassoCopyAll);
   }
 
   private colorButton(): HTMLButtonElement {
