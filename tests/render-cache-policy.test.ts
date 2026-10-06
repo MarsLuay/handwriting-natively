@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  DENSE_ZOOM_RASTER_FALLBACK_STROKES,
   deferredRenderDisposition,
   renderCacheBudget,
   renderCacheKey,
   renderCacheStale,
   repaintPlan,
+  shouldUseDenseZoomRasterFallback,
   retainAfterMemoryPressure
 } from "../src/runtime/renderCachePolicy";
 
@@ -42,6 +44,24 @@ describe("render cache policy", () => {
       mode: "dirty-region",
       rects: [{ minX: 1, minY: 2, maxX: 8, maxY: 9 }]
     });
+  });
+
+  it("keeps a dense captured raster for same-size zoom release frames", () => {
+    const input = {
+      canonicalZoomSettle: true,
+      strokeCount: DENSE_ZOOM_RASTER_FALLBACK_STROKES,
+      needsResize: false,
+      canBlit: true,
+      layerValid: true,
+      layerMatchesBacking: true,
+      erasingLive: false,
+      movingSelection: false,
+      livePreview: false
+    };
+    expect(shouldUseDenseZoomRasterFallback(input)).toBe(true);
+    expect(shouldUseDenseZoomRasterFallback({ ...input, strokeCount: input.strokeCount - 1 })).toBe(false);
+    expect(shouldUseDenseZoomRasterFallback({ ...input, needsResize: true })).toBe(false);
+    expect(shouldUseDenseZoomRasterFallback({ ...input, livePreview: true })).toBe(false);
   });
 
   it("cancels deferred HQ when the ink-layer epoch moves and still runs wet input", () => {

@@ -21,6 +21,33 @@ export type RepaintPlan =
 export type RenderStage = "wet" | "finalized" | "hq";
 export type RenderDisposition = "run" | "cancel";
 
+/** Dense pages keep their captured raster during the zoom release frame. */
+export const DENSE_ZOOM_RASTER_FALLBACK_STROKES = 32;
+
+export interface DenseZoomRasterFallbackInput {
+  readonly canonicalZoomSettle: boolean;
+  readonly strokeCount: number;
+  readonly needsResize: boolean;
+  readonly canBlit: boolean;
+  readonly layerValid: boolean;
+  readonly layerMatchesBacking: boolean;
+  readonly erasingLive: boolean;
+  readonly movingSelection: boolean;
+  readonly livePreview: boolean;
+}
+
+export function shouldUseDenseZoomRasterFallback(input: DenseZoomRasterFallbackInput): boolean {
+  return input.canonicalZoomSettle
+    && input.strokeCount >= DENSE_ZOOM_RASTER_FALLBACK_STROKES
+    && !input.needsResize
+    && input.canBlit
+    && input.layerValid
+    && input.layerMatchesBacking
+    && !input.erasingLive
+    && !input.movingSelection
+    && !input.livePreview;
+}
+
 export interface RasterCacheEntry {
   readonly id: string;
   readonly pageNumber: number;
