@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PinchGestureCleanup,
+  PINCH_STALE_CONTACT_MAX_AGE_MS,
   decideZoomBurstWatchdog,
   PostZoomInputTrace,
   classifyPostZoomFailure,
@@ -507,6 +508,35 @@ describe("PostZoomInputTrace", () => {
     expect(report.activePinchPointersAtSettle).toEqual([]);
     expect(report.activePinchTouchesAtSettle).toEqual([]);
     expect(pinch.consumePointerReconciliations()).toEqual([]);
+  });
+
+  it("prunes abandoned touches older than max age before a new burst and ignores them in active pinch count", () => {
+    const pinch = new PinchGestureCleanup();
+    pinch.observeTouch(101, "touchstart", 1_000);
+    pinch.beginBurst(1_100);
+    expect(pinch.activePinchCount(1_200).touches).toBe(1);
+
+    // After stale max age without events, activePinchCount excludes the contact
+    expect(pinch.activePinchCount(1_000 + PINCH_STALE_CONTACT_MAX_AGE_MS + 50).touches).toBe(0);
+
+    // A subsequent zoom burst at t=2,000 prunes the stale touch
+    const seed = pinch.beginBurst(2_000);
+    expect(seed.prunedBeforeBurstTouchIdentifiers).toEqual([101]);
+    expect(seed.pruned[0]).toMatchObject({
+      event: "stale-pinch-contact-pruned",
+      id: 101,
+      stream: "touch",
+      lastSeenAt: 1_000,
+      ageMs: 1_000,
+      reason: "stale-before-burst"
+    });
+    expect(seed.seededPinchTouchIdentifiers).toEqual([]);
+    expect(pinch.activePinchCount(2_000).touches).toBe(0);
+
+    // Settle evaluates quiescent immediately because stale touch was not seeded
+    const report = pinch.evaluate(2_010);
+    expect(report.quiescent).toBe(true);
+    expect(report.activePinchTouchesAtSettle).toEqual([]);
   });
 
   it("emits one browser identity regression after a pen stroke without calling touch a Pencil", () => {
