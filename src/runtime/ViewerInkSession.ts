@@ -1041,8 +1041,6 @@ export class ViewerInkSession {
   private textBoxTransformDrag: TextBoxTransformDrag | null = null;
   private textToolActive = false;
   private temporaryStylusEraserPointers = 0;
-  /** Hold Cmd/Ctrl while drawing to route the next gesture through Eraser. */
-  private readonly temporaryModifierEraserKeys = new Set<"Control" | "Meta">();
   private debugState: DebugState = {};
   private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
   /** Visual mobile PDF zoom is persistent CSS/container state, not PDF.js scale. */
@@ -8510,7 +8508,6 @@ export class ViewerInkSession {
     // selection outside this editor. Ctrl/Cmd+A stays with that text.
     // Ctrl/Cmd+Option+A selects the ink on the current page.
     if (this.destroyed) return false;
-    if (this.beginTemporaryEraserModifier(event)) return true;
     if (this.handleActiveTextEditorSelectAll(event)) {
       this.logKeyboardShortcut(event, "native-text", null, true);
       return true;
@@ -8597,38 +8594,6 @@ export class ViewerInkSession {
     if (!editor || !range || !selection || !editor.element.isConnected) return;
     selection.removeAllRanges();
     selection.addRange(range);
-  }
-
-  handleKeyUp(event: KeyboardEvent): boolean {
-    if (this.destroyed) return false;
-    const key = temporaryEraserModifierKey(event);
-    if (!key || !this.temporaryModifierEraserKeys.delete(key)) return false;
-    this.refreshTemporaryEraserChrome();
-    return true;
-  }
-
-  /** Window blur has no guaranteed modifier keyup; never leave the eraser stuck on. */
-  clearTemporaryEraserModifier(): void {
-    if (this.temporaryModifierEraserKeys.size === 0) return;
-    this.temporaryModifierEraserKeys.clear();
-    this.refreshTemporaryEraserChrome();
-  }
-
-  private beginTemporaryEraserModifier(event: KeyboardEvent): boolean {
-    const key = temporaryEraserModifierKey(event);
-    if (!key || !this.isAttached() || this.activeTextEditor || shouldIgnoreSelectionShortcut(event.target)) return false;
-    const wasActive = this.temporaryModifierEraserKeys.size > 0;
-    this.temporaryModifierEraserKeys.add(key);
-    if (!wasActive) this.refreshTemporaryEraserChrome();
-    return true;
-  }
-
-  private refreshTemporaryEraserChrome(): void {
-    const active = this.temporaryModifierEraserKeys.size > 0;
-    this.toolbar.element.classList.toggle("native-pdf-handwriting-temporary-eraser", active);
-    this.toolbar.element.dataset.temporaryTool = active ? "eraser" : "";
-    this.syncAnnotationCursorMode();
-    this.refreshSurfaceCursors();
   }
 
   private handleActiveTextEditorSelectAll(event: KeyboardEvent): boolean {
@@ -9207,7 +9172,7 @@ export class ViewerInkSession {
 
   /** Physical eraser tips temporarily route as Eraser without changing saved tool choice. */
   private activeTool(): ToolPreferences["activeTool"] {
-    return this.temporaryStylusEraserPointers > 0 || this.temporaryModifierEraserKeys.size > 0
+    return this.temporaryStylusEraserPointers > 0
       ? "eraser"
       : this.options.settings.toolPreferences.activeTool;
   }
@@ -16029,10 +15994,6 @@ export class ViewerInkSession {
 
 function inkInputType(pointerType: string): InkStroke["inputType"] {
   return pointerType === "pen" || pointerType === "touch" ? pointerType : "mouse";
-}
-
-function temporaryEraserModifierKey(event: KeyboardEvent): "Control" | "Meta" | null {
-  return event.key === "Control" || event.key === "Meta" ? event.key : null;
 }
 
 function samplePoints<T>(points: readonly T[], maxPoints: number): T[] {

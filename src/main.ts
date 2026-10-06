@@ -383,12 +383,6 @@ export default class NativePdfInkPlugin extends Plugin {
     this.registerDomEvent(window, "keydown", (event) => {
       this.activeSession()?.handleKeyDown(event, "window");
     }, { capture: true });
-    this.registerDomEvent(window, "keyup", (event) => {
-      for (const session of this.sessions.values()) session.handleKeyUp(event);
-    }, { capture: true });
-    this.registerDomEvent(window, "blur", () => {
-      for (const session of this.sessions.values()) session.clearTemporaryEraserModifier();
-    });
     void this.vaultDebugLog.writeUrgent("info", "plugin-onload", {
       mobile: Platform.isMobile,
       phone: Platform.isPhone,
