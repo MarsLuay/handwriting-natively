@@ -1,16 +1,10 @@
 import type { ToolbarPlacement } from "../model";
 
-/**
- * Mobile PDF chrome has little room for a top ink bar. Treat configured `main`
- * as `left` so the Draw toolbar docks beside the pages by default.
- */
+/** Keep the user's explicit toolbar location, defaulting invalid values to the PDF bar. */
 export function resolveToolbarPlacement(
-  configured: ToolbarPlacement | undefined,
-  mobile: boolean
+  configured: ToolbarPlacement | undefined
 ): ToolbarPlacement {
-  const placement = configured === "left" || configured === "right" || configured === "main"
+  return configured === "left" || configured === "right" || configured === "main"
     ? configured
     : "main";
-  if (mobile && placement === "main") return "left";
-  return placement;
 }

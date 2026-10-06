@@ -190,6 +190,29 @@ describe("viewer runtime tracer", () => {
     expect(blocked[1]?.error).toEqual(new Error("destroy failed"));
   });
 
+  it("mounts an explicitly selected PDF toolbar on mobile", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const mountToolbar = vi.spyOn(adapter, "mountToolbar");
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolbarPlacement = "main";
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings,
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: false })
+    });
+
+    expect(mountToolbar).toHaveBeenCalledWith(expect.any(HTMLElement), "main");
+    await session.destroy();
+  });
+
   it("destroys a constructed session when sidecar load fails before registration", async () => {
     const files = new MemoryFiles();
     const createOptions = (adapter: FakeAdapter, sidecars: SidecarRepository, recovery: RecoveryRepository) => ({
