@@ -840,6 +840,19 @@ interface PageSurface {
   viewportCullPending: boolean;
   /** Neighbor zoom settle used blit-stretch / lower backing; needs idle HQ upgrade. */
   settleUpgradePending: boolean;
+  /** Chunked HQ repaint kept off the release frame for very dense pages. */
+  deferredCanonicalPaint: {
+    strokes: readonly InkStroke[];
+    nextIndex: number;
+    pageRevision: number;
+    backingScale: number;
+    pixelWidth: number;
+    pixelHeight: number;
+    width: number;
+    height: number;
+    startedAt: number;
+  } | null;
+  deferredCanonicalPaintFrame: number | null;
   router: PointerRouter | null;
   mobileCustomPinch: MobilePdfCssZoomTransaction | null;
   pendingRouterHandoff: PointerRouterHandoff | null;
@@ -1248,6 +1261,8 @@ export class ViewerInkSession {
   private static readonly FLASH_DOUBLE_PAINT_MS = 50;
   /** Large pages use the captured layer for the release frame; HQ restamp follows off-frame. */
   private static readonly LARGE_ZOOM_RASTER_FALLBACK_STROKES = 32;
+  /** Chunk only pages large enough for the captured telemetry's ~1s vector walls. */
+  private static readonly DEFERRED_CANONICAL_CHUNK_STROKES = 128;
   private static readonly PIXEL_EVIDENCE_MAX_EDGE = 192;
   private readonly lastPagePaintAt = new Map<number, { at: number; reason: string }>();
   private pasteGeneration = 0;
@@ -1472,6 +1487,15 @@ export class ViewerInkSession {
     this.textContextMenu = new DropdownController(options.adapter.host.ownerDocument);
     this.autosave = new AutosaveQueue<SidecarSchemaV1>({
       delayMs: options.settings.autosaveDelayMs,
+      delayMsForSnapshot: (snapshot) => {
+        // Captured telemetry shows 300-stroke documents spending 223–1,549ms
+        // in sidecar writes. Give dense snapshots a quiet window so repeated
+        // short releases do not each start another blocking vault transaction.
+        const strokeCount = countSidecarStrokes(snapshot);
+        return strokeCount >= 128
+          ? Math.max(options.settings.autosaveDelayMs, 2_500)
+          : options.settings.autosaveDelayMs;
+      },
       retryFailed: options.settings.retryFailedAutosaves,
       write: async (_documentId, snapshot) => this.persist(snapshot, "autosave"),
       onStatus: (_documentId, status, error) => {
@@ -3223,6 +3247,91 @@ export class ViewerInkSession {
     }
   }
 
+
+  private scheduleDeferredCanonicalPaint(surface: PageSurface): void {
+    if (this.destroyed || surface.deferredCanonicalPaintFrame !== null) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) {
+      this.paintDeferredCanonicalChunk(surface);
+      return;
+    }
+    surface.deferredCanonicalPaintFrame = view.requestAnimationFrame(() => {
+      surface.deferredCanonicalPaintFrame = null;
+      this.paintDeferredCanonicalChunk(surface);
+    });
+  }
+
+  /** Paint a bounded number of dense-page strokes per frame, keeping the captured raster visible until complete. */
+  private paintDeferredCanonicalChunk(surface: PageSurface): void {
+    const job = surface.deferredCanonicalPaint;
+    if (this.destroyed || !job || !surface.inkLayer || !surface.inkLayerContext) return;
+    if (this.surfaceHasLiveInkInput(surface)) {
+      this.scheduleDeferredCanonicalPaint(surface);
+      return;
+    }
+    if (
+      this.ink.pageRevision(surface.page.pageNumber) !== job.pageRevision
+      || surface.inkLayer.width !== job.pixelWidth
+      || surface.inkLayer.height !== job.pixelHeight
+    ) {
+      surface.deferredCanonicalPaint = null;
+      surface.inkLayerValid = false;
+      surface.inkLayerBurstCapture = false;
+      surface.rasterFallbackReady = false;
+      surface.settleUpgradePending = false;
+      return;
+    }
+    const startedAt = performance.now();
+    const deadline = startedAt + this.frameTimingProfile().frameBudgetMs;
+    const layerContext = surface.inkLayerContext;
+    layerContext.setTransform(job.backingScale, 0, 0, job.backingScale, 0, 0);
+    let painted = 0;
+    while (job.nextIndex < job.strokes.length && (painted === 0 || performance.now() < deadline)) {
+      const stroke = job.strokes[job.nextIndex];
+      if (!stroke) {
+        job.nextIndex = job.strokes.length;
+        break;
+      }
+      this.paintCommittedStrokes(surface, layerContext, [stroke], undefined, "full");
+      job.nextIndex += 1;
+      painted += 1;
+    }
+    if (job.nextIndex < job.strokes.length) {
+      this.scheduleDeferredCanonicalPaint(surface);
+      return;
+    }
+    surface.deferredCanonicalPaint = null;
+    surface.inkLayerValid = true;
+    surface.inkLayerBackingScale = job.backingScale;
+    surface.inkLayerBurstCapture = false;
+    surface.inkLayerRevision = job.pageRevision;
+    surface.rasterFallbackReady = false;
+    surface.settleUpgradePending = false;
+    const blitPixels = this.blitInkLayerToCanvas(
+      surface,
+      job.pixelWidth,
+      job.pixelHeight,
+      job.backingScale
+    );
+    this.paintLaserTrails(surface, surface.page.pageNumber);
+    this.lastPagePaintAt.set(surface.page.pageNumber, { at: performance.now(), reason: "settle-upgrade" });
+    this.logger.renderProfile({
+      page: surface.page.pageNumber,
+      operation: "page-canonical-chunked",
+      reason: "settle-upgrade",
+      durationMs: roundMetric(performance.now() - job.startedAt),
+      chunkDurationMs: roundMetric(performance.now() - startedAt),
+      strokeCount: job.strokes.length,
+      vectorRepaintCount: job.strokes.length,
+      pageRevision: job.pageRevision,
+      cachedLayerRevision: surface.inkLayerRevision,
+      useLayerCache: true,
+      deferredCanonicalUpgrade: true,
+      blitMode: "full-layer",
+      blitPixels,
+      visiblePageCount: this.surfaces.size
+    });
+  }
 
   /** Paint pages deferred by viewport culling / cheap neighbor settle once handoff ends. */
   private scheduleViewportPaint(): void {
@@ -6087,6 +6196,16 @@ export class ViewerInkSession {
         // A dense page can keep the already-captured committed raster visible
         // while the final PDF-space vector rebase is queued after handoff.
         // This avoids blocking release on a multi-second HQ repaint.
+        const preserveExistingDeferredRaster = this.ink.page(pageNumber).length >= ViewerInkSession.DEFERRED_CANONICAL_CHUNK_STROKES
+          && surface.rasterFallbackReady
+          && surface.settleUpgradePending
+          && surface.canvas.width > 0
+          && surface.canvas.height > 0;
+        if (preserveExistingDeferredRaster) {
+          stats.deferredCanonicalPages += 1;
+          this.logZoomInkLayout(surface, "handoff-final", layouts.get(pageNumber), geometry.snapshots.get(pageNumber));
+          continue;
+        }
         const canDeferDenseRebase = this.ink.page(pageNumber).length >= ViewerInkSession.LARGE_ZOOM_RASTER_FALLBACK_STROKES
           && surface.inkLayerValid
           && !surface.inkLayerBurstCapture
@@ -6617,7 +6736,10 @@ export class ViewerInkSession {
     }
     this.refreshDepth += 1;
     this.reconcileSelection();
-    this.invalidateInkLayers();
+    // A refresh reattaches/synchronizes page chrome; it does not imply that
+    // committed ink pixels changed. Keep valid layer caches so a PDF.js DOM
+    // refresh becomes a blit instead of repainting every dense-page stroke.
+    this.renderEpoch += 1;
     this.logger.refresh(reason, {
       selected: this.selected.length,
       surfaces: this.surfaces.size,
@@ -6931,8 +7053,9 @@ export class ViewerInkSession {
 
   /**
    * Commit an eraser gesture into the cached layer without repainting every
-   * stroke on a dense page. The wet preview already isolated the small damaged
-   * regions; clear those regions and restamp only post-erase candidates.
+   * stroke on a dense page. Partial erasing can replay the same destination-out
+   * path into the cached layer; whole-stroke erasing retains the clipped
+   * candidate restamp fallback because pixels outside the path must disappear.
    */
   private patchCommittedErase(surface: PageSurface, command: ReplacePageStrokesCommand): boolean {
     if (
@@ -6940,7 +7063,6 @@ export class ViewerInkSession {
       || !surface.inkLayerValid
       || !surface.inkLayer
       || !surface.inkLayerContext
-      || typeof surface.inkLayerContext.clip !== "function"
       || !surface.inkLayer.width
       || !surface.inkLayer.height
       || surface.inkLayerBurstCapture
@@ -6984,36 +7106,53 @@ export class ViewerInkSession {
         maxY: Math.min(height, rect.maxY + padding)
       });
     }
-    const patches = patchLedger.drain();
+    const fastPath = surface.eraserWholeStrokes !== true
+      && surface.eraserSize !== undefined
+      && surface.editPath.length > 0;
     const mapper = this.mapper(surface);
+    if (fastPath) {
+      const points = surface.editPath.map((point) => mapper.toViewport(point));
+      const lineWidth = Math.max(1, surface.eraserSize! * this.displayScale(surface));
+      patchLedger.add(pathBoundsWithPadding(points, lineWidth / 2));
+    }
+    const patches = patchLedger.drain();
     const layerContext = surface.inkLayerContext;
     const startedAt = performance.now();
     let repaintedStrokes = 0;
+    let patchStrategy: "destination-out" | "candidate-restamp" = "candidate-restamp";
     surface.paintGeneration = ++this.nextPaintGeneration;
-    layerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
-    for (const patch of patches) {
-      if (patch.maxX <= patch.minX || patch.maxY <= patch.minY) continue;
-      layerContext.clearRect(patch.minX, patch.minY, patch.maxX - patch.minX, patch.maxY - patch.minY);
-      const pageCorners = [
-        mapper.toPage({ x: patch.minX, y: patch.minY }),
-        mapper.toPage({ x: patch.maxX, y: patch.minY }),
-        mapper.toPage({ x: patch.minX, y: patch.maxY }),
-        mapper.toPage({ x: patch.maxX, y: patch.maxY })
-      ];
-      const pageBounds: Bounds = {
-        minX: Math.min(...pageCorners.map((point) => point.x)),
-        minY: Math.min(...pageCorners.map((point) => point.y)),
-        maxX: Math.max(...pageCorners.map((point) => point.x)),
-        maxY: Math.max(...pageCorners.map((point) => point.y))
-      };
-      const candidates = this.ink.pageIntersecting(surface.page.pageNumber, pageBounds);
-      repaintedStrokes += candidates.length;
-      layerContext.save();
-      layerContext.beginPath();
-      layerContext.rect(patch.minX, patch.minY, patch.maxX - patch.minX, patch.maxY - patch.minY);
-      layerContext.clip();
-      this.paintCommittedStrokes(surface, layerContext, candidates);
-      layerContext.restore();
+    if (fastPath) {
+      const points = surface.editPath.map((point) => mapper.toViewport(point));
+      const lineWidth = Math.max(1, surface.eraserSize! * this.displayScale(surface));
+      this.wetRenderer.erase(surface.inkLayer, points, lineWidth, backingScale, new DamageLedger());
+      patchStrategy = "destination-out";
+    } else {
+      if (typeof layerContext.clip !== "function") return false;
+      layerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+      for (const patch of patches) {
+        if (patch.maxX <= patch.minX || patch.maxY <= patch.minY) continue;
+        layerContext.clearRect(patch.minX, patch.minY, patch.maxX - patch.minX, patch.maxY - patch.minY);
+        const pageCorners = [
+          mapper.toPage({ x: patch.minX, y: patch.minY }),
+          mapper.toPage({ x: patch.maxX, y: patch.minY }),
+          mapper.toPage({ x: patch.minX, y: patch.maxY }),
+          mapper.toPage({ x: patch.maxX, y: patch.maxY })
+        ];
+        const pageBounds: Bounds = {
+          minX: Math.min(...pageCorners.map((point) => point.x)),
+          minY: Math.min(...pageCorners.map((point) => point.y)),
+          maxX: Math.max(...pageCorners.map((point) => point.x)),
+          maxY: Math.max(...pageCorners.map((point) => point.y))
+        };
+        const candidates = this.ink.pageIntersecting(surface.page.pageNumber, pageBounds);
+        repaintedStrokes += candidates.length;
+        layerContext.save();
+        layerContext.beginPath();
+        layerContext.rect(patch.minX, patch.minY, patch.maxX - patch.minX, patch.maxY - patch.minY);
+        layerContext.clip();
+        this.paintCommittedStrokes(surface, layerContext, candidates);
+        layerContext.restore();
+      }
     }
     surface.inkLayerRevision = this.ink.pageRevision(surface.page.pageNumber);
     surface.inkLayerBackingScale = backingScale;
@@ -7034,6 +7173,7 @@ export class ViewerInkSession {
       cachedLayerRevision: surface.inkLayerRevision,
       patchCount: patches.length,
       damageSource,
+      patchStrategy,
       blitMode: "damage-region",
       blitRegionCount: patches.length,
       blitPixels,
@@ -9416,6 +9556,8 @@ export class ViewerInkSession {
       rasterFallbackReady: false,
       viewportCullPending: false,
       settleUpgradePending: false,
+      deferredCanonicalPaint: null,
+      deferredCanonicalPaintFrame: null,
       router: null,
       mobileCustomPinch: null,
       livePaintFrame: null,
@@ -12142,6 +12284,11 @@ export class ViewerInkSession {
   private releaseSurfaceBuffers(surface: PageSurface): void {
     this.cancelLivePaint(surface);
     this.cancelPaintAcknowledgement(surface);
+    if (surface.deferredCanonicalPaintFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(surface.deferredCanonicalPaintFrame);
+      surface.deferredCanonicalPaintFrame = null;
+    }
+    surface.deferredCanonicalPaint = null;
     this.endWetPreview(surface);
     surface.canvas.width = 0;
     surface.canvas.height = 0;
@@ -14420,6 +14567,11 @@ export class ViewerInkSession {
   }
 
   private invalidateInkLayer(surface: PageSurface): void {
+    if (surface.deferredCanonicalPaintFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(surface.deferredCanonicalPaintFrame);
+      surface.deferredCanonicalPaintFrame = null;
+    }
+    surface.deferredCanonicalPaint = null;
     surface.inkLayerValid = false;
     surface.inkLayerBackingScale = null;
     surface.inkLayerBurstCapture = false;
@@ -14964,6 +15116,38 @@ export class ViewerInkSession {
       const pageRevision = this.ink.pageRevision(pageNumber);
       const canonicalLayerRepaint = canonicalZoomSettle
         && (surface.inkLayerBurstCapture || surface.inkLayerRevision !== pageRevision);
+      if (surface.deferredCanonicalPaint && reason === "settle-upgrade") {
+        this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: "settle-upgrade-deferred" });
+        return true;
+      }
+      const canChunkCanonicalUpgrade = reason === "settle-upgrade"
+        && surface.rasterFallbackReady
+        && surface.settleUpgradePending
+        && surface.inkLayerBurstCapture
+        && visibleStrokes.length >= ViewerInkSession.DEFERRED_CANONICAL_CHUNK_STROKES;
+      if (canChunkCanonicalUpgrade) {
+        layerContext.clearRect(0, 0, width, height);
+        surface.inkLayerValid = false;
+        surface.inkLayerBackingScale = backingScale;
+        surface.inkLayerBurstCapture = true;
+        surface.inkLayerRevision = pageRevision;
+        surface.deferredCanonicalPaint = {
+          strokes: visibleStrokes,
+          nextIndex: 0,
+          pageRevision,
+          backingScale,
+          pixelWidth,
+          pixelHeight,
+          width,
+          height,
+          startedAt: performance.now()
+        };
+        this.scheduleDeferredCanonicalPaint(surface);
+        this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: "settle-upgrade-deferred" });
+        surface.viewportCullPending = false;
+        if (syncText) this.renderTextAnnotations(surface);
+        return true;
+      }
       if (!surface.inkLayerValid || canonicalLayerRepaint) {
         const layerPaintStartedAt = performance.now();
         layerContext.clearRect(0, 0, width, height);

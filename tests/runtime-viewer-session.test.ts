@@ -443,7 +443,11 @@ describe("viewer runtime tracer", () => {
     settings.toolPreferences.eraser.size = 1_000;
     adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150));
     const erasePatch = [...debug.mock.calls, ...warn.mock.calls].find((call) => call[1] === "ink render profile" && (call[2] as { operation?: string }).operation === "erase-patch");
-    expect(erasePatch?.[2]).toMatchObject({ operation: "erase-patch", damageSource: "path-bounds" });
+    expect(erasePatch?.[2]).toMatchObject({
+      operation: "erase-patch",
+      damageSource: "path-bounds",
+      patchStrategy: "destination-out"
+    });
     await session.manualSave();
     const erasedSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(JSON.parse(erasedSidecar![1]).pages[0].strokes).toHaveLength(3);
@@ -3181,6 +3185,7 @@ describe("viewer runtime tracer", () => {
       refresh(reason: string): void;
       invalidateInkLayers(): void;
       ink: { all(): unknown[] };
+      surfaces: Map<number, { inkLayerValid: boolean }>;
     };
     const refresh = vi.spyOn(internal, "refresh");
     const invalidateAll = vi.spyOn(internal, "invalidateInkLayers");
@@ -3192,6 +3197,9 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerup", 220, 240));
 
     expect(internal.ink.all()).toHaveLength(1);
+    expect(internal.surfaces.get(1)?.inkLayerValid).toBe(true);
+    internal.refresh("pdfjs-refresh");
+    expect(internal.surfaces.get(1)?.inkLayerValid).toBe(true);
     expect(refresh).not.toHaveBeenCalledWith("history");
     expect(invalidateAll).not.toHaveBeenCalled();
 
