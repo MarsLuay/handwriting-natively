@@ -637,9 +637,9 @@ interface StrokeRenderLifecycleState {
 
 interface StrokePersistenceLifecycleState {
   strokeId: string;
-  lastSerializationRevision: string | null;
+  lastSerializedVersionByStore: Record<"recovery" | "sidecar", string | null>;
   lastSerializationOmissionRevision: string | null;
-  lastPersistedRevision: string | null;
+  lastPersistedVersion: string | null;
 }
 
 interface PixelEvidenceRegion {
@@ -955,6 +955,7 @@ interface ZoomReleaseGate {
   replacementInkReady: boolean;
   stableRafReady: boolean;
   timeoutReached: boolean;
+  absoluteTimeoutReached: boolean;
   ready: boolean;
 }
 
@@ -1193,6 +1194,8 @@ export class ViewerInkSession {
   private readonly lastInkVisibilityByPage = new Map<number, InkVisibilitySnapshot>();
   private zoomCompositeReleaseTimer: number | null = null;
   private zoomCompositeSettledAt = 0;
+  private lastZoomReleaseGateLogSignature: string | null = null;
+  private lastZoomReleaseGateLogAt = 0;
   private lastZoomHandoffSettledAt = 0;
   private zoomNativeContentMutations = 0;
   private lastZoomNativeContentAt = 0;
@@ -1266,8 +1269,10 @@ export class ViewerInkSession {
   private static readonly ZOOM_NATIVE_RENDER_GRACE_MS = 500;
   /** Do not release during the tail of a native page-content replacement burst. */
   private static readonly ZOOM_NATIVE_RENDER_QUIET_MS = 120;
-  /** Recheck unresolved release-gate dependencies without a fixed release tail. */
+  /** Recheck unresolved release-gate dependencies while the compositor is held. */
   private static readonly ZOOM_RELEASE_GATE_RETRY_MS = 32;
+  /** Never leave stale zoom chrome/timers alive when replacement evidence cannot converge. */
+  private static readonly ZOOM_RELEASE_ABSOLUTE_TIMEOUT_MS = 1_500;
   /** Detect back-to-back page paints during handoff (flash proxy). */
   private static readonly FLASH_DOUBLE_PAINT_MS = 50;
   /** Large pages use the captured layer for the release frame; HQ restamp follows off-frame. */
@@ -5326,6 +5331,8 @@ export class ViewerInkSession {
     this.cancelZoomCompositeRelease();
     this.cancelZoomSettleSlice();
     this.zoomCompositeSettledAt = 0;
+    this.lastZoomReleaseGateLogSignature = null;
+    this.lastZoomReleaseGateLogAt = 0;
     this.zoomNativeContentMutations = 0;
     this.lastZoomNativeContentAt = 0;
     this.zoomHandoffNeedsFinalRebase = false;
@@ -5392,8 +5399,13 @@ export class ViewerInkSession {
       (latest, signal) => signal.lastAt === null ? latest : Math.max(latest ?? signal.lastAt, signal.lastAt),
       null
     );
+    const sinceSettleMs = this.zoomCompositeSettledAt > 0
+      ? now - this.zoomCompositeSettledAt
+      : 0;
     const timeoutReached = this.zoomCompositeSettledAt > 0
-      && now - this.zoomCompositeSettledAt >= ViewerInkSession.ZOOM_NATIVE_RENDER_GRACE_MS;
+      && sinceSettleMs >= ViewerInkSession.ZOOM_NATIVE_RENDER_GRACE_MS;
+    const absoluteTimeoutReached = this.zoomCompositeSettledAt > 0
+      && sinceSettleMs >= ViewerInkSession.ZOOM_RELEASE_ABSOLUTE_TIMEOUT_MS;
     const nativeRenderSignalReady = nativeRenderSignalCount > 0 || timeoutReached;
     const nativeContentQuiet = this.lastZoomNativeContentAt === 0
       || now - this.lastZoomNativeContentAt >= ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS;
@@ -5409,6 +5421,7 @@ export class ViewerInkSession {
       replacementInkReady: replacementReady,
       stableRafReady,
       timeoutReached,
+      absoluteTimeoutReached,
       ready: inputTerminalsReady
         && nativeRenderSignalReady
         && nativeContentQuiet
@@ -5435,15 +5448,26 @@ export class ViewerInkSession {
     return Math.max(0, nextAt - now);
   }
 
-  private releaseZoomCompositeAfterNativeRender(): void {
-    if (this.destroyed) return;
-    const view = this.options.adapter.host.ownerDocument.defaultView;
-    this.cancelZoomCompositeRelease();
-    const now = performance.now();
-    const gate = this.zoomReleaseGate(now);
-    const delayMs = this.zoomReleaseGateDelayMs(now, gate);
+  private logZoomReleaseGate(now: number, gate: ZoomReleaseGate, delayMs: number, stage: "timer" | "stable-raf"): void {
+    const signature = [
+      gate.inputTerminalsReady,
+      gate.inputTerminalTimedOut,
+      gate.nativeRenderSignalReady,
+      gate.nativeRenderSignalCount,
+      gate.nativeContentQuiet,
+      gate.replacementInkReady,
+      gate.timeoutReached,
+      gate.absoluteTimeoutReached
+    ].join(":");
+    if (
+      signature === this.lastZoomReleaseGateLogSignature
+      && now - this.lastZoomReleaseGateLogAt < 1_000
+    ) return;
+    this.lastZoomReleaseGateLogSignature = signature;
+    this.lastZoomReleaseGateLogAt = now;
     this.logger.zoomComposite("release-scheduled", {
       pages: this.surfaces.size,
+      stage,
       delayMs: roundMs(delayMs),
       nativeContentMutations: this.zoomNativeContentMutations,
       sinceSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null,
@@ -5456,12 +5480,67 @@ export class ViewerInkSession {
       replacementInkReady: gate.replacementInkReady,
       stableRafReady: gate.stableRafReady,
       timeoutReached: gate.timeoutReached,
+      absoluteTimeoutReached: gate.absoluteTimeoutReached,
       gateReadyBeforeStableRaf: gate.ready
     });
+  }
+
+  /**
+   * Once native/render/input gates are quiet, the canvas already held under the
+   * compositor is a safe bounded fallback. Preserve it for release and rebuild
+   * canonical vectors through the existing idle viewport painter.
+   */
+  private retainZoomRasterForTimedOutRelease(): number[] {
+    const activePageNumber = this.options.adapter.getViewState().pageNumber;
+    const recoveredPages: number[] = [];
+    for (const [pageNumber, surface] of this.surfaces) {
+      if (this.ink.page(pageNumber).length === 0) continue;
+      if (surface.inkLayerValid && !surface.inkLayerBurstCapture) continue;
+      if (surface.rasterFallbackReady) continue;
+      const geometryUnavailable = !surface.overlay.isConnected
+        || !surface.canvas.isConnected
+        || surface.canvas.width <= 0
+        || surface.canvas.height <= 0;
+      if (geometryUnavailable) {
+        if (pageNumber === activePageNumber) surface.viewportCullPending = true;
+        continue;
+      }
+      surface.rasterFallbackReady = true;
+      surface.settleUpgradePending = true;
+      recoveredPages.push(pageNumber);
+    }
+    if (recoveredPages.length > 0) {
+      this.logger.zoomFlashProxy("release-timeout-retained-raster", {
+        pages: recoveredPages,
+        sinceSettleMs: this.zoomCompositeSettledAt > 0
+          ? roundMs(performance.now() - this.zoomCompositeSettledAt)
+          : null
+      });
+    }
+    return recoveredPages;
+  }
+
+  private releaseZoomCompositeAfterNativeRender(): void {
+    if (this.destroyed) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    this.cancelZoomCompositeRelease();
+    const now = performance.now();
+    const gate = this.zoomReleaseGate(now);
+    const delayMs = this.zoomReleaseGateDelayMs(now, gate);
+    this.logZoomReleaseGate(now, gate, delayMs, "timer");
     if (!view) {
       this.rebaseZoomAfterNativeRender();
-      const fallbackGate = this.zoomReleaseGate(performance.now(), true);
+      let fallbackGate = this.zoomReleaseGate(performance.now(), true);
+      if (!fallbackGate.ready && fallbackGate.timeoutReached && !fallbackGate.replacementInkReady) {
+        this.retainZoomRasterForTimedOutRelease();
+        fallbackGate = this.zoomReleaseGate(performance.now(), true);
+      }
       if (fallbackGate.ready) this.releaseZoomCompositeLayers();
+      else if (
+        fallbackGate.absoluteTimeoutReached
+        && fallbackGate.inputTerminalsReady
+        && fallbackGate.nativeContentQuiet
+      ) this.releaseZoomCompositeLayers(true);
       return;
     }
     this.zoomCompositeReleaseTimer = window.setTimeout(() => {
@@ -5472,31 +5551,32 @@ export class ViewerInkSession {
         if (this.destroyed || this.zoomCompositing) return;
         this.rebaseZoomAfterNativeRender();
         const stableAt = performance.now();
-        const stableGate = this.zoomReleaseGate(stableAt, true);
+        let stableGate = this.zoomReleaseGate(stableAt, true);
+        if (!stableGate.ready && stableGate.timeoutReached && !stableGate.replacementInkReady) {
+          this.retainZoomRasterForTimedOutRelease();
+          stableGate = this.zoomReleaseGate(performance.now(), true);
+        }
         this.zoomNativeHandoffTrace.noteStableRaf({
           at: stableAt,
           compositorHeld: !stableGate.ready,
           phase: this.nativeHandoffPhase()
         });
-        this.logger.zoomComposite("release-scheduled", {
-          pages: this.surfaces.size,
-          delayMs: 0,
-          nativeContentMutations: this.zoomNativeContentMutations,
-          sinceSettleMs: this.zoomCompositeSettledAt > 0
-            ? roundMs(stableAt - this.zoomCompositeSettledAt)
-            : null,
-          inputTerminalsReady: stableGate.inputTerminalsReady,
-          inputTerminalTimedOut: stableGate.inputTerminalTimedOut,
-          nativeRenderSignalReady: stableGate.nativeRenderSignalReady,
-          nativeRenderSignalCount: stableGate.nativeRenderSignalCount,
-          nativeRenderSignalAt: stableGate.nativeRenderSignalAt,
-          nativeContentQuiet: stableGate.nativeContentQuiet,
-          replacementInkReady: stableGate.replacementInkReady,
-          stableRafReady: true,
-          timeoutReached: stableGate.timeoutReached,
-          gateReadyBeforeStableRaf: stableGate.ready
-        });
+        this.logZoomReleaseGate(stableAt, stableGate, 0, "stable-raf");
         if (!stableGate.ready) {
+          if (
+            stableGate.absoluteTimeoutReached
+            && stableGate.inputTerminalsReady
+            && stableGate.nativeContentQuiet
+          ) {
+            this.logger.zoomFlashProxy("release-gate-absolute-timeout", {
+              pages: this.surfaces.size,
+              replacementInkReady: stableGate.replacementInkReady,
+              nativeContentQuiet: stableGate.nativeContentQuiet,
+              inputTerminalsReady: stableGate.inputTerminalsReady
+            });
+            this.releaseZoomCompositeLayers(true);
+            return;
+          }
           this.releaseZoomCompositeAfterNativeRender();
           return;
         }
@@ -5858,10 +5938,10 @@ export class ViewerInkSession {
     if (this.pageMutationShieldSettledAt > 0) this.schedulePageMutationShieldRelease();
   }
 
-  private releaseZoomCompositeLayers(): void {
+  private releaseZoomCompositeLayers(forceAfterTimeout = false): void {
     const nativeContentQuiet = this.lastZoomNativeContentAt === 0
       || performance.now() - this.lastZoomNativeContentAt >= ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS;
-    if (!nativeContentQuiet && !this.destroyed) {
+    if (!nativeContentQuiet && !forceAfterTimeout && !this.destroyed) {
       this.logger.zoomComposite("release-scheduled", {
         pages: this.surfaces.size,
         delayMs: ViewerInkSession.ZOOM_RELEASE_GATE_RETRY_MS,
@@ -5879,7 +5959,7 @@ export class ViewerInkSession {
     // become a second visible refresh after the overlay is removed.
     this.flushPendingMobileScrollRemount();
     this.recordInkVisibility("after-final-canonical");
-    if (!this.replacementInkReady(true) && !this.destroyed) {
+    if (!this.replacementInkReady(true) && !forceAfterTimeout && !this.destroyed) {
       this.logger.zoomComposite("release-scheduled", {
         pages: this.surfaces.size,
         delayMs: ViewerInkSession.ZOOM_RELEASE_GATE_RETRY_MS,
@@ -5924,7 +6004,8 @@ export class ViewerInkSession {
     this.logger.zoomComposite("release", {
       pages: this.surfaces.size,
       nativeContentMutations: this.zoomNativeContentMutations,
-      heldAfterSettleMs
+      heldAfterSettleMs,
+      forceAfterTimeout
     });
     this.postZoomTrace.remember("zoom-release", {
       pages: this.surfaces.size,
@@ -5943,6 +6024,8 @@ export class ViewerInkSession {
       heldAfterSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null
     });
     this.zoomCompositeSettledAt = 0;
+    this.lastZoomReleaseGateLogSignature = null;
+    this.lastZoomReleaseGateLogAt = 0;
     this.zoomHandoffNeedsFinalRebase = false;
     this.lastZoomFrameAttributionSummary = this.zoomFrameDiagnostics.finish();
     // Strict settle may have deferred off-screen pages; idle-margin prefetch once handoff ends.
@@ -11576,8 +11659,9 @@ export class ViewerInkSession {
       for (const stroke of page.strokes) {
         serializedIds.add(stroke.id);
         const state = this.strokePersistenceState(stroke.id);
-        if (state.lastSerializationRevision === revision) continue;
-        state.lastSerializationRevision = revision;
+        const strokeVersion = `${stroke.updatedAt}:${stroke.points.length}:${stroke.eraseMasks?.length ?? 0}`;
+        if (state.lastSerializedVersionByStore[store] === strokeVersion) continue;
+        state.lastSerializedVersionByStore[store] = strokeVersion;
         this.logger.strokeLifecycle("stroke-serialization-included", {
           strokeId: stroke.id,
           penContactId: this.strokePenContactIds.get(stroke.id) ?? null,
@@ -11616,8 +11700,9 @@ export class ViewerInkSession {
     for (const page of snapshot.pages) {
       for (const stroke of page.strokes) {
         const state = this.strokePersistenceState(stroke.id);
-        if (state.lastPersistedRevision === snapshot.updatedAt) continue;
-        state.lastPersistedRevision = snapshot.updatedAt;
+        const strokeVersion = `${stroke.updatedAt}:${stroke.points.length}:${stroke.eraseMasks?.length ?? 0}`;
+        if (state.lastPersistedVersion === strokeVersion) continue;
+        state.lastPersistedVersion = strokeVersion;
         this.logger.strokeLifecycle("stroke-persisted", {
           strokeId: stroke.id,
           penContactId: this.strokePenContactIds.get(stroke.id) ?? null,
@@ -11644,9 +11729,9 @@ export class ViewerInkSession {
     }
     const state: StrokePersistenceLifecycleState = {
       strokeId,
-      lastSerializationRevision: null,
+      lastSerializedVersionByStore: { recovery: null, sidecar: null },
       lastSerializationOmissionRevision: null,
-      lastPersistedRevision: null
+      lastPersistedVersion: null
     };
     this.strokePersistenceStates.set(strokeId, state);
     return state;
@@ -11735,30 +11820,19 @@ export class ViewerInkSession {
     }
   }
 
-  private strokeCachePixelEvidence(surface: PageSurface, stroke: InkStroke): {
+  private strokeCachePixelEvidence(_surface: PageSurface, _stroke: InkStroke): {
     inkLayer: PixelEvidenceSample;
     canvas: PixelEvidenceSample;
   } {
-    const unavailable = (reason: string): PixelEvidenceSample => ({
+    const reason = this.logger.isEnabled() ? "deferred-off-commit-path" : "diagnostics-disabled";
+    const unavailable: PixelEvidenceSample = {
       available: false,
       pixelCount: 0,
       nonTransparentPixels: 0,
       alphaSum: 0,
       reason
-    });
-    if (!this.logger.isEnabled()) {
-      return { inkLayer: unavailable("diagnostics-disabled"), canvas: unavailable("diagnostics-disabled") };
-    }
-    const canvasRegion = this.pixelEvidenceRegion(surface, stroke, surface.canvas);
-    const canvas = this.readPixelEvidence(surface.context, surface.canvas, canvasRegion);
-    const inkLayer = surface.inkLayer && surface.inkLayerContext
-      ? this.readPixelEvidence(
-        surface.inkLayerContext,
-        surface.inkLayer,
-        this.pixelEvidenceRegion(surface, stroke, surface.inkLayer)
-      )
-      : unavailable("ink-layer-unavailable");
-    return { inkLayer, canvas };
+    };
+    return { inkLayer: unavailable, canvas: unavailable };
   }
 
   private recordStrokeCacheHandoff(
@@ -11819,15 +11893,18 @@ export class ViewerInkSession {
     };
   }
 
-  private beginStrokePixelEvidence(surface: PageSurface, stroke: InkStroke, canvas: HTMLCanvasElement, context: CanvasRenderingContext2D): void {
+  private beginStrokePixelEvidence(surface: PageSurface, stroke: InkStroke, canvas: HTMLCanvasElement, _context: CanvasRenderingContext2D): void {
     if (!this.logger.isEnabled()) return;
     const state = this.strokePixelEvidenceState(stroke.id);
-    // Evidence is diagnostic only. One bounded sample per canvas generation is
-    // enough; sampling every incremental paint generation performs synchronous
-    // getImageData calls on the pointer-release path.
     if (state.canvasGeneration === surface.canvasGeneration && state.region) return;
     const region = this.pixelEvidenceRegion(surface, stroke, canvas);
-    const before = this.readPixelEvidence(context, canvas, region);
+    const before: PixelEvidenceSample = {
+      available: false,
+      pixelCount: region ? region.width * region.height : 0,
+      nonTransparentPixels: 0,
+      alphaSum: 0,
+      reason: "deferred-to-delayed-verification"
+    };
     state.paintGeneration = surface.paintGeneration;
     state.canvasGeneration = surface.canvasGeneration;
     state.region = region;
@@ -11839,31 +11916,28 @@ export class ViewerInkSession {
     });
   }
 
-  private finishStrokePixelEvidence(surface: PageSurface, stroke: InkStroke, canvas: HTMLCanvasElement, context: CanvasRenderingContext2D): void {
+  private finishStrokePixelEvidence(surface: PageSurface, stroke: InkStroke, canvas: HTMLCanvasElement, _context: CanvasRenderingContext2D): void {
     if (!this.logger.isEnabled()) return;
     const state = this.strokePixelEvidenceState(stroke.id);
     if (state.paintGeneration !== surface.paintGeneration || !state.region) return;
-    const after = this.readPixelEvidence(context, canvas, state.region);
+    const after: PixelEvidenceSample = {
+      available: false,
+      pixelCount: state.region.width * state.region.height,
+      nonTransparentPixels: 0,
+      alphaSum: 0,
+      reason: "deferred-to-delayed-verification"
+    };
     const before = state.before;
-    const positiveDelta = Boolean(before?.available && after.available)
-      && (after.alphaSum > (before?.alphaSum ?? 0) || after.nonTransparentPixels > (before?.nonTransparentPixels ?? 0));
     const visibleTarget = canvas === surface.canvas && canvas.isConnected;
-    const verified = visibleTarget && after.available && after.nonTransparentPixels > 0 && positiveDelta;
     this.logger.strokeLifecycle("stroke-pixel-region-post", {
       ...this.pixelEvidenceDetails(stroke, surface, state.region, after, visibleTarget ? "committed-canvas" : "ink-layer"),
       samplePhase: "after",
       beforePixelEvidenceAvailable: before?.available ?? false,
       beforeNonTransparentPixels: before?.nonTransparentPixels ?? 0,
       beforeAlphaSum: before?.alphaSum ?? 0,
-      pixelPresenceObserved: after.available && after.nonTransparentPixels > 0,
-      pixelVisibilityVerified: verified,
-      ...(verified ? {} : {
-        reason: !before?.available ? "pre-sample-unavailable"
-          : !after.available ? "post-sample-unavailable"
-            : !visibleTarget ? "render-target-not-connected"
-              : after.nonTransparentPixels === 0 ? "no-pixels-present"
-                : "no-positive-pixel-delta"
-      })
+      pixelPresenceObserved: false,
+      pixelVisibilityVerified: false,
+      reason: "deferred-to-delayed-verification"
     });
     this.scheduleStrokePixelPresenceVerification(stroke.id, stroke.page);
   }
