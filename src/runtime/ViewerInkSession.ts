@@ -824,10 +824,13 @@ interface PageSurface {
   draftCanvas: HTMLCanvasElement;
   /** Predicted pen samples stay separate so releasing never has to erase them from the final draft. */
   predictionCanvas: HTMLCanvasElement;
+  /** Selection/lasso chrome is isolated from committed ink so pointer moves do not blit the page. */
+  selectionCanvas: HTMLCanvasElement;
   textLayer: HTMLElement;
   context: CanvasRenderingContext2D;
   draftContext: CanvasRenderingContext2D;
   predictionContext: CanvasRenderingContext2D;
+  selectionContext: CanvasRenderingContext2D;
   /** Committed-stroke cache — blit for live draw + zoom settle before HQ rebuild. */
   inkLayer: HTMLCanvasElement | null;
   inkLayerContext: CanvasRenderingContext2D | null;
@@ -6865,6 +6868,11 @@ export class ViewerInkSession {
     for (const surface of this.surfaces.values()) {
       surface.router?.syncToolState();
       this.renderTextAnnotations(surface);
+      // Selection remains available for move/copy/delete shortcuts, but its
+      // blue pixels are transient lasso chrome and must disappear immediately
+      // when the user switches to a drawing tool.
+      if (this.activeTool() === "lasso") this.renderSelectionChrome(surface);
+      else this.clearSelectionChrome(surface);
     }
     this.syncTouchDrawPolicy(reason);
     this.syncAnnotationCursorMode();
@@ -9662,6 +9670,10 @@ export class ViewerInkSession {
     predictionCanvas.className = "native-pdf-handwriting-prediction-canvas";
     predictionCanvas.setAttribute("aria-hidden", "true");
     overlay.append(predictionCanvas);
+    const selectionCanvas = createDetachedEl(overlay.ownerDocument, 'canvas');
+    selectionCanvas.className = "native-pdf-handwriting-selection-canvas";
+    selectionCanvas.setAttribute("aria-hidden", "true");
+    overlay.append(selectionCanvas);
     const textLayer = createDetachedDiv(overlay.ownerDocument);
     textLayer.className = "native-pdf-handwriting-text-layer";
     overlay.append(textLayer);
@@ -9671,16 +9683,20 @@ export class ViewerInkSession {
     if (!draftContext) throw new Error("Canvas 2D rendering is unavailable");
     const predictionContext = predictionCanvas.getContext("2d");
     if (!predictionContext) throw new Error("Canvas 2D rendering is unavailable");
+    const selectionContext = selectionCanvas.getContext("2d");
+    if (!selectionContext) throw new Error("Canvas 2D rendering is unavailable");
     const surface: PageSurface = {
       page,
       overlay,
       canvas,
       draftCanvas,
       predictionCanvas,
+      selectionCanvas,
       textLayer,
       context,
       draftContext,
       predictionContext,
+      selectionContext,
       canvasGeneration: 0,
       paintGeneration: 0,
       inkLayer: null,
@@ -12265,7 +12281,15 @@ export class ViewerInkSession {
       stabilization = painted.stabilization;
       draftResized = painted.draftResized;
     } else if (surface.editTool === "eraser") eraserPreview = this.renderLiveEraserPreview(surface);
-    else this.renderPage(surface.page.pageNumber, undefined, "live-edit", pending.syncText);
+    else if (this.moveDrag?.page === surface.page.pageNumber) {
+      // Moving an existing selection needs the translated ink preview; unlike
+      // a fresh lasso outline it cannot be represented by chrome alone.
+      this.renderPage(surface.page.pageNumber, undefined, "live-edit", pending.syncText);
+    } else {
+      // Lasso chrome has its own canvas. Updating it avoids blitting/repainting
+      // every committed stroke for each high-rate pointermove.
+      this.renderLiveLassoPreview(surface);
+    }
     const completedAt = performance.now();
     if (pending.kind === "draw") {
       const profile = surface.strokePerformance;
@@ -12443,6 +12467,8 @@ export class ViewerInkSession {
     surface.draftCanvas.height = 0;
     surface.predictionCanvas.width = 0;
     surface.predictionCanvas.height = 0;
+    surface.selectionCanvas.width = 0;
+    surface.selectionCanvas.height = 0;
     surface.liveDrawPageBounds = null;
     surface.liveDrawPreviewStrokeId = null;
     if (surface.inkLayer) {
@@ -14107,7 +14133,11 @@ export class ViewerInkSession {
       this.syncFindBridgePage(surface.page.pageNumber);
       return;
     }
-    const selected = new Set(this.selectedTexts.map((text) => text.id));
+    const selected = new Set(
+      this.activeTool() === "lasso" || this.activeTool() === "text"
+        ? this.selectedTexts.map((text) => text.id)
+        : []
+    );
     if (this.syncCurrentTextBoxes(surface, annotations, selected)) return;
     const boxes = annotations.map((annotation) => {
       const box = createDetachedDiv(surface.overlay.ownerDocument);
@@ -14971,7 +15001,10 @@ export class ViewerInkSession {
       for (const stroke of strokes) {
         const drawn = this.movePreview?.find((item) => item.id === stroke.id) ?? stroke;
         this.beginStrokePixelEvidence(surface, stroke, targetCanvas, context);
-        this.drawStroke(surface, drawn, this.selected.some((item) => item.id === stroke.id));
+        // Selection chrome is painted on its disposable overlay. Keeping the
+        // canonical layer free of blue selection pixels lets a tool change
+        // clear chrome without repainting every committed stroke.
+        this.drawStroke(surface, drawn, false);
         this.recordStrokeRendered(surface, stroke);
         this.finishStrokePixelEvidence(surface, stroke, targetCanvas, context);
       }
@@ -15052,12 +15085,8 @@ export class ViewerInkSession {
       surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
       this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
       const drawingLasso = surface.editTool === "lasso" && surface.editPath.length > 0;
-      const drawingSelection = Boolean(this.selectionShape && this.selectionPage === pageNumber) && !drawingLasso;
-      surface.canvas.classList.toggle("is-selection-chrome-raised", drawingLasso || drawingSelection);
-      if (drawingLasso) this.drawLassoPreview(surface);
-      else if (drawingSelection && this.selectionShape) {
-        this.drawSelectionShape(surface, this.moveShapePreview ?? this.selectionShape, { closeFreeform: true });
-      }
+      if (drawingLasso) this.renderLiveLassoPreview(surface);
+      else this.renderSelectionChrome(surface);
       this.paintLaserTrails(surface, pageNumber);
       if (syncText) this.renderTextAnnotations(surface);
       if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
@@ -15154,12 +15183,8 @@ export class ViewerInkSession {
         this.recordStrokeZoomSettleCheck(surface, settledStrokes, settledStrokes, reason);
       }
       const drawingLasso = surface.editTool === "lasso" && surface.editPath.length > 0;
-      const drawingSelection = Boolean(this.selectionShape && this.selectionPage === pageNumber) && !drawingLasso;
-      surface.canvas.classList.toggle("is-selection-chrome-raised", drawingLasso || drawingSelection);
-      if (drawingLasso) this.drawLassoPreview(surface);
-      else if (drawingSelection && this.selectionShape) {
-        this.drawSelectionShape(surface, this.moveShapePreview ?? this.selectionShape, { closeFreeform: true });
-      }
+      if (drawingLasso) this.renderLiveLassoPreview(surface);
+      else this.renderSelectionChrome(surface);
       this.paintLaserTrails(surface, pageNumber);
       if (syncText) this.renderTextAnnotations(surface);
       if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
@@ -15363,16 +15388,8 @@ export class ViewerInkSession {
       this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
       surface.viewportCullPending = false;
       const drawingLassoNeighbor = surface.editTool === "lasso" && surface.editPath.length > 0;
-      const drawingSelectionNeighbor = Boolean(this.selectionShape && this.selectionPage === pageNumber)
-        && !drawingLassoNeighbor;
-      surface.canvas.classList.toggle(
-        "is-selection-chrome-raised",
-        drawingLassoNeighbor || drawingSelectionNeighbor
-      );
-      if (drawingLassoNeighbor) this.drawLassoPreview(surface);
-      else if (drawingSelectionNeighbor && this.selectionShape) {
-        this.drawSelectionShape(surface, this.moveShapePreview ?? this.selectionShape, { closeFreeform: true });
-      }
+      if (drawingLassoNeighbor) this.renderLiveLassoPreview(surface);
+      else this.renderSelectionChrome(surface);
       this.paintLaserTrails(surface, pageNumber);
       if (syncText) this.renderTextAnnotations(surface);
       if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
@@ -15469,16 +15486,11 @@ export class ViewerInkSession {
     surface.settleUpgradePending = false;
 
     // Lasso/selection chrome is painted on the ink canvas (under the text layer
-    // by default). Raise the canvas while that chrome is visible so text boxes
-    // do not cover the outline — same look for ink-only and text selections.
+    // by default). Selection/lasso chrome lives on its disposable canvas so a
+    // tool change can hide the blue overlay without repainting committed ink.
     const drawingLasso = surface.editTool === "lasso" && surface.editPath.length > 0;
-    const drawingSelection = Boolean(this.selectionShape && this.selectionPage === pageNumber) && !drawingLasso;
-    surface.canvas.classList.toggle("is-selection-chrome-raised", drawingLasso || drawingSelection);
-    if (drawingLasso) {
-      this.drawLassoPreview(surface);
-    } else if (drawingSelection && this.selectionShape) {
-      this.drawSelectionShape(surface, this.moveShapePreview ?? this.selectionShape, { closeFreeform: true });
-    }
+    if (drawingLasso) this.renderLiveLassoPreview(surface);
+    else this.renderSelectionChrome(surface);
     if (includeActivePreview && surface.builder?.preview().length) {
       if (surface.laserDraft) {
         const laser = this.options.settings.toolPreferences.laser;
@@ -15752,26 +15764,119 @@ export class ViewerInkSession {
     this.laserFadeFrame = view.requestAnimationFrame(tick);
   }
 
-  private drawLassoPreview(surface: PageSurface): void {
+  private lassoShape(surface: PageSurface): SelectionShape | null {
     const points = surface.editPath;
-    if (!points.length) return;
+    if (!points.length) return null;
     const lassoType = this.options.settings.toolPreferences.lasso.type;
-    const shape: SelectionShape = lassoType === "freeform"
-      ? { type: "freeform", points }
-      : (() => {
-        const xs = points.map((point) => point.x);
-        const ys = points.map((point) => point.y);
-        return {
-          type: lassoType,
-          bounds: { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) }
-        };
-      })();
-    this.drawSelectionShape(surface, shape, { closeFreeform: false });
+    if (lassoType === "freeform") return { type: "freeform", points };
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    return {
+      type: lassoType,
+      bounds: { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) }
+    };
   }
 
-  private drawSelectionShape(surface: PageSurface, shape: SelectionShape, options: { closeFreeform: boolean }): void {
+  private prepareSelectionCanvas(surface: PageSurface): number {
+    const layout = this.pageLayout(surface);
+    const fallbackWidth = Math.max(1, Math.round(layout.contentWidth));
+    const fallbackHeight = Math.max(1, Math.round(layout.contentHeight));
+    const width = surface.canvas.width || fallbackWidth;
+    const height = surface.canvas.height || fallbackHeight;
+    if (surface.selectionCanvas.width !== width) surface.selectionCanvas.width = width;
+    if (surface.selectionCanvas.height !== height) surface.selectionCanvas.height = height;
+    return width / Math.max(1, layout.contentWidth);
+  }
+
+  private clearSelectionChrome(surface: PageSurface): void {
+    const context = surface.selectionContext;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, surface.selectionCanvas.width, surface.selectionCanvas.height);
+    surface.canvas.classList.remove("is-selection-chrome-raised");
+  }
+
+  private drawStrokeSelectionChrome(surface: PageSurface, stroke: InkStroke, context: CanvasRenderingContext2D): void {
     const mapper = this.mapper(surface);
-    const context = surface.context;
+    const scale = this.displayScale(surface);
+    const segments = stroke.tool === "highlighter"
+      ? visibleStrokeSegments(stroke.points, stroke.eraseMasks)
+      : stroke.points.length ? [stroke.points] : [];
+    context.save();
+    context.globalAlpha = 0.9;
+    context.strokeStyle = "#2563eb";
+    context.lineWidth = Math.max(0.5, stroke.width * scale) + 4;
+    context.setLineDash([4, 3]);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    for (const segment of segments) {
+      if (!segment.length) continue;
+      const first = mapper.toViewport(segment[0]!);
+      context.beginPath();
+      if (segment.length === 1) {
+        context.arc(first.x, first.y, Math.max(2, context.lineWidth / 2), 0, Math.PI * 2);
+      } else {
+        context.moveTo(first.x, first.y);
+        for (const point of segment.slice(1)) {
+          const view = mapper.toViewport(point);
+          context.lineTo(view.x, view.y);
+        }
+        context.stroke();
+      }
+      if (segment.length === 1) context.stroke();
+    }
+    context.restore();
+  }
+
+  private renderSelectionChrome(surface: PageSurface): void {
+    this.clearSelectionChrome(surface);
+    const tool = this.activeTool();
+    if ((tool !== "lasso" && tool !== "text")
+      || this.selectionPage !== surface.page.pageNumber
+      || !this.selectionShape) return;
+    const shape = this.moveShapePreview ?? this.selectionShape;
+    if (tool === "text") {
+      // Keep the text transform marquee on the committed canvas for the
+      // text-layer interaction contract; lasso chrome uses the disposable
+      // canvas below so drawing-tool changes are cheap and clean.
+      this.drawSelectionShape(surface, shape, { closeFreeform: true });
+      surface.canvas.classList.add("is-selection-chrome-raised");
+      return;
+    }
+    const scale = this.prepareSelectionCanvas(surface);
+    const context = surface.selectionContext;
+    context.setTransform(scale, 0, 0, scale, 0, 0);
+    this.drawSelectionShape(surface, shape, { closeFreeform: true }, context);
+    for (const stroke of this.selected) {
+      if (stroke.page !== surface.page.pageNumber) continue;
+      const preview = this.movePreview?.find((item) => item.id === stroke.id) ?? stroke;
+      this.drawStrokeSelectionChrome(surface, preview, context);
+    }
+    surface.canvas.classList.add("is-selection-chrome-raised");
+  }
+
+  private drawLassoPreview(surface: PageSurface, context = surface.context): void {
+    const shape = this.lassoShape(surface);
+    if (shape) this.drawSelectionShape(surface, shape, { closeFreeform: false }, context);
+  }
+
+  private renderLiveLassoPreview(surface: PageSurface): void {
+    this.clearSelectionChrome(surface);
+    if (this.activeTool() !== "lasso") return;
+    const scale = this.prepareSelectionCanvas(surface);
+    const context = surface.selectionContext;
+    context.setTransform(scale, 0, 0, scale, 0, 0);
+    this.drawLassoPreview(surface, context);
+    surface.canvas.classList.add("is-selection-chrome-raised");
+  }
+
+  private drawSelectionShape(
+    surface: PageSurface,
+    shape: SelectionShape,
+    options: { closeFreeform: boolean },
+    targetContext = surface.context
+  ): void {
+    const mapper = this.mapper(surface);
+    const context = targetContext;
     context.save();
     context.strokeStyle = "#2563eb";
     context.fillStyle = "rgba(37, 99, 235, 0.12)";
