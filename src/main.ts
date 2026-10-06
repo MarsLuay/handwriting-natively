@@ -23,6 +23,7 @@ import { isSupportedImageFile } from "./integration/ImageFileTypes";
 import type { AnnotationSurface, AnnotationSurfaceCallbacks } from "./runtime/AnnotationSurface";
 import { pdfSurfaceExtensions } from "./integration/ObsidianPdfAdapter";
 import { PdfViewerCompatibility } from "./integration/PdfViewerCompatibility";
+import { tryRegisterPdfExtension } from "./integration/PdfExtensionRegistration";
 import { probePlatformCapabilities } from "./integration/PlatformCapabilities";
 import { describePdfPageDom } from "./integration/pdfPageSelectors";
 import { getDebugNodeId } from "./dom/debugNodeId";
@@ -268,11 +269,23 @@ export default class NativePdfInkPlugin extends Plugin {
       },
       onDiagnostic: (event, payload) => this.vaultDebugLog.write("info", event, payload)
     }));
-    // Explicit registration keeps the replacement reversible through Obsidian's
-    // public extension mapping API. Existing native leaves are adopted after
-    // layout-ready; failed owned-view initialization can still select type pdf.
-    this.registerExtensions(["pdf"], PLUGIN_PDF_VIEW_TYPE);
+    // Prefer the plugin-owned PDF view when the host allows an extension
+    // override. Newer Obsidian desktop builds reject overriding their built-in
+    // PDF extension; that must not abort the entire plugin before native-view
+    // scanning can attach handwriting sessions.
+    const pdfExtensionRegistration = tryRegisterPdfExtension(
+      (extensions, viewType) => this.registerExtensions(extensions, viewType),
+      PLUGIN_PDF_VIEW_TYPE
+    );
     await this.vaultDebugLog.clear();
+    if (!pdfExtensionRegistration.registered) {
+      await this.vaultDebugLog.writeUrgent("warn", "pdf extension registration skipped", {
+        reason: "host-extension-already-registered",
+        error: pdfExtensionRegistration.error instanceof Error
+          ? pdfExtensionRegistration.error.message
+          : String(pdfExtensionRegistration.error)
+      });
+    }
     this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(document);
     this.updateSidebarSwipeBlocker();
     this.addSettingTab(new NativePdfInkSettingTab(this.app, this));
@@ -355,7 +368,14 @@ export default class NativePdfInkPlugin extends Plugin {
         mobile: Platform.isMobile,
         phone: Platform.isPhone
       });
-      void this.adoptExistingNativePdfLeaves().finally(() => this.scheduleDebouncedScan());
+      if (pdfExtensionRegistration.registered) {
+        void this.adoptExistingNativePdfLeaves().finally(() => this.scheduleDebouncedScan());
+      } else {
+        // A previously restored workspace can still contain the plugin-owned
+        // view even though this host rejected the extension override. Restore
+        // those leaves before scanning so the native adapter can attach.
+        void this.restoreOwnedPdfLeavesToNative().finally(() => this.scheduleDebouncedScan());
+      }
     });
     this.registerDomEvent(window, "beforeunload", () => {
       this.emergencyPersistAllSessions();
@@ -1022,6 +1042,20 @@ export default class NativePdfInkPlugin extends Plugin {
       await leaf.setViewState({
         ...current,
         type: PLUGIN_PDF_VIEW_TYPE,
+        state: { ...(current.state ?? {}), file: file.path }
+      });
+    }
+  }
+
+  private async restoreOwnedPdfLeavesToNative(): Promise<void> {
+    if (this.unloaded) return;
+    for (const leaf of this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE)) {
+      const file = this.fileForLeaf(leaf);
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
+      const current = leaf.getViewState();
+      await leaf.setViewState({
+        ...current,
+        type: "pdf",
         state: { ...(current.state ?? {}), file: file.path }
       });
     }

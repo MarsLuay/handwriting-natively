@@ -34,6 +34,13 @@ describe("main PDF page actions", () => {
     expect(onload).toContain("this.scheduleDebouncedScan(0);");
   });
 
+  it("keeps native PDF scanning when the host rejects the extension override", () => {
+    expect(mainSource).toContain("tryRegisterPdfExtension");
+    expect(mainSource).toContain("pdfExtensionRegistration.registered");
+    expect(mainSource).toContain("restoreOwnedPdfLeavesToNative");
+    expect(mainSource).toContain('type: "pdf"');
+  });
+
   it("cleans a partially attached adapter when session creation fails", () => {
     expect(mainSource).toContain('"session attach adapter cleanup"');
     expect(mainSource).toContain('reason: "attach-failed-before-session-registration"');
