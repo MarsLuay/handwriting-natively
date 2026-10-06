@@ -7190,8 +7190,8 @@ export class ViewerInkSession {
   private patchRasterFallbackErase(surface: PageSurface, command: ReplacePageStrokesCommand): boolean {
     if (
       command.pageNumber !== surface.page.pageNumber
-      || !surface.rasterFallbackReady
-      || !surface.settleUpgradePending
+      || (!surface.rasterFallbackReady && !surface.inkLayerBurstCapture && !surface.wetPreviewUsesCommittedCanvas)
+      || (!surface.settleUpgradePending && !surface.wetPreviewUsesCommittedCanvas)
       || surface.eraserWholeStrokes === true
       || surface.eraserSize === undefined
       || surface.editPath.length === 0
