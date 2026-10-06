@@ -85,6 +85,16 @@ describe("coordinates and geometry", () => {
     expect(selectStrokes([outside], shape)).toEqual([]);
   });
 
+  it("selects a highlighter from a tiny ribbon hit", () => {
+    const shape: SelectionShape = { type: "rectangle", bounds: { minX: 49.5, minY: 4, maxX: 50.5, maxY: 6 } };
+    const highlight: InkStroke = {
+      ...stroke("highlight", [point(0, 5), point(100, 5)]),
+      tool: "highlighter",
+      width: 12
+    };
+    expect(selectStrokes([highlight], shape).map((item) => item.id)).toEqual(["highlight"]);
+  });
+
   it("translates selection shapes and hit-tests interior points", () => {
     const shape: SelectionShape = { type: "rectangle", bounds: { minX: 0, minY: 0, maxX: 10, maxY: 10 } };
     const moved = translateShape(shape, 5, -3);
