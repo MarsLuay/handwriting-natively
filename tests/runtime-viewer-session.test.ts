@@ -2049,7 +2049,7 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
-  it("uses Cmd or Ctrl as a non-persistent temporary eraser", async () => {
+  it("does not turn Cmd or Ctrl into a temporary eraser", async () => {
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.toolPreferences.activeTool = "pen";
@@ -2065,14 +2065,13 @@ describe("viewer runtime tracer", () => {
       notice: () => undefined
     });
     const internal = session as unknown as { activeTool(): string };
-    const down = new KeyboardEvent("keydown", { key: "Control", bubbles: true, cancelable: true });
-    expect(session.handleKeyDown(down)).toBe(true);
-    expect(down.defaultPrevented).toBe(false);
-    expect(internal.activeTool()).toBe("eraser");
-    expect(adapter.toolbarHost.querySelector(".native-pdf-handwriting-toolbar")?.classList.contains("native-pdf-handwriting-temporary-eraser")).toBe(true);
-
-    expect(session.handleKeyUp(new KeyboardEvent("keyup", { key: "Control", bubbles: true }))).toBe(true);
-    expect(internal.activeTool()).toBe("pen");
+    for (const key of ["Control", "Meta"]) {
+      const down = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      expect(session.handleKeyDown(down)).toBe(false);
+      expect(down.defaultPrevented).toBe(false);
+      expect(internal.activeTool()).toBe("pen");
+    }
+    expect(adapter.toolbarHost.querySelector(".native-pdf-handwriting-toolbar")?.classList.contains("native-pdf-handwriting-temporary-eraser")).toBe(false);
     expect(settings.toolPreferences.activeTool).toBe("pen");
     await session.destroy();
   });

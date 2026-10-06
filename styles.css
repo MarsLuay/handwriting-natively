@@ -212,11 +212,6 @@
 .native-pdf-handwriting-toolbar-button[aria-pressed="true"] {
   background: var(--background-modifier-hover, #e5e7eb);
 }
-.native-pdf-handwriting-toolbar.native-pdf-handwriting-temporary-eraser [data-control="eraser"] {
-  background: var(--interactive-accent, #2563eb);
-  color: var(--text-on-accent, #fff);
-}
-
 .native-pdf-handwriting-toolbar-button:focus-visible,
 .native-pdf-handwriting-dropdown-option:focus-visible {
   outline: 2px solid var(--interactive-accent, #2563eb);
