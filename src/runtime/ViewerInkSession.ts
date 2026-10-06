@@ -6298,8 +6298,7 @@ export class ViewerInkSession {
       phone: platform.phone,
       domPageCount,
       toolbarPlacement: resolveToolbarPlacement(
-        options.toolbarPlacement?.() ?? options.settings.toolbarPlacement,
-        platform.mobile
+        options.toolbarPlacement?.() ?? options.settings.toolbarPlacement
       )
     });
     let contentHash: string | undefined;
@@ -15695,7 +15694,7 @@ export class ViewerInkSession {
 
   private currentToolbarPlacement(): ToolbarPlacement {
     const configured = this.options.toolbarPlacement?.() ?? this.options.settings.toolbarPlacement;
-    return resolveToolbarPlacement(configured, this.runtimePlatform().mobile);
+    return resolveToolbarPlacement(configured);
   }
 
   private async handleMore(action: MoreAction): Promise<void> {
