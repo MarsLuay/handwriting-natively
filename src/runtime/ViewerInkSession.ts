@@ -7185,6 +7185,55 @@ export class ViewerInkSession {
     return true;
   }
 
+  /** Keep an existing zoom raster interactive while partial eraser history catches up. */
+  private patchRasterFallbackErase(surface: PageSurface, command: ReplacePageStrokesCommand): boolean {
+    if (
+      command.pageNumber !== surface.page.pageNumber
+      || !surface.rasterFallbackReady
+      || !surface.settleUpgradePending
+      || surface.eraserWholeStrokes === true
+      || surface.eraserSize === undefined
+      || surface.editPath.length === 0
+      || !surface.canvas.width
+      || !surface.canvas.height
+    ) return false;
+    const layout = this.pageLayout(surface);
+    const width = Math.max(1, layout.contentWidth || 1);
+    const height = Math.max(1, layout.contentHeight || 1);
+    const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
+    if (surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight) return false;
+    const mapper = this.mapper(surface);
+    const points = surface.editPath.map((point) => mapper.toViewport(point));
+    const lineWidth = Math.max(1, surface.eraserSize * this.displayScale(surface));
+    const startedAt = performance.now();
+    const damage = new DamageLedger();
+    this.wetRenderer.erase(surface.canvas, points, lineWidth, backingScale, damage);
+    if (surface.inkLayer && surface.inkLayer.width === pixelWidth && surface.inkLayer.height === pixelHeight) {
+      this.wetRenderer.erase(surface.inkLayer, points, lineWidth, backingScale, new DamageLedger());
+    }
+    surface.inkLayerValid = false;
+    surface.inkLayerBackingScale = null;
+    surface.inkLayerBurstCapture = true;
+    surface.inkLayerRevision = null;
+    surface.rasterFallbackReady = true;
+    surface.settleUpgradePending = true;
+    this.clearLiveDrawPreview(surface, damage.drain(), backingScale);
+    this.logger.renderProfile({
+      page: surface.page.pageNumber,
+      operation: "erase-raster-fallback",
+      reason: "history-erase",
+      durationMs: roundMetric(performance.now() - startedAt),
+      pathPointCount: points.length,
+      blitMode: "none",
+      deferredCanonicalUpgrade: true,
+      rasterSource: "existing-deferred-raster",
+      useLayerCache: false,
+      visiblePageCount: this.surfaces.size
+    });
+    this.scheduleViewportPaint();
+    return true;
+  }
+
   private paintAfterHistory(command?: Command, action?: HistoryChangeAction): void {
     if (this.historyDirtyPages.size === 0) {
       this.refresh("history");
@@ -7210,7 +7259,10 @@ export class ViewerInkSession {
       const patchedErase = command instanceof ReplacePageStrokesCommand
         ? this.patchCommittedErase(surface, command)
         : false;
-      if (!appended && !patchedErase) {
+      const rasterErase = !patchedErase && command instanceof ReplacePageStrokesCommand
+        ? this.patchRasterFallbackErase(surface, command)
+        : false;
+      if (!appended && !patchedErase && !rasterErase) {
         this.invalidateInkLayer(surface);
         this.renderPage(page);
       }
@@ -14843,6 +14895,47 @@ export class ViewerInkSession {
     const livePreview = includeActivePreview && (Boolean(surface.builder?.preview().length)
       || (surface.editTool === "lasso" && surface.editPath.length > 0)
       || Boolean(this.selectionShape && this.selectionPage === pageNumber));
+    const canUseBurstRasterPreview = !needsResize
+      && canBlit
+      && surface.inkLayerBurstCapture
+      && surface.inkLayer
+      && surface.inkLayer.width === pixelWidth
+      && surface.inkLayer.height === pixelHeight
+      && surface.settleUpgradePending
+      && !erasingLive
+      && !movingSelection;
+    const shouldPaintBurstRasterPreview = canUseBurstRasterPreview
+      && ((reason === "live-edit" && livePreview)
+        || (reason === "render" && !livePreview)
+        || (reason.includes("settle-focus") && !reason.includes("settle-focus-fast") && !livePreview));
+    if (shouldPaintBurstRasterPreview) {
+      const previewStartedAt = performance.now();
+      surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+      this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
+      const drawingLasso = surface.editTool === "lasso" && surface.editPath.length > 0;
+      const drawingSelection = Boolean(this.selectionShape && this.selectionPage === pageNumber) && !drawingLasso;
+      surface.canvas.classList.toggle("is-selection-chrome-raised", drawingLasso || drawingSelection);
+      if (drawingLasso) this.drawLassoPreview(surface);
+      else if (drawingSelection && this.selectionShape) {
+        this.drawSelectionShape(surface, this.moveShapePreview ?? this.selectionShape, { closeFreeform: true });
+      }
+      this.paintLaserTrails(surface, pageNumber);
+      if (syncText) this.renderTextAnnotations(surface);
+      if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
+      this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: "burst-raster-preview" });
+      this.logger.renderProfile({
+        page: pageNumber,
+        operation: "page-raster-preview",
+        reason,
+        durationMs: roundMetric(performance.now() - previewStartedAt),
+        strokeCount: this.ink.page(pageNumber).length,
+        deferredCanonicalUpgrade: true,
+        rasterSource: "burst-ink-layer",
+        useLayerCache: true,
+        visiblePageCount: this.surfaces.size
+      });
+      return true;
+    }
     // Focus-fast and neighbor settle stay on the compositor stretch while the
     // handoff is held. Reuse the captured layer at the existing backing size
     // and defer the one required final-resolution resize to the queued upgrade.
