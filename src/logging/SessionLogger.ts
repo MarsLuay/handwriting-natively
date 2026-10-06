@@ -346,11 +346,13 @@ export class SessionLogger {
     } = {}
   ): void {
     if (!this.isEnabled() || durationMs < 8) return;
-    this.emit(durationMs >= FRAME_MS_120 ? "warn" : "info", "ink input paint", {
+    const slow = durationMs > FRAME_MS_120;
+    this.emit(slow ? "warn" : "info", "ink input paint", {
       document: this.documentPath,
       page,
       kind,
       durationMs: round(durationMs),
+      ...(slow ? { thresholdMs: round(FRAME_MS_120) } : {}),
       sampleCount,
       ...(details.draftPoints !== undefined ? { draftPoints: details.draftPoints } : {}),
       ...(details.incremental !== undefined ? { incremental: details.incremental } : {}),
@@ -426,10 +428,12 @@ export class SessionLogger {
     const durationMs = typeof details.durationMs === "number" && Number.isFinite(details.durationMs)
       ? details.durationMs
       : 0;
-    this.emit(durationMs >= FRAME_MS_120 ? "warn" : "info", "ink render profile", {
+    const slow = durationMs > FRAME_MS_120;
+    this.emit(slow ? "warn" : "info", "ink render profile", {
       document: this.documentPath,
       pluginVersion: this.pluginVersion,
       profileSchema: PROFILE_SCHEMA_VERSION,
+      ...(slow ? { thresholdMs: round(FRAME_MS_120) } : {}),
       ...details
     });
   }
@@ -1190,7 +1194,7 @@ export class SessionLogger {
     const frameBudgetMs = Number.isFinite(details.frameBudgetMs) && (details.frameBudgetMs ?? 0) > 0
       ? details.frameBudgetMs!
       : FRAME_MS_120;
-    if (details.durationMs >= FRAME_MS_120 || (msSinceLastRepaint !== null && msSinceLastRepaint < frameBudgetMs)) {
+    if (details.durationMs > FRAME_MS_120 || (msSinceLastRepaint !== null && msSinceLastRepaint < frameBudgetMs)) {
       this.emit("warn", "ink zoom repaint hot", payload);
     }
   }

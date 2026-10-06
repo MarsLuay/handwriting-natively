@@ -572,6 +572,52 @@ describe("zoom ink compositing", () => {
     await session.destroy();
   });
 
+  it("defers dense handoff HQ repaint until after raster release", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const internal = session as unknown as {
+      zoomHandoffNeedsFinalRebase: boolean;
+      rebaseZoomAfterNativeRender(): void;
+      cancelZoomCompositeRelease(): void;
+      releaseZoomCompositeLayers(): void;
+    };
+    for (let index = 0; index < 32; index += 1) {
+      const x = 80 + (index % 8) * 12;
+      const y = 90 + Math.floor(index / 8) * 18;
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", x, y));
+      adapter.pageElement.dispatchEvent(pointer("pointermove", x + 10, y + 12));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", x + 20, y + 24));
+    }
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+    expect(overlayOf(adapter).classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+
+    internal.zoomHandoffNeedsFinalRebase = true;
+    internal.rebaseZoomAfterNativeRender();
+    const surface = probeSurface(session) as SurfaceProbe & { rasterFallbackReady: boolean };
+    expect(surface.rasterFallbackReady).toBe(true);
+    expect(surface.inkLayerValid).toBe(false);
+    expect(debugCalls("ink render profile").some((call) => {
+      const details = call[2] as { operation?: string; reason?: string; deferredCanonicalUpgrade?: boolean };
+      return details.operation === "page-raster-fallback"
+        && details.reason === "zoom-handoff-final"
+        && details.deferredCanonicalUpgrade === true;
+    })).toBe(true);
+
+    internal.cancelZoomCompositeRelease();
+    internal.releaseZoomCompositeLayers();
+    expect(overlayOf(adapter).classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+    await vi.advanceTimersByTimeAsync(16);
+    expect(surface.inkLayerValid).toBe(true);
+    expect(surface.rasterFallbackReady).toBe(false);
+    await session.destroy();
+  });
+
   it("keeps a bounded scale, mutation, and resize storm page-scoped until canonical release", async () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter, new MemoryFiles(), { mobile: true, phone: false });

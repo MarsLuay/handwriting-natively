@@ -22,6 +22,7 @@ function snapshot(overrides: Partial<InkVisibilitySnapshot> = {}): InkVisibility
     canvasWidth: 800,
     canvasHeight: 1000,
     canonicalPaintComplete: true,
+    canonicalPaintDeferred: false,
     pixelProbeRan: true,
     pixelProbeHasInk: true,
     pixelProbeNonTransparentSamples: 3,

@@ -25,9 +25,13 @@ describe("SessionLogger", () => {
     const logger = new SessionLogger("Notes/example.pdf");
 
     logger.inputPaint(1, FRAME_MS_120 - 0.1, "draw", 4);
+    logger.inputPaint(1, FRAME_MS_120, "draw", 4);
     logger.inputPaint(1, FRAME_MS_120 + 0.1, "draw", 4);
 
     expect(warn.mock.calls.filter((call) => call[1] === "ink input paint")).toHaveLength(1);
+    expect(warn.mock.calls.find((call) => call[1] === "ink input paint")?.[2]).toMatchObject({
+      thresholdMs: 8.33
+    });
     debug.mockRestore();
     warn.mockRestore();
   });
@@ -38,9 +42,13 @@ describe("SessionLogger", () => {
     const logger = new SessionLogger("Notes/example.pdf");
 
     logger.renderProfile({ durationMs: FRAME_MS_120 - 0.1, operation: "stroke-append" });
+    logger.renderProfile({ durationMs: FRAME_MS_120, operation: "stroke-append" });
     logger.renderProfile({ durationMs: FRAME_MS_120 + 0.1, operation: "stroke-append" });
 
     expect(warn.mock.calls.filter((call) => call[1] === "ink render profile")).toHaveLength(1);
+    expect(warn.mock.calls.find((call) => call[1] === "ink render profile")?.[2]).toMatchObject({
+      thresholdMs: 8.33
+    });
     debug.mockRestore();
     warn.mockRestore();
   });

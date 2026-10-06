@@ -834,6 +834,8 @@ interface PageSurface {
   inkLayerBurstCapture: boolean;
   /** Exact InkSession page revision represented by inkLayer, or null when unknown. */
   inkLayerRevision: number | null;
+  /** True when a stale committed raster is visible while dense zoom HQ paint is deferred. */
+  rasterFallbackReady: boolean;
   /** Off-viewport page skipped a canonical paint and must redraw before display. */
   viewportCullPending: boolean;
   /** Neighbor zoom settle used blit-stretch / lower backing; needs idle HQ upgrade. */
@@ -5849,6 +5851,7 @@ export class ViewerInkSession {
       if (
         this.ink.page(pageNumber).length > 0
         && (!surface.inkLayerValid || surface.inkLayerBurstCapture)
+        && !surface.rasterFallbackReady
       ) return false;
     }
     return true;
@@ -5901,7 +5904,8 @@ export class ViewerInkSession {
       canvasConnected: canvas.isConnected,
       canvasWidth: canvas.width,
       canvasHeight: canvas.height,
-      canonicalPaintComplete: surface.inkLayerValid && !surface.inkLayerBurstCapture,
+      canonicalPaintComplete: surface.inkLayerValid && !surface.inkLayerBurstCapture && !surface.rasterFallbackReady,
+      canonicalPaintDeferred: surface.rasterFallbackReady,
       ...probe,
       overlayRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
     };
@@ -6035,6 +6039,7 @@ export class ViewerInkSession {
     const started = performance.now();
     const stats = {
       pagesRepainted: 0,
+      deferredCanonicalPages: 0,
       canvasesResized: 0,
       strokesRedrawn: 0,
       skippedDisconnected: 0,
@@ -6077,13 +6082,55 @@ export class ViewerInkSession {
     try {
       for (const surface of reconciled) {
         const pageNumber = surface.page.pageNumber;
-        // A capped backing canvas can keep the same pixel dimensions while its
-        // CSS geometry changes. Invalidating forces a canonical PDF-space paint
-        // at the final scale in either case.
+        // A dense page can keep the already-captured committed raster visible
+        // while the final PDF-space vector rebase is queued after handoff.
+        // This avoids blocking release on a multi-second HQ repaint.
+        const canDeferDenseRebase = this.ink.page(pageNumber).length >= ViewerInkSession.LARGE_ZOOM_RASTER_FALLBACK_STROKES
+          && surface.inkLayerValid
+          && !surface.inkLayerBurstCapture
+          && surface.inkLayer !== null
+          && surface.inkLayer.width > 0
+          && surface.inkLayer.width === surface.canvas.width
+          && surface.inkLayer.height === surface.canvas.height;
+        if (canDeferDenseRebase) {
+          const fallbackLayout = layouts.get(pageNumber) ?? this.pageLayout(surface);
+          const fallbackWidth = Math.max(1, fallbackLayout.contentWidth || 1);
+          const fallbackHeight = Math.max(1, fallbackLayout.contentHeight || 1);
+          const { backingScale: fallbackBackingScale } = this.resolveInkBacking(fallbackWidth, fallbackHeight);
+          const fallbackBlitStartedAt = performance.now();
+          this.blitInkLayerToCanvas(surface, surface.canvas.width, surface.canvas.height, fallbackBackingScale);
+          const fallbackBlitDurationMs = roundMetric(performance.now() - fallbackBlitStartedAt);
+          surface.inkLayerValid = false;
+          surface.inkLayerBackingScale = null;
+          surface.inkLayerBurstCapture = true;
+          surface.inkLayerRevision = null;
+          surface.rasterFallbackReady = true;
+          surface.settleUpgradePending = true;
+          stats.deferredCanonicalPages += 1;
+          this.logger.renderProfile({
+            page: pageNumber,
+            operation: "page-raster-fallback",
+            reason: "zoom-handoff-final",
+            durationMs: fallbackBlitDurationMs,
+            strokeCount: this.ink.page(pageNumber).length,
+            canvasResized: false,
+            vectorRepaintCount: 0,
+            useLayerCache: true,
+            includeActivePreview: false,
+            zoomCompositing: this.zoomCompositing,
+            visiblePageCount: this.surfaces.size,
+            deferredCanonicalUpgrade: true,
+            rasterSource: "previous-canonical-layer",
+            fallbackBlitDurationMs
+          });
+          this.logZoomInkLayout(surface, "handoff-final", layouts.get(pageNumber), geometry.snapshots.get(pageNumber));
+          continue;
+        }
         surface.inkLayerValid = false;
         surface.inkLayerBackingScale = null;
         surface.inkLayerBurstCapture = false;
         surface.inkLayerRevision = null;
+        surface.rasterFallbackReady = false;
         const painted = this.renderPage(pageNumber, stats, "zoom-handoff-final");
         this.logZoomInkLayout(surface, "handoff-final", layouts.get(pageNumber), geometry.snapshots.get(pageNumber));
         if (painted) stats.pagesRepainted += 1;
@@ -6094,6 +6141,7 @@ export class ViewerInkSession {
     }
     this.logger.zoomComposite("final-canonical", {
       pagesRepainted: stats.pagesRepainted,
+      deferredCanonicalPages: stats.deferredCanonicalPages,
       canvasesResized: stats.canvasesResized,
       strokesRedrawn: stats.strokesRedrawn,
       skippedDisconnected: stats.skippedDisconnected,
@@ -9332,6 +9380,7 @@ export class ViewerInkSession {
       inkLayerBackingScale: null,
       inkLayerBurstCapture: false,
       inkLayerRevision: null,
+      rasterFallbackReady: false,
       viewportCullPending: false,
       settleUpgradePending: false,
       router: null,
@@ -12051,6 +12100,7 @@ export class ViewerInkSession {
     surface.inkLayerContext = null;
     surface.inkLayerValid = false;
     surface.inkLayerRevision = null;
+    surface.rasterFallbackReady = false;
     surface.liveEraserPaintedPoints = 0;
     surface.predictedPreview = [];
     surface.predictedPreviewPainted = false;
@@ -14255,6 +14305,7 @@ export class ViewerInkSession {
     surface.inkLayerBackingScale = null;
     surface.inkLayerBurstCapture = false;
     surface.inkLayerRevision = null;
+    surface.rasterFallbackReady = false;
     this.renderEpoch += 1;
   }
 
@@ -14274,6 +14325,7 @@ export class ViewerInkSession {
       if (!surface.inkLayerContext) throw new Error("Canvas 2D rendering is unavailable");
       surface.inkLayerValid = false;
       surface.inkLayerRevision = null;
+      surface.rasterFallbackReady = false;
     }
     if (surface.inkLayer.width !== pixelWidth || surface.inkLayer.height !== pixelHeight) {
       surface.inkLayer.width = pixelWidth;
@@ -14282,6 +14334,7 @@ export class ViewerInkSession {
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = false;
       surface.inkLayerRevision = null;
+      surface.rasterFallbackReady = false;
     }
     surface.inkLayerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
     return surface.inkLayerContext;
@@ -14317,6 +14370,7 @@ export class ViewerInkSession {
     surface.inkLayerRevision = pageRevision;
     // Raster warm — must not satisfy blit-only settle (needs vector restamp).
     surface.inkLayerBurstCapture = true;
+    surface.rasterFallbackReady = false;
     surface.inkLayerBackingScale = null;
     if (traceStartedAt !== null) {
       this.zoomPipelineTrace.noteStage("ink-capture", performance.now() - traceStartedAt, 1, "ink-layer-capture");
@@ -14578,6 +14632,10 @@ export class ViewerInkSession {
     }
 
     const paintStarted = performance.now();
+    const renderPhaseDurations: Record<string, number> = {};
+    const recordRenderPhase = (phase: string, startedAt: number): void => {
+      renderPhaseDurations[phase] = roundMetric(performance.now() - startedAt);
+    };
     const previousPaint = this.lastPagePaintAt.get(pageNumber);
     if (
       previousPaint
@@ -14603,10 +14661,13 @@ export class ViewerInkSession {
       && !surface.inkLayerBurstCapture
       && this.ink.page(pageNumber).length >= ViewerInkSession.LARGE_ZOOM_RASTER_FALLBACK_STROKES;
     if (needsResize && canBlit && (!canonicalZoomSettle || largeZoomRasterFallback)) {
+      const snapshotStartedAt = performance.now();
       scaledBlit = this.snapshotCommittedBitmap(surface);
+      recordRenderPhase("bitmap-snapshot", snapshotStartedAt);
     }
 
     if (needsResize) {
+      const resizeStartedAt = performance.now();
       this.recordStrokeCanvasRebuild(surface, reason || "render");
       if (this.zoomProfile) this.zoomProfile.canvasResizes += 1;
       surface.canvas.width = pixelWidth;
@@ -14625,7 +14686,9 @@ export class ViewerInkSession {
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = false;
       surface.inkLayerRevision = null;
+      surface.rasterFallbackReady = false;
       if (stats) stats.canvasesResized += 1;
+      recordRenderPhase("canvas-resize", resizeStartedAt);
     }
     surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
 
@@ -14634,6 +14697,7 @@ export class ViewerInkSession {
     // queue then restores canonical vector ink without blocking pointer release.
     const rasterZoomFallback = canonicalZoomSettle && largeZoomRasterFallback && Boolean(scaledBlit);
     if (scaledBlit && (!canonicalZoomSettle || rasterZoomFallback)) {
+      const fallbackBlitStartedAt = performance.now();
       surface.context.setTransform(1, 0, 0, 1, 0, 0);
       surface.context.clearRect(0, 0, pixelWidth, pixelHeight);
       surface.context.imageSmoothingEnabled = false;
@@ -14649,6 +14713,7 @@ export class ViewerInkSession {
         pixelHeight
       );
       surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+      recordRenderPhase("bitmap-blit", fallbackBlitStartedAt);
     }
 
     if (rasterZoomFallback && scaledBlit) {
@@ -14656,6 +14721,7 @@ export class ViewerInkSession {
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = true;
       surface.inkLayerRevision = null;
+      surface.rasterFallbackReady = true;
       surface.settleUpgradePending = true;
       this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
       surface.viewportCullPending = false;
@@ -14687,6 +14753,7 @@ export class ViewerInkSession {
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = true;
       surface.inkLayerRevision = null;
+      surface.rasterFallbackReady = true;
       surface.settleUpgradePending = true;
       this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
       surface.viewportCullPending = false;
@@ -14707,10 +14774,12 @@ export class ViewerInkSession {
       return true;
     }
 
+    const strokeQueryStartedAt = performance.now();
     const storedStrokes = this.ink.pageIntersecting(pageNumber, this.pageInkBounds(surface));
     const visibleStrokes = erasingLive
       ? (surface.eraserWholeStrokes ? eraseWholeStrokes : eraseStrokes)(storedStrokes, surface.editPath, surface.eraserSize!).kept
       : storedStrokes;
+    recordRenderPhase("stroke-query", strokeQueryStartedAt);
     this.recordStrokeRenderOmissions(
       surface,
       storedStrokes,
@@ -14727,24 +14796,32 @@ export class ViewerInkSession {
       const canonicalLayerRepaint = canonicalZoomSettle
         && (surface.inkLayerBurstCapture || surface.inkLayerRevision !== pageRevision);
       if (!surface.inkLayerValid || canonicalLayerRepaint) {
+        const layerPaintStartedAt = performance.now();
         layerContext.clearRect(0, 0, width, height);
         this.paintCommittedStrokes(surface, layerContext, visibleStrokes, stats, "full");
+        recordRenderPhase("layer-paint", layerPaintStartedAt);
         surface.inkLayerValid = true;
         surface.inkLayerBackingScale = backingScale;
         surface.inkLayerBurstCapture = false;
         surface.inkLayerRevision = pageRevision;
+        surface.rasterFallbackReady = false;
         if (canonicalZoomSettle) {
           this.logZoomInkRenderer(pageNumber, "settle-canonical", "canonical-pdf-space", visibleStrokes);
         }
       }
+      const layerBlitStartedAt = performance.now();
       this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
+      recordRenderPhase("layer-blit", layerBlitStartedAt);
     } else {
       surface.inkLayerValid = false;
       surface.inkLayerBackingScale = null;
       surface.inkLayerBurstCapture = false;
       surface.inkLayerRevision = null;
+      surface.rasterFallbackReady = false;
+      const directPaintStartedAt = performance.now();
       surface.context.clearRect(0, 0, width, height);
       this.paintCommittedStrokes(surface, surface.context, visibleStrokes, stats, "full");
+      recordRenderPhase("direct-paint", directPaintStartedAt);
       if (canonicalZoomSettle) {
         this.logZoomInkRenderer(pageNumber, "settle-canonical", "canonical-pdf-space", visibleStrokes);
       }
@@ -14800,9 +14877,15 @@ export class ViewerInkSession {
         this.renderLiveDrawPreview(surface);
       }
     }
+    const laserStartedAt = performance.now();
     this.paintLaserTrails(surface, pageNumber);
+    recordRenderPhase("laser-trails", laserStartedAt);
+    const textStartedAt = performance.now();
     if (syncText) this.renderTextAnnotations(surface);
+    recordRenderPhase("text-layout", textStartedAt);
+    const clearPreviewStartedAt = performance.now();
     if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
+    recordRenderPhase("preview-clear", clearPreviewStartedAt);
     const renderCompletedAt = performance.now();
     const profile = surface.strokePerformance;
     this.noteStrokeCanvasCommit(surface, renderCompletedAt, paintStarted);
@@ -14831,7 +14914,8 @@ export class ViewerInkSession {
       useLayerCache,
       includeActivePreview,
       zoomCompositing: this.zoomCompositing,
-      visiblePageCount: this.surfaces.size
+      visiblePageCount: this.surfaces.size,
+      phaseDurations: renderPhaseDurations
     });
     return true;
   }
