@@ -1,5 +1,5 @@
 import type { AnnotationSurface, AnnotationSurfaceCallbacks, AnnotationViewState } from "../runtime/AnnotationSurface";
-import type { ToolbarPlacement } from "../model";
+import type { InkStroke, ToolbarPlacement } from "../model";
 import type { PdfFindControllerLike, PdfIntegrationProfile, PdfJsEventBus } from "./PdfViewerCompatibility";
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import type { PdfPageInfo } from "./PdfPageLocator";
@@ -8,6 +8,14 @@ import type { MobilePdfZoomHandoff } from "./MobilePdfZoomHandoff";
 /** Compatibility aliases for PDF-only adapters and integrations. */
 export type PdfViewState = AnnotationViewState;
 export type PdfAdapterCallbacks = AnnotationSurfaceCallbacks;
+
+/** Bounded, read-only ink data used only for low-resolution PDF sidebar previews. */
+export interface PdfInkPreview {
+  revision: number;
+  strokes: readonly InkStroke[];
+}
+
+export type PdfInkPreviewProvider = (pageNumber: number) => PdfInkPreview;
 
 /** Optional PDF-only capabilities; generic annotation surfaces do not implement this contract. */
 export interface PdfSurfaceExtensions {
@@ -33,6 +41,10 @@ export interface PdfSurfaceExtensions {
     maxSidebarOffsetJump: number;
     sidebarFollowSuppressedTriggers: number;
   } | null;
+  /** Supplies sidecar ink to plugin-owned low-resolution sidebar previews. */
+  setInkPreviewProvider?(provider: PdfInkPreviewProvider | null): void;
+  /** Invalidates only the changed pages; rendering is coalesced by the adapter. */
+  refreshInkPreviews?(pageNumbers?: readonly number[]): void;
 }
 
 export function pdfSurfaceExtensions(surface: AnnotationSurface): PdfSurfaceExtensions | null {

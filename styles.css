@@ -1225,8 +1225,23 @@
 }
 .hn-owned-pdf-outline ol { margin: 0; padding-left: 20px; }
 .hn-owned-pdf-outline li { margin: 3px 0; }
-.hn-owned-pdf-outline button { text-align: left; width: 100%; }
+.hn-owned-pdf-outline button {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  text-align: left;
+  width: 100%;
+}
+.hn-owned-pdf-outline-ink {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  flex: 0 0 auto;
+  max-height: 56px;
+  max-width: 42px;
+}
 .hn-owned-pdf-thumbnails { display: flex; flex-direction: column; gap: 8px; }
+.hn-owned-pdf-thumbnail-canvas { max-width: 100%; }
+.hn-owned-pdf-thumbnail-canvas > canvas { max-width: 100%; }
 .hn-owned-pdf-thumbnail {
   align-items: center;
   background: transparent;

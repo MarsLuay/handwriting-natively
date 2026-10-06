@@ -6422,6 +6422,10 @@ export class ViewerInkSession {
       }
       for (const text of page.texts ?? []) session.texts.add(text);
     }
+    pdfSurfaceExtensions(options.adapter)?.setInkPreviewProvider?.((pageNumber) => ({
+      revision: session.ink.pageRevision(pageNumber),
+      strokes: session.ink.page(pageNumber)
+    }));
     await urgent("session create hydrate ok", {
       document: options.documentPath,
       loadedStrokes,
@@ -8938,6 +8942,7 @@ export class ViewerInkSession {
     this.documentInputOwnership = null;
     this.pointerProbeAbort.abort();
     this.toolbar.destroy();
+    pdfSurfaceExtensions(this.options.adapter)?.setInkPreviewProvider?.(null);
     this.options.adapter.destroy();
     await this.autosave.close().catch(() => undefined);
     return true;
@@ -10991,6 +10996,7 @@ export class ViewerInkSession {
       modelPresent: event.modelPresent,
       ...(event.reason ? { reason: event.reason } : {})
     });
+    pdfSurfaceExtensions(this.options.adapter)?.refreshInkPreviews?.([event.stroke.page]);
   }
 
   private recordStrokeReloadRestoration(stroke: InkStroke, source: string, reason: string): void {
