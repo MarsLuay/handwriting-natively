@@ -890,6 +890,14 @@ interface PageSurface {
   liveDrawPageBounds: Bounds | null;
   /** Stroke whose final-quality pixels currently occupy draftCanvas. */
   liveDrawPreviewStrokeId: string | null;
+  /** Canonical pixels already copied to inkLayer but still visible in draftCanvas. */
+  pendingCommittedPreview: {
+    regions: readonly Bounds[];
+    pixelWidth: number;
+    pixelHeight: number;
+    backingScale: number;
+  } | null;
+  pendingCommittedPreviewCancel: (() => void) | null;
   /** Browser-predicted pen points rendered only on the disposable prediction layer. */
   predictedPreview: PagePoint[];
   predictedPreviewPainted: boolean;
@@ -1279,6 +1287,8 @@ export class ViewerInkSession {
   private static readonly LARGE_ZOOM_RASTER_FALLBACK_STROKES = DENSE_ZOOM_RASTER_FALLBACK_STROKES;
   /** Chunk only pages large enough for the captured telemetry's ~1s vector walls. */
   private static readonly DEFERRED_CANONICAL_CHUNK_STROKES = 128;
+  /** Keep the visible draft over the committed canvas while a huge backing blit waits for idle time. */
+  private static readonly DEFERRED_COMMITTED_PREVIEW_MIN_PIXELS = 16_000_000;
   private static readonly PIXEL_EVIDENCE_MAX_EDGE = 192;
   private readonly lastPagePaintAt = new Map<number, { at: number; reason: string }>();
   private pasteGeneration = 0;
@@ -7072,13 +7082,11 @@ export class ViewerInkSession {
     }
     surface.inkLayerBackingScale = backingScale;
     surface.inkLayerRevision = pageRevision;
-    const blitPixels = this.blitInkLayerRegionsToCanvas(
-      surface,
-      [strokeRegion],
-      pixelWidth,
-      pixelHeight,
-      backingScale
-    );
+    const deferVisibleBlit = previewTransferReady
+      && pixelWidth * pixelHeight >= ViewerInkSession.DEFERRED_COMMITTED_PREVIEW_MIN_PIXELS;
+    const blitPixels = deferVisibleBlit
+      ? this.deferCommittedPreviewFlush(surface, [strokeRegion], pixelWidth, pixelHeight, backingScale)
+      : this.blitInkLayerRegionsToCanvas(surface, [strokeRegion], pixelWidth, pixelHeight, backingScale);
     if (previousStroke && beforeEvidence) {
       const afterEvidence = this.strokeCachePixelEvidence(surface, previousStroke);
       this.recordStrokeCacheHandoff(surface, stroke, "after", pageRevision, expectedLayerRevision, afterEvidence);
@@ -7101,7 +7109,7 @@ export class ViewerInkSession {
         });
       }
     }
-    this.clearLiveDrawPreview(surface, [strokeRegion], backingScale);
+    if (!deferVisibleBlit) this.clearLiveDrawPreview(surface, [strokeRegion], backingScale);
     this.paintLaserTrails(surface, surface.page.pageNumber);
     surface.viewportCullPending = false;
     surface.settleUpgradePending = false;
@@ -7149,7 +7157,8 @@ export class ViewerInkSession {
       blitMode: "damage-region",
       blitRegionCount: 1,
       blitPixels,
-      previewTransferMode: previewTransferReady ? "damage-region" : "vector-stamp"
+      previewTransferMode: previewTransferReady ? "damage-region" : "vector-stamp",
+      visibleBlitDeferred: deferVisibleBlit
     });
     return true;
   }
@@ -9813,6 +9822,8 @@ export class ViewerInkSession {
       liveDrawPaintedPoints: 0,
       liveDrawPageBounds: null,
       liveDrawPreviewStrokeId: null,
+      pendingCommittedPreview: null,
+      pendingCommittedPreviewCancel: null,
       predictedPreview: [],
       predictedPreviewPainted: false,
       builder: undefined,
@@ -12494,11 +12505,104 @@ export class ViewerInkSession {
     surface.pendingLiveInputAt = null;
   }
 
+  /**
+   * Keep the active draft visible over the old committed canvas until the
+   * browser has an idle slice for the expensive high-resolution visible blit.
+   * The canonical layer is updated first, so any intervening repaint can flush
+   * this handoff without changing pixels or losing the new stroke.
+   */
+  private deferCommittedPreviewFlush(
+    surface: PageSurface,
+    regions: readonly Bounds[],
+    pixelWidth: number,
+    pixelHeight: number,
+    backingScale: number
+  ): number {
+    this.flushPendingCommittedPreview(surface);
+    const copiedPixels = this.estimateInkLayerRegionPixels(regions, pixelWidth, pixelHeight, backingScale);
+    surface.pendingCommittedPreview = {
+      regions: [...regions],
+      pixelWidth,
+      pixelHeight,
+      backingScale
+    };
+    const flush = (): void => {
+      surface.pendingCommittedPreviewCancel = null;
+      this.flushPendingCommittedPreview(surface);
+    };
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) {
+      flush();
+      return copiedPixels;
+    }
+    const idleView = view as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idleView.requestIdleCallback === "function") {
+      const handle = idleView.requestIdleCallback(flush, { timeout: 120 });
+      surface.pendingCommittedPreviewCancel = () => idleView.cancelIdleCallback?.(handle);
+    } else {
+      const handle = view.setTimeout(flush, 0);
+      surface.pendingCommittedPreviewCancel = () => view.clearTimeout(handle);
+    }
+    return copiedPixels;
+  }
+
+  private flushPendingCommittedPreview(surface: PageSurface): boolean {
+    const pending = surface.pendingCommittedPreview;
+    if (!pending) return false;
+    surface.pendingCommittedPreview = null;
+    surface.pendingCommittedPreviewCancel?.();
+    surface.pendingCommittedPreviewCancel = null;
+    const pageRevision = this.ink.pageRevision(surface.page.pageNumber);
+    const canBlit = surface.canvas.width === pending.pixelWidth
+      && surface.canvas.height === pending.pixelHeight
+      && surface.inkLayer?.width === pending.pixelWidth
+      && surface.inkLayer.height === pending.pixelHeight
+      && surface.inkLayerRevision === pageRevision;
+    if (canBlit) {
+      this.blitInkLayerRegionsToCanvas(
+        surface,
+        pending.regions,
+        pending.pixelWidth,
+        pending.pixelHeight,
+        pending.backingScale
+      );
+    }
+    this.clearLiveDrawPreview(surface, pending.regions, pending.backingScale);
+    return canBlit;
+  }
+
+  private estimateInkLayerRegionPixels(
+    regions: readonly Bounds[],
+    pixelWidth: number,
+    pixelHeight: number,
+    backingScale: number
+  ): number {
+    let pixels = 0;
+    for (const region of regions) {
+      const left = Math.max(0, Math.floor(region.minX * backingScale) - 2);
+      const top = Math.max(0, Math.floor(region.minY * backingScale) - 2);
+      const right = Math.min(pixelWidth, Math.ceil(region.maxX * backingScale) + 2);
+      const bottom = Math.min(pixelHeight, Math.ceil(region.maxY * backingScale) + 2);
+      if (right > left && bottom > top) pixels += (right - left) * (bottom - top);
+    }
+    return pixels;
+  }
+
+  private cancelPendingCommittedPreview(surface: PageSurface): void {
+    surface.pendingCommittedPreviewCancel?.();
+    surface.pendingCommittedPreviewCancel = null;
+    surface.pendingCommittedPreview = null;
+  }
+
   private clearLiveDrawPreview(
     surface: PageSurface,
     regions?: readonly Bounds[],
     backingScale?: number
   ): void {
+    this.flushPendingCommittedPreview(surface);
     const { draftCanvas, draftContext, predictionCanvas, predictionContext } = surface;
     const hadDrawPreview = surface.liveDrawPreviewStrokeId !== null;
     const hadPrediction = surface.predictedPreviewPainted;
@@ -12530,6 +12634,7 @@ export class ViewerInkSession {
 
   /** Drop detached page bitmaps and their scheduled work promptly. */
   private releaseSurfaceBuffers(surface: PageSurface): void {
+    this.cancelPendingCommittedPreview(surface);
     this.cancelLivePaint(surface);
     this.cancelPaintAcknowledgement(surface);
     if (surface.deferredCanonicalPaintFrame !== null) {
@@ -12612,6 +12717,7 @@ export class ViewerInkSession {
     stabilization: string;
     draftResized: boolean;
   } {
+    this.flushPendingCommittedPreview(surface);
     const builder = surface.builder;
     if (!builder || surface.laserDraft) {
       return {
@@ -12799,6 +12905,7 @@ export class ViewerInkSession {
     damageArea: number;
     backingScale: number;
   } | null {
+    this.flushPendingCommittedPreview(surface);
     const eraserSize = surface.eraserSize;
     if (eraserSize === undefined || surface.editPath.length === 0) return null;
     const layout = this.pageLayout(surface);
@@ -15109,6 +15216,7 @@ export class ViewerInkSession {
   ): boolean {
     const surface = this.surfaces.get(pageNumber);
     if (!surface || (this.zoomCompositing && !reason.startsWith("post-zoom"))) return false;
+    this.flushPendingCommittedPreview(surface);
     if (surface.wetPreviewUsesCommittedCanvas) this.endWetPreview(surface);
     if (reason.includes("settle-upgrade") && surface.strokePerformance) surface.strokePerformance.hqUpgrades += 1;
     const preserveLiveDraft = this.surfaceHasLiveInkInput(surface);

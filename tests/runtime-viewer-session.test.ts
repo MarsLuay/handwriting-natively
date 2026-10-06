@@ -2212,6 +2212,67 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("keeps a huge committed draft visible until its canonical blit is flushed", async () => {
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/huge-preview.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    type BoundsLike = { minX: number; minY: number; maxX: number; maxY: number };
+    type DeferredSurface = {
+      canvas: HTMLCanvasElement;
+      draftCanvas: HTMLCanvasElement;
+      inkLayer: HTMLCanvasElement | null;
+      inkLayerRevision: number | null;
+      liveDrawPreviewStrokeId: string | null;
+      liveDrawPaintedPoints: number;
+    };
+    const internal = session as unknown as {
+      surfaces: Map<number, DeferredSurface>;
+      deferCommittedPreviewFlush: (
+        surface: DeferredSurface,
+        regions: readonly BoundsLike[],
+        pixelWidth: number,
+        pixelHeight: number,
+        backingScale: number
+      ) => number;
+      flushPendingCommittedPreview: (surface: DeferredSurface) => boolean;
+      clearLiveDrawPreview: (...args: unknown[]) => void;
+      blitInkLayerRegionsToCanvas: (...args: unknown[]) => number;
+    };
+    const surface = internal.surfaces.get(1);
+    expect(surface?.inkLayer).toBeTruthy();
+    expect(surface).toBeDefined();
+    surface!.canvas.width = 1;
+    surface!.canvas.height = 1;
+    surface!.draftCanvas.width = 1;
+    surface!.draftCanvas.height = 1;
+    surface!.inkLayer!.width = 1;
+    surface!.inkLayer!.height = 1;
+    surface!.inkLayerRevision = 0;
+    surface!.liveDrawPreviewStrokeId = "pending";
+    surface!.liveDrawPaintedPoints = 1;
+    const clearPreview = vi.spyOn(internal, "clearLiveDrawPreview");
+    const blit = vi.spyOn(internal, "blitInkLayerRegionsToCanvas");
+    const region = [{ minX: 0, minY: 0, maxX: 2, maxY: 2 }];
+
+    const copiedPixels = internal.deferCommittedPreviewFlush(surface!, region, 1, 1, 1);
+    expect(copiedPixels).toBe(1);
+    expect(clearPreview).not.toHaveBeenCalled();
+
+    expect(internal.flushPendingCommittedPreview(surface!)).toBe(true);
+    expect(blit).toHaveBeenCalledTimes(1);
+    expect(clearPreview).toHaveBeenCalledTimes(1);
+    await session.destroy();
+  });
+
   it("uses one graphite renderer throughout a long stroke", async () => {
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);

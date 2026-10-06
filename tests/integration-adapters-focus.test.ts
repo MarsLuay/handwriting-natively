@@ -61,6 +61,38 @@ describe("PDF adapters", () => {
     expect(stateChanges).toHaveBeenCalledOnce();
   });
 
+  it("suppresses only native PDF annotation-link drags and removes the guard on destroy", async () => {
+    const host = compatibleHost();
+    const page = host.querySelector(".page")!;
+    const annotationLayer = document.createElement("div");
+    annotationLayer.className = "annotationLayer";
+    const annotationLink = document.createElement("a");
+    annotationLink.href = "https://example.com/annotation";
+    const linkChild = document.createElement("span");
+    annotationLink.append(linkChild);
+    annotationLayer.append(annotationLink);
+    const ordinaryLink = document.createElement("a");
+    ordinaryLink.href = "https://example.com/ordinary";
+    page.append(annotationLayer, ordinaryLink);
+
+    const adapter = await NativePdfViewAdapter.attach(host);
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    const annotationDrag = new Event("dragstart", { bubbles: true, cancelable: true });
+    const ordinaryDrag = new Event("dragstart", { bubbles: true, cancelable: true });
+    linkChild.dispatchEvent(click);
+    linkChild.dispatchEvent(annotationDrag);
+    ordinaryLink.dispatchEvent(ordinaryDrag);
+
+    expect(click.defaultPrevented).toBe(false);
+    expect(annotationDrag.defaultPrevented).toBe(true);
+    expect(ordinaryDrag.defaultPrevented).toBe(false);
+
+    adapter.destroy();
+    const dragAfterDestroy = new Event("dragstart", { bubbles: true, cancelable: true });
+    linkChild.dispatchEvent(dragAfterDestroy);
+    expect(dragAfterDestroy.defaultPrevented).toBe(false);
+  });
+
   it("reports a viewer reload and releases the reload observer on destroy", async () => {
     const host = compatibleHost();
     const pageChanges = vi.fn();
