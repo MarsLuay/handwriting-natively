@@ -7234,6 +7234,76 @@ export class ViewerInkSession {
     return true;
   }
 
+  /** Append a committed stroke to the visible deferred raster and upgrade later. */
+  private patchDeferredRasterStroke(surface: PageSurface, stroke: InkStroke): boolean {
+    if (
+      !surface.inkLayer
+      || !surface.inkLayerContext
+      || (!surface.rasterFallbackReady && !surface.inkLayerBurstCapture)
+      || !surface.settleUpgradePending
+      || surface.inkLayer.width === 0
+      || surface.inkLayer.height === 0
+    ) return false;
+    const layout = this.pageLayout(surface);
+    const width = Math.max(1, layout.contentWidth || 1);
+    const height = Math.max(1, layout.contentHeight || 1);
+    const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
+    if (
+      surface.canvas.width !== pixelWidth
+      || surface.canvas.height !== pixelHeight
+      || surface.inkLayer.width !== pixelWidth
+      || surface.inkLayer.height !== pixelHeight
+    ) return false;
+    const startedAt = performance.now();
+    const mapper = this.mapper(surface);
+    const scale = this.displayScale(surface);
+    const paint = (context: CanvasRenderingContext2D): void => {
+      context.save();
+      context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+      this.drawPointsForMapper(
+        context,
+        mapper,
+        scale,
+        stroke.points,
+        stroke.color,
+        stroke.width,
+        stroke.opacity,
+        stroke.tool,
+        false,
+        stroke.id,
+        "full",
+        stroke.eraseMasks,
+        stroke.penType
+      );
+      context.restore();
+    };
+    paint(surface.inkLayerContext);
+    paint(surface.context);
+    const strokeRegion = this.strokeDamageBounds(surface, stroke);
+    surface.inkLayerValid = false;
+    surface.inkLayerBackingScale = null;
+    surface.inkLayerBurstCapture = true;
+    surface.inkLayerRevision = null;
+    surface.rasterFallbackReady = true;
+    surface.settleUpgradePending = true;
+    this.clearLiveDrawPreview(surface, [strokeRegion], backingScale);
+    this.paintLaserTrails(surface, surface.page.pageNumber);
+    this.logger.renderProfile({
+      page: surface.page.pageNumber,
+      operation: "stroke-raster-fallback",
+      reason: "history-add-stroke",
+      durationMs: roundMetric(performance.now() - startedAt),
+      strokeCount: 1,
+      pageStrokeCount: this.ink.page(surface.page.pageNumber).length,
+      deferredCanonicalUpgrade: true,
+      rasterSource: "existing-deferred-raster",
+      useLayerCache: false,
+      visiblePageCount: this.surfaces.size
+    });
+    this.scheduleViewportPaint();
+    return true;
+  }
+
   private paintAfterHistory(command?: Command, action?: HistoryChangeAction): void {
     if (this.historyDirtyPages.size === 0) {
       this.refresh("history");
@@ -7256,13 +7326,16 @@ export class ViewerInkSession {
       const appended = incrementalStroke?.page === page
         ? this.appendCommittedStroke(surface, incrementalStroke)
         : false;
+      const deferredStroke = !appended && incrementalStroke?.page === page
+        ? this.patchDeferredRasterStroke(surface, incrementalStroke)
+        : false;
       const patchedErase = command instanceof ReplacePageStrokesCommand
         ? this.patchCommittedErase(surface, command)
         : false;
       const rasterErase = !patchedErase && command instanceof ReplacePageStrokesCommand
         ? this.patchRasterFallbackErase(surface, command)
         : false;
-      if (!appended && !patchedErase && !rasterErase) {
+      if (!appended && !deferredStroke && !patchedErase && !rasterErase) {
         this.invalidateInkLayer(surface);
         this.renderPage(page);
       }
@@ -12409,7 +12482,7 @@ export class ViewerInkSession {
    * O(path)×huge draft backing and slows long strokes (~10ms→45ms in logs).
    * Shape preview still morphs as a whole, so it keeps the full redraw path.
    */
-  private renderLiveDrawPreview(surface: PageSurface): {
+  private renderLiveDrawPreview(surface: PageSurface, qualityOverride?: "full" | "draft"): {
     draftPoints: number;
     incremental: boolean;
     compositeMatched: boolean;
@@ -12472,10 +12545,10 @@ export class ViewerInkSession {
       return { draftPoints: 0, incremental: false, compositeMatched, stabilization, draftResized };
     }
     const style = builder.style;
-    // Live and committed pencil paint use the same final-quality renderer. The
-    // draft layer is incremental, so quality is distributed over the gesture
-    // instead of being paid as one full-path spike on pointer-up.
-    const liveGraphiteQuality = "full" as const;
+    // Pencil draft quality keeps high-frequency input responsive. Pointer-up
+    // explicitly requests full quality before history capture, so the cache and
+    // export still receive deterministic final graphite.
+    const liveGraphiteQuality = qualityOverride ?? (style.tool === "pencil" ? "draft" : "full");
     const context = surface.draftContext;
     const predictionContext = surface.predictionContext;
     const shapeMorph = surface.shapePreview !== null;
@@ -12532,8 +12605,12 @@ export class ViewerInkSession {
     }
 
     // Causal preview (StrokeBuilder.smoothedPoints) keeps prior indices fixed —
-    // incremental stamps are safe even with medium/high stabilization.
-    const canIncremental = !draftResized
+    // incremental stamps are safe for opaque pen/pencil strokes. Highlighter
+    // alpha is not idempotent: overlapping the prior capsule darkens the live
+    // preview, then the single final pass becomes visibly lighter on release.
+    // Redraw only the disposable highlighter layer so preview and commit match.
+    const canIncremental = style.tool !== "highlighter"
+      && !draftResized
       && surface.liveDrawPaintedPoints > 0
       && surface.liveDrawPaintedPoints <= points.length;
 
@@ -12885,6 +12962,7 @@ export class ViewerInkSession {
       this.scheduleZoomSettleResume();
       return;
     }
+    const ephemeralLaser = route === "draw" && surface.laserDraft;
     if (route === "draw" && surface.builder) {
       if (event.pointerType === "pen") this.finishInkStrokeGeometry(event, samples, "pointerup");
       this.commitActiveDraw(surface, samples, "pointerup");
@@ -12899,7 +12977,8 @@ export class ViewerInkSession {
       surface.liveEraserPaintedPoints = 0;
     }
     this.updateDebug(surface, event);
-    if (this.needsPagePaint(surface.page.pageNumber)) this.renderPage(surface.page.pageNumber);
+    if (ephemeralLaser) this.repaintLaserOverlay(surface.page.pageNumber);
+    else if (this.needsPagePaint(surface.page.pageNumber)) this.renderPage(surface.page.pageNumber);
     this.scheduleZoomSettleResume();
   }
 
@@ -12929,7 +13008,7 @@ export class ViewerInkSession {
     // Finish any samples that arrived after the last rAF before transferring
     // the final-quality draft. This is incremental when the draft is warm, not
     // a second full-path reconstruction.
-    if (!laserDraft) this.renderLiveDrawPreview(surface);
+    if (!laserDraft) this.renderLiveDrawPreview(surface, "full");
     // Match live preview geometry — finish()+simplify reshapes the path → visible snap.
     const stroke = builder.finishMatchingPreview(laserDraft ? true : this.simplifyStrokesEnabled());
     if (surface.shapePreview?.length) stroke.points = surface.shapePreview;
@@ -13184,7 +13263,7 @@ export class ViewerInkSession {
     }
     this.selectionShape = shape;
     this.selectionPage = surface.page.pageNumber;
-    this.invalidateInkLayer(surface);
+    this.invalidateInkLayer(surface, { preserveDeferredRaster: true });
     this.logger.lassoSelection(surface.page.pageNumber, this.selected.length + this.selectedTexts.length, editPath.length, shape.type);
     this.logText(surface, "lasso-selection", {
       shape: shape.type,
@@ -14565,7 +14644,7 @@ export class ViewerInkSession {
     if (page != null) {
       const surface = this.surfaces.get(page);
       if (surface) {
-        this.invalidateInkLayer(surface);
+        this.invalidateInkLayer(surface, { preserveDeferredRaster: true });
         this.renderPage(page);
         this.renderTextAnnotations(surface);
       }
@@ -14622,17 +14701,21 @@ export class ViewerInkSession {
     }
   }
 
-  private invalidateInkLayer(surface: PageSurface): void {
-    if (surface.deferredCanonicalPaintFrame !== null) {
+  private invalidateInkLayer(surface: PageSurface, options: { preserveDeferredRaster?: boolean } = {}): void {
+    const preserveDeferredRaster = options.preserveDeferredRaster === true
+      && Boolean(surface.inkLayer && surface.inkLayer.width > 0 && surface.inkLayer.height > 0)
+      && (surface.rasterFallbackReady || surface.inkLayerBurstCapture);
+    if (surface.deferredCanonicalPaintFrame !== null && !preserveDeferredRaster) {
       this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(surface.deferredCanonicalPaintFrame);
       surface.deferredCanonicalPaintFrame = null;
     }
-    surface.deferredCanonicalPaint = null;
+    if (!preserveDeferredRaster) surface.deferredCanonicalPaint = null;
     surface.inkLayerValid = false;
     surface.inkLayerBackingScale = null;
-    surface.inkLayerBurstCapture = false;
+    surface.inkLayerBurstCapture = preserveDeferredRaster;
     surface.inkLayerRevision = null;
-    surface.rasterFallbackReady = false;
+    surface.rasterFallbackReady = preserveDeferredRaster;
+    if (preserveDeferredRaster) surface.settleUpgradePending = true;
     this.renderEpoch += 1;
   }
 
@@ -15486,15 +15569,21 @@ export class ViewerInkSession {
   private repaintLaserOverlay(pageNumber: number): void {
     const surface = this.surfaces.get(pageNumber);
     if (!surface) return;
-    if (!surface.inkLayerValid || !surface.inkLayer) {
-      this.renderPage(pageNumber);
-      return;
-    }
     const rect = surface.overlay.getBoundingClientRect();
     const layout = this.pageLayout(surface);
     const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
     const height = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
     const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
+    const deferredRaster = !surface.inkLayerValid
+      && Boolean(surface.inkLayer)
+      && (surface.inkLayerBurstCapture || surface.rasterFallbackReady)
+      && surface.settleUpgradePending
+      && surface.inkLayer!.width === pixelWidth
+      && surface.inkLayer!.height === pixelHeight;
+    if ((!surface.inkLayerValid || !surface.inkLayer) && !deferredRaster) {
+      this.renderPage(pageNumber);
+      return;
+    }
     // Must restore CSS-pixel transform after the identity blit — same as blitInkLayerToCanvas.
     const startedAt = performance.now();
     this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
