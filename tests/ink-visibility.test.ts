@@ -75,7 +75,21 @@ describe("ink visibility", () => {
       previousPhasePixelProbeHasInk: true,
       nextPhasePixelProbeHasInk: true
     });
-    expect(replacementInkReady(snapshot({ pixelProbeHasInk: false, pixelProbeNonTransparentSamples: 0 }))).toBe(false);
+    // A coarse-grid miss is not proof that sparse ink is absent when the
+    // canonical layer (or an explicitly retained zoom raster) is ready.
+    expect(replacementInkReady(snapshot({ pixelProbeHasInk: false, pixelProbeNonTransparentSamples: 0 }))).toBe(true);
+    expect(replacementInkReady(snapshot({
+      canonicalPaintComplete: false,
+      canonicalPaintDeferred: true,
+      pixelProbeHasInk: false,
+      pixelProbeNonTransparentSamples: 0
+    }))).toBe(true);
+    expect(replacementInkReady(snapshot({
+      canonicalPaintComplete: false,
+      canonicalPaintDeferred: false,
+      pixelProbeHasInk: false,
+      pixelProbeNonTransparentSamples: 0
+    }))).toBe(false);
     expect(replacementInkReady(snapshot())).toBe(true);
     expect(replacementInkReady(snapshot({ pixelProbeRan: false, canonicalPaintComplete: true }))).toBe(true);
   });

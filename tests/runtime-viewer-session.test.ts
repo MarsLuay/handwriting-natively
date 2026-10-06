@@ -633,7 +633,27 @@ describe("viewer runtime tracer", () => {
     const savedSidecar = JSON.parse([...files.values.entries()].find(([path]) => path.startsWith("annotations/"))![1]) as SidecarSchemaV1;
     const internal = session as unknown as {
       recordStrokeSerialization(snapshot: SidecarSchemaV1, store: "recovery" | "sidecar", reason: string): void;
+      recordStrokePersisted(snapshot: SidecarSchemaV1, reason: string): void;
     };
+    const lifecycleCount = (phase: string, store?: string) => writes.filter((entry) =>
+      entry.event === "stroke lifecycle"
+      && entry.payload.phase === phase
+      && (store === undefined || entry.payload.store === store)
+    ).length;
+    const recoverySerializationCount = lifecycleCount("stroke-serialization-included", "recovery");
+    const sidecarSerializationCount = lifecycleCount("stroke-serialization-included", "sidecar");
+    const persistedCount = lifecycleCount("stroke-persisted");
+    const unchangedStrokeNewSnapshot = {
+      ...savedSidecar,
+      updatedAt: new Date(Date.parse(savedSidecar.updatedAt) + 1).toISOString()
+    };
+    internal.recordStrokeSerialization(unchangedStrokeNewSnapshot, "recovery", "unrelated-snapshot-revision");
+    internal.recordStrokeSerialization(unchangedStrokeNewSnapshot, "sidecar", "unrelated-snapshot-revision");
+    internal.recordStrokePersisted(unchangedStrokeNewSnapshot, "unrelated-snapshot-revision");
+    expect(lifecycleCount("stroke-serialization-included", "recovery")).toBe(recoverySerializationCount);
+    expect(lifecycleCount("stroke-serialization-included", "sidecar")).toBe(sidecarSerializationCount);
+    expect(lifecycleCount("stroke-persisted")).toBe(persistedCount);
+
     internal.recordStrokeSerialization({
       ...savedSidecar,
       updatedAt: new Date(Date.parse(savedSidecar.updatedAt) + 1).toISOString(),
@@ -664,7 +684,8 @@ describe("viewer runtime tracer", () => {
       lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(), rect: vi.fn(), ellipse: vi.fn(), drawImage: vi.fn(),
       getImageData: vi.fn((_x: number, _y: number, width: number, height: number) => {
         const data = new Uint8ClampedArray(width * height * 4);
-        if (reads++ > 0) data[3] = 255;
+        reads += 1;
+        data[3] = 255;
         return { data };
       })
     } as unknown as CanvasRenderingContext2D;
@@ -689,7 +710,9 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 501 }));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 501 }));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 501 }));
+    expect(context.getImageData).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(220);
+    expect(reads).toBe(1);
 
     const pixelEvents = writes.filter((entry) => entry.event === "stroke lifecycle" && String(entry.payload.phase).startsWith("stroke-pixel-"));
     expect(pixelEvents).toEqual(expect.arrayContaining([
@@ -706,6 +729,7 @@ describe("viewer runtime tracer", () => {
   });
 
   it("fails closed when pixel evidence cannot be sampled", async () => {
+    vi.useFakeTimers();
     const context = {
       setTransform: vi.fn(), clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(),
       beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), moveTo: vi.fn(), closePath: vi.fn(),
@@ -733,11 +757,15 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 601 }));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 601 }));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 601 }));
+    expect(context.getImageData).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(220);
+    expect(context.getImageData).toHaveBeenCalledTimes(1);
     const unavailable = writes.filter((entry) => entry.event === "stroke lifecycle" && String(entry.payload.phase).startsWith("stroke-pixel-") && entry.payload.pixelVisibilityVerified === false);
     expect(unavailable.length).toBeGreaterThan(0);
     expect(unavailable).toEqual(expect.arrayContaining([
       expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-pixel-region-pre", pixelEvidenceAvailable: false }) }),
-      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-pixel-region-post", pixelVisibilityVerified: false }) })
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-pixel-region-post", pixelVisibilityVerified: false }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-pixel-presence-check", pixelVisibilityVerified: false }) })
     ]));
     await expect(session.destroy()).resolves.toBe(true);
   });

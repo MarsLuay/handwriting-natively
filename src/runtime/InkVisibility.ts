@@ -114,14 +114,21 @@ export function inkVisibilityCause(snapshot: InkVisibilitySnapshot): InkVisibili
   return null;
 }
 
-/** Connected, non-zero canvas, and painted when the page has strokes. Unreadable pixels fall back to canonical state. */
+/**
+ * Connected, non-zero canvas with canonical or retained-raster paint state.
+ *
+ * The coarse 8×8 probe is diagnostic evidence, not a completeness proof: it
+ * routinely misses sparse handwriting on a very large zoomed canvas. A miss
+ * may still report a possible flash, but it must not hold the compositor when
+ * the canonical layer or an explicitly retained raster is ready.
+ */
 export function replacementInkReady(snapshot: InkVisibilitySnapshot): boolean {
   if (snapshot.modelStrokeCount <= 0) return snapshot.overlayConnected && snapshot.canvasWidth > 0 && snapshot.canvasHeight > 0;
   if (inkVisibilityCause(snapshot) === "overlay-detached") return false;
   if (inkVisibilityCause(snapshot) === "overlay-hidden") return false;
   if (inkVisibilityCause(snapshot) === "canvas-zero-size") return false;
-  if (snapshot.pixelProbeRan) return snapshot.pixelProbeHasInk;
-  return snapshot.canonicalPaintComplete;
+  if (snapshot.pixelProbeHasInk) return true;
+  return snapshot.canonicalPaintComplete || snapshot.canonicalPaintDeferred;
 }
 
 /**

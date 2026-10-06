@@ -1606,4 +1606,74 @@ describe("zoom ink compositing", () => {
     expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
     await session.destroy();
   });
+
+  it("keeps absolute-timeout release behind the native-content quiet tail", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const overlay = overlayOf(adapter);
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 0, top: 0, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(560);
+
+    const internal = session as unknown as {
+      zoomCompositeSettledAt: number;
+      lastZoomNativeContentAt: number;
+      replacementInkReady: () => boolean;
+      releaseZoomCompositeAfterNativeRender: () => void;
+    };
+    internal.replacementInkReady = () => false;
+    const untilAbsoluteTimeout = internal.zoomCompositeSettledAt + 1_500 - performance.now();
+    expect(untilAbsoluteTimeout).toBeGreaterThan(100);
+    await vi.advanceTimersByTimeAsync(untilAbsoluteTimeout - 40);
+    internal.lastZoomNativeContentAt = performance.now();
+    internal.releaseZoomCompositeAfterNativeRender();
+
+    await vi.advanceTimersByTimeAsync(80);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+    await vi.advanceTimersByTimeAsync(80);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+
+    await session.destroy();
+  });
+
+  it("bounds a stuck zoom-release gate without looping forever", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const overlay = overlayOf(adapter);
+
+    // Draw one stroke so the page has model ink.
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180));
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 0, top: 0, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+
+    // Settle paint marks the transition point and begins handoff hold.
+    await vi.advanceTimersByTimeAsync(560);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(true);
+
+    // Simulate an incomplete/stale replacement ink state that cannot converge.
+    const surface = probeSurface(session) as SurfaceProbe & { rasterFallbackReady: boolean };
+    surface.inkLayerValid = false;
+    surface.rasterFallbackReady = false;
+    (session as unknown as { replacementInkReady: () => boolean }).replacementInkReady = () => false;
+
+    // Advance past the absolute bound; the session must keep visible ink and stop retrying.
+    await vi.advanceTimersByTimeAsync(1_700);
+    expect(overlay.classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
+    expect(surface.canvas.isConnected).toBe(true);
+    expect(surface.canvas.width).toBeGreaterThan(0);
+    expect(logCalls("ink zoom flash proxy").some(
+      (call) => (call[2] as { proxy?: string }).proxy === "release-gate-absolute-timeout"
+    )).toBe(true);
+    expect(debugCalls("ink zoom composite").filter(
+      (call) => (call[2] as { phase?: string }).phase === "release-scheduled"
+    ).length).toBeLessThan(20);
+
+    await session.destroy();
+  });
 });
