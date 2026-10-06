@@ -124,7 +124,6 @@ export class SessionLogger {
   private zoomRepaintWindowCount = 0;
   private lastZoomRepaintAt = 0;
   private lastZoomTickAt = 0;
-  private mousePanMoveCount = 0;
   private alignMoveCount = 0;
   private shapeResizeMoveCount = 0;
   private readonly textToolHotCounts = new Map<string, number>();
@@ -420,16 +419,6 @@ export class SessionLogger {
         ...details
       }
     );
-  }
-
-  /** One bounded summary per completed plugin-participating pan burst. */
-  panProfile(details: Record<string, unknown>): void {
-    this.emit("info", "ink pan profile", {
-      document: this.documentPath,
-      pluginVersion: this.pluginVersion,
-      profileSchema: PROFILE_SCHEMA_VERSION,
-      ...details
-    });
   }
 
   /** Major synchronous render work, never one event per pointer sample/frame. */
@@ -854,20 +843,6 @@ export class SessionLogger {
     });
   }
 
-  mousePan(phase: "probe" | "start" | "pending" | "activate" | "move" | "end" | "cancel" | "abort" | "skip" | "config", details: Record<string, unknown> = {}): void {
-    if (phase === "move") {
-      this.mousePanMoveCount += 1;
-      if (this.mousePanMoveCount !== 1 && this.mousePanMoveCount % 8 !== 0) return;
-    } else if (phase === "start" || phase === "probe") {
-      this.mousePanMoveCount = 0;
-    }
-    this.emit("info", "mouse pan", {
-      document: this.documentPath,
-      phase,
-      ...details
-    });
-  }
-
   /** Compact shortcut routing when vault debug is on. */
   keyboardShortcut(details: Record<string, unknown> = {}): void {
     this.emit("info", "keyboard-shortcut", {
@@ -1076,14 +1051,11 @@ export class SessionLogger {
 
   sessionAttach(details: {
     scrollRoot: string;
-    panCapture: string;
-    panBoundary?: string;
     stylusPolicy?: string;
     touchPolicy?: string;
     mousePolicy?: string;
     activeTool?: string;
     runtimePlatform?: string;
-    mouseDragScroll?: boolean;
     toolbarPlacement?: string;
     loadedStrokes?: number;
     loadedTexts?: number;

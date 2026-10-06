@@ -106,9 +106,8 @@ export interface PointerRouterCallbacks {
   /** Latest visual sample, delivered at most once per display frame. */
   onCustomPinchFrame?(frame: CustomPinchFrame): void;
   onCustomPinchEnd?(reason: "pointerup" | "pointercancel" | "lostpointercapture" | "pen-contact" | "lifecycle" | "disabled"): void;
-  /** True when the requested mouse button is bound to an annotation gesture. */
-  mouseAnnotationEnabled?(button?: number): boolean;
-  rightMouseEraserEnabled?(): boolean;
+  /** True when left-button mouse input is enabled for annotation gestures. */
+  mouseInkingEnabled?(): boolean;
   onStylusEraserStart?(): void;
   onStylusEraserEnd?(): void;
   scrollRoot?(): HTMLElement | null;
@@ -250,7 +249,6 @@ export class PointerRouter {
       element.addEventListener("pointerup", this.handleEnd, options);
       element.addEventListener("pointercancel", this.handleCancel, options);
       element.addEventListener("lostpointercapture", this.handleLostPointerCapture, options);
-      element.addEventListener("contextmenu", this.suppressRightMouseEraserMenu, options);
       element.addEventListener("pointerleave", this.hideCustomCursors, options);
       // Native PDF scrolling can deliver a terminal event to another virtualized
       // page (or directly to document). Do not retain it as a phantom pinch.
@@ -342,11 +340,14 @@ export class PointerRouter {
       // Fingers leave native scroll/pinch unless the gesture starts on a text box.
       return { route: "touch-pan", reason: "touch-native" };
     }
+    if (event.pointerType === "mouse" && !isStylusEraserInput(event) && event.button !== 0 && event.button !== -1) {
+      return { route: "native", reason: "mouse-primary-button-only" };
+    }
     if (event.pointerType === "mouse"
-      && this.callbacks.mouseAnnotationEnabled
+      && this.callbacks.mouseInkingEnabled
       && !isStylusEraserInput(event)
-      && !this.callbacks.mouseAnnotationEnabled(event.button)) {
-      return { route: "native", reason: "mouse-button-binding" };
+      && !this.callbacks.mouseInkingEnabled()) {
+      return { route: "native", reason: "mouse-inking-disabled" };
     }
     if (!this.callbacks.canAnnotatePointer(event)) {
       return { route: "native", reason: "annotation-policy" };
@@ -357,9 +358,6 @@ export class PointerRouter {
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
     if (this.isTextToolRoute(tool, event, penLike)) return { route: "text", reason: "text-tool" };
     const editing = tool === "eraser" || tool === "lasso";
-    if (event.pointerType === "mouse" && event.button === 2 && this.callbacks.rightMouseEraserEnabled?.()) {
-      return { route: "edit", reason: "right-mouse-eraser" };
-    }
     if (penLike) return { route: editing ? "edit" : "draw", reason: editing ? "stylus-edit" : "stylus-draw" };
     if (event.pointerType === "mouse" && event.button === 0 && isInkDrawTool(tool)) {
       return { route: "draw", reason: "mouse-draw" };
@@ -634,10 +632,8 @@ export class PointerRouter {
         buttons: event.buttons,
         target: event.pointerType === "touch" || this.callbacks.canAnnotatePointer(event) ? "page" : "ui",
         inkToolSelected: route === "draw" || route === "edit" || route === "text",
-        mouseIntent: (route === "draw" || route === "edit" || route === "text")
+        inkIntent: (route === "draw" || route === "edit" || route === "text")
           && (event.pointerType !== "touch" || this.callbacks.canAnnotatePointer(event) || touchTextTarget)
-          ? "ink"
-          : "pan"
       })
       : { state: this.ownership.snapshot() };
     if (this.palmPolicy.hasActivePen()) {
@@ -779,7 +775,7 @@ export class PointerRouter {
       buttons: event.buttons,
       target: "page",
       inkToolSelected: true,
-      mouseIntent: "ink"
+      inkIntent: true
     });
     if (this.palmPolicy.hasActivePen()) this.palmPolicy.adoptActivePenIds(this.activePenIds());
     const gesturePointerType = this.gesturePointerType(event);
@@ -1539,11 +1535,6 @@ export class PointerRouter {
     this.drawCursor.remove();
   }
 
-  private readonly suppressRightMouseEraserMenu = (event: MouseEvent): void => {
-    if (!this.callbacks.mouseAnnotationEnabled?.(event.button) || !this.callbacks.rightMouseEraserEnabled?.() || event.button !== 2) return;
-    event.preventDefault();
-  };
-
   private scheduleCustomCursorUpdate(event: PointerEvent): void {
     if (event.pointerType !== "mouse" && event.pointerType !== "pen") {
       this.paintCustomCursorsNow(event);
@@ -1607,7 +1598,7 @@ export class PointerRouter {
     const type = pointerType ?? this.lastCursorPointerType ?? "mouse";
     const pointerAllows = type === "pen"
       || (type === "touch" && this.callbacks.touchAnnotationEnabled?.() === true)
-      || this.callbacks.mouseAnnotationEnabled?.(0) === true;
+      || this.callbacks.mouseInkingEnabled?.() === true;
     const visible = pointerAllows && isInkDrawTool(tool);
     if (!visible) {
       this.hideDrawCursor();
@@ -1643,7 +1634,7 @@ export class PointerRouter {
     const type = pointerType ?? this.lastCursorPointerType ?? "mouse";
     const pointerAllows = type === "pen"
       || (type === "touch" && this.callbacks.touchAnnotationEnabled?.() === true)
-      || this.callbacks.mouseAnnotationEnabled?.(0) === true;
+      || this.callbacks.mouseInkingEnabled?.() === true;
     const visible = pointerAllows && this.callbacks.activeTool() === "eraser";
     if (!visible) {
       this.hideEraserCursor();

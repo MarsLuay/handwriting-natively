@@ -676,14 +676,14 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
-  it("routes Text explicitly while preserving right-click eraser as an opt-in", () => {
+  it("routes Text explicitly while leaving right-click native", () => {
     const element = document.createElement("div");
     let tool: ToolId = "text";
     const starts = vi.fn();
     const router = new PointerRouter(element, {
       activeTool: () => tool,
       canAnnotatePointer: () => true,
-      rightMouseEraserEnabled: () => true,
+      mouseInkingEnabled: () => true,
       onStart: starts
     });
     const text = pointer("mouse", 30);
@@ -693,21 +693,19 @@ describe("PointerRouter", () => {
     tool = "pen";
     const right = pointer("mouse", 31, { button: 2, buttons: 2 });
     element.dispatchEvent(right);
-    expect(right.defaultPrevented).toBe(true);
-    expect(starts.mock.calls[1]?.[1]).toBe("edit");
+    expect(right.defaultPrevented).toBe(false);
+    expect(starts).toHaveBeenCalledTimes(1);
     router.destroy();
   });
 
-  it("routes only enabled mouse drag bindings and leaves disabled buttons native", () => {
+  it("routes left mouse only when inking is enabled and always leaves right-click native", () => {
     const element = document.createElement("div");
     const starts = vi.fn();
-    let leftEnabled = false;
-    let rightEnabled = false;
+    let enabled = false;
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
       canAnnotatePointer: () => true,
-      mouseAnnotationEnabled: (button = 0) => button === 2 ? rightEnabled : leftEnabled,
-      rightMouseEraserEnabled: () => rightEnabled,
+      mouseInkingEnabled: () => enabled,
       onStart: starts
     });
 
@@ -721,17 +719,16 @@ describe("PointerRouter", () => {
     expect(rightNative.defaultPrevented).toBe(false);
     expect(starts).not.toHaveBeenCalled();
 
-    leftEnabled = true;
+    enabled = true;
     const leftDraw = pointer("mouse", 42);
     element.dispatchEvent(leftDraw);
     expect(leftDraw.defaultPrevented).toBe(true);
     expect(starts.mock.calls.at(-1)?.[1]).toBe("draw");
 
-    rightEnabled = true;
-    const rightErase = pointer("mouse", 43, { button: 2, buttons: 2 });
-    element.dispatchEvent(rightErase);
-    expect(rightErase.defaultPrevented).toBe(true);
-    expect(starts.mock.calls.at(-1)?.[1]).toBe("edit");
+    const rightStillNative = pointer("mouse", 43, { button: 2, buttons: 2 });
+    element.dispatchEvent(rightStillNative);
+    expect(rightStillNative.defaultPrevented).toBe(false);
+    expect(starts).toHaveBeenCalledTimes(1);
 
     router.destroy();
   });
@@ -965,7 +962,7 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "eraser",
       canAnnotatePointer: () => true,
-      mouseAnnotationEnabled: () => true,
+      mouseInkingEnabled: () => true,
       eraserCursorDiameter: () => 36
     });
 
@@ -997,7 +994,7 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
       canAnnotatePointer: () => true,
-      mouseAnnotationEnabled: () => true,
+      mouseInkingEnabled: () => true,
       drawCursorColor: () => "#ff0000"
     });
 
@@ -1065,7 +1062,7 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "eraser",
       canAnnotatePointer: () => true,
-      mouseAnnotationEnabled: () => true,
+      mouseInkingEnabled: () => true,
       eraserCursorDiameter: () => diameter
     });
 
@@ -1093,7 +1090,7 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
       canAnnotatePointer: () => true,
-      mouseAnnotationEnabled: () => true,
+      mouseInkingEnabled: () => true,
       projectCursor
     });
 

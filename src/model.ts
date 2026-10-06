@@ -1,9 +1,8 @@
 export type DrawingTool = "pen" | "pencil" | "highlighter";
-/** Annotation tools. Mouse pan/native modes live in settings, not as a tool. */
+/** Annotation tools. Mouse inking is a separate input setting, not a tool. */
 export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser";
 export type LassoType = "freeform" | "rectangle";
 export type ToolbarPlacement = "main" | "left" | "right";
-export type MouseInputMode = "pan" | "annotate" | "native";
 /** Which input source supplies pressure for new ink strokes. */
 export type PressureProfile = "auto" | "pen" | "mouse";
 /** The physical-style simulation used by the pen tool. */
@@ -154,7 +153,6 @@ export interface TextStyle {
 export interface EraserPreferences {
   size: number;
   eraseWholeStrokes: boolean;
-  eraseWithRightMouseButton: boolean;
 }
 
 export interface ShapePreferences {
@@ -195,17 +193,8 @@ export interface PluginSettings {
   sidecarFolder: string;
   /** Vault-relative PDF template; page one is used. Empty means blank US Letter paper. */
   pdfTemplatePath: string;
-  /**
-   * Explicit mouse behavior without a Draw checkbox.
-   * Migrated from legacy `mouseDragScroll` when absent (`true` → pan, `false` → native).
-   */
-  mouseInputMode?: MouseInputMode;
-  /** Legacy mirror of `mouseInputMode === "pan"` for older sidecars / readers. */
-  mouseDragScroll: boolean;
-  /** Primary-button mouse drags use the active annotation tool when enabled. */
-  mouseLeftDragDraw: boolean;
-  /** Secondary-button mouse drags erase when enabled; native context menus remain otherwise. */
-  mouseRightDragErase: boolean;
+  /** Left mouse drags use the selected annotation tool when enabled. */
+  mouseInkingEnabled: boolean;
   /** Explicit touch-only/ambiguous-device fallback; never enabled by migration. */
   touchDrawFallback: boolean;
   /** Allow a finger double-tap on the page to switch to the eraser. */
@@ -286,7 +275,7 @@ export function createDefaultToolPreferences(): ToolPreferences {
       italic: false,
       strikethrough: false
     },
-    eraser: { size: 12, eraseWholeStrokes: false, eraseWithRightMouseButton: false },
+    eraser: { size: 12, eraseWholeStrokes: false },
     lasso: { type: "freeform" },
     laser: {
       color: "#ff0000",
@@ -313,10 +302,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   textEscapeAction: "save",
   sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
   pdfTemplatePath: "",
-  mouseInputMode: "pan",
-  mouseDragScroll: true,
-  mouseLeftDragDraw: true,
-  mouseRightDragErase: false,
+  mouseInkingEnabled: false,
   touchDrawFallback: false,
   touchDoubleTapEraser: true,
   pressureProfile: "auto",
@@ -358,7 +344,17 @@ export function mergeSettings(
   const defaults = createDefaultSettings(configDir);
   const raw = { ...(saved ?? {}) } as Record<string, unknown>;
   const legacyDisableSearchBarSwipe = raw.disableSearchBarSwipe === true;
+  const legacyMouseInputMode = raw.mouseInputMode;
+  const legacyMouseLeftDragDraw = raw.mouseLeftDragDraw;
+  const savedMouseInkingEnabled = raw.mouseInkingEnabled;
+  const legacyMouseInkingEnabled = legacyMouseInputMode === "annotate"
+    ? legacyMouseLeftDragDraw !== false
+    : legacyMouseInputMode === undefined && legacyMouseLeftDragDraw === true;
   delete raw.disableSearchBarSwipe;
+  delete raw.mouseInputMode;
+  delete raw.mouseDragScroll;
+  delete raw.mouseLeftDragDraw;
+  delete raw.mouseRightDragErase;
   for (const key of LEGACY_SETTING_KEYS) delete raw[key];
   const cleaned = raw as Partial<PluginSettings>;
   const lassoRaw = { ...defaults.toolPreferences.lasso, ...cleaned.toolPreferences?.lasso } as {
@@ -375,9 +371,9 @@ export function mergeSettings(
     : defaults.pdfTemplatePath;
   const pressureProfile = cleaned.pressureProfile;
   const pressureCalibration = normalizePressureCalibration(cleaned.pressureCalibration, defaults.pressureCalibration);
-  const mouseRightDragErase = typeof cleaned.mouseRightDragErase === "boolean"
-    ? cleaned.mouseRightDragErase
-    : cleaned.toolPreferences?.eraser?.eraseWithRightMouseButton === true;
+  const mouseInkingEnabled = typeof savedMouseInkingEnabled === "boolean"
+    ? savedMouseInkingEnabled
+    : legacyMouseInkingEnabled;
   const savedEnabledSurfaces = cleaned.enabledSurfaces as Partial<EnabledSurfaceSettings> | undefined;
   const savedToolPreferences = { ...(cleaned.toolPreferences ?? {}) } as Record<string, unknown>;
   delete savedToolPreferences.pan;
@@ -408,8 +404,7 @@ export function mergeSettings(
       ? toolbarPlacement
       : defaults.toolbarPlacement,
     pdfTemplatePath,
-    mouseLeftDragDraw: cleaned.mouseLeftDragDraw !== false,
-    mouseRightDragErase,
+    mouseInkingEnabled,
     // Legacy `fingerDraw` is removed above; only the new explicit setting may
     // opt into touch ink, and only with the literal boolean value true.
     touchDrawFallback: cleaned.touchDrawFallback === true,
@@ -452,8 +447,7 @@ export function mergeSettings(
       },
       eraser: {
         size: cleaned.toolPreferences?.eraser?.size ?? defaults.toolPreferences.eraser.size,
-        eraseWholeStrokes: cleaned.toolPreferences?.eraser?.eraseWholeStrokes === true,
-        eraseWithRightMouseButton: mouseRightDragErase
+        eraseWholeStrokes: cleaned.toolPreferences?.eraser?.eraseWholeStrokes === true
       },
       lasso,
       laser: {
@@ -484,18 +478,7 @@ export function mergeSettings(
     parentVaultFolder(merged.vaultDebugLogPath),
     configDir
   );
-  const mouseInputMode = resolvePersistedMouseInputMode(cleaned);
-  merged.mouseInputMode = mouseInputMode;
-  merged.mouseDragScroll = mouseInputMode === "pan";
   return merged;
-}
-
-function resolvePersistedMouseInputMode(
-  cleaned: Partial<PluginSettings>
-): MouseInputMode {
-  const mode = cleaned.mouseInputMode;
-  if (mode === "pan" || mode === "annotate" || mode === "native") return mode;
-  return cleaned.mouseDragScroll === false ? "native" : "pan";
 }
 
 /** Prefer `.md` so the vault log opens as a note in Obsidian. */

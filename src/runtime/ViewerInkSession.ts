@@ -79,13 +79,9 @@ import {
   type PhysicalContactCollectorLease,
   type PhysicalContactDuplicateObserver
 } from "../input/PhysicalContactCollector";
-import { ViewerMousePan, type MousePanPhase } from "../input/ViewerMousePan";
 import {
   canAnnotatePointer,
-  describeInputPolicies,
-  mousePanEnabled,
-  resolveMouseInputMode,
-  type MouseInputMode
+  describeInputPolicies
 } from "../input/annotationInputPolicy";
 import { AddPageControl } from "../ui/AddPageControl";
 import { AddPageTiming } from "../ui/AddPageTiming";
@@ -569,11 +565,8 @@ export interface ViewerInkSessionOptions {
   onReorderPage?(fromPage: number, toPage: number): Promise<void>;
   notice(message: string): void;
   decideUnsaved?(): Promise<CloseChoice>;
-  mouseDragScrollEnabled?(): boolean;
-  /** Reads the live primary-button drawing binding. */
-  mouseLeftDragDrawEnabled?(): boolean;
-  /** Reads the live secondary-button erasing binding. */
-  mouseRightDragEraseEnabled?(): boolean;
+  /** Reads whether left-button mouse input is enabled for annotation. */
+  mouseInkingEnabled?(): boolean;
   /** Reads the live explicit touch-only/ambiguous-device fallback. */
   touchDrawFallbackEnabled?(): boolean;
   /** Reads whether a finger double-tap should switch to the eraser. */
@@ -696,21 +689,6 @@ interface StrokePerformanceState {
   vectorRepaints: number;
   mutationRefreshes: number;
   hqUpgrades: number;
-}
-
-interface PanPerformanceState {
-  startedAt: number;
-  pointerType: string;
-  pointerMoves: number;
-  refreshes: number;
-  frameIntervals: BoundedTiming;
-  lastMoveAt: number | null;
-  maxPluginCallbackMs: number;
-  maxScrollDeltaPx: number;
-  routerRebinds: number;
-  canvasResizes: number;
-  vectorRepaints: number;
-  scrollCorrections: number;
 }
 
 interface ZoomOverlayLayoutTiming {
@@ -1193,7 +1171,6 @@ export class ViewerInkSession {
   private lastObservedTool: ToolId = "pen";
   private lastDrawOwner = "idle";
   private lastActivePenIds: number[] = [];
-  private panProfile: PanPerformanceState | null = null;
   private laserTrails: LaserTrail[] = [];
   private laserFadeFrame: number | null = null;
   private lastLaserPaintAt = 0;
@@ -1260,7 +1237,6 @@ export class ViewerInkSession {
   private readonly resizeObserver: ResizeObserver | null;
   private readonly logger: SessionLogger;
   private readonly ipadInputTrace: IpadPointerTouchTrace | null;
-  private readonly viewerMousePan: ViewerMousePan;
   private readonly mobilePinchZoom: MobilePinchZoomController;
   private activeMobilePinchSurface: PageSurface | null = null;
   private mobilePinchIndicator: HTMLElement | null = null;
@@ -1562,51 +1538,6 @@ export class ViewerInkSession {
       onEligibility: (target) => this.mobilePinchWheelEligible(target, adapter),
       onIndicator: (scale, reset) => this.updateMobilePinchIndicator(scale, reset, adapter.host.ownerDocument)
     });
-    this.viewerMousePan = new ViewerMousePan(adapter.host.ownerDocument, {
-        enabled: () => mousePanEnabled(this.mouseInputMode()),
-      // Fingers: native PDF viewer only. Custom touch pan fights pinch/scroll remounts on phone.
-      touchPanEnabled: () => false,
-      allowMousePan: (event) => !this.isDesktopPdfPageEvent(event) || !this.mouseLeftDragEnabled(),
-      scrollRoot: () => adapter.scrollElement(),
-      withinTarget: (target) => {
-        if (!(target instanceof Element)) return false;
-        if (target.closest(".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown, .native-pdf-handwriting-selection-toolbar")) return false;
-        // The native PDF sidebar and its resize handle share the leaf host but
-        // must keep their own pointer handling. Only pan from the PDF viewport.
-        return adapter.root.contains(target);
-      },
-      captureElement: () => adapter.root,
-      onPan: (phase, event, details) => {
-        const panStarted = performance.now();
-        this.observePan(phase, event, details);
-        this.logMousePan(phase, event, details);
-        if (phase !== "move" && phase !== "pending") {
-          this.recordPostUiProbeStage(event, "pan", {
-            phase,
-            accepted: phase === "start" || phase === "activate",
-            scrollBefore: details.scrollBefore ?? null,
-            scrollAfter: details.scrollAfter ?? null,
-            ...details
-          });
-        }
-        if (event.pointerType === "pen" && (phase === "start" || phase === "activate" || phase === "move")) {
-          this.logger.inputInvariantViolation("pen-entered-mouse-pan", {
-            phase,
-            pointerId: event.pointerId,
-            activeTool: this.activeTool(),
-            ...this.inputPolicyLogFields(),
-            ...details,
-          });
-        }
-        if (this.panProfile) this.panProfile.maxPluginCallbackMs = Math.max(this.panProfile.maxPluginCallbackMs, performance.now() - panStarted);
-      },
-      onPanClaim: (event, details) => {
-        this.recordPostUiProbeStage(event, "claim", {
-          claimOwner: "mouse-pan",
-          ...details
-        });
-      }
-    }, this.gestureOwnership, false);
     this.addPageControl = options.onInsertPage
       ? new AddPageControl({
         enabled: () => !this.destroyed && typeof this.options.onInsertPage === "function",
@@ -1717,7 +1648,6 @@ export class ViewerInkSession {
       registrationSource: this.documentInputRegistrationSource
     });
     this.pointerProbeAbort.abort();
-    this.viewerMousePan.destroy();
     for (const surface of this.surfaces.values()) {
       surface.router?.destroy();
       surface.router = null;
@@ -4269,13 +4199,8 @@ export class ViewerInkSession {
   }
 
 
-  private mouseInputMode(): MouseInputMode {
-    const settings = this.options.settings;
-    const liveDrag = this.options.mouseDragScrollEnabled?.();
-    const mode = settings.mouseInputMode ?? null;
-    if (liveDrag === true) return resolveMouseInputMode({ mouseInputMode: mode, mouseDragScroll: true });
-    if (liveDrag === false) return resolveMouseInputMode({ mouseInputMode: mode, mouseDragScroll: false });
-    return resolveMouseInputMode(settings);
+  private mouseInkingEnabled(): boolean {
+    return this.options.mouseInkingEnabled?.() ?? this.options.settings.mouseInkingEnabled;
   }
 
   private isDesktopPdfPageEvent(
@@ -4294,27 +4219,12 @@ export class ViewerInkSession {
     return topHit instanceof Element && page.element.contains(topHit);
   }
 
-  private mouseLeftDragEnabled(): boolean {
-    return this.options.mouseLeftDragDrawEnabled?.() ?? this.options.settings.mouseLeftDragDraw;
-  }
-
-  private mouseRightDragEnabled(): boolean {
-    return this.options.mouseRightDragEraseEnabled?.()
-      ?? this.options.settings.mouseRightDragErase
-      ?? this.options.settings.toolPreferences.eraser.eraseWithRightMouseButton;
-  }
-
-  private mouseButtonEnabled(button = 0): boolean {
-    if (button === 2) return this.mouseRightDragEnabled();
-    if (button === 0 || button === -1) return this.mouseLeftDragEnabled();
-    return false;
-  }
 
   private canAnnotatePointerEvent(
     event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
   ): boolean {
     const context = {
-      mouseInputMode: this.mouseInputMode(),
+      mouseInkingEnabled: this.mouseInkingEnabled(),
       stylusConfirmed: this.stylusCapability === "confirmed",
       touchDrawFallback: this.touchAnnotationEnabled(),
       ...(event.pointerType === "mouse"
@@ -4396,8 +4306,7 @@ export class ViewerInkSession {
   private inputPolicyLogFields(): Record<string, unknown> {
     return {
       ...describeInputPolicies({
-        mouseInputMode: this.mouseInputMode(),
-        mouseDragScroll: this.options.settings.mouseDragScroll
+        mouseInkingEnabled: this.mouseInkingEnabled()
       }),
       stylusCapability: this.stylusCapability,
       touchDrawFallback: this.touchAnnotationEnabled(),
@@ -4411,9 +4320,9 @@ export class ViewerInkSession {
     if (event.pointerType === "pen") return "annotate";
     if (event.pointerType === "touch") return this.touchAnnotationEnabled() ? "annotate-touch-fallback" : "native";
     if (event.pointerType === "mouse" && this.isDesktopPdfPageEvent(event)) {
-      return "annotate-page";
+      return this.mouseInkingEnabled() ? "annotate-page" : "native";
     }
-    return this.mouseInputMode();
+    return "native";
   }
 
   /** Live annotation gesture (ink/edit) or selection/text manipulation. */
@@ -6526,8 +6435,6 @@ export class ViewerInkSession {
     });
     session.logger.sessionAttach({
       scrollRoot: describeScrollElement(options.adapter.scrollElement()),
-      panCapture: "document-capture",
-      panBoundary: describeScrollElement(options.adapter.host),
       ...describeInputPolicies(options.settings),
       activeTool: options.settings.toolPreferences.activeTool,
       runtimePlatform: session.runtimePlatform().mobile ? "mobile" : "desktop",
@@ -6584,7 +6491,6 @@ export class ViewerInkSession {
     this.reconcileToolbarMount(reason);
     this.addPageControl?.refresh();
     if (this.zoomProfile) this.zoomProfile.refreshExecutions += 1;
-    if (this.panProfile) this.panProfile.refreshes += 1;
     if (this.deferRefreshDuringZoom(reason)) return;
 
     const pages = this.pagesForInkMount();
@@ -8444,8 +8350,7 @@ export class ViewerInkSession {
       pageRouters,
       ownedInputPages: this.ownedInputPages.size,
       physicalContactPointers: this.physicalContactIdsByPointer.size,
-      physicalContactCollector: this.physicalContactCollectorLease?.snapshot().listenerRegistered ? 1 : 0,
-      viewerMousePan: this.inputTeardownStarted || this.destroyed ? 0 : 1
+      physicalContactCollector: this.physicalContactCollectorLease?.snapshot().listenerRegistered ? 1 : 0
     };
     const base = (() => {
       try {
@@ -8483,7 +8388,6 @@ export class ViewerInkSession {
     this.physicalContactCollectorLease?.release();
     this.physicalContactCollectorLease = null;
     this.pointerProbeAbort.abort();
-    this.viewerMousePan.destroy();
     for (const surface of this.surfaces.values()) {
       surface.router?.destroy();
       surface.router = null;
@@ -8887,7 +8791,6 @@ export class ViewerInkSession {
     this.physicalContactCollectorLease?.release();
     this.physicalContactCollectorLease = null;
     this.syncEffectiveDrawState(options.silent ? "session-destroy" : "plugin-unload", "lifecycle");
-    this.finishPanPerformance(options.silent ? "session-destroy" : "plugin-unload");
     this.releasePageMutationShield("session-destroy");
     this.commitActiveTextEditor("destroy");
     this.cancelTextBoxTransform("destroy");
@@ -9019,7 +8922,6 @@ export class ViewerInkSession {
     }
     this.mobilePinchIndicator?.remove();
     this.mobilePinchIndicator = null;
-    this.viewerMousePan.destroy();
     this.addPageControl?.destroy();
     this.thumbnailSidebarActions?.destroy();
     this.findBridge?.destroy();
@@ -9069,7 +8971,7 @@ export class ViewerInkSession {
     const tool = this.activeTool();
     // A primary-button drawing binding hides the native cursor for ink/eraser.
     const hideNativeCursor = !forceOff
-      && this.mouseLeftDragEnabled()
+      && this.mouseInkingEnabled()
       && (isInkDrawTool(tool) || tool === "eraser");
     this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
   }
@@ -9212,36 +9114,6 @@ export class ViewerInkSession {
     for (const pageNumber of this.zoomWorkingPageNumbers) {
       this.surfaces.get(pageNumber)?.router?.refreshCursors();
     }
-  }
-
-  private logMousePanConfig(reason: string): void {
-    this.logger.mousePan("config", this.mousePanContext(reason));
-  }
-
-  private logMousePan(phase: MousePanPhase, event: PointerEvent, details: Record<string, unknown>): void {
-    this.logger.mousePan(phase, {
-      ...this.mousePanContext(),
-      clientX: Math.round(event.clientX),
-      clientY: Math.round(event.clientY),
-      pointerId: event.pointerId,
-      pointerType: event.pointerType || "(empty)",
-      buttons: event.buttons,
-      width: event.width,
-      height: event.height,
-      pressure: event.pressure,
-      ...details
-    });
-  }
-
-  private mousePanContext(reason?: string): Record<string, unknown> {
-    const mode = this.mouseInputMode();
-    return {
-      ...this.inputPolicyLogFields(),
-      panEnabled: mousePanEnabled(mode),
-      touchPanEnabled: false,
-      scrollRoot: describeScrollElement(this.options.adapter.scrollElement()),
-      ...(reason ? { reason } : {})
-    };
   }
 
   private mountPage(page: AnnotationPageInfo): PageSurface {
@@ -9862,8 +9734,7 @@ export class ViewerInkSession {
       canAnnotatePointer: (event) => this.canAnnotateSurface(surface, event),
       touchAnnotationEnabled: () => this.touchAnnotationEnabled(),
       pointerInputCapabilities: () => detectPointerInputCapabilities(surface.page.element),
-      mouseAnnotationEnabled: (button = 0) => this.mouseButtonEnabled(button),
-      rightMouseEraserEnabled: () => this.mouseRightDragEnabled(),
+      mouseInkingEnabled: () => this.mouseInkingEnabled(),
       onStylusEraserStart: () => {
         this.temporaryStylusEraserPointers += 1;
         this.refreshSurfaceCursors();
@@ -10934,7 +10805,6 @@ export class ViewerInkSession {
     this.claimInputOwner(pageElement, surface.page.pageNumber);
     surface.router = this.createPageRouter(surface);
     if (this.zoomProfile) this.zoomProfile.routerRebinds += 1;
-    if (this.panProfile) this.panProfile.routerRebinds += 1;
     if (surface.strokePerformance) surface.strokePerformance.routerRebinds += 1;
     this.logger.inputLifecycleEvent("router-rebind", {
       source: "session-input",
@@ -10987,7 +10857,6 @@ export class ViewerInkSession {
         for (const surface of this.surfaces.values()) {
           if (surface.strokePerformance) surface.strokePerformance.longTaskMaxMs = Math.max(surface.strokePerformance.longTaskMaxMs, longest);
         }
-        if (this.panProfile) this.panProfile.maxPluginCallbackMs = Math.max(this.panProfile.maxPluginCallbackMs, longest);
       });
       observer.observe({ entryTypes: ["longtask"] });
       this.interactionLongTaskObserver = observer;
@@ -10997,7 +10866,7 @@ export class ViewerInkSession {
   }
 
   private stopInteractionLongTaskObserver(): void {
-    if (this.panProfile || [...this.surfaces.values()].some((surface) => surface.strokePerformance)) return;
+    if ([...this.surfaces.values()].some((surface) => surface.strokePerformance)) return;
     this.interactionLongTaskObserver?.disconnect();
     this.interactionLongTaskObserver = null;
   }
@@ -11069,69 +10938,6 @@ export class ViewerInkSession {
     if (profile.inputToRender.count === 0 && profile.firstInputAt !== null) {
       profile.inputToRender.add(Math.max(0, at - profile.firstInputAt));
     }
-  }
-
-  private finishPanPerformance(outcome: string): void {
-    const profile = this.panProfile;
-    if (!profile) return;
-    const frames = profile.frameIntervals.summary();
-    this.logger.panProfile({
-      pointerType: profile.pointerType,
-      outcome,
-      durationMs: roundMetric(performance.now() - profile.startedAt),
-      pointerMoves: profile.pointerMoves,
-      frameCount: frames.count,
-      avgFrameMs: roundMetric(frames.averageMs),
-      p95FrameMs: roundMetric(frames.p95Ms),
-      maxFrameMs: roundMetric(frames.maxMs),
-      lateFrameCount: frames.lateFrameCount,
-      droppedFrameEstimate: frames.droppedFrameEstimate,
-      frameIntervalHistogram: frames.histogram,
-      frameTiming: this.frameTimingProfile(),
-      largestScrollDeltaPx: roundMetric(profile.maxScrollDeltaPx),
-      maxPluginCallbackMs: roundMetric(profile.maxPluginCallbackMs),
-      refreshCount: profile.refreshes,
-      routerRebinds: profile.routerRebinds,
-      canvasResizes: profile.canvasResizes,
-      vectorRepaints: profile.vectorRepaints,
-      scrollCorrections: profile.scrollCorrections,
-      visiblePageCount: this.surfaces.size
-    });
-    this.panProfile = null;
-    this.stopInteractionLongTaskObserver();
-  }
-
-  private observePan(phase: MousePanPhase, event: PointerEvent, details: Record<string, unknown>): void {
-    if (!this.logger.isEnabled()) return;
-    if (phase === "start" || (phase === "activate" && !this.panProfile)) {
-      this.startInteractionLongTaskObserver();
-      this.panProfile = {
-        startedAt: performance.now(),
-        pointerType: event.pointerType || "unknown",
-        pointerMoves: 0,
-        refreshes: 0,
-        frameIntervals: this.frameTimingAccumulator(),
-        lastMoveAt: null,
-        maxPluginCallbackMs: 0,
-        maxScrollDeltaPx: 0,
-        routerRebinds: 0,
-        canvasResizes: 0,
-        vectorRepaints: 0,
-        scrollCorrections: 0
-      };
-    }
-    const profile = this.panProfile;
-    if (!profile) return;
-    if (phase === "move") {
-      const now = performance.now();
-      profile.pointerMoves += 1;
-      if (profile.lastMoveAt !== null) profile.frameIntervals.add(Math.max(0, now - profile.lastMoveAt));
-      profile.lastMoveAt = now;
-      const deltaX = typeof details.deltaX === "number" ? details.deltaX : 0;
-      const deltaY = typeof details.deltaY === "number" ? details.deltaY : 0;
-      profile.maxScrollDeltaPx = Math.max(profile.maxScrollDeltaPx, Math.max(Math.abs(deltaX), Math.abs(deltaY)));
-    }
-    if (phase === "end" || phase === "cancel" || phase === "abort") this.finishPanPerformance(phase);
   }
 
   private recordStrokeLifecycleStart(surface: PageSurface, event: PointerEvent): void {
@@ -12430,7 +12236,7 @@ export class ViewerInkSession {
           }
         }
       }
-      surface.editTool = activeTool === "eraser" || this.isRightMouseEraser(event) ? "eraser" : "lasso";
+      surface.editTool = activeTool === "eraser" ? "eraser" : "lasso";
       surface.eraserSize = surface.editTool === "eraser" ? preferences.eraser.size : undefined;
       surface.eraserWholeStrokes = surface.editTool === "eraser" ? preferences.eraser.eraseWholeStrokes : undefined;
       surface.editPath = this.toPagePoints(surface, samples, true);
@@ -12794,11 +12600,6 @@ export class ViewerInkSession {
       strokeSelectedCount: this.selected.length
     });
     this.ensureSelectionToolbar({ resetPlacement: true });
-  }
-
-  private isRightMouseEraser(event: PointerEvent): boolean {
-    return event.pointerType === "mouse" && event.button === 2
-      && this.mouseRightDragEnabled();
   }
 
   private scheduleHeldShape(surface: PageSurface): void {
@@ -14374,7 +14175,6 @@ export class ViewerInkSession {
     graphiteQuality: "full" | "draft" = "full"
   ): void {
     if (this.zoomProfile && graphiteQuality === "full") this.zoomProfile.vectorRepaints += 1;
-    if (this.panProfile && graphiteQuality === "full") this.panProfile.vectorRepaints += 1;
     if (surface.strokePerformance && graphiteQuality === "full") surface.strokePerformance.vectorRepaints += 1;
     const previous = surface.context;
     surface.context = context;
@@ -14436,7 +14236,6 @@ export class ViewerInkSession {
     const paintGeneration = ++this.nextPaintGeneration;
     surface.paintGeneration = paintGeneration;
     const needsResize = surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight;
-    if (needsResize && this.panProfile) this.panProfile.canvasResizes += 1;
     if (needsResize && surface.strokePerformance) surface.strokePerformance.canvasResizes += 1;
     const canBlit = typeof surface.context.drawImage === "function";
     const zoomish = ViewerInkSession.isZoomPaintReason(reason);
@@ -14471,7 +14270,6 @@ export class ViewerInkSession {
         surface.canvas.height = pixelHeight;
         surface.liveDrawPaintedPoints = 0;
         if (this.zoomProfile) this.zoomProfile.canvasResizes += 1;
-        if (this.panProfile) this.panProfile.canvasResizes += 1;
         if (surface.strokePerformance) surface.strokePerformance.canvasResizes += 1;
         if (stats) stats.canvasesResized += 1;
       }

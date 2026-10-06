@@ -177,23 +177,6 @@ describe("SessionLogger", () => {
     warn.mockRestore();
   });
 
-  it("logs mouse pan probes and throttles move events", () => {
-    const writes: Array<Record<string, unknown>> = [];
-    const vaultLog = { write: (_level: string, _event: string, payload: Record<string, unknown>) => { writes.push(payload); } };
-    const logger = new SessionLogger("Notes/example.pdf", vaultLog);
-
-    logger.mousePan("probe", { inBoundary: true, enabled: true });
-    logger.mousePan("start", { target: "canvas" });
-    for (let index = 0; index < 10; index += 1) {
-      logger.mousePan("move", { deltaY: 4, changed: true });
-    }
-
-    const moves = writes.filter((entry) => entry.phase === "move");
-    expect(writes.some((entry) => entry.phase === "probe")).toBe(true);
-    expect(moves.length).toBeLessThan(10);
-    expect(moves.length).toBeGreaterThan(0);
-  });
-
   it("logs toolbar placement transitions", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const logger = new SessionLogger("Notes/example.pdf", {
@@ -447,7 +430,6 @@ describe("SessionLogger", () => {
     logger.drawStateChanged({ from: true, to: false, reason: "tool-selected", source: "toolbar" });
     logger.zoomProfile({ durationMs: 524, lateFrameCount: 4, frameIntervalHistogram: { "0-8.3": 1 } });
     logger.inkStrokeProfile({ p95InputToRenderMs: 24.8, droppedFrameEstimate: 3 });
-    logger.panProfile({ pointerMoves: 20, maxFrameMs: 48 });
     logger.renderProfile({ operationCount: 4, totalMs: 12 });
     logger.persistProfile({ serializedBytes: 100, totalMs: 4, overlappedActiveGesture: false });
 
@@ -455,13 +437,12 @@ describe("SessionLogger", () => {
       "draw state changed",
       "ink zoom profile",
       "ink stroke profile",
-      "ink pan profile",
       "ink render profile",
       "sidecar persist profile"
     ]);
     expect(writes[0]?.payload).toMatchObject({ from: true, to: false, reason: "tool-selected", pluginVersion: "0.1.60" });
     expect(writes[1]?.payload).toMatchObject({ profileSchema: 2, pluginVersion: "0.1.60", durationMs: 524 });
-    expect(writes[5]?.payload).toMatchObject({ serializedBytes: 100, totalMs: 4, overlappedActiveGesture: false });
+    expect(writes[4]?.payload).toMatchObject({ serializedBytes: 100, totalMs: 4, overlappedActiveGesture: false });
   });
 
   it("logs bounded post-UI probe stages with the plugin and profile identity", () => {

@@ -846,8 +846,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
     const previousAutomaticAnnotationRecovery = this.inkSettings.automaticAnnotationRecovery;
     const previousAnnotationBackupPath = this.inkSettings.annotationBackupPath;
-    const previousMouseLeftDragDraw = this.inkSettings.mouseLeftDragDraw;
-    const previousMouseRightDragErase = this.inkSettings.mouseRightDragErase;
+    const previousMouseInkingEnabled = this.inkSettings.mouseInkingEnabled;
     const previousTouchDrawFallback = this.inkSettings.touchDrawFallback;
     const previousTouchDoubleTapEraser = this.inkSettings.touchDoubleTapEraser;
     settings = mergeSettings(settings, this.app.vault.configDir);
@@ -879,8 +878,7 @@ export default class NativePdfInkPlugin extends Plugin {
         ...(previousPlacement !== settings.toolbarPlacement ? ["toolbarPlacement"] : []),
         ...(previousBoostedZoom !== settings.boostedPdfZoom ? ["boostedPdfZoom"] : []),
         ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
-        ...(previousMouseLeftDragDraw !== settings.mouseLeftDragDraw ? ["mouseLeftDragDraw"] : []),
-        ...(previousMouseRightDragErase !== settings.mouseRightDragErase ? ["mouseRightDragErase"] : []),
+        ...(previousMouseInkingEnabled !== settings.mouseInkingEnabled ? ["mouseInkingEnabled"] : []),
         ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : []),
         ...(previousTouchDoubleTapEraser !== settings.touchDoubleTapEraser ? ["touchDoubleTapEraser"] : [])
       ]
@@ -895,8 +893,7 @@ export default class NativePdfInkPlugin extends Plugin {
       for (const session of this.allSessions()) session.setCustomMobilePdfPinchZoomEnabled(settings.customMobilePdfPinchZoom);
     }
     if (
-      previousMouseLeftDragDraw !== settings.mouseLeftDragDraw ||
-      previousMouseRightDragErase !== settings.mouseRightDragErase ||
+      previousMouseInkingEnabled !== settings.mouseInkingEnabled ||
       previousTouchDrawFallback !== settings.touchDrawFallback
     ) {
       for (const session of this.allSessions()) session.updateMouseInputBindings();
@@ -1556,9 +1553,7 @@ export default class NativePdfInkPlugin extends Plugin {
       } : {}),
       notice: suppressUserNotification,
       decideUnsaved: () => this.decideUnsaved(),
-      mouseDragScrollEnabled: () => this.inkSettings.mouseDragScroll,
-      mouseLeftDragDrawEnabled: () => this.inkSettings.mouseLeftDragDraw,
-      mouseRightDragEraseEnabled: () => this.inkSettings.mouseRightDragErase,
+      mouseInkingEnabled: () => this.inkSettings.mouseInkingEnabled,
       touchDrawFallbackEnabled: () => this.inkSettings.touchDrawFallback,
       touchDoubleTapEraserEnabled: () => this.inkSettings.touchDoubleTapEraser,
       pressureProfile: () => this.inkSettings.pressureProfile,
@@ -1788,8 +1783,7 @@ export default class NativePdfInkPlugin extends Plugin {
   private async saveToolPreferences(preferences: ToolPreferences): Promise<void> {
     this.inkSettings = {
       ...this.inkSettings,
-      toolPreferences: structuredClone(preferences),
-      mouseRightDragErase: preferences.eraser.eraseWithRightMouseButton
+      toolPreferences: structuredClone(preferences)
     };
     await this.saveData(this.inkSettings);
   }

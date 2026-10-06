@@ -294,45 +294,12 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         heading: "PDF navigation",
         items: [
           {
-            name: "Mouse input on PDF pages",
-            desc: "Pan: drag empty areas to scroll. Native: leave scrolling and selection to the PDF viewer. Stylus always annotates; fingers stay native. Mouse drag bindings below control annotation gestures on PDF pages.",
-            render: (setting: Setting) => {
-              setting.addDropdown((dropdown) =>
-                dropdown
-                  .addOption("pan", "Drag to pan / scroll")
-                  .addOption("annotate", "Annotate with active tool")
-                  .addOption("native", "Native PDF only")
-                  .setValue(this.host.inkSettings.mouseInputMode ?? (this.host.inkSettings.mouseDragScroll ? "pan" : "native"))
-                  .onChange(async (value) => {
-                    if (value !== "pan" && value !== "annotate" && value !== "native") return;
-                    await this.persistPatch({
-                      mouseInputMode: value,
-                      mouseDragScroll: value === "pan"
-                    });
-                  })
-              );
-            }
-          },
-          {
-            name: "Left mouse drag draws",
-            desc: "Use the primary mouse button to draw with the active tool on PDF pages. Enabled by default; when off, the existing pan/native PDF behavior is preserved.",
+            name: "Enable mouse for inking",
+            desc: "Allow the left mouse button to draw or edit with the active tool on PDF pages. When off, mouse input remains native; mouse drag-to-pan is not provided by the plugin.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.mouseLeftDragDraw).onChange(async (value) => {
-                  await this.persistPatch({ mouseLeftDragDraw: value });
-                })
-              );
-            }
-          },
-          {
-            name: "Right mouse drag erases",
-            desc: "Use the secondary mouse button as a temporary eraser on PDF pages. Disabled by default; when off, the native context menu remains available.",
-            render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.mouseRightDragErase).onChange(async (value) => {
-                  const toolPreferences = structuredClone(this.host.inkSettings.toolPreferences);
-                  toolPreferences.eraser.eraseWithRightMouseButton = value;
-                  await this.persistPatch({ mouseRightDragErase: value, toolPreferences });
+                toggle.setValue(this.host.inkSettings.mouseInkingEnabled).onChange(async (value) => {
+                  await this.persistPatch({ mouseInkingEnabled: value });
                 })
               );
             }

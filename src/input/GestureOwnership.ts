@@ -4,8 +4,7 @@ export type InputOwner =
   | "touch-ink"
   | "custom-touch-pinch"
   | "native-touch-navigation"
-  | "mouse-ink"
-  | "mouse-pan";
+  | "mouse-ink";
 
 export interface ActiveInputState {
   owner: InputOwner;
@@ -23,7 +22,7 @@ export interface GestureContact {
   buttons?: number;
   target?: "page" | "ui";
   inkToolSelected?: boolean;
-  mouseIntent?: "ink" | "pan";
+  inkIntent?: boolean;
   samples?: readonly string[];
   predicted?: readonly string[];
 }
@@ -120,7 +119,6 @@ export class GestureOwnership {
       if (
         this.activePenId !== null
         || this.owner === "mouse-ink"
-        || this.owner === "mouse-pan"
         || this.owner === "touch-ink"
       ) {
         return this.observe("observe");
@@ -129,7 +127,7 @@ export class GestureOwnership {
         this.owner = "custom-touch-pinch";
         return this.decision("preview", true);
       }
-      if (contact.target === "page" && contact.inkToolSelected && contact.mouseIntent === "ink") {
+      if (contact.target === "page" && contact.inkToolSelected && contact.inkIntent === true) {
         this.owner = "touch-ink";
         return this.claim("claim-ink");
       }
@@ -144,11 +142,13 @@ export class GestureOwnership {
       return this.claim("claim-ink");
     }
 
-    const intent = contact.mouseIntent ?? "pan";
-    this.owner = intent === "pan" ? "mouse-pan" : "mouse-ink";
+    if (contact.target !== "page" || !contact.inkToolSelected || contact.inkIntent !== true) {
+      return this.observe("observe");
+    }
+    this.owner = "mouse-ink";
     this.activeMousePointerId = contact.pointerId;
     this.activeMouseButtons = mouseButtonMask(contact);
-    return this.claim(intent === "ink" ? "claim-ink" : "observe");
+    return this.claim("claim-ink");
   }
 
   pointerMove(contact: GestureContact): GestureDecision {

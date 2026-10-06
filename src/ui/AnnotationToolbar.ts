@@ -240,10 +240,6 @@ export class AnnotationToolbar {
         onWholeStrokeChange: (enabled) => {
           this.preferences.eraser.eraseWholeStrokes = enabled;
           this.changed();
-        },
-        onRightMouseButtonChange: (enabled) => {
-          this.preferences.eraser.eraseWithRightMouseButton = enabled;
-          this.changed();
         }
       }, this.abort.signal)
     };
