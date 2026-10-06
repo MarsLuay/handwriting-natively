@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InkSession } from "../src/ink/InkSession";
 import type { InkStroke } from "../src/model";
 
@@ -43,6 +43,27 @@ describe("ink spatial index", () => {
     session.replacePage(1, [stroke("three", 1, 400, 400)]);
     expect(session.pageIntersecting(1, { minX: 0, minY: 0, maxX: 50, maxY: 50 })).toEqual([]);
     expect(session.pageIntersecting(1, { minX: 350, minY: 350, maxX: 450, maxY: 450 }).map((item) => item.id)).toEqual(["three"]);
+  });
+
+  it("updates only changed index entries when an eraser replaces a dense page", () => {
+    const unchanged = Array.from({ length: 500 }, (_, index) => stroke(`unchanged-${index}`, 1, index * 8, 200));
+    const erased = stroke("erased", 1, 20, 20);
+    const replacement = stroke("replacement", 1, 24, 20);
+    const session = new InkSession([...unchanged, erased]);
+    const index = (session as unknown as { indexByPage: Map<number, { add: (stroke: InkStroke) => void; remove: (id: string) => void }> })
+      .indexByPage.get(1)!;
+    const add = vi.spyOn(index, "add");
+    const remove = vi.spyOn(index, "remove");
+
+    session.replacePage(1, [...unchanged, replacement], "erase-stroke-segments");
+
+    expect(remove).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledWith("erased");
+    expect(remove).toHaveBeenCalledWith("replacement");
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(add).toHaveBeenCalledWith(replacement);
+    expect(session.pageIntersecting(1, { minX: 0, minY: 0, maxX: 40, maxY: 40 }).map((item) => item.id))
+      .toEqual(["replacement"]);
   });
 
   it("emits bounded insert and explicit removal lifecycle events", () => {

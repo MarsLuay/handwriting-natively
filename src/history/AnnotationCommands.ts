@@ -37,6 +37,10 @@ export class ReplacePageStrokesCommand implements Command {
     this.after = [...after];
   }
 
+  get pageNumber(): number { return this.page; }
+  get beforeStrokes(): readonly InkStroke[] { return this.before; }
+  get afterStrokes(): readonly InkStroke[] { return this.after; }
+
   execute(): void { this.session.replacePage(this.page, this.after, "erase-stroke-segments"); }
   undo(): void { this.session.replacePage(this.page, this.before, "history-undo-erase-stroke-segments"); }
 }

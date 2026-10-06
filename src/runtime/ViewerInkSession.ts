@@ -1232,6 +1232,8 @@ export class ViewerInkSession {
   private static readonly ZOOM_RELEASE_GATE_RETRY_MS = 32;
   /** Detect back-to-back page paints during handoff (flash proxy). */
   private static readonly FLASH_DOUBLE_PAINT_MS = 50;
+  /** Large pages use the captured layer for the release frame; HQ restamp follows off-frame. */
+  private static readonly LARGE_ZOOM_RASTER_FALLBACK_STROKES = 32;
   private static readonly PIXEL_EVIDENCE_MAX_EDGE = 192;
   private readonly lastPagePaintAt = new Map<number, { at: number; reason: string }>();
   private pasteGeneration = 0;
@@ -6825,6 +6827,110 @@ export class ViewerInkSession {
     return true;
   }
 
+  /**
+   * Commit an eraser gesture into the cached layer without repainting every
+   * stroke on a dense page. The wet preview already isolated the small damaged
+   * regions; clear those regions and restamp only post-erase candidates.
+   */
+  private patchCommittedErase(surface: PageSurface, command: ReplacePageStrokesCommand): boolean {
+    if (
+      command.pageNumber !== surface.page.pageNumber
+      || !surface.wetPreviewActive
+      || !surface.inkLayerValid
+      || !surface.inkLayer
+      || !surface.inkLayerContext
+      || !surface.inkLayer.width
+      || !surface.inkLayer.height
+      || surface.inkLayerBurstCapture
+      || surface.inkLayerRevision !== this.ink.pageRevision(surface.page.pageNumber) - 1
+      || surface.canvas.width !== surface.inkLayer.width
+      || surface.canvas.height !== surface.inkLayer.height
+    ) return false;
+    const damage = surface.wetDamage.drain();
+    if (damage.length === 0) return false;
+
+    const layout = this.pageLayout(surface);
+    const width = Math.max(1, layout.contentWidth || 1);
+    const height = Math.max(1, layout.contentHeight || 1);
+    const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
+    if (
+      pixelWidth !== surface.inkLayer.width
+      || pixelHeight !== surface.inkLayer.height
+      || surface.inkLayerBackingScale === null
+      || Math.abs(surface.inkLayerBackingScale - backingScale) >= 1e-6
+    ) return false;
+
+    let maxStrokeWidth = 0;
+    for (const stroke of command.beforeStrokes) {
+      if (Number.isFinite(stroke.width)) maxStrokeWidth = Math.max(maxStrokeWidth, stroke.width);
+    }
+    const padding = Math.max(2, maxStrokeWidth * this.displayScale(surface) / 2 + 2);
+    const patchLedger = new DamageLedger();
+    for (const rect of damage) {
+      patchLedger.add({
+        minX: Math.max(0, rect.minX - padding),
+        minY: Math.max(0, rect.minY - padding),
+        maxX: Math.min(width, rect.maxX + padding),
+        maxY: Math.min(height, rect.maxY + padding)
+      });
+    }
+    const patches = patchLedger.drain();
+    const mapper = this.mapper(surface);
+    const layerContext = surface.inkLayerContext;
+    const startedAt = performance.now();
+    let repaintedStrokes = 0;
+    surface.paintGeneration = ++this.nextPaintGeneration;
+    layerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+    for (const patch of patches) {
+      if (patch.maxX <= patch.minX || patch.maxY <= patch.minY) continue;
+      layerContext.clearRect(patch.minX, patch.minY, patch.maxX - patch.minX, patch.maxY - patch.minY);
+      const pageCorners = [
+        mapper.toPage({ x: patch.minX, y: patch.minY }),
+        mapper.toPage({ x: patch.maxX, y: patch.minY }),
+        mapper.toPage({ x: patch.minX, y: patch.maxY }),
+        mapper.toPage({ x: patch.maxX, y: patch.maxY })
+      ];
+      const pageBounds: Bounds = {
+        minX: Math.min(...pageCorners.map((point) => point.x)),
+        minY: Math.min(...pageCorners.map((point) => point.y)),
+        maxX: Math.max(...pageCorners.map((point) => point.x)),
+        maxY: Math.max(...pageCorners.map((point) => point.y))
+      };
+      const candidates = this.ink.pageIntersecting(surface.page.pageNumber, pageBounds);
+      repaintedStrokes += candidates.length;
+      layerContext.save();
+      layerContext.beginPath();
+      layerContext.rect(patch.minX, patch.minY, patch.maxX - patch.minX, patch.maxY - patch.minY);
+      layerContext.clip();
+      this.paintCommittedStrokes(surface, layerContext, candidates);
+      layerContext.restore();
+    }
+    surface.inkLayerRevision = this.ink.pageRevision(surface.page.pageNumber);
+    surface.inkLayerBackingScale = backingScale;
+    surface.inkLayerBurstCapture = false;
+    this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
+    this.paintLaserTrails(surface, surface.page.pageNumber);
+    this.clearLiveDrawPreview(surface);
+    this.lastPagePaintAt.set(surface.page.pageNumber, { at: performance.now(), reason: "erase-patch" });
+    const durationMs = roundMetric(performance.now() - startedAt);
+    this.logger.renderProfile({
+      page: surface.page.pageNumber,
+      operation: "erase-patch",
+      reason: "history-erase",
+      durationMs,
+      strokeCount: repaintedStrokes,
+      pageStrokeCount: this.ink.page(surface.page.pageNumber).length,
+      pageRevision: this.ink.pageRevision(surface.page.pageNumber),
+      cachedLayerRevision: surface.inkLayerRevision,
+      patchCount: patches.length,
+      useLayerCache: true,
+      includeActivePreview: false,
+      zoomCompositing: this.zoomCompositing,
+      visiblePageCount: this.surfaces.size
+    });
+    return true;
+  }
+
   private paintAfterHistory(command?: Command, action?: HistoryChangeAction): void {
     if (this.historyDirtyPages.size === 0) {
       this.refresh("history");
@@ -6847,7 +6953,10 @@ export class ViewerInkSession {
       const appended = incrementalStroke?.page === page
         ? this.appendCommittedStroke(surface, incrementalStroke)
         : false;
-      if (!appended) {
+      const patchedErase = command instanceof ReplacePageStrokesCommand
+        ? this.patchCommittedErase(surface, command)
+        : false;
+      if (!appended && !patchedErase) {
         this.invalidateInkLayer(surface);
         this.renderPage(page);
       }
@@ -11290,7 +11399,10 @@ export class ViewerInkSession {
   private beginStrokePixelEvidence(surface: PageSurface, stroke: InkStroke, canvas: HTMLCanvasElement, context: CanvasRenderingContext2D): void {
     if (!this.logger.isEnabled()) return;
     const state = this.strokePixelEvidenceState(stroke.id);
-    if (state.paintGeneration === surface.paintGeneration && state.region) return;
+    // Evidence is diagnostic only. One bounded sample per canvas generation is
+    // enough; sampling every incremental paint generation performs synchronous
+    // getImageData calls on the pointer-release path.
+    if (state.canvasGeneration === surface.canvasGeneration && state.region) return;
     const region = this.pixelEvidenceRegion(surface, stroke, canvas);
     const before = this.readPixelEvidence(context, canvas, region);
     state.paintGeneration = surface.paintGeneration;
@@ -12554,23 +12666,49 @@ export class ViewerInkSession {
     surface.eraserSize = undefined;
     surface.eraserWholeStrokes = undefined;
     if (editTool === "eraser" && eraserSize !== undefined) {
+      const startedAt = performance.now();
+      const hadWetPreview = surface.wetPreviewActive;
       const erase = eraserWholeStrokes ? eraseWholeStrokes : eraseStrokes;
       const strokes = this.ink.page(surface.page.pageNumber);
+      const candidateStartedAt = performance.now();
       const candidates = this.ink.pageIntersecting(
         surface.page.pageNumber,
         pathBoundsWithPadding(surface.editPath, eraserSize / 2)
       );
+      const candidateMs = performance.now() - candidateStartedAt;
+      const geometryStartedAt = performance.now();
       const result = erase(strokes, surface.editPath, eraserSize, {
         candidateIds: new Set(candidates.map((stroke) => stroke.id)),
         createFragmentId: () => this.id()
       });
+      const geometryMs = performance.now() - geometryStartedAt;
+      let historyPaintMs = 0;
       if (result.erased.length) {
         this.clearSelection();
+        const historyStartedAt = performance.now();
         this.executeHistory(
           new ReplacePageStrokesCommand(this.ink, surface.page.pageNumber, this.ink.page(surface.page.pageNumber), result.kept),
           surface.page.pageNumber
         );
+        historyPaintMs = performance.now() - historyStartedAt;
       }
+      this.logger.renderProfile({
+        page: surface.page.pageNumber,
+        operation: "erase-finalize",
+        reason: "pointerup",
+        durationMs: performance.now() - startedAt,
+        candidateMs,
+        geometryMs,
+        historyPaintMs,
+        wholeStroke: eraserWholeStrokes,
+        pathPointCount: surface.editPath.length,
+        candidateCount: candidates.length,
+        beforeStrokeCount: strokes.length,
+        changedStrokeCount: result.erased.length,
+        fragmentCount: result.fragments.length,
+        afterStrokeCount: result.kept.length,
+        wetPreviewActive: hadWetPreview
+      });
       return;
     }
     if (editTool !== "lasso" || surface.editPath.length < 2) return;
@@ -14410,7 +14548,11 @@ export class ViewerInkSession {
     const canonicalZoomSettle = zoomish
       && (needsResize || reason.includes("handoff-final") || settleFocusHq)
       && !settleCheap;
-    if (needsResize && canBlit && !canonicalZoomSettle) {
+    const largeZoomRasterFallback = canonicalZoomSettle
+      && surface.inkLayerValid
+      && !surface.inkLayerBurstCapture
+      && this.ink.page(pageNumber).length >= ViewerInkSession.LARGE_ZOOM_RASTER_FALLBACK_STROKES;
+    if (needsResize && canBlit && (!canonicalZoomSettle || largeZoomRasterFallback)) {
       scaledBlit = this.snapshotCommittedBitmap(surface);
     }
 
@@ -14437,10 +14579,11 @@ export class ViewerInkSession {
     }
     surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
 
-    // Non-zoom resize keeps a bitmap fallback. Zoom itself settles directly to
-    // canonical ink: a scaled raster and a later vector upgrade visibly differ
-    // in opacity, while this synchronous render is presented atomically.
-    if (scaledBlit && !canonicalZoomSettle) {
+    // Non-zoom resize keeps a bitmap fallback. Large zoom settles may also use
+    // the captured layer for the release frame; the existing settle-upgrade
+    // queue then restores canonical vector ink without blocking pointer release.
+    const rasterZoomFallback = canonicalZoomSettle && largeZoomRasterFallback && Boolean(scaledBlit);
+    if (scaledBlit && (!canonicalZoomSettle || rasterZoomFallback)) {
       surface.context.setTransform(1, 0, 0, 1, 0, 0);
       surface.context.clearRect(0, 0, pixelWidth, pixelHeight);
       surface.context.imageSmoothingEnabled = false;
@@ -14456,6 +14599,36 @@ export class ViewerInkSession {
         pixelHeight
       );
       surface.context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+    }
+
+    if (rasterZoomFallback && scaledBlit) {
+      surface.inkLayerValid = false;
+      surface.inkLayerBackingScale = null;
+      surface.inkLayerBurstCapture = true;
+      surface.inkLayerRevision = null;
+      surface.settleUpgradePending = true;
+      this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
+      surface.viewportCullPending = false;
+      if (syncText) this.renderTextAnnotations(surface);
+      if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
+      this.logger.renderProfile({
+        page: pageNumber,
+        operation: "page-raster-fallback",
+        reason: reason || "render",
+        durationMs: roundMetric(performance.now() - paintStarted),
+        pageRevision: this.ink.pageRevision(pageNumber),
+        cachedLayerRevision: null,
+        strokeCount: this.ink.page(pageNumber).length,
+        canvasResized: needsResize,
+        canvasResizeCount: needsResize ? 1 : 0,
+        vectorRepaintCount: 0,
+        useLayerCache: true,
+        includeActivePreview,
+        zoomCompositing: this.zoomCompositing,
+        visiblePageCount: this.surfaces.size,
+        deferredCanonicalUpgrade: true
+      });
+      return true;
     }
 
     // Cheap settle under CSS mask: keep blit-stretch only; HQ upgrades on later rAF/idle.

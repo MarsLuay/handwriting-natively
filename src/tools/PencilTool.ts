@@ -270,6 +270,7 @@ export function graphiteMarks(
     return out;
   }
 
+  let lastStamp: { x: number; y: number } | null = null;
   for (let i = 1; i < points.length; i += 1) {
     const a = points[i - 1]!;
     const b = points[i]!;
@@ -293,13 +294,22 @@ export function graphiteMarks(
 
     for (let step = 0; step <= steps; step += 1) {
       const t = step / steps;
+      const x = a.x + dx * t;
+      const y = a.y + dy * t;
+      const terminal = i === points.length - 1 && step === steps;
+      if (
+        lastStamp
+        && !terminal
+        && Math.hypot(x - lastStamp.x, y - lastStamp.y) < spacing * 0.8
+      ) continue;
       stampAt({
-        x: a.x + dx * t,
-        y: a.y + dy * t,
+        x,
+        y,
         pressure: a.pressure + (b.pressure - a.pressure) * t,
         tiltX: (a.tiltX ?? 0) + ((b.tiltX ?? 0) - (a.tiltX ?? 0)) * t,
         tiltY: (a.tiltY ?? 0) + ((b.tiltY ?? 0) - (a.tiltY ?? 0)) * t
       }, i * 97 + step, heading, nx, ny);
+      lastStamp = { x, y };
     }
   }
   return out;
