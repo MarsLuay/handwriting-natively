@@ -190,12 +190,12 @@ describe("viewer runtime tracer", () => {
     expect(blocked[1]?.error).toEqual(new Error("destroy failed"));
   });
 
-  it("mounts an explicitly selected PDF toolbar on mobile", async () => {
+  it("can switch from a sidebar to the PDF toolbar on mobile", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     const mountToolbar = vi.spyOn(adapter, "mountToolbar");
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.toolbarPlacement = "main";
+    settings.toolbarPlacement = "left";
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/example.pdf",
@@ -209,7 +209,13 @@ describe("viewer runtime tracer", () => {
       runtimePlatform: () => ({ mobile: true, phone: false })
     });
 
-    expect(mountToolbar).toHaveBeenCalledWith(expect.any(HTMLElement), "main");
+    expect(mountToolbar).toHaveBeenCalledWith(expect.any(HTMLElement), "left");
+    const more = adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='more']");
+    more?.click();
+    const pdfToolbarOption = document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']");
+    expect(pdfToolbarOption?.textContent).toBe("Toolbar: PDF bar");
+    pdfToolbarOption?.click();
+    expect(settings.toolbarPlacement).toBe("main");
     await session.destroy();
   });
 
