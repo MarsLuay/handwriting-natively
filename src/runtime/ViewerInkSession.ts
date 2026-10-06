@@ -67,7 +67,11 @@ import {
   type InkVisibilityPhase,
   type InkVisibilitySnapshot
 } from "./InkVisibility";
-import { deferredRenderDisposition } from "./renderCachePolicy";
+import {
+  deferredRenderDisposition,
+  DENSE_ZOOM_RASTER_FALLBACK_STROKES,
+  shouldUseDenseZoomRasterFallback
+} from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRoute, type PointerRouterHandoff } from "../input/PointerRouter";
 import { classifyInputTarget } from "../input/InputTargetClassification";
 import { detectPointerInputCapabilities } from "../input/PointerInputCapabilities";
@@ -1262,7 +1266,7 @@ export class ViewerInkSession {
   /** Detect back-to-back page paints during handoff (flash proxy). */
   private static readonly FLASH_DOUBLE_PAINT_MS = 50;
   /** Large pages use the captured layer for the release frame; HQ restamp follows off-frame. */
-  private static readonly LARGE_ZOOM_RASTER_FALLBACK_STROKES = 32;
+  private static readonly LARGE_ZOOM_RASTER_FALLBACK_STROKES = DENSE_ZOOM_RASTER_FALLBACK_STROKES;
   /** Chunk only pages large enough for the captured telemetry's ~1s vector walls. */
   private static readonly DEFERRED_CANONICAL_CHUNK_STROKES = 128;
   private static readonly PIXEL_EVIDENCE_MAX_EDGE = 192;
@@ -15286,6 +15290,58 @@ export class ViewerInkSession {
         strokeCount: this.ink.page(pageNumber).length,
         canvasResized: needsResize,
         canvasResizeCount: needsResize ? 1 : 0,
+        vectorRepaintCount: 0,
+        useLayerCache: true,
+        includeActivePreview,
+        zoomCompositing: this.zoomCompositing,
+        visiblePageCount: this.surfaces.size,
+        deferredCanonicalUpgrade: true
+      });
+      return true;
+    }
+
+    // A scale change can require a canonical settle even when the backing
+    // dimensions stay the same. Keep the already-captured dense raster for the
+    // release frame in that case; the queued settle upgrade restores vector
+    // pixels after the compositor is no longer holding the interaction.
+    const sameSizeRasterZoomFallback = shouldUseDenseZoomRasterFallback({
+      canonicalZoomSettle,
+      strokeCount: this.ink.page(pageNumber).length,
+      needsResize,
+      canBlit,
+      layerValid: surface.inkLayerValid,
+      layerMatchesBacking: Boolean(
+        surface.inkLayer
+        && surface.inkLayer.width === pixelWidth
+        && surface.inkLayer.height === pixelHeight
+      ),
+      erasingLive,
+      movingSelection,
+      livePreview
+    });
+    if (sameSizeRasterZoomFallback) {
+      const cachedLayerRevision = surface.inkLayerRevision;
+      this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
+      surface.inkLayerValid = false;
+      surface.inkLayerBackingScale = null;
+      surface.inkLayerBurstCapture = true;
+      surface.inkLayerRevision = null;
+      surface.rasterFallbackReady = true;
+      surface.settleUpgradePending = true;
+      this.lastPagePaintAt.set(pageNumber, { at: performance.now(), reason: reason || "render" });
+      surface.viewportCullPending = false;
+      if (syncText) this.renderTextAnnotations(surface);
+      if (!preserveLiveDraft) this.clearLiveDrawPreview(surface);
+      this.logger.renderProfile({
+        page: pageNumber,
+        operation: "page-raster-fallback",
+        reason: reason || "render",
+        durationMs: roundMetric(performance.now() - paintStarted),
+        pageRevision: this.ink.pageRevision(pageNumber),
+        cachedLayerRevision,
+        strokeCount: this.ink.page(pageNumber).length,
+        canvasResized: false,
+        canvasResizeCount: 0,
         vectorRepaintCount: 0,
         useLayerCache: true,
         includeActivePreview,

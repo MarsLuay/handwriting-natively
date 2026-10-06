@@ -3,6 +3,9 @@ import type { VaultLogSink, VaultLogLevel } from "./VaultLogSink";
 import { normalizeVaultRelativePath } from "../storage/VaultFs";
 
 const LOG_RETENTION_MS = 60 * 60 * 1000;
+const LOG_MAX_BYTES = 8 * 1024 * 1024;
+const LOG_COMPACTION_INTERVAL_MS = 5 * 60 * 1000;
+const LOG_COMPACTION_BYTES = 512 * 1024;
 
 async function ensureParentFolder(vault: Vault, filePath: string): Promise<void> {
   const parent = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
@@ -28,7 +31,17 @@ function retainRecentEntries(contents: string, now: Date): string {
       return false;
     }
   });
-  return recent.length ? `${recent.join("\n")}\n` : "";
+  const bounded: string[] = [];
+  let bytes = 0;
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const line = recent[index]!;
+    const lineBytes = line.length + 1;
+    if (bounded.length > 0 && bytes + lineBytes > LOG_MAX_BYTES) break;
+    bounded.push(line);
+    bytes += lineBytes;
+  }
+  bounded.reverse();
+  return bounded.length ? `${bounded.join("\n")}\n` : "";
 }
 
 export class VaultDebugLog implements VaultLogSink {
@@ -37,6 +50,8 @@ export class VaultDebugLog implements VaultLogSink {
   private retentionTimer: number | null = null;
   private flushQueue: Promise<void> = Promise.resolve();
   private destroyed = false;
+  private lastCompactionAtMs = 0;
+  private uncompactedBytes = 0;
 
   constructor(
     private readonly vault: () => Vault,
@@ -79,6 +94,8 @@ export class VaultDebugLog implements VaultLogSink {
         const filePath = normalizeVaultRelativePath(this.path());
         await ensureParentFolder(vault, filePath);
         await vault.adapter.write(filePath, "");
+        this.lastCompactionAtMs = this.now().getTime();
+        this.uncompactedBytes = 0;
       } catch (error) {
         console.error("[Handwriting Natively] vault debug log clear failed", error);
       }
@@ -130,9 +147,25 @@ export class VaultDebugLog implements VaultLogSink {
         const vault = this.vault();
         const filePath = normalizeVaultRelativePath(this.path());
         await ensureParentFolder(vault, filePath);
-        const existing = await vault.adapter.exists(filePath) ? await vault.adapter.read(filePath) : "";
-        const retained = retainRecentEntries(existing, this.now());
-        await vault.adapter.write(filePath, `${retained}${chunk}`);
+        const now = this.now();
+        const shouldCompact = this.lastCompactionAtMs === 0
+          || now.getTime() - this.lastCompactionAtMs >= LOG_COMPACTION_INTERVAL_MS
+          || this.uncompactedBytes + chunk.length >= LOG_COMPACTION_BYTES;
+        const exists = await vault.adapter.exists(filePath);
+        if (shouldCompact) {
+          const existing = exists ? await vault.adapter.read(filePath) : "";
+          const retained = retainRecentEntries(`${existing}${chunk}`, now);
+          await vault.adapter.write(filePath, retained);
+          this.lastCompactionAtMs = now.getTime();
+          this.uncompactedBytes = 0;
+        } else if (exists) {
+          await vault.adapter.append(filePath, chunk);
+          this.uncompactedBytes += chunk.length;
+        } else {
+          await vault.adapter.write(filePath, chunk);
+          this.lastCompactionAtMs = now.getTime();
+          this.uncompactedBytes = 0;
+        }
       } catch (error) {
         console.error("[Handwriting Natively] vault debug log write failed", error);
       }
@@ -148,7 +181,11 @@ export class VaultDebugLog implements VaultLogSink {
         if (!await vault.adapter.exists(filePath)) return;
         const current = await vault.adapter.read(filePath);
         const retained = retainRecentEntries(current, this.now());
-        if (retained !== current) await vault.adapter.write(filePath, retained);
+        if (retained !== current) {
+          await vault.adapter.write(filePath, retained);
+          this.lastCompactionAtMs = this.now().getTime();
+          this.uncompactedBytes = 0;
+        }
       } catch (error) {
         console.error("[Handwriting Natively] vault debug log retention failed", error);
       }
