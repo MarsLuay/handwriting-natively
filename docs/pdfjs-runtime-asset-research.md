@@ -1,7 +1,14 @@
 # PDF.js runtime assets and packaging research (#466)
 
-**Status:** research-only input to #460. This note does not add PDF.js to the
-plugin, change the build, or authorize a viewer replacement.
+**Status:** research input to #460. The current BRAT release path now bundles
+PDF.js and pdf-lib into `main.js`; this note preserves the asset trade-offs and
+compatibility evidence behind that decision.
+
+**Implementation update:** BRAT installs only `main.js`, `manifest.json`, and
+`styles.css`. The plugin therefore uses PDF.js's self-contained fake-worker mode
+for releases instead of depending on sibling worker, CMap, font, or WASM files.
+The external-asset resolver remains available for injected test runtimes and
+future hosts that can prove a packaged asset directory is present.
 
 ## Evidence
 
@@ -65,13 +72,14 @@ For this repository:
 1. Pin `pdfjs-dist` to an exact version (not a caret range), record the selected
    modern/legacy build, and sync its core, worker, CMaps, fonts, WASM, ICC, and
    optional viewer assets through a reviewed script.
-2. Keep PDF.js runtime assets outside `main.js`. The current esbuild target is a
-   CJS plugin bundle with a strict bundle budget; inlining the full viewer,
-   CMaps, fonts, and WASM would be both oversized and fragile for worker URLs.
-3. Add an explicit release asset allowlist when implementation is authorized:
-   `main.js`, `manifest.json`, `styles.css`, and a versioned `pdfjs/` directory
-   containing only the selected manifest entries. Do not copy all of
-   `node_modules` or an unreviewed `pdfjs-dist` tree.
+2. For BRAT releases, bundle the pinned display runtime and auxiliary runtime
+   modules into `main.js`; BRAT does not install arbitrary sibling directories
+   from a release asset glob. Keep the bundle budget explicit and verify the
+   self-contained fake-worker path.
+3. Keep the release asset allowlist to `main.js`, `manifest.json`, and
+   `styles.css`. Do not publish an unconsumable `pdfjs/` asset glob; GitHub
+   release assets do not preserve directory structure for BRAT's standard
+   three-file installer.
 4. Resolve URLs through one `PdfRuntimeAssetResolver` at runtime. It should
    return a normalized URL and a diagnostic for each asset, with a platform
    capability probe. Do not scatter relative strings through page/render code.

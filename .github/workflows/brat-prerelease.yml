@@ -68,12 +68,9 @@ jobs:
           test -f main.js
           test -f manifest.json
           test -f styles.css
-          test -f pdfjs/manifest.json
-          test -f pdfjs/pdf.mjs
-          test -f pdfjs/pdf.worker.mjs
-          test -f pdfjs/pdf-lib.mjs
-          test -f pdfjs/pdf-thumbnail-actions.mjs
-          test -f pdfjs/post-zoom-input.mjs
+          # BRAT installs only these three release assets. All runtime code is
+          # bundled into main.js so the installed plugin is self-contained.
+          test ! -e pdfjs
 
       - name: Publish BRAT prerelease
         uses: softprops/action-gh-release@v3
@@ -92,4 +89,3 @@ jobs:
             main.js
             manifest.json
             styles.css
-            pdfjs/**

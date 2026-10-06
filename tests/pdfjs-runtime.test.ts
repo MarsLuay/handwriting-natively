@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PdfJsViewAdapter } from "../src/integration/PdfJsViewAdapter";
-import { createPdfJsAssetResolver, pdfJsDocumentOptions, type PdfJsRuntime } from "../src/integration/PdfJsRuntime";
+import { createPdfJsAssetResolver, loadPdfJsRuntime, pdfJsDocumentOptions, type PdfJsRuntime } from "../src/integration/PdfJsRuntime";
 
 describe("plugin-owned PDF.js runtime boundary", () => {
   const originalDevicePixelRatio = window.devicePixelRatio;
@@ -19,6 +19,18 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(assets.root).toBe(".obsidian/plugins/handwriting-natively/pdfjs");
     expect(assets.resolve("pdf.worker.mjs")).toBe("app://local/.obsidian/plugins/handwriting-natively/pdfjs/pdf.worker.mjs");
     expect(getResourcePath).toHaveBeenCalledWith(".obsidian/plugins/handwriting-natively/pdfjs/pdf.worker.mjs");
+  });
+
+  it("loads a self-contained runtime for BRAT installs", async () => {
+    const runtime = await loadPdfJsRuntime({} as never, ".obsidian/plugins/handwriting-natively");
+    expect(runtime.assets.embedded).toBe(true);
+    expect(typeof runtime.module.getDocument).toBe("function");
+
+    const options = pdfJsDocumentOptions(runtime.assets, new Uint8Array([37, 80, 68, 70]));
+    expect(options.disableWorker).toBe(true);
+    expect(options.useWorkerFetch).toBe(false);
+    expect(options.cMapUrl).toBeUndefined();
+    expect(options.standardFontDataUrl).toBeUndefined();
   });
 
   it("keeps parsing data and auxiliary font/map assets local", () => {
