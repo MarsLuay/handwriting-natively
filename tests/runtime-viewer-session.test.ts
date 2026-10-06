@@ -2227,6 +2227,53 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("redraws brush ribbons as whole paths so release transfers the live form", async () => {
+    const adapter = new FakeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "pen";
+    settings.toolPreferences.pen.penType = "brush";
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/brush-preview.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      paintCommittedStrokes: (...args: unknown[]) => void;
+      renderLiveDrawPreview: (surface: unknown) => { incremental: boolean };
+      surfaces: Map<number, unknown>;
+    };
+    const vectorPaint = vi.spyOn(internal, "paintCommittedStrokes");
+    vectorPaint.mockClear();
+    const surface = internal.surfaces.get(1);
+    expect(surface).toBeDefined();
+
+    const previewResults: Array<{ incremental: boolean }> = [];
+    const pointerId = 903;
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 80, 140, { pointerId }));
+    previewResults.push(internal.renderLiveDrawPreview(surface));
+    for (let index = 1; index <= 240; index += 1) {
+      adapter.pageElement.dispatchEvent(pointer(
+        "pointermove",
+        80 + (index % 480),
+        140 + Math.sin(index / 18) * 90,
+        { pointerId }
+      ));
+      if (index % 20 === 0) previewResults.push(internal.renderLiveDrawPreview(surface));
+    }
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 560, 140, { pointerId }));
+
+    expect(previewResults.length).toBeGreaterThan(1);
+    expect(previewResults.every(({ incremental }) => incremental === false)).toBe(true);
+    expect(vectorPaint).not.toHaveBeenCalled();
+    await session.destroy();
+  });
+
   it("uses accumulated live bounds instead of rescanning a long stroke on release", async () => {
     const adapter = new FakeAdapter();
     const session = await ViewerInkSession.create({

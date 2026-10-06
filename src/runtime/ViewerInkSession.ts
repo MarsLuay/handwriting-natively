@@ -12617,11 +12617,16 @@ export class ViewerInkSession {
     }
 
     // Causal preview (StrokeBuilder.smoothedPoints) keeps prior indices fixed —
-    // incremental stamps are safe for opaque pen/pencil strokes. Highlighter
-    // alpha is not idempotent: overlapping the prior capsule darkens the live
-    // preview, then the single final pass becomes visibly lighter on release.
-    // Redraw only the disposable highlighter layer so preview and commit match.
+    // incremental stamps are safe for opaque pen/pencil strokes. Brush ribbons
+    // are not incremental: velocity shaping and endpoint taper depend on the
+    // complete path, so fragmenting them would make release repaint the stroke.
+    // Highlighter alpha is not idempotent either: overlapping the prior capsule
+    // darkens the live preview, then the single final pass becomes visibly
+    // lighter on release. Redraw these disposable previews as whole paths so
+    // preview and commit match.
+    const brushWholePreview = style.tool === "pen" && style.penType === "brush";
     const canIncremental = style.tool !== "highlighter"
+      && !brushWholePreview
       && !draftResized
       && surface.liveDrawPaintedPoints > 0
       && surface.liveDrawPaintedPoints <= points.length;
