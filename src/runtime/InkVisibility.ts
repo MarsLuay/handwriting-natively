@@ -40,6 +40,8 @@ export interface InkVisibilitySnapshot extends InkPixelProbe {
   canvasWidth: number;
   canvasHeight: number;
   canonicalPaintComplete: boolean;
+  /** True when visible raster ink is safe for release while vector HQ paint is deferred. */
+  canonicalPaintDeferred: boolean;
 }
 
 /** Sample a coarse grid. `readAlpha` returns null when the canvas cannot be read. */
@@ -99,11 +101,14 @@ export function inkVisibilityCause(snapshot: InkVisibilitySnapshot): InkVisibili
   if (!snapshot.overlayConnected) return "overlay-detached";
   if (hidden(snapshot.overlayDisplay, snapshot.overlayVisibility, snapshot.overlayOpacity)) return "overlay-hidden";
   if (!snapshot.canvasConnected || snapshot.canvasWidth <= 0 || snapshot.canvasHeight <= 0) return "canvas-zero-size";
-  if (snapshot.phase === "after-final-canonical" && !snapshot.canonicalPaintComplete) return "canonical-rebase-blank";
+  if (snapshot.phase === "after-final-canonical" && !snapshot.canonicalPaintComplete && !snapshot.canonicalPaintDeferred) {
+    return "canonical-rebase-blank";
+  }
   if (
     snapshot.phase === "before-composite-release"
     && !snapshot.compositingClassPresent
     && !snapshot.canonicalPaintComplete
+    && !snapshot.canonicalPaintDeferred
   ) return "compositor-released-early";
   if (snapshot.pixelProbeRan && !snapshot.pixelProbeHasInk) return "canvas-cleared";
   return null;
@@ -158,6 +163,7 @@ export function inkVisibilityFlash(input: {
     overlayOpacity: input.current.overlayOpacity,
     compositingClassPresent: input.current.compositingClassPresent,
     canonicalPaintComplete: input.current.canonicalPaintComplete,
+    canonicalPaintDeferred: input.current.canonicalPaintDeferred,
     canvasConnected: input.current.canvasConnected,
     canvasWidth: input.current.canvasWidth,
     canvasHeight: input.current.canvasHeight,
