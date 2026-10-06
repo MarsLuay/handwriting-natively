@@ -12203,6 +12203,10 @@ export class ViewerInkSession {
       ...(compositeMatched !== undefined ? { compositeMatched } : {}),
       ...(stabilization !== undefined ? { stabilization } : {}),
       ...(draftResized !== undefined ? { draftResized } : {}),
+      ...(pending.event ? {
+        pointerId: pending.event.pointerId,
+        ...(pending.kind === "edit" ? { editTool: surface.editTool ?? null } : {})
+      } : {}),
       ...(eraserPreview ? {
         eraserPathPoints: eraserPreview.pathPoints,
         eraserPendingPoints: eraserPreview.pendingPoints,
@@ -12223,7 +12227,7 @@ export class ViewerInkSession {
         ? surface.strokePerformance.physicalContactId
           ?? surface.strokePerformance.strokeId
           ?? (surface.strokePerformance.pointerId === null ? null : `pointer:${surface.strokePerformance.pointerId}`)
-        : null,
+        : pending.event ? `pointer:${pending.event.pointerId}` : null,
       zoomBurstId: this.zoomCorrelationId
     });
     if (paintSpan) this.logger.perfSlowSpan({ ...paintSpan });
