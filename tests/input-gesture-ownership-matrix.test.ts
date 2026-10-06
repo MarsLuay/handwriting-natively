@@ -127,17 +127,17 @@ describe("deterministic gesture ownership matrix", () => {
 
   it("gates touch fallback until explicitly enabled and never after stylus promotion", () => {
     expect(canAnnotatePointer({ pointerType: "touch" }, {
-      mouseInputMode: "annotate",
+      mouseInkingEnabled: false,
       touchDrawFallback: false,
       stylusConfirmed: false
     })).toBe(false);
     expect(canAnnotatePointer({ pointerType: "touch" }, {
-      mouseInputMode: "annotate",
+      mouseInkingEnabled: false,
       touchDrawFallback: true,
       stylusConfirmed: false
     })).toBe(true);
     expect(canAnnotatePointer({ pointerType: "touch" }, {
-      mouseInputMode: "annotate",
+      mouseInkingEnabled: false,
       touchDrawFallback: true,
       stylusConfirmed: true
     })).toBe(false);
@@ -195,12 +195,11 @@ describe("deterministic gesture ownership matrix", () => {
     element.remove();
   });
 
-  it("rejects UI targets, permits mouse pan separately, and switches drawing tools without a Draw toggle", () => {
+  it("rejects UI targets, leaves non-inking mouse input native, and switches drawing tools without a Draw toggle", () => {
     const ownership = new GestureOwnership();
-    const pan = ownership.pointerDown({ pointerId: 60, pointerType: "mouse", mouseIntent: "pan", buttons: 1 });
-    expect(pan.state.owner).toBe("mouse-pan");
-    expect(pan.preventDefault).toBe(false);
-    ownership.pointerUp({ pointerId: 60, pointerType: "mouse", buttons: 0 });
+    const nativeMouse = ownership.pointerDown({ pointerId: 60, pointerType: "mouse", target: "page", buttons: 1 });
+    expect(nativeMouse.state.owner).toBe("idle");
+    expect(nativeMouse.preventDefault).toBe(false);
 
     const element = document.createElement("div");
     const button = document.createElement("button");

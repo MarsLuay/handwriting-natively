@@ -392,7 +392,7 @@ describe("AnnotationToolbar", () => {
     slider!.value = "20";
     slider!.dispatchEvent(new Event("input", { bubbles: true }));
     expect(preferences.activeTool).toBe("eraser");
-    expect(preferences.eraser).toEqual({ size: 20, eraseWholeStrokes: false, eraseWithRightMouseButton: false });
+    expect(preferences.eraser).toEqual({ size: 20, eraseWholeStrokes: false });
     expect(preview?.style.getPropertyValue("--ink-eraser-preview-size")).toBe("20px");
     expect(previewed).toHaveBeenCalledOnce();
     expect(changed).toHaveBeenCalledOnce(); // first click activated eraser

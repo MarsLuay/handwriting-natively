@@ -1,27 +1,11 @@
 /**
  * Device-aware annotation input policy (pencil-first).
- * Pen annotates by active tool; touch stays native PDF nav; desktop mouse annotates
- * on PDF pages and keeps the configured empty-space behavior elsewhere.
+ * Pen annotates by active tool; touch stays native PDF navigation; mouse
+ * annotation is an explicit left-button opt-in on PDF pages.
  */
 
-export type MouseInputMode = "pan" | "annotate" | "native";
-
 export interface MouseInputSettings {
-  mouseInputMode?: MouseInputMode | null;
-  mouseDragScroll?: boolean | null;
-}
-
-/** Resolve persisted mouse mode; migrate legacy mouseDragScroll when mode absent. */
-export function resolveMouseInputMode(settings: MouseInputSettings): MouseInputMode {
-  const mode = settings.mouseInputMode;
-  if (mode === "pan" || mode === "annotate" || mode === "native") return mode;
-  // Legacy: drag-scroll on → pan; off → native (never silently map to annotate).
-  return settings.mouseDragScroll === false ? "native" : "pan";
-}
-
-/** Keep mouseDragScroll aligned with mode for older readers / back-compat. */
-export function mouseDragScrollForMode(mode: MouseInputMode): boolean {
-  return mode === "pan";
+  mouseInkingEnabled?: boolean | null;
 }
 
 /** Stylus / Apple Pencil always may annotate (caller still checks UI occlusion). */
@@ -30,8 +14,8 @@ export function stylusAnnotationEnabled(): boolean {
 }
 
 export interface AnnotatePointerContext {
-  mouseInputMode: MouseInputMode;
-  /** Fixed desktop page gate. Omit to retain the legacy mode-only policy. */
+  mouseInkingEnabled: boolean;
+  /** Fixed desktop page gate. Omit to retain the enabled-only policy. */
   mouseOverPdfPage?: boolean;
   /** Runtime capability has observed a valid Pointer Events pen contact. */
   stylusConfirmed?: boolean;
@@ -41,8 +25,9 @@ export interface AnnotatePointerContext {
 
 /**
  * Whether this pointer may create annotation ink/edit/text routes.
- * Touch never inks. Pen always may (occlusion handled separately). Desktop mouse
- * annotates only when the caller confirms that the pointer started on a PDF page.
+ * Touch never inks by default. Pen always may (occlusion handled separately).
+ * Desktop mouse annotates only when the single mouse-inking setting is enabled
+ * and the caller confirms that the pointer started on a PDF page.
  */
 export function canAnnotatePointer(
   event: Pick<PointerEvent, "pointerType">,
@@ -53,29 +38,21 @@ export function canAnnotatePointer(
     return ctx.touchDrawFallback === true && ctx.stylusConfirmed !== true;
   }
   if (event.pointerType === "mouse") {
-    if (ctx.mouseInputMode !== "annotate") return false;
+    if (!ctx.mouseInkingEnabled) return false;
     if (ctx.mouseOverPdfPage !== undefined) return ctx.mouseOverPdfPage;
     return true;
   }
   return false;
 }
 
-export function mouseAnnotationEnabled(mode: MouseInputMode): boolean {
-  return mode === "annotate";
-}
-
-export function mousePanEnabled(mode: MouseInputMode): boolean {
-  return mode === "pan";
-}
-
 export function describeInputPolicies(settings: MouseInputSettings): {
   stylusPolicy: "annotate";
   touchPolicy: "native";
-  mousePolicy: MouseInputMode;
+  mousePolicy: "inking" | "native";
 } {
   return {
     stylusPolicy: "annotate",
     touchPolicy: "native",
-    mousePolicy: resolveMouseInputMode(settings)
+    mousePolicy: settings.mouseInkingEnabled === true ? "inking" : "native"
   };
 }

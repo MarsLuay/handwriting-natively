@@ -17,8 +17,7 @@ type InputOwner =
   | "idle"
   | "pen-ink"
   | "native-touch-navigation"
-  | "mouse-ink"
-  | "mouse-pan";
+  | "mouse-ink";
 
 interface ActiveInputState {
   owner: InputOwner;
@@ -41,7 +40,7 @@ A router generation invalidates callbacks from a replaced or destroyed viewer.
 | `idle` | pen down, ink-capable tool, annotatable page | claim `pen-ink` |
 | `idle` | finger down | pass through as `native-touch-navigation` |
 | `idle` | mouse draw gesture | claim `mouse-ink` |
-| `idle` | configured mouse pan gesture | claim `mouse-pan` |
+| `idle` | mouse input disabled or non-primary button | leave the native event available |
 | `pen-ink` | matching pen move/up | append/finalize ink, then release |
 | `pen-ink` | matching pen cancel/lost capture | cancel safely, then release |
 | `pen-ink` | finger/palm contact | observe/track only; never transfer ink ownership |
@@ -50,8 +49,9 @@ A router generation invalidates callbacks from a replaced or destroyed viewer.
 | any | blur, background, destroy, or generation replacement | clear every contact and capture |
 
 A recognized active pen may annotate with the selected ink tool without a
-separate Draw checkbox. Finger input remains navigation. Mouse intent remains
-explicit because `pointerType="mouse"` does not identify the user's intent.
+separate Draw checkbox. Finger input remains navigation. Primary-button mouse
+inking is controlled by one explicit setting; disabled mouse input remains
+native because `pointerType="mouse"` does not identify the user's intent.
 
 Width, height, radius, or pressure may be recorded as diagnostics, but they are
 not the primary pen/palm classifier. In particular, a large ordinary finger
@@ -119,8 +119,6 @@ viewer/UI/Scribble ordering without participating in routing.
   no second set may silently classify the same contact.
 - `PalmRejectionPolicy.ts` is limited to ambiguous/touch-only policy and bounded
   evidence. Active recognized-pen ownership already makes a touch non-ink.
-- `ViewerMousePan.ts` owns only explicitly configured mouse pan. It must not
-  route Pencil through mouse pan or create a competing touch gesture engine.
 - `annotationInputPolicy.ts` remains declarative: selected tool, pointer type,
   target class, explicit touch-draw mode, and stylus capability are inputs; it
   has no mutable gesture state.
@@ -133,8 +131,9 @@ Automated tests must cover pen down/move/up, coalesced sample ordering,
 predicted-sample exclusion, finger navigation, two-finger native pinch
 classification, a finger arriving during a pen stroke, cancel/lost capture,
 blur/destroy/generation cleanup, UI-target exclusion, duplicate pen IDs, and
-Pointer/Touch observation without duplicate actions. They must also cover mouse
-pan versus mouse ink and the Pointer Events capability-disabled fallback.
+Pointer/Touch observation without duplicate actions. They must also cover the
+mouse primary-button route, disabled mouse input remaining native, and the
+Pointer Events capability-disabled fallback.
 
 These tests do **not** certify hardware behavior. The release gate remains a
 physical Obsidian iPadOS/WKWebView trace for:

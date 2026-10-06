@@ -300,16 +300,16 @@ describe("viewer runtime tracer", () => {
     adapter.host.append(nativeSidebarHandle);
     const sidebarPointer = pointer("pointerdown", 16, 16, { pointerType: "mouse", pointerId: 1 });
     nativeSidebarHandle.dispatchEvent(sidebarPointer);
-    // Mouse pan must not take over the native sidebar's resize handle.
+    // Plugin mouse input must not take over the native sidebar's resize handle.
     expect(sidebarPointer.defaultPrevented).toBe(false);
 
     const nativePointer = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 2 });
     adapter.pageElement.dispatchEvent(nativePointer);
     adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 120, { pointerType: "mouse", pointerId: 2 }));
-    // Primary mouse input on a PDF page is not owned by handwriting route unless mouseInputMode is annotate.
+    // Primary mouse input is native until the single mouse-inking toggle is enabled.
     expect(nativePointer.defaultPrevented).toBe(false);
 
-    settings.mouseInputMode = "annotate";
+    settings.mouseInkingEnabled = true;
     session.updateMouseInputBindings();
 
     const dragDown = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 3 });
@@ -322,10 +322,10 @@ describe("viewer runtime tracer", () => {
 
     expect(adapter.toolbarHost.querySelector("[data-control='draw']")).toBeNull();
     expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
-    settings.mouseLeftDragDraw = false;
+    settings.mouseInkingEnabled = false;
     session.updateMouseInputBindings();
     expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(false);
-    settings.mouseLeftDragDraw = true;
+    settings.mouseInkingEnabled = true;
     session.updateMouseInputBindings();
     expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
 
@@ -399,7 +399,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInputMode = "annotate";
+    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/example.png",
@@ -510,7 +510,7 @@ describe("viewer runtime tracer", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const createSession = (adapter: FakeAdapter) => {
       const settings = structuredClone(DEFAULT_SETTINGS);
-      settings.mouseInputMode = "annotate";
+      settings.mouseInkingEnabled = true;
       return ViewerInkSession.create({
         adapter,
         documentPath: "Notes/example.png",
@@ -582,7 +582,7 @@ describe("viewer runtime tracer", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInputMode = "annotate";
+    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/pixels.png",
@@ -626,7 +626,7 @@ describe("viewer runtime tracer", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInputMode = "annotate";
+    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/pixels-unavailable.png",
@@ -717,7 +717,7 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
-  it("position-gated mouse drawing wins on PDF pages regardless of empty-space mode", async () => {
+  it("gates page-positioned mouse drawing with the single inking toggle", async () => {
     const source = await PDFDocument.create();
     source.addPage([600, 800]);
     const sourceBytes = await source.save();
@@ -725,8 +725,7 @@ describe("viewer runtime tracer", () => {
     Object.assign(adapter.pageElement, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => true });
     const files = new MemoryFiles();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInputMode = "pan";
-    settings.mouseDragScroll = true;
+    settings.mouseInkingEnabled = false;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/mouse-policy.pdf",
@@ -746,8 +745,7 @@ describe("viewer runtime tracer", () => {
     let sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(sidecar ? JSON.parse(sidecar[1]).pages?.[0]?.strokes ?? [] : []).toHaveLength(0);
 
-    settings.mouseInputMode = "annotate";
-    settings.mouseDragScroll = false;
+    settings.mouseInkingEnabled = true;
     session.updateMouseInputBindings();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 2 }));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 2 }));
@@ -1880,12 +1878,11 @@ describe("viewer runtime tracer", () => {
   });
 
 
-  it("lets mouse annotate policy ink while fingers keep native scroll policy", async () => {
+  it("lets enabled mouse inking draw while fingers keep native scroll policy", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInputMode = "annotate";
-    settings.mouseDragScroll = false;
+    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/example.pdf",
@@ -1975,8 +1972,7 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     let profile: "auto" | "pen" | "mouse" = "auto";
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInputMode = "annotate";
-    settings.mouseDragScroll = false;
+    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/example.pdf",

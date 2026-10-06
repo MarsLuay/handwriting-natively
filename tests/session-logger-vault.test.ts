@@ -13,7 +13,7 @@ describe("SessionLogger vault sink", () => {
     };
     const logger = new SessionLogger("Notes/example.pdf", sink);
 
-    logger.mousePan("activate", { changed: true, scrollTop: 12 });
+    logger.keyboardShortcut({ command: "undo" });
     logger.zoomRepaint({
       reason: "view-scalechanging",
       durationMs: 3,
@@ -26,8 +26,8 @@ describe("SessionLogger vault sink", () => {
     expect(writes).toHaveLength(2);
     expect(writes[0]).toMatchObject({
       level: "info",
-      event: "mouse pan",
-      payload: { document: "Notes/example.pdf", phase: "activate", changed: true, scrollTop: 12 }
+      event: "keyboard-shortcut",
+      payload: { document: "Notes/example.pdf", command: "undo" }
     });
     expect(writes[1]?.event).toBe("ink zoom repaint");
     info.mockRestore();

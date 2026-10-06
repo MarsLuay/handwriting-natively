@@ -27,8 +27,9 @@ Related evidence boundaries:
 4. Touch remains native PDF navigation and pinch/pan unless the explicit,
    opt-in touch-draw fallback is enabled on a session that has not confirmed a
    stylus.
-5. Mouse intent remains explicit. Page-position gating and `mouseInputMode`
-   decide whether a mouse gesture annotates, pans, or stays native.
+5. Mouse inking is explicit. The `mouseInkingEnabled` toggle and page-position
+   gate decide whether a primary-button mouse gesture annotates; other mouse
+   input remains native.
 6. UI targets are excluded before annotation ownership is claimed.
 7. Active pen ownership makes companion touch non-ink; touch cannot steal the
    pen stroke.
@@ -48,7 +49,7 @@ counter.
 | Touch while a pen owns ink | `pen-ink` remains authoritative | Observe/block companion scroll; never ink |
 | Second native touch | `native-touch-navigation` | Preserve native pinch/pan |
 | Mouse with annotation intent | `mouse-ink` | Begin/append/finalize the selected tool |
-| Mouse with pan intent | `mouse-pan` | Preserve configured pan behavior |
+| Mouse with inking disabled or non-primary button | `idle` | Preserve native PDF behavior |
 | Pen or mouse on UI/chrome before a claim | `idle` or existing owner | Leave the UI event available |
 | Blur, pagehide, hidden visibility, cancel, destroy, or generation replacement | `idle` for the new generation | Release captures and clear IDs |
 
@@ -141,10 +142,10 @@ gesture.
 
 ## Mouse and tool behavior
 
-`pointerType === "mouse"` does not identify user intent. The effective mode is
-resolved from `mouseInputMode` (`pan`, `annotate`, or `native`) with legacy
-`mouseDragScroll` migration. On a PDF page, the page-position gate prevents
-empty viewer space from unexpectedly becoming annotation input.
+`pointerType === "mouse"` does not identify user intent. The single
+`mouseInkingEnabled` setting enables only primary-button annotation on a PDF
+page. The page-position gate prevents empty viewer space from unexpectedly
+becoming annotation input; the plugin does not implement mouse drag-to-pan.
 
 The selected tool controls the semantic route:
 
@@ -164,7 +165,7 @@ detection is not permission to change native touch behavior.
 | Android + active stylus | Pointer Events with `pointerType === "pen"` when exposed | Native touch; explicit touch fallback only when opted in and no stylus is confirmed | Host WebView delivery, stylus fields, pinch, replacement, resume |
 | Windows/Surface pen | Pointer Events pen ownership; explicit mouse policy | Native touch/mouse behavior when optional capture is absent | Real pen pressure/tilt, capture, page boundary, host viewer lifecycle |
 | Touch-only mobile | Native one-/two-finger navigation by default | Explicit `touchDrawFallback` only when deliberately enabled | Touch-only drawing UX, `touch-action` placement, background/resume |
-| Desktop mouse/trackpad | Explicit `mouseInputMode` and page-position gating | `native` or configured pan mode | Host PDF page hit behavior and trackpad gesture interaction |
+| Desktop mouse/trackpad | Explicit primary-button inking toggle and page-position gating | Native mouse behavior when disabled | Host PDF page hit behavior and trackpad gesture interaction |
 | Unknown or ambiguous host | Do not guess; preserve native behavior and fail closed on unsafe page evidence | No implicit touch drawing or pen promotion | A named host/device run before making a support claim |
 
 The table describes policy, not a hardware qualification result. Supported

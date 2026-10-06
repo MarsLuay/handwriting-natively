@@ -57,14 +57,20 @@ describe("GestureOwnership", () => {
     expect(stale.persistSamples).toEqual([]);
   });
 
-  it("leaves UI targets and mouse pan independent from pen ink", () => {
+  it("leaves UI and native mouse targets unclaimed while explicit mouse ink owns its contact", () => {
     const ownership = new GestureOwnership();
     expect(ownership.pointerDown({ pointerId: 4, pointerType: "pen", target: "ui", inkToolSelected: true }).action).toBe("ignore");
-    const pan = ownership.pointerDown({ pointerId: 5, pointerType: "mouse", mouseIntent: "pan", buttons: 1 });
-    expect(pan.state.owner).toBe("mouse-pan");
-    expect(pan.preventDefault).toBe(false);
-    ownership.pointerUp({ pointerId: 5, pointerType: "mouse" });
-    const draw = ownership.pointerDown({ pointerId: 6, pointerType: "mouse", mouseIntent: "ink", buttons: 1 });
+    const nativeMouse = ownership.pointerDown({ pointerId: 5, pointerType: "mouse", target: "page", buttons: 1 });
+    expect(nativeMouse.state.owner).toBe("idle");
+    expect(nativeMouse.preventDefault).toBe(false);
+    const draw = ownership.pointerDown({
+      pointerId: 6,
+      pointerType: "mouse",
+      target: "page",
+      inkToolSelected: true,
+      inkIntent: true,
+      buttons: 1
+    });
     expect(draw.state.owner).toBe("mouse-ink");
     expect(draw.action).toBe("claim-ink");
   });
