@@ -128,7 +128,7 @@ import { AddStrokeCommand, ReplaceAnnotationSelectionCommand, ReplacePageStrokes
 import { CommandHistory, type Command, type HistoryChangeAction } from "../history/CommandHistory";
 import { eraseStrokes, eraseWholeStrokes } from "../tools/EraserTool";
 import { recognizeHeldShape, resizeShapePoints, shapeResizeAnchor, shapeResizeHandle, SHAPE_RECOGNITION_HOLD_MS, type ShapeRecognition } from "../tools/ShapeRecognizer";
-import { boundingShapeFromSelection, filterSelectableStrokes, selectStrokes, selectionShapeArea, shapeBounds, shapeContainsPoint, translateShape, type SelectionShape } from "../tools/LassoTool";
+import { boundingShapeFromSelection, filterSelectableStrokes, selectStrokes, selectionShapeArea, shapeBounds, shapeContainsPoint, translateShape, visibleStrokeSegments, type SelectionShape } from "../tools/LassoTool";
 import { drawHighlighterStroke, drawHighlighterStrokeWithMasks } from "../tools/HighlighterTool";
 import {
   drawLaserStroke,
@@ -15864,14 +15864,19 @@ export class ViewerInkSession {
       context.setLineDash([4, 3]);
       context.lineCap = "round";
       context.lineJoin = "round";
-      const first = mapper.toViewport(points[0]!);
-      context.beginPath();
-      context.moveTo(first.x, first.y);
-      for (const point of points.slice(1)) {
-        const view = mapper.toViewport(point);
-        context.lineTo(view.x, view.y);
+      const segments = tool === "highlighter"
+        ? visibleStrokeSegments(points, eraseMasks)
+        : points.length ? [points] : [];
+      for (const segment of segments) {
+        const first = mapper.toViewport(segment[0]!);
+        context.beginPath();
+        context.moveTo(first.x, first.y);
+        for (const point of segment.slice(1)) {
+          const view = mapper.toViewport(point);
+          context.lineTo(view.x, view.y);
+        }
+        context.stroke();
       }
-      context.stroke();
     }
     context.restore();
   }
