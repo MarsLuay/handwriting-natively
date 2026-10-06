@@ -30,7 +30,7 @@ export const PDF_INTERACTION_SCENARIOS: readonly PdfInteractionScenario[] = [
     requiresHardware: false,
     actions: ["pinch", "zoom", "replacement"],
     assertions: ["wet-ink-preserved", "single-settle-paint", "no-inner-layer-remount"],
-    coverage: ["tests/zoom-ink-compositing.test.ts", "tests/pdf-zoom-boost.test.ts"]
+    coverage: ["tests/zoom-ink-compositing.test.ts"]
   },
   {
     id: "erase-and-select",

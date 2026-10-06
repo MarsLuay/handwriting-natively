@@ -2,7 +2,8 @@
  * Cap ink canvas backing-store size.
  * Overlay CSS grows with PDF zoom; full css×dpr at high pinch allocates huge buffers
  * (canvas + inkLayer + draft). Too-low caps CSS-stretch a soft bitmap → blurry/pixely ink.
- * Budgets track Obsidian PDF boost (~64MP native); ink keeps a per-surface ceiling.
+ * Native PDF rasterization may allocate large buffers at high zoom; ink keeps a
+ * separate per-surface ceiling.
  */
 export const MAX_INK_EDGE_PX = 8192;
 export const MAX_INK_PIXELS = 8192 * 6144;

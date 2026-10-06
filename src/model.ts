@@ -204,8 +204,6 @@ export interface PluginSettings {
   /** Device-pressure tuning; captured when each stroke starts. */
   pressureCalibration: PressureCalibration;
   simplifyStrokes: boolean;
-  /** Advanced opt-in: raise Obsidian PDF viewer zoom from 10× to 25×. */
-  boostedPdfZoom: boolean;
   /** Experimental mobile-only replacement for the native two-finger PDF pinch; enabled by default with an explicit opt-out. */
   customMobilePdfPinchZoom: boolean;
   /** Advanced accessibility opt-out; the page label remains visible by default. */
@@ -308,7 +306,6 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   pressureProfile: "auto",
   pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
   simplifyStrokes: true,
-  boostedPdfZoom: false,
   customMobilePdfPinchZoom: true,
   hideStylusAnnotationLabel: false,
   disableSidebarSwipe: false,
@@ -334,7 +331,9 @@ const LEGACY_SETTING_KEYS = [
   "createBackupBeforeDirectModification",
   "backupLocation",
   "retainSidecarAfterDirectModification",
-  "showZoomMenu"
+  "showZoomMenu",
+  // The removed 25× PDF zoom option must not be written back from old settings.
+  "boostedPdfZoom"
 ] as const;
 
 export function mergeSettings(
@@ -410,7 +409,6 @@ export function mergeSettings(
     touchDrawFallback: cleaned.touchDrawFallback === true,
     touchDoubleTapEraser: cleaned.touchDoubleTapEraser !== false,
     textEscapeAction: "save" as const,
-    boostedPdfZoom: cleaned.boostedPdfZoom === true,
     customMobilePdfPinchZoom: typeof cleaned.customMobilePdfPinchZoom === "boolean"
       ? cleaned.customMobilePdfPinchZoom
       : defaults.customMobilePdfPinchZoom,

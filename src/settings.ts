@@ -208,7 +208,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
   /**
    * Obsidian 1.13+ settings search + declarative render. Uses `render` (not
    * `control.key`) so changes still go through {@link persistPatch} / host
-   * `saveSettings` (toolbar remount + boosted zoom).
+   * `saveSettings`.
    */
   getSettingDefinitions() {
     return [
@@ -328,7 +328,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
           },
           {
             name: "Experimental mobile PDF pinch zoom",
-            desc: "Experimental mobile-only custom PDF pinch path, enabled by default. Turn it off to keep native pinch zoom; Pencil, one-finger navigation, PDF links/search, and unsupported hosts keep their native behavior, while unsafe or unavailable hosts fall back to native zoom. This may use more memory during the temporary preview and is independent of the 25× zoom limit.",
+            desc: "Experimental mobile-only custom PDF pinch path, enabled by default. Turn it off to keep native pinch zoom; Pencil, one-finger navigation, PDF links/search, and unsupported hosts keep their native behavior, while unsafe or unavailable hosts fall back to native zoom. This may use more memory during the temporary preview.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
                 toggle.setValue(this.host.inkSettings.customMobilePdfPinchZoom).onChange(async (value) => {
@@ -539,15 +539,6 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
       detailsClass: "native-pdf-handwriting-advanced-settings-details",
       contentsClass: "native-pdf-handwriting-advanced-settings-contents"
     });
-
-    new Setting(contents)
-      .setName("Allow 25× PDF zoom")
-      .setDesc("Increase the PDF viewer zoom limit beyond Obsidian's normal 10× cap. This can use substantially more memory on large pdfs.")
-      .addToggle((toggle) =>
-        toggle.setValue(this.host.inkSettings.boostedPdfZoom).onChange(async (value) => {
-          await this.persistPatch({ boostedPdfZoom: value });
-        })
-      );
 
     new Setting(contents)
       .setName("Hide stylus annotation label")

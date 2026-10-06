@@ -1515,7 +1515,7 @@ export class ViewerInkSession {
     const adapter = options.adapter;
     this.mobilePinchZoom = new MobilePinchZoomController({
       minScale: 0.1,
-      maxScale: options.settings.boostedPdfZoom ? 25 : 10,
+      maxScale: 10,
       getScale: () => {
         try {
           const surface = this.mobilePinchSurfaceAt(null, null);
@@ -6301,8 +6301,7 @@ export class ViewerInkSession {
       toolbarPlacement: resolveToolbarPlacement(
         options.toolbarPlacement?.() ?? options.settings.toolbarPlacement,
         platform.mobile
-      ),
-      boostedPdfZoom: options.settings.boostedPdfZoom
+      )
     });
     let contentHash: string | undefined;
     try {
@@ -6327,7 +6326,6 @@ export class ViewerInkSession {
       document: options.documentPath,
       mobile: platform.mobile
     });
-    pdfSurfaceExtensions(options.adapter)?.setBoostedZoom?.(options.settings.boostedPdfZoom);
     session.persistEpoch = options.claimPersistEpoch?.(session.identity.id) ?? 1;
     await urgent("session create sidecar begin", {
       document: options.documentPath,
@@ -9682,8 +9680,7 @@ export class ViewerInkSession {
   ): void {
     const state = surface.mobileCustomPinch;
     if (!state || !Number.isFinite(previewScale)) return;
-    const maxScale = this.options.settings.boostedPdfZoom ? 25 : 10;
-    const boundedScale = Math.max(0.1, Math.min(maxScale, previewScale));
+    const boundedScale = Math.max(0.1, Math.min(10, previewScale));
     state.preview(boundedScale, focalPoint);
   }
 
@@ -15684,10 +15681,6 @@ export class ViewerInkSession {
     if (this.destroyed) return;
     this.reconcileToolbarMount("settings");
     this.scheduleUiIntegrityCheck("settings");
-  }
-
-  setBoostedPdfZoom(enabled: boolean): void {
-    pdfSurfaceExtensions(this.options.adapter)?.setBoostedZoom?.(enabled);
   }
 
   /** False after PDF++ (or Obsidian) tears down the PDF DOM under this session. */

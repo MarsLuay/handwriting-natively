@@ -150,9 +150,10 @@ describe("safe defaults", () => {
 
   it("enables custom mobile PDF pinch zoom by default while preserving an explicit opt-out", () => {
     expect(DEFAULT_SETTINGS.customMobilePdfPinchZoom).toBe(true);
-    expect(DEFAULT_SETTINGS.boostedPdfZoom).toBe(false);
+    const retiredZoomSetting = mergeSettings({ boostedPdfZoom: true } as never);
+    expect("boostedPdfZoom" in retiredZoomSetting).toBe(false);
     expect(mergeSettings(undefined).customMobilePdfPinchZoom).toBe(true);
-    expect(mergeSettings({ boostedPdfZoom: true }).customMobilePdfPinchZoom).toBe(true);
+    expect(retiredZoomSetting.customMobilePdfPinchZoom).toBe(true);
     expect(mergeSettings({ customMobilePdfPinchZoom: true }).customMobilePdfPinchZoom).toBe(true);
     expect(mergeSettings({ customMobilePdfPinchZoom: false }).customMobilePdfPinchZoom).toBe(false);
     expect(mergeSettings({ customMobilePdfPinchZoom: "true" } as never).customMobilePdfPinchZoom).toBe(true);
