@@ -182,6 +182,20 @@ describe("circular segment eraser", () => {
     expect(penFragments[1]?.points[0]?.x).toBeCloseTo(61);
   });
 
+  it("removes a highlighter covered by several erase-mask passes", () => {
+    const highlight: InkStroke = {
+      ...stroke("multi-pass", [0, 5, 10, 15, 20].map((x) => point(x, 0)), 4),
+      tool: "highlighter"
+    };
+    let remaining: InkStroke[] = [highlight];
+    for (const x of [0, 5, 10, 15, 20]) {
+      const result = eraseStrokeSegments(remaining, [point(x, 0)], 10, { now: () => "after" });
+      expect(result.erased).toHaveLength(1);
+      remaining = result.kept;
+    }
+    expect(remaining).toEqual([]);
+  });
+
   it("keeps long highlighter finalization spatially bounded", () => {
     const highlight: InkStroke = {
       ...stroke("dense-highlight", Array.from({ length: 3_000 }, (_, index) =>
