@@ -856,8 +856,10 @@ interface PageSurface {
   strokePerformance: StrokePerformanceState | null;
   /** Prefix of editPath already represented by the transient live eraser preview. */
   liveEraserPaintedPoints: number;
-  /** True while draftCanvas is a wet copy of the committed ink canvas. */
+  /** True while a transient eraser preview owns the page pixels. */
   wetPreviewActive: boolean;
+  /** True when the preview erases the visible committed canvas in place. */
+  wetPreviewUsesCommittedCanvas: boolean;
   /** Damage accumulated by the transient eraser preview until the command settles. */
   wetDamage: DamageLedger;
   /** Prefix of live stroke preview already stamped on draftCanvas (incremental paint). */
@@ -6874,7 +6876,7 @@ export class ViewerInkSession {
         });
       }
     }
-    this.clearLiveDrawPreview(surface);
+    this.clearLiveDrawPreview(surface, [strokeRegion], backingScale);
     this.paintLaserTrails(surface, surface.page.pageNumber);
     surface.viewportCullPending = false;
     surface.settleUpgradePending = false;
@@ -7018,7 +7020,7 @@ export class ViewerInkSession {
     surface.inkLayerBurstCapture = false;
     const blitPixels = this.blitInkLayerRegionsToCanvas(surface, patches, pixelWidth, pixelHeight, backingScale);
     this.paintLaserTrails(surface, surface.page.pageNumber);
-    this.clearLiveDrawPreview(surface);
+    this.clearLiveDrawPreview(surface, patches, backingScale);
     this.lastPagePaintAt.set(surface.page.pageNumber, { at: performance.now(), reason: "erase-patch" });
     const durationMs = roundMetric(performance.now() - startedAt);
     this.logger.renderProfile({
@@ -9426,6 +9428,7 @@ export class ViewerInkSession {
       strokePerformance: null,
       liveEraserPaintedPoints: 0,
       wetPreviewActive: false,
+      wetPreviewUsesCommittedCanvas: false,
       wetDamage: new DamageLedger(),
       liveDrawPaintedPoints: 0,
       liveDrawPreviewStrokeId: null,
@@ -11969,6 +11972,7 @@ export class ViewerInkSession {
     let compositeMatched: boolean | undefined;
     let stabilization: string | undefined;
     let draftResized: boolean | undefined;
+    let eraserPreview: ReturnType<ViewerInkSession["renderLiveEraserPreview"]> = null;
     if (pending.kind === "draw") {
       const painted = this.renderLiveDrawPreview(surface);
       draftPoints = painted.draftPoints;
@@ -11976,7 +11980,7 @@ export class ViewerInkSession {
       compositeMatched = painted.compositeMatched;
       stabilization = painted.stabilization;
       draftResized = painted.draftResized;
-    } else if (surface.editTool === "eraser") this.renderLiveEraserPreview(surface);
+    } else if (surface.editTool === "eraser") eraserPreview = this.renderLiveEraserPreview(surface);
     else this.renderPage(surface.page.pageNumber, undefined, "live-edit", pending.syncText);
     const completedAt = performance.now();
     if (pending.kind === "draw") {
@@ -12004,7 +12008,14 @@ export class ViewerInkSession {
       ...(incremental !== undefined ? { incremental } : {}),
       ...(compositeMatched !== undefined ? { compositeMatched } : {}),
       ...(stabilization !== undefined ? { stabilization } : {}),
-      ...(draftResized !== undefined ? { draftResized } : {})
+      ...(draftResized !== undefined ? { draftResized } : {}),
+      ...(eraserPreview ? {
+        eraserPathPoints: eraserPreview.pathPoints,
+        eraserPendingPoints: eraserPreview.pendingPoints,
+        eraserDirectCanvas: eraserPreview.directCanvas,
+        eraserDamageArea: roundMetric(eraserPreview.damageArea),
+        eraserBackingScale: roundMetric(eraserPreview.backingScale)
+      } : {})
     });
     const paintSpan = this.slowSpans.record({
       kind: "sync",
@@ -12094,18 +12105,34 @@ export class ViewerInkSession {
     surface.pendingLiveInputAt = null;
   }
 
-  private clearLiveDrawPreview(surface: PageSurface): void {
+  private clearLiveDrawPreview(
+    surface: PageSurface,
+    regions?: readonly Bounds[],
+    backingScale?: number
+  ): void {
     const { draftCanvas, draftContext, predictionCanvas, predictionContext } = surface;
+    const hadDrawPreview = surface.liveDrawPreviewStrokeId !== null;
+    const hadPrediction = surface.predictedPreviewPainted;
     this.endWetPreview(surface);
     surface.liveDrawPaintedPoints = 0;
     surface.liveDrawPreviewStrokeId = null;
     surface.predictedPreview = [];
     surface.predictedPreviewPainted = false;
-    if (draftCanvas.width && draftCanvas.height) {
+    const canClearDraftRegions = Boolean(regions?.length && backingScale && hadDrawPreview && !hadPrediction);
+    if (draftCanvas.width && draftCanvas.height && canClearDraftRegions) {
+      draftContext.setTransform(1, 0, 0, 1, 0, 0);
+      for (const region of regions!) {
+        const left = Math.max(0, Math.floor(region.minX * backingScale!) - 2);
+        const top = Math.max(0, Math.floor(region.minY * backingScale!) - 2);
+        const right = Math.min(draftCanvas.width, Math.ceil(region.maxX * backingScale!) + 2);
+        const bottom = Math.min(draftCanvas.height, Math.ceil(region.maxY * backingScale!) + 2);
+        if (right > left && bottom > top) draftContext.clearRect(left, top, right - left, bottom - top);
+      }
+    } else if (draftCanvas.width && draftCanvas.height && (hadDrawPreview || !regions)) {
       draftContext.setTransform(1, 0, 0, 1, 0, 0);
       draftContext.clearRect(0, 0, draftCanvas.width, draftCanvas.height);
     }
-    if (predictionCanvas.width && predictionCanvas.height) {
+    if (predictionCanvas.width && predictionCanvas.height && (hadPrediction || !regions)) {
       predictionContext.setTransform(1, 0, 0, 1, 0, 0);
       predictionContext.clearRect(0, 0, predictionCanvas.width, predictionCanvas.height);
     }
@@ -12136,19 +12163,39 @@ export class ViewerInkSession {
     surface.predictedPreview = [];
     surface.predictedPreviewPainted = false;
     surface.wetDamage.clear();
+    surface.wetPreviewUsesCommittedCanvas = false;
   }
 
   /** Restore the committed layer after a wet preview is committed or cancelled. */
   private endWetPreview(surface: PageSurface): void {
     if (!surface.wetPreviewActive) {
       surface.wetDamage.clear();
+      surface.wetPreviewUsesCommittedCanvas = false;
       surface.canvas.classList.remove("is-wet-hidden");
       return;
     }
-    this.wetRenderer.end(surface.draftCanvas);
+    if (surface.wetPreviewUsesCommittedCanvas) {
+      const damage = surface.wetDamage.drain();
+      const layout = this.pageLayout(surface);
+      const width = Math.max(1, layout.contentWidth || 1);
+      const height = Math.max(1, layout.contentHeight || 1);
+      const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
+      if (
+        damage.length > 0
+        && surface.inkLayerValid
+        && surface.inkLayer
+        && surface.inkLayer.width === pixelWidth
+        && surface.inkLayer.height === pixelHeight
+      ) {
+        this.blitInkLayerRegionsToCanvas(surface, damage, pixelWidth, pixelHeight, backingScale);
+      }
+    } else {
+      this.wetRenderer.end(surface.draftCanvas);
+      surface.wetDamage.clear();
+    }
     surface.wetPreviewActive = false;
+    surface.wetPreviewUsesCommittedCanvas = false;
     surface.canvas.classList.remove("is-wet-hidden");
-    surface.wetDamage.clear();
   }
 
   /**
@@ -12342,9 +12389,15 @@ export class ViewerInkSession {
    * model update still happens once at pointer-up; cancel/repaint restores the
    * untouched committed canvas immediately.
    */
-  private renderLiveEraserPreview(surface: PageSurface): void {
+  private renderLiveEraserPreview(surface: PageSurface): {
+    pathPoints: number;
+    pendingPoints: number;
+    directCanvas: boolean;
+    damageArea: number;
+    backingScale: number;
+  } | null {
     const eraserSize = surface.eraserSize;
-    if (eraserSize === undefined || surface.editPath.length === 0) return;
+    if (eraserSize === undefined || surface.editPath.length === 0) return null;
     const layout = this.pageLayout(surface);
     const rect = surface.overlay.getBoundingClientRect();
     const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
@@ -12361,20 +12414,51 @@ export class ViewerInkSession {
     }
 
     if (!surface.wetPreviewActive) {
-      if (!this.wetRenderer.begin(surface.canvas, surface.draftCanvas)) return;
-      surface.wetPreviewActive = true;
-      surface.canvas.classList.add("is-wet-hidden");
+      const canEraseCommittedCanvas = Boolean(
+        surface.inkLayerValid
+        && surface.inkLayer
+        && !surface.inkLayerBurstCapture
+        && surface.inkLayer.width === pixelWidth
+        && surface.inkLayer.height === pixelHeight
+        && surface.canvas.width === pixelWidth
+        && surface.canvas.height === pixelHeight
+      );
+      if (canEraseCommittedCanvas) {
+        surface.wetPreviewActive = true;
+        surface.wetPreviewUsesCommittedCanvas = true;
+      } else {
+        if (!this.wetRenderer.begin(surface.canvas, surface.draftCanvas)) return null;
+        surface.wetPreviewActive = true;
+        surface.wetPreviewUsesCommittedCanvas = false;
+        surface.canvas.classList.add("is-wet-hidden");
+      }
     }
 
-    if (surface.liveEraserPaintedPoints >= surface.editPath.length) return;
+    if (surface.liveEraserPaintedPoints >= surface.editPath.length) {
+      return {
+        pathPoints: surface.editPath.length,
+        pendingPoints: 0,
+        directCanvas: surface.wetPreviewUsesCommittedCanvas,
+        damageArea: surface.wetDamage.totalArea(),
+        backingScale
+      };
+    }
     // Continue from the prior endpoint so each new packet erases the capsule
     // between frames instead of leaving a visible gap at the frame boundary.
     const pending = surface.editPath.slice(Math.max(0, surface.liveEraserPaintedPoints - 1));
     const mapper = this.mapper(surface);
     const points = pending.map((point) => mapper.toViewport(point));
     const lineWidth = Math.max(1, eraserSize * this.displayScale(surface));
-    this.wetRenderer.erase(surface.draftCanvas, points, lineWidth, backingScale, surface.wetDamage);
+    const target = surface.wetPreviewUsesCommittedCanvas ? surface.canvas : surface.draftCanvas;
+    this.wetRenderer.erase(target, points, lineWidth, backingScale, surface.wetDamage);
     surface.liveEraserPaintedPoints = surface.editPath.length;
+    return {
+      pathPoints: surface.editPath.length,
+      pendingPoints: pending.length,
+      directCanvas: surface.wetPreviewUsesCommittedCanvas,
+      damageArea: surface.wetDamage.totalArea(),
+      backingScale
+    };
   }
 
   private pointerStart(surface: PageSurface, samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void {
@@ -14568,6 +14652,7 @@ export class ViewerInkSession {
   ): boolean {
     const surface = this.surfaces.get(pageNumber);
     if (!surface || (this.zoomCompositing && !reason.startsWith("post-zoom"))) return false;
+    if (surface.wetPreviewUsesCommittedCanvas) this.endWetPreview(surface);
     if (reason.includes("settle-upgrade") && surface.strokePerformance) surface.strokePerformance.hqUpgrades += 1;
     const preserveLiveDraft = this.surfaceHasLiveInkInput(surface);
     // Keep tip draft visible through resize/paint — clearing first caused a blank
