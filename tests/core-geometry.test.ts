@@ -4,7 +4,7 @@ import { hitTestStroke } from "../src/ink/StrokeHitTesting";
 import { simplifyPoints } from "../src/ink/StrokeStabilizer";
 import { eraseStrokeSegments } from "../src/tools/EraserTool";
 import { PdfCoordinateMapper, type PageRotation } from "../src/pdf/PdfCoordinateMapper";
-import { boundingShapeFromSelection, selectStrokes, shapeContainsPoint, strokeDiscernibleInOverlay, translateShape, type SelectionShape } from "../src/tools/LassoTool";
+import { boundingShapeFromSelection, selectStrokes, shapeContainsPoint, strokeDiscernibleInOverlay, translateShape, type SelectionShape, visibleStrokeSegments } from "../src/tools/LassoTool";
 
 const point = (x: number, y: number): PdfPoint => ({ x, y, pressure: 0.5, time: x });
 const stroke = (id: string, points: PdfPoint[]): InkStroke => ({ id, page: 1, tool: "pen", color: "#000000", width: 2, opacity: 1, inputType: "pen", points, createdAt: "now", updatedAt: "now" });
@@ -132,7 +132,7 @@ describe("coordinates and geometry", () => {
 
   it("does not select a highlighter's erased hole, but keeps its visible paint selectable", () => {
     const highlight: InkStroke = {
-      ...stroke("highlight", [point(0, 5), point(10, 5), point(50, 5), point(100, 5)]),
+      ...stroke("highlight", [point(0, 5), point(10, 5), point(40, 5), point(50, 5), point(60, 5), point(100, 5)]),
       tool: "highlighter"
     };
     const erased = eraseStrokeSegments([highlight], [point(50, 5)], 16).fragments[0]!;
@@ -141,5 +141,7 @@ describe("coordinates and geometry", () => {
 
     expect(selectStrokes([erased], hole)).toEqual([]);
     expect(selectStrokes([erased], visible).map((item) => item.id)).toEqual(["highlight"]);
+    expect(visibleStrokeSegments(erased.points, erased.eraseMasks).map((segment) => segment.map((item) => item.x)))
+      .toEqual([[0, 10, 40], [60, 100]]);
   });
 });

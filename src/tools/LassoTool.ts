@@ -65,6 +65,74 @@ function pointErasedByMasks(point: Point, masks: InkStroke["eraseMasks"]): boole
   return masks?.some((mask) => pointErasedByMask(point, mask)) ?? false;
 }
 
+function segmentsIntersect(firstStart: Point, firstEnd: Point, secondStart: Point, secondEnd: Point): boolean {
+  const cross = (a: Point, b: Point, c: Point): number =>
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  const onSegment = (start: Point, end: Point, point: Point): boolean =>
+    point.x >= Math.min(start.x, end.x) - 1e-9
+    && point.x <= Math.max(start.x, end.x) + 1e-9
+    && point.y >= Math.min(start.y, end.y) - 1e-9
+    && point.y <= Math.max(start.y, end.y) + 1e-9;
+  const firstStartSide = cross(firstStart, firstEnd, secondStart);
+  const firstEndSide = cross(firstStart, firstEnd, secondEnd);
+  const secondStartSide = cross(secondStart, secondEnd, firstStart);
+  const secondEndSide = cross(secondStart, secondEnd, firstEnd);
+  return (firstStartSide === 0 && onSegment(firstStart, firstEnd, secondStart))
+    || (firstEndSide === 0 && onSegment(firstStart, firstEnd, secondEnd))
+    || (secondStartSide === 0 && onSegment(secondStart, secondEnd, firstStart))
+    || (secondEndSide === 0 && onSegment(secondStart, secondEnd, firstEnd))
+    || ((firstStartSide < 0) !== (firstEndSide < 0)
+      && (secondStartSide < 0) !== (secondEndSide < 0));
+}
+
+function segmentErasedByMask(start: Point, end: Point, mask: NonNullable<InkStroke["eraseMasks"]>[number]): boolean {
+  const radius = Math.max(0, mask.radius);
+  if (mask.points.length === 1) return distanceToSegment(mask.points[0]!, start, end) <= radius;
+  for (let index = 1; index < mask.points.length; index += 1) {
+    const maskStart = mask.points[index - 1]!;
+    const maskEnd = mask.points[index]!;
+    if (segmentsIntersect(start, end, maskStart, maskEnd)
+      || distanceToSegment(start, maskStart, maskEnd) <= radius
+      || distanceToSegment(end, maskStart, maskEnd) <= radius
+      || distanceToSegment(maskStart, start, end) <= radius
+      || distanceToSegment(maskEnd, start, end) <= radius) return true;
+  }
+  return false;
+}
+
+function segmentErasedByMasks(start: Point, end: Point, masks: InkStroke["eraseMasks"]): boolean {
+  return masks?.some((mask) => segmentErasedByMask(start, end, mask)) ?? false;
+}
+
+/** Split a selected highlighter path so its blue selection dash never crosses a hole. */
+export function visibleStrokeSegments(
+  points: readonly PagePoint[],
+  masks: InkStroke["eraseMasks"]
+): PagePoint[][] {
+  if (!points.length) return [];
+  if (!masks?.length) return [points.slice()];
+  const segments: PagePoint[][] = [];
+  let current: PagePoint[] = [];
+  const flush = (): void => {
+    if (current.length) segments.push(current);
+    current = [];
+  };
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index]!;
+    if (pointErasedByMasks(point, masks)) {
+      flush();
+      continue;
+    }
+    const previous = points[index - 1];
+    if (previous && !pointErasedByMasks(previous, masks) && segmentErasedByMasks(previous, point, masks)) {
+      flush();
+    }
+    current.push(point);
+  }
+  flush();
+  return segments;
+}
+
 function strokeMatchesSelection(stroke: InkStroke, shape: SelectionShape): boolean {
   if (!stroke.points.length) return false;
   // Highlighter erasing keeps the original centerline and records holes as
