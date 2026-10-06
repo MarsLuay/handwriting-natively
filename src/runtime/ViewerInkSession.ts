@@ -4604,7 +4604,10 @@ export class ViewerInkSession {
     if (this.pinchCleanup.needsAnimationFrame()) {
       // Finger release already ran on this turn. That is the one post-terminal
       // frame; waiting for another rAF was the 50ms flag.
-      if (report.quiescent && this.pinchTerminalAt !== 0) {
+      if (report.quiescent && (this.pinchTerminalAt !== 0 || report.gestureCleanupTimedOut)) {
+        if (this.pinchTerminalAt === 0) {
+          this.pinchTerminalAt = performance.now();
+        }
         this.pinchCleanup.noteAnimationFrame();
       } else {
         this.lastSettleDeferralReason = "pinch-cleanup-frame";

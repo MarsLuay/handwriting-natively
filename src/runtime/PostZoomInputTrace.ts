@@ -42,6 +42,7 @@ export const POST_ZOOM_CAPTURE_RECOVERY = "release-annotation-pointer-captures";
 export const POST_ZOOM_GESTURE_RECOVERY = "wait-for-all-pinch-contacts-to-fully-terminate-before-post-zoom-enable";
 export const PINCH_CLEANUP_MAX_WAIT_MS = 800;
 export const ZOOM_BURST_STUCK_MS = 2_000;
+export const PINCH_STALE_CONTACT_MAX_AGE_MS = 600;
 
 export interface ZoomBurstWatchInput {
   now: number;
@@ -868,15 +869,18 @@ export class PinchGestureCleanup {
   private pruneInactive(
     stream: "pointer" | "touch",
     records: Map<number, { terminal: boolean }>,
-    active: ReadonlySet<number>,
+    active: Set<number>,
     now: number
   ): StalePinchPrune[] {
     const pruned: StalePinchPrune[] = [];
     const seen = stream === "pointer" ? this.pointerSeenAt : this.touchSeenAt;
     for (const [id, state] of records) {
-      if (state.terminal || active.has(id)) continue;
+      if (state.terminal && !active.has(id)) continue;
       const lastSeenAt = seen.get(id) ?? null;
+      const isStale = lastSeenAt !== null && now - lastSeenAt > PINCH_STALE_CONTACT_MAX_AGE_MS;
+      if (active.has(id) && !isStale && !state.terminal) continue;
       state.terminal = true;
+      active.delete(id);
       pruned.push({
         event: "stale-pinch-contact-pruned",
         id,
@@ -920,10 +924,20 @@ export class PinchGestureCleanup {
     return { timedOut: this.timedOut, lastPinchEventAgeMs: age, stalePointerIds, staleTouchIds };
   }
 
-  activePinchCount(): { pointers: number; touches: number } {
+  activePinchCount(now = Date.now()): { pointers: number; touches: number } {
     return {
-      pointers: [...this.pinchPointers].filter((id) => !this.pointers.get(id)?.terminal).length,
-      touches: [...this.pinchTouches].filter((id) => !this.touches.get(id)?.terminal && !this.stylusAssociated.has(id)).length
+      pointers: [...this.pinchPointers].filter((id) => {
+        const state = this.pointers.get(id);
+        if (!state || state.terminal) return false;
+        const seen = this.pointerSeenAt.get(id);
+        return seen == null || now - seen <= PINCH_STALE_CONTACT_MAX_AGE_MS;
+      }).length,
+      touches: [...this.pinchTouches].filter((id) => {
+        const state = this.touches.get(id);
+        if (!state || state.terminal || this.stylusAssociated.has(id)) return false;
+        const seen = this.touchSeenAt.get(id);
+        return seen == null || now - seen <= PINCH_STALE_CONTACT_MAX_AGE_MS;
+      }).length
     };
   }
 
