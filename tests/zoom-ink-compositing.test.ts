@@ -828,6 +828,7 @@ describe("zoom ink compositing", () => {
       settings: (() => {
         const settings = structuredClone(DEFAULT_SETTINGS);
         settings.autosave = false;
+        settings.toolbarPlacement = "left";
         settings.toolPreferences.activeTool = "pen";
         return settings;
       })(),
