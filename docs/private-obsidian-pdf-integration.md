@@ -53,7 +53,7 @@ When present, the object may provide `currentPageNumber`, `currentScale`, `pages
 | `host.pdfViewer`, `currentScale`, `pagesRotation`, page/render signals, EventBus, find controller | private Obsidian/PDF.js graph | feature-detect behind `PdfViewerCompatibility`; never required for basic ink |
 | `PdfPageLocator` sequential page-number stamping and canvas/rect inference | heuristic evidence | report low confidence; reject ambiguous identity |
 | `PdfScrollRoot` candidates and private viewer container | fallback layout capability | return element, strategy, and confidence; host fallback is degraded |
-| sidebar/toolbar rail, CSS width, thumbnail menu, and zoom boost | optional/invasive integration | isolate from core annotation; bounded cleanup and independent degradation |
+| sidebar/toolbar rail, CSS width, and thumbnail menu | optional/invasive integration | isolate from core annotation; bounded cleanup and independent degradation |
 
 Page discovery prefers a validated private/page-render signal, then EventBus plus DOM validation, numbered DOM shells, and finally bounded initial-attach retries. Scroll resolves once and is revalidated only after viewer replacement. Mutation observers target the smallest validated page owner and filter plugin-owned nodes, text-layer churn, annotation-layer churn, and paint-only changes. Resize/geometry work is coalesced. Every retry, observer, EventBus subscription, and rAF is generation-cancelled on replacement or destroy.
 

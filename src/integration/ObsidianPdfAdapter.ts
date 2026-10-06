@@ -20,7 +20,6 @@ export type PdfInkPreviewProvider = (pageNumber: number) => PdfInkPreview;
 /** Optional PDF-only capabilities; generic annotation surfaces do not implement this contract. */
 export interface PdfSurfaceExtensions {
   readonly supportsPdfExport?: true;
-  setBoostedZoom?(enabled: boolean): void;
   nativeTextLayer?(pageNumber: number): HTMLElement | null;
   findController?(): PdfFindControllerLike | null;
   eventBus?(): PdfJsEventBus | null;

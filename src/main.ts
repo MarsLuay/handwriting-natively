@@ -840,7 +840,6 @@ export default class NativePdfInkPlugin extends Plugin {
 
   async saveSettings(settings: PluginSettings): Promise<void> {
     const previousPlacement = this.inkSettings.toolbarPlacement;
-    const previousBoostedZoom = this.inkSettings.boostedPdfZoom;
     const previousCustomMobilePdfPinchZoom = this.inkSettings.customMobilePdfPinchZoom;
     const previousPdfEnabled = this.inkSettings.enabledSurfaces.pdf;
     const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
@@ -876,7 +875,6 @@ export default class NativePdfInkPlugin extends Plugin {
     this.vaultDebugLog.write("info", "plugin settings saved", {
       changedKeys: [
         ...(previousPlacement !== settings.toolbarPlacement ? ["toolbarPlacement"] : []),
-        ...(previousBoostedZoom !== settings.boostedPdfZoom ? ["boostedPdfZoom"] : []),
         ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
         ...(previousMouseInkingEnabled !== settings.mouseInkingEnabled ? ["mouseInkingEnabled"] : []),
         ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : []),
@@ -885,9 +883,6 @@ export default class NativePdfInkPlugin extends Plugin {
     });
     if (previousPlacement !== settings.toolbarPlacement) {
       for (const session of this.allSessions()) session.remountToolbar();
-    }
-    if (previousBoostedZoom !== settings.boostedPdfZoom) {
-      for (const session of this.allSessions()) session.setBoostedPdfZoom(settings.boostedPdfZoom);
     }
     if (previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom) {
       for (const session of this.allSessions()) session.setCustomMobilePdfPinchZoomEnabled(settings.customMobilePdfPinchZoom);

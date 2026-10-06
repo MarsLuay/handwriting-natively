@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EmbeddedPdfAdapter } from "../src/integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "../src/integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "../src/integration/NativePdfViewAdapter";
-import { OBSIDIAN_DEFAULT_MAX_SCALE } from "../src/integration/PdfZoomBoost";
 import { DEFAULT_SETTINGS } from "../src/model";
 import { AnnotationToolbar } from "../src/ui/AnnotationToolbar";
 
@@ -156,54 +155,6 @@ describe("PDF adapters", () => {
     eventBus.emit("scalechanging", { scale: 1.5 });
     expect(zoom.mock.calls).toHaveLength(callsBeforeDestroy);
     vi.useRealTimers();
-  });
-
-  it("keeps page-space zoom alignment and restores the zoom patch on cleanup", async () => {
-    const host = compatibleHost();
-    const stateChanges = vi.fn();
-    let currentScale = 1.5;
-    const privateViewer = {
-      currentScale,
-      updateScale: vi.fn(() => undefined)
-    };
-    const globals = window as typeof window & {
-      pdfjsViewer?: {
-        MAX_SCALE: number;
-        AppOptions: { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> };
-      };
-    };
-    const previousGlobals = globals.pdfjsViewer;
-    const appOptions = {
-      get: vi.fn(() => 16 * 1024 * 1024),
-      set: vi.fn()
-    };
-    globals.pdfjsViewer = { MAX_SCALE: OBSIDIAN_DEFAULT_MAX_SCALE, AppOptions: appOptions };
-
-    const adapter = await NativePdfViewAdapter.attach(
-      host,
-      { onViewStateChange: stateChanges },
-      { privateViewer }
-    );
-    const page = host.querySelector(".page") as HTMLElement;
-    const overlay = adapter.mountOverlay(1);
-    adapter.setBoostedZoom?.(true);
-
-    currentScale = 2.25;
-    privateViewer.currentScale = currentScale;
-    page.dataset.scale = String(currentScale);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-
-    expect(adapter.page(1)).toMatchObject({ scale: currentScale });
-    expect(overlay.parentElement).toBe(page);
-    expect(stateChanges.mock.calls.at(-1)?.[0]).toMatchObject({ scale: currentScale });
-    expect(globals.pdfjsViewer.MAX_SCALE).toBeGreaterThan(OBSIDIAN_DEFAULT_MAX_SCALE);
-
-    adapter.destroy();
-    expect(overlay.isConnected).toBe(false);
-    expect(globals.pdfjsViewer.MAX_SCALE).toBe(OBSIDIAN_DEFAULT_MAX_SCALE);
-    expect(appOptions.set).toHaveBeenLastCalledWith("maxCanvasPixels", 16 * 1024 * 1024);
-    if (previousGlobals) globals.pdfjsViewer = previousGlobals;
-    else delete globals.pdfjsViewer;
   });
 
   it("captures and restores PDF.js scale mode across a view-state mutation", async () => {

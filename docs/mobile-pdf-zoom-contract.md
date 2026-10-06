@@ -1,6 +1,6 @@
 # Mobile-only CSS-owned PDF pinch-zoom contract
 
-This document defines the experimental replacement path for mobile PDF pinch zoom. The persisted `customMobilePdfPinchZoom` setting defaults to `true`, can be explicitly disabled, is independent of `boostedPdfZoom`, and does not change desktop behavior. PDF.js remains the renderer and keeps its canonical scale; the custom path owns only the visual container zoom.
+This document defines the experimental replacement path for mobile PDF pinch zoom. The persisted `customMobilePdfPinchZoom` setting defaults to `true`, can be explicitly disabled, and does not change desktop behavior. PDF.js remains the renderer and keeps its canonical scale; the custom path owns only the visual container zoom.
 
 ## Activation gate
 

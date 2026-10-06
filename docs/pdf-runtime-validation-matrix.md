@@ -27,7 +27,7 @@ The matrix intentionally keeps physical-device rows `not-run` until a real devic
 | Missing toolbar/private viewer/EventBus | compatibility tests | optional fallback or `degraded`; annotation remains available when page evidence is safe |
 | Duplicate or stale page shell | `tests/pdf-page-locator.test.ts` | independent mount generation; ambiguous identity is unsafe |
 | Zoom fallback and inner-layer churn | `tests/pdf-sidebar-rail-offset.test.ts`, `tests/zoom-ink-compositing.test.ts`, `tests/runtime-viewer-session.test.ts` | geometry/event fallback, no plugin-owned remount, generation-safe reattachment |
-| Opt-in custom mobile pinch gate | `tests/mobile-custom-pdf-zoom.test.ts`, `tests/settings.test.ts`, `tests/mobile-pdf-compositor.test.ts`, `tests/mobile-pdf-zoom-handoff.test.ts`, `tests/mobile-pdf-zoom-diagnostics.test.ts` | setting remains false by default and independent from boosted zoom; unsupported/unknown hosts report `native-fallback`; page-local preview and native handoff remain generation-safe |
+| Opt-in custom mobile pinch gate | `tests/mobile-custom-pdf-zoom.test.ts`, `tests/settings.test.ts`, `tests/mobile-pdf-compositor.test.ts`, `tests/mobile-pdf-zoom-handoff.test.ts`, `tests/mobile-pdf-zoom-diagnostics.test.ts` | setting remains false by default; unsupported/unknown hosts report `native-fallback`; page-local preview and native handoff remain generation-safe |
 | Unsafe geometry/identity | `tests/annotation-safety.test.ts` | pointer and persistence gates reject the affected page |
 | Full synthetic interaction matrix | `tests/fixtures/pdfInteractionScenarios.ts`, `tests/pdf-interaction-fixtures.test.ts` | versioned direct/embedded scenarios cover sidecar, export/reopen, generation, zoom, sidebar, and cleanup assertions |
 | Explicit page-end creation | `tests/add-page-control.test.ts`, `tests/pdf-page-actions.test.ts` | accessible control follows the highest page, debounces activation, and reuses guarded page mutation |
@@ -58,7 +58,7 @@ Run the applicable rows above on the named build. Keep each result `not-run`, `b
 5. Structure actions: exercise Add page, Delete page, Import page, and Scan document where supported; verify sidecar/recovery remapping and cancellation/error safety.
 6. Export and reopen: export an annotated copy, confirm the source PDF is unchanged, close/reopen the source, and verify sidecar-backed ink survives.
 7. Lifecycle: switch split panes/leaves, close/reopen the PDF, background/resume the app, and disable/re-enable the plugin; verify cleanup and recovery.
-8. Degraded/unsafe paths: repeat with optional viewer, sidebar, find, or boosted-zoom capabilities absent; exercise duplicate/invalid page evidence and verify `annotation-safety-blocked`, no new stroke, and no unsafe sidecar write.
+8. Degraded/unsafe paths: repeat with optional viewer, sidebar, or find capabilities absent; exercise duplicate/invalid page evidence and verify `annotation-safety-blocked`, no new stroke, and no unsafe sidecar write.
 
 ## Capture checklist
 
@@ -69,7 +69,7 @@ For each live row, record only bounded diagnostics: target/build identifier, ada
 3. Zoom with wheel/trackpad/pinch; verify no page remount during the burst and one generation-safe settle/rebind.
 4. Force a PDF.js page/canvas replacement, reload the view, switch split panes/leaves, and background/resume the app; verify stale callbacks are ignored.
 5. Exercise an indistinguishable duplicate shell and invalid geometry; verify `annotation-safety-blocked`, no new stroke, and no unsafe sidecar write.
-6. Repeat after optional find/sidebar/boosted-zoom capabilities are absent; validated pages remain annotatable.
+6. Repeat after optional find/sidebar capabilities are absent; validated pages remain annotatable.
 
 ## Automation and physical-device boundary
 

@@ -41,7 +41,6 @@ function hasWritableCurrentScale(viewer: NonNullable<CompatibilityResult["privat
 
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import { PDF_PAGE_SELECTOR } from "./pdfPageSelectors";
-import { installPdfZoomBoost, type PdfZoomBoostHandle } from "./PdfZoomBoost";
 import { getDebugNodeId } from "../dom/debugNodeId";
 import { LayoutWorkTrace, type LayoutOperationResult } from "../runtime/LayoutWorkTrace";
 import { MobilePdfZoomHandoff } from "./MobilePdfZoomHandoff";
@@ -57,7 +56,6 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private readonly mounted = new Set<HTMLElement>();
   private readonly callbacks: PdfAdapterCallbacks;
   private readonly layoutTrace: LayoutWorkTrace;
-  private zoomBoost: PdfZoomBoostHandle | null = null;
   private destroyed = false;
   private viewerReplacementNotified = false;
   private currentViewerGeneration = 1;
@@ -128,7 +126,6 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.callbacks = callbacks;
     this.layoutTrace = new LayoutWorkTrace({ enabled: () => Boolean(this.callbacks.onDebugLog) });
     this.locator = new PdfPageLocator(this.root, compatibility.privateViewer);
-    this.registerCleanup(() => this.zoomBoost?.destroy());
     this.registerCleanup(() => {
       if (this.zoomSettleTimer !== null) window.clearTimeout(this.zoomSettleTimer);
       this.zoomSettleTimer = null;
@@ -228,14 +225,6 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       this.emitZoomChange("settled", source, generation);
       this.zoomSignalActive = false;
     }, 120);
-  }
-
-  setBoostedZoom(enabled: boolean): void {
-    if (enabled && !this.zoomBoost) this.zoomBoost = installPdfZoomBoost(this.compatibility.privateViewer);
-    if (!enabled && this.zoomBoost) {
-      this.zoomBoost.destroy();
-      this.zoomBoost = null;
-    }
   }
 
   nativeScaleCommitAvailable(): boolean {
