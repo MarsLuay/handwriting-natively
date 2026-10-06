@@ -581,7 +581,7 @@ describe("zoom ink compositing", () => {
       cancelZoomCompositeRelease(): void;
       releaseZoomCompositeLayers(): void;
     };
-    for (let index = 0; index < 32; index += 1) {
+    for (let index = 0; index < 132; index += 1) {
       const x = 80 + (index % 8) * 12;
       const y = 90 + Math.floor(index / 8) * 18;
       adapter.pageElement.dispatchEvent(pointer("pointerdown", x, y));
@@ -612,7 +612,7 @@ describe("zoom ink compositing", () => {
     internal.cancelZoomCompositeRelease();
     internal.releaseZoomCompositeLayers();
     expect(overlayOf(adapter).classList.contains("native-pdf-handwriting-zoom-compositing")).toBe(false);
-    await vi.advanceTimersByTimeAsync(16);
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(surface.inkLayerValid).toBe(true);
     expect(surface.rasterFallbackReady).toBe(false);
     await session.destroy();

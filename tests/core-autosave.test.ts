@@ -26,6 +26,22 @@ describe("autosave", () => {
     vi.useRealTimers();
   });
 
+  it("allows dense snapshots to request a longer quiet period", async () => {
+    vi.useFakeTimers();
+    const write = vi.fn(async () => undefined);
+    const queue = new AutosaveQueue({
+      write,
+      delayMs: 10,
+      delayMsForSnapshot: (snapshot: { strokes: number }) => snapshot.strokes >= 128 ? 100 : 10
+    });
+    queue.schedule("doc", { strokes: 128 });
+    await vi.advanceTimersByTimeAsync(99);
+    expect(write).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(write).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
   it("bounds the dirty interval while commands keep arriving", async () => {
     vi.useFakeTimers();
     const write = vi.fn(async () => undefined);

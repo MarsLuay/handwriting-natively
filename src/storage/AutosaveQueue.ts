@@ -33,6 +33,8 @@ export interface AutosaveQueueOptions<T> {
   maxDirtyIntervalMs?: number;
   /** Automatic retries are finite; explicit retry() remains available afterwards. */
   maxRetries?: number;
+  /** Dense snapshots may request a longer quiet period without changing user settings. */
+  delayMsForSnapshot?: (snapshot: T) => number;
   maxRetryDelayMs?: number;
   onStatus?: (documentId: string, status: SaveStatus, error?: unknown) => void;
   /** Receives only terminal operations with an actionable slow phase. */
@@ -227,7 +229,9 @@ export class AutosaveQueue<T> {
 
   private scheduleDrain(documentId: string, entry: Entry<T>): void {
     const remaining = Math.max(0, this.maxDirtyIntervalMs - this.dirtyAge(entry));
-    this.scheduleTimer(documentId, entry, Math.min(this.delayMs, remaining), "debounce");
+    const requestedDelay = this.options.delayMsForSnapshot?.(entry.snapshot) ?? this.delayMs;
+    const delay = Number.isFinite(requestedDelay) ? Math.max(0, requestedDelay) : this.delayMs;
+    this.scheduleTimer(documentId, entry, Math.min(delay, remaining), "debounce");
   }
 
   private scheduleTimer(
