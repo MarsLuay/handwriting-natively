@@ -174,6 +174,25 @@ describe("pencil graphite approximation", () => {
     expect(zoomed.length).toBeLessThan(900);
   });
 
+  it("does not multiply graphite marks for densely sampled input", () => {
+    const points = Array.from({ length: 3_000 }, (_, index) => ({
+      x: index * 0.5,
+      y: Math.sin(index / 5) * 2,
+      pressure: 0.5
+    }));
+    const marks = graphiteStampCircles(points, {
+      color: "#111",
+      width: 24,
+      opacity: 0.7,
+      textureStrength: 0.55,
+      pressureSensitivity: false,
+      tiltSensitivity: false,
+      thinning: 0,
+      seed: 1
+    });
+    expect(marks.length).toBeLessThan(12_000);
+  });
+
   it("draft quality uses fewer marks for live previews", () => {
     const points = [
       { x: 0, y: 0, pressure: 0.5 },

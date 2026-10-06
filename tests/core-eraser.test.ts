@@ -182,6 +182,28 @@ describe("circular segment eraser", () => {
     expect(penFragments[1]?.points[0]?.x).toBeCloseTo(61);
   });
 
+  it("keeps long highlighter finalization spatially bounded", () => {
+    const highlight: InkStroke = {
+      ...stroke("dense-highlight", Array.from({ length: 3_000 }, (_, index) =>
+        point(index * 0.5, Math.sin(index / 5) * 2)
+      ), 24),
+      tool: "highlighter"
+    };
+    const path = Array.from({ length: 300 }, (_, index) => point(
+      100 + index * 0.5,
+      Math.sin(index / 5) * 2
+    ));
+    const hypot = vi.spyOn(Math, "hypot");
+    try {
+      const result = eraseStrokeSegments([highlight], path, 12, { now: () => "after" });
+      expect(result.erased).toEqual([highlight]);
+      expect(result.fragments[0]?.eraseMasks?.at(-1)?.points).toHaveLength(path.length);
+      expect(hypot.mock.calls.length).toBeLessThan(100_000);
+    } finally {
+      hypot.mockRestore();
+    }
+  });
+
   it("rejects invalid size and coordinate scale", () => {
     expect(() => eraseStrokeSegments([], [], 0)).toThrow("positive");
     expect(() => eraseStrokeSegments([], [], 2, { scale: 0 })).toThrow("scale");

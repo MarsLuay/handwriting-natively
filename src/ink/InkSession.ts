@@ -74,13 +74,22 @@ export class InkSession {
   replacePage(page: number, strokes: readonly InkStroke[], reason = "replace-page"): void {
     const previous = this.byPage.get(page) ?? [];
     const previousIds = new Set(previous.map((stroke) => stroke.id));
+    const previousById = new Map(previous.map((stroke) => [stroke.id, stroke]));
     const next = [...strokes];
     const nextIds = new Set(next.map((stroke) => stroke.id));
+    const nextById = new Map(next.map((stroke) => [stroke.id, stroke]));
     const strokeCountBefore = this.strokeCount;
     this.byPage.set(page, next);
+    // Keep the spatial index entries for untouched strokes. Rebuilding bounds
+    // for every point on a dense page made releasing the eraser pay a second
+    // full-document cost after the geometry pass had already completed.
     const index = this.index(page);
-    index.clear();
-    for (const stroke of next) index.add(stroke);
+    for (const stroke of previous) {
+      if (nextById.get(stroke.id) !== stroke) index.remove(stroke.id);
+    }
+    for (const stroke of next) {
+      if (previousById.get(stroke.id) !== stroke) index.add(stroke);
+    }
     this.strokeCount += next.length - previous.length;
     this.bumpPageRevision(page);
     for (const stroke of previous) {
