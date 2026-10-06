@@ -2056,6 +2056,8 @@ describe("viewer runtime tracer", () => {
       .map(({ payload }) => payload);
     expect(appended).toHaveLength(3);
     expect(appended.every((payload) => payload.incremental === true)).toBe(true);
+    expect(appended.every((payload) => payload.previewTransfer === true)).toBe(true);
+    expect(appended.every((payload) => payload.vectorRepaintCount === 0)).toBe(true);
     expect(appended.map((payload) => payload.pageStrokeCount)).toEqual([1, 2, 3]);
 
     session.writeCopiedLogUiSnapshot();
@@ -2064,6 +2066,52 @@ describe("viewer runtime tracer", () => {
       totalSlowStrokes: expect.any(Number),
       byStage: expect.any(Object),
       worstStrokes: expect.any(Array)
+    });
+    await session.destroy();
+  });
+
+  it("transfers a long final-quality draft without rebuilding it on release", async () => {
+    const adapter = new FakeAdapter();
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: { write: (_level, event, payload = {}) => logs.push({ event, payload }) }
+    });
+    const internal = session as unknown as {
+      paintCommittedStrokes: (...args: unknown[]) => void;
+    };
+    const vectorPaint = vi.spyOn(internal, "paintCommittedStrokes");
+    vectorPaint.mockClear();
+
+    const pointerId = 901;
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 80, 140, { pointerId }));
+    for (let index = 1; index <= 1_200; index += 1) {
+      adapter.pageElement.dispatchEvent(pointer(
+        "pointermove",
+        80 + (index % 480),
+        140 + Math.sin(index / 18) * 90,
+        { pointerId }
+      ));
+    }
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 560, 140, { pointerId }));
+
+    expect(vectorPaint).not.toHaveBeenCalled();
+    const appended = logs.find(({ event, payload }) =>
+      event === "ink render profile" && payload.operation === "stroke-append"
+    );
+    expect(appended?.payload).toMatchObject({
+      incremental: true,
+      previewTransfer: true,
+      vectorRepaintCount: 0
     });
     await session.destroy();
   });

@@ -813,9 +813,12 @@ interface PageSurface {
   paintGeneration: number;
   /** Ephemeral active-stroke layer. The committed ink canvas stays untouched while drawing. */
   draftCanvas: HTMLCanvasElement;
+  /** Predicted pen samples stay separate so releasing never has to erase them from the final draft. */
+  predictionCanvas: HTMLCanvasElement;
   textLayer: HTMLElement;
   context: CanvasRenderingContext2D;
   draftContext: CanvasRenderingContext2D;
+  predictionContext: CanvasRenderingContext2D;
   /** Committed-stroke cache — blit for live draw + zoom settle before HQ rebuild. */
   inkLayer: HTMLCanvasElement | null;
   inkLayerContext: CanvasRenderingContext2D | null;
@@ -852,7 +855,9 @@ interface PageSurface {
   wetDamage: DamageLedger;
   /** Prefix of live stroke preview already stamped on draftCanvas (incremental paint). */
   liveDrawPaintedPoints: number;
-  /** Browser-predicted pen points rendered only on the disposable wet layer. */
+  /** Stroke whose final-quality pixels currently occupy draftCanvas. */
+  liveDrawPreviewStrokeId: string | null;
+  /** Browser-predicted pen points rendered only on the disposable prediction layer. */
   predictedPreview: PagePoint[];
   predictedPreviewPainted: boolean;
   builder: StrokeBuilder | undefined;
@@ -6753,7 +6758,28 @@ export class ViewerInkSession {
 
     const startedAt = performance.now();
     surface.paintGeneration = ++this.nextPaintGeneration;
-    this.paintCommittedStrokes(surface, surface.inkLayerContext, [stroke], undefined, "full");
+    const layerContext = surface.inkLayerContext;
+    const previewTransferReady = surface.liveDrawPreviewStrokeId === stroke.id
+      && surface.draftCanvas.width === pixelWidth
+      && surface.draftCanvas.height === pixelHeight
+      && typeof layerContext.drawImage === "function";
+    if (previewTransferReady) {
+      // The draft is already the final-quality stroke. Transfer its pixels to
+      // the canonical layer instead of running the entire long path again on
+      // pointer-up. Predicted samples live on a separate canvas and therefore
+      // cannot leak into the committed bitmap.
+      this.beginStrokePixelEvidence(surface, stroke, surface.inkLayer, layerContext);
+      layerContext.save();
+      layerContext.setTransform(1, 0, 0, 1, 0, 0);
+      layerContext.globalCompositeOperation = "source-over";
+      layerContext.drawImage(surface.draftCanvas, 0, 0);
+      layerContext.restore();
+      layerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+      this.recordStrokeRendered(surface, stroke);
+      this.finishStrokePixelEvidence(surface, stroke, surface.inkLayer, layerContext);
+    } else {
+      this.paintCommittedStrokes(surface, layerContext, [stroke], undefined, "full");
+    }
     surface.inkLayerBackingScale = backingScale;
     surface.inkLayerRevision = pageRevision;
     this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
@@ -6814,7 +6840,8 @@ export class ViewerInkSession {
       incremental: true,
       canvasResized: false,
       canvasResizeCount: 0,
-      vectorRepaintCount: 1,
+      vectorRepaintCount: previewTransferReady ? 0 : 1,
+      previewTransfer: previewTransferReady,
       hqUpgradeCount: 0,
       backingScale: roundMetric(backingScale),
       width: roundMetric(width),
@@ -9268,6 +9295,10 @@ export class ViewerInkSession {
     draftCanvas.className = "native-pdf-handwriting-draft-canvas";
     draftCanvas.setAttribute("aria-hidden", "true");
     overlay.append(draftCanvas);
+    const predictionCanvas = createDetachedEl(overlay.ownerDocument, 'canvas');
+    predictionCanvas.className = "native-pdf-handwriting-prediction-canvas";
+    predictionCanvas.setAttribute("aria-hidden", "true");
+    overlay.append(predictionCanvas);
     const textLayer = createDetachedDiv(overlay.ownerDocument);
     textLayer.className = "native-pdf-handwriting-text-layer";
     overlay.append(textLayer);
@@ -9275,14 +9306,18 @@ export class ViewerInkSession {
     if (!context) throw new Error("Canvas 2D rendering is unavailable");
     const draftContext = draftCanvas.getContext("2d");
     if (!draftContext) throw new Error("Canvas 2D rendering is unavailable");
+    const predictionContext = predictionCanvas.getContext("2d");
+    if (!predictionContext) throw new Error("Canvas 2D rendering is unavailable");
     const surface: PageSurface = {
       page,
       overlay,
       canvas,
       draftCanvas,
+      predictionCanvas,
       textLayer,
       context,
       draftContext,
+      predictionContext,
       canvasGeneration: 0,
       paintGeneration: 0,
       inkLayer: null,
@@ -9307,6 +9342,7 @@ export class ViewerInkSession {
       wetPreviewActive: false,
       wetDamage: new DamageLedger(),
       liveDrawPaintedPoints: 0,
+      liveDrawPreviewStrokeId: null,
       predictedPreview: [],
       predictedPreviewPainted: false,
       builder: undefined,
@@ -11973,14 +12009,20 @@ export class ViewerInkSession {
   }
 
   private clearLiveDrawPreview(surface: PageSurface): void {
-    const { draftCanvas, draftContext } = surface;
+    const { draftCanvas, draftContext, predictionCanvas, predictionContext } = surface;
     this.endWetPreview(surface);
     surface.liveDrawPaintedPoints = 0;
+    surface.liveDrawPreviewStrokeId = null;
     surface.predictedPreview = [];
     surface.predictedPreviewPainted = false;
-    if (!draftCanvas.width || !draftCanvas.height) return;
-    draftContext.setTransform(1, 0, 0, 1, 0, 0);
-    draftContext.clearRect(0, 0, draftCanvas.width, draftCanvas.height);
+    if (draftCanvas.width && draftCanvas.height) {
+      draftContext.setTransform(1, 0, 0, 1, 0, 0);
+      draftContext.clearRect(0, 0, draftCanvas.width, draftCanvas.height);
+    }
+    if (predictionCanvas.width && predictionCanvas.height) {
+      predictionContext.setTransform(1, 0, 0, 1, 0, 0);
+      predictionContext.clearRect(0, 0, predictionCanvas.width, predictionCanvas.height);
+    }
   }
 
   /** Drop detached page bitmaps and their scheduled work promptly. */
@@ -11992,6 +12034,9 @@ export class ViewerInkSession {
     surface.canvas.height = 0;
     surface.draftCanvas.width = 0;
     surface.draftCanvas.height = 0;
+    surface.predictionCanvas.width = 0;
+    surface.predictionCanvas.height = 0;
+    surface.liveDrawPreviewStrokeId = null;
     if (surface.inkLayer) {
       surface.inkLayer.width = 0;
       surface.inkLayer.height = 0;
@@ -12075,27 +12120,42 @@ export class ViewerInkSession {
       surface.liveDrawPaintedPoints = 0;
       draftResized = true;
     }
+    if (surface.predictionCanvas.width !== pixelWidth || surface.predictionCanvas.height !== pixelHeight) {
+      surface.predictionCanvas.width = pixelWidth;
+      surface.predictionCanvas.height = pixelHeight;
+    }
 
     const points = surface.shapePreview ?? builder.preview(this.simplifyStrokesEnabled());
     if (!points.length) {
       surface.liveDrawPaintedPoints = 0;
+      surface.liveDrawPreviewStrokeId = null;
       surface.predictedPreviewPainted = false;
+      surface.predictionContext.setTransform(1, 0, 0, 1, 0, 0);
+      surface.predictionContext.clearRect(0, 0, pixelWidth, pixelHeight);
       return { draftPoints: 0, incremental: false, compositeMatched, stabilization, draftResized };
     }
     const style = builder.style;
-    // Pencil texture is intentionally cheaper while the pointer is down; the
-    // committed pointer-up paint still uses full graphite quality.
-    const liveGraphiteQuality = style.tool === "pencil" ? "draft" : "full";
+    // Live and committed pencil paint use the same final-quality renderer. The
+    // draft layer is incremental, so quality is distributed over the gesture
+    // instead of being paid as one full-path spike on pointer-up.
+    const liveGraphiteQuality = "full" as const;
     const context = surface.draftContext;
+    const predictionContext = surface.predictionContext;
     const shapeMorph = surface.shapePreview !== null;
     const predicted = surface.predictedPreview;
     const hasPredicted = predicted.length > 0 && !shapeMorph;
-    const hadPredicted = surface.predictedPreviewPainted;
 
-    const paintPredicted = (): void => {
-      if (!hasPredicted) return;
+    const updatePredictionLayer = (): void => {
+      if (!hasPredicted && !surface.predictedPreviewPainted) return;
+      predictionContext.setTransform(1, 0, 0, 1, 0, 0);
+      predictionContext.clearRect(0, 0, pixelWidth, pixelHeight);
+      if (!hasPredicted) {
+        surface.predictedPreviewPainted = false;
+        return;
+      }
       const anchor = points.at(-1);
       const predictedPoints = anchor ? [anchor, ...predicted] : predicted;
+      predictionContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
       this.drawPoints(
         surface,
         predictedPoints,
@@ -12106,9 +12166,11 @@ export class ViewerInkSession {
         false,
         builder.id,
         liveGraphiteQuality,
-        context
+        predictionContext
       );
+      surface.predictedPreviewPainted = true;
     };
+    updatePredictionLayer();
     // Shape preview replaces geometry each frame — never incremental.
     // After a shape frame, force the next freehand paint through the full path.
     if (shapeMorph) {
@@ -12128,32 +12190,7 @@ export class ViewerInkSession {
         context
       );
       surface.liveDrawPaintedPoints = 0;
-      surface.predictedPreviewPainted = false;
-      return { draftPoints: points.length, incremental: false, compositeMatched, stabilization, draftResized };
-    }
-
-    // Predicted points are not part of the builder. Repaint the disposable
-    // layer whenever they appear or disappear so they can never linger or be
-    // mistaken for canonical stroke geometry.
-    if (hasPredicted || hadPredicted) {
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      context.clearRect(0, 0, pixelWidth, pixelHeight);
-      context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
-      this.drawPoints(
-        surface,
-        points,
-        style.color,
-        style.width,
-        style.opacity,
-        style.tool,
-        false,
-        builder.id,
-        liveGraphiteQuality,
-        context
-      );
-      paintPredicted();
-      surface.liveDrawPaintedPoints = points.length;
-      surface.predictedPreviewPainted = hasPredicted;
+      surface.liveDrawPreviewStrokeId = builder.id;
       return { draftPoints: points.length, incremental: false, compositeMatched, stabilization, draftResized };
     }
 
@@ -12165,6 +12202,7 @@ export class ViewerInkSession {
 
     if (canIncremental) {
       if (surface.liveDrawPaintedPoints === points.length) {
+        surface.liveDrawPreviewStrokeId = builder.id;
         return { draftPoints: points.length, incremental: true, compositeMatched, stabilization, draftResized };
       }
       // Overlap one prior point so stamp capsules join without a gap.
@@ -12183,6 +12221,7 @@ export class ViewerInkSession {
         context
       );
       surface.liveDrawPaintedPoints = points.length;
+      surface.liveDrawPreviewStrokeId = builder.id;
       return { draftPoints: points.length, incremental: true, compositeMatched, stabilization, draftResized };
     }
 
@@ -12206,7 +12245,7 @@ export class ViewerInkSession {
       context
     );
     surface.liveDrawPaintedPoints = points.length;
-    surface.predictedPreviewPainted = false;
+    surface.liveDrawPreviewStrokeId = builder.id;
     return { draftPoints: points.length, incremental: false, compositeMatched, stabilization, draftResized };
   }
 
@@ -12503,7 +12542,8 @@ export class ViewerInkSession {
       return;
     }
     surface.predictedPreview = [];
-    surface.predictedPreviewPainted = false;
+    // Leave the painted flag set until renderLiveDrawPreview clears the separate
+    // prediction layer; resetting it here would strand stale predicted pixels.
     this.cancelHeldShape(surface);
     const laserDraft = surface.laserDraft;
     const simulate = laserDraft ? false : surface.simulateMousePressure;
@@ -12512,6 +12552,10 @@ export class ViewerInkSession {
     const lastPoint = points.at(-1);
     if (lastPoint) this.resizeLockedShape(surface, lastPoint);
     if (laserDraft) this.trimLaserDraft(surface, performance.now());
+    // Finish any samples that arrived after the last rAF before transferring
+    // the final-quality draft. This is incremental when the draft is warm, not
+    // a second full-path reconstruction.
+    if (!laserDraft) this.renderLiveDrawPreview(surface);
     // Match live preview geometry — finish()+simplify reshapes the path → visible snap.
     const stroke = builder.finishMatchingPreview(laserDraft ? true : this.simplifyStrokesEnabled());
     if (surface.shapePreview?.length) stroke.points = surface.shapePreview;
