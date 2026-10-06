@@ -28,11 +28,6 @@ export interface GraphiteStrokeOptions {
    * space so a canonical redraw has the same grain density after zooming.
    */
   coordinateScale?: number;
-  /**
-   * `full` — final paint / export.
-   * `draft` — live pointer preview (cheaper; still graphite, not pen).
-   */
-  quality?: "full" | "draft";
 }
 
 /**
@@ -107,30 +102,22 @@ function clamp01(value: number): number {
  * Along-path stamp pitch. Scales with tip width and document-space floors so
  * displayScale zoom preserves the same stamp sequence.
  */
-export function graphiteSpacing(
-  width: number,
-  texture: number,
-  quality: "full" | "draft",
-  coordinateScale = 1
-): number {
+export function graphiteSpacing(width: number, texture: number, coordinateScale = 1): number {
   const t = clamp01(texture);
   const scale = normalizedCoordinateScale(coordinateScale);
-  const draftBoost = quality === "draft" ? 1.55 : 1;
   // Slightly tighter pitch → denser graphite body without solid pen fill.
-  const pitch = Math.max(1.0 * scale, width * (0.14 + (1 - t) * 0.08));
-  return pitch * draftBoost;
+  return Math.max(1.0 * scale, width * (0.14 + (1 - t) * 0.08));
 }
 
 /**
  * Flecks per sample. Almost flat vs document-space tip half-width — zoom-in
  * must not add grains.
  */
-export function graphiteGrainCount(half: number, texture: number, quality: "full" | "draft"): number {
+export function graphiteGrainCount(half: number, texture: number): number {
   const t = clamp01(texture);
   const acrossFill = Math.min(3, Math.floor(half / 5));
   const base = 3 + Math.floor(t * 3) + acrossFill;
-  const draftScale = quality === "draft" ? 2 : 1;
-  return Math.max(3, Math.round(base / draftScale));
+  return Math.max(3, base);
 }
 
 /** Visual fleck size — grows slowly with tip width, never giant discs. */
@@ -168,7 +155,6 @@ export function graphiteMarks(
   if (!points.length) return out;
   const seed = options.seed ?? 1;
   const texture = clamp01(options.textureStrength);
-  const quality = options.quality ?? "full";
   const coordinateScale = normalizedCoordinateScale(options.coordinateScale);
 
   const stampAt = (
@@ -196,7 +182,7 @@ export function graphiteMarks(
       });
     }
 
-    const grains = graphiteGrainCount(documentHalf, texture, quality);
+    const grains = graphiteGrainCount(documentHalf, texture);
     for (let g = 0; g < grains; g += 1) {
       // Fill tip width; mild Gaussian bias to center.
       const raw = graphiteNoise(seed, index, g * 9 + 1) * 2 - 1;
@@ -238,30 +224,28 @@ export function graphiteMarks(
       });
     }
 
-    if (quality === "full") {
-      const flecks = 2 + Math.floor(texture * 2) + Math.min(2, Math.floor(documentHalf / 4));
-      for (let f = 0; f < flecks; f += 1) {
-        if (graphiteNoise(seed, index, f * 5 + 50) < 0.22 + texture * 0.16) continue;
-        const acrossUnit = (graphiteNoise(seed, index, f * 5 + 51) * 2 - 1) * tipWiden;
-        const along = (graphiteNoise(seed, index, f * 5 + 52) - 0.5) * half;
-        const across = acrossUnit * half * (0.9 + texture * 0.15);
-        const size = Math.max(
-          0.28 * coordinateScale,
-          Math.min(
-            1.05 * coordinateScale,
-            (0.26 + documentHalf * 0.035 + graphiteNoise(seed, index, f * 5 + 53) * 0.25) * coordinateScale
-          )
-        );
-        out.push({
-          x: point.x + nx * across - ny * along,
-          y: point.y + ny * across + nx * along,
-          rx: size * (1.5 + texture * 0.8),
-          ry: size * 0.6,
-          rotation: heading + (graphiteNoise(seed, index, f * 5 + 54) - 0.5) * 1.4,
-          opacity: Math.min(0.72, opacity * (0.32 + texture * 0.34) * (0.5 + graphiteNoise(seed, index, f * 5 + 55) * 0.5)),
-          kind: "fleck"
-        });
-      }
+    const flecks = 2 + Math.floor(texture * 2) + Math.min(2, Math.floor(documentHalf / 4));
+    for (let f = 0; f < flecks; f += 1) {
+      if (graphiteNoise(seed, index, f * 5 + 50) < 0.22 + texture * 0.16) continue;
+      const acrossUnit = (graphiteNoise(seed, index, f * 5 + 51) * 2 - 1) * tipWiden;
+      const along = (graphiteNoise(seed, index, f * 5 + 52) - 0.5) * half;
+      const across = acrossUnit * half * (0.9 + texture * 0.15);
+      const size = Math.max(
+        0.28 * coordinateScale,
+        Math.min(
+          1.05 * coordinateScale,
+          (0.26 + documentHalf * 0.035 + graphiteNoise(seed, index, f * 5 + 53) * 0.25) * coordinateScale
+        )
+      );
+      out.push({
+        x: point.x + nx * across - ny * along,
+        y: point.y + ny * across + nx * along,
+        rx: size * (1.5 + texture * 0.8),
+        ry: size * 0.6,
+        rotation: heading + (graphiteNoise(seed, index, f * 5 + 54) - 0.5) * 1.4,
+        opacity: Math.min(0.72, opacity * (0.32 + texture * 0.34) * (0.5 + graphiteNoise(seed, index, f * 5 + 55) * 0.5)),
+        kind: "fleck"
+      });
     }
   };
 
@@ -286,7 +270,7 @@ export function graphiteMarks(
       tiltX: ((a.tiltX ?? 0) + (b.tiltX ?? 0)) / 2,
       tiltY: ((a.tiltY ?? 0) + (b.tiltY ?? 0)) / 2
     });
-    const spacing = graphiteSpacing(mid.width, texture, quality, coordinateScale);
+    const spacing = graphiteSpacing(mid.width, texture, coordinateScale);
     const steps = Math.max(1, Math.ceil(segment / spacing));
     const nx = -dy / segment;
     const ny = dx / segment;

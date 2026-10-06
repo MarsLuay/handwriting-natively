@@ -2183,7 +2183,7 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
-  it("keeps pencil texture final-quality throughout a long stroke", async () => {
+  it("uses one graphite renderer throughout a long stroke", async () => {
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.toolPreferences.activeTool = "pencil";
@@ -2221,9 +2221,8 @@ describe("viewer runtime tracer", () => {
     }
     adapter.pageElement.dispatchEvent(pointer("pointerup", 560, 140, { pointerId }));
 
-    const qualityCalls = drawPoints.mock.calls.map((call) => call[8]);
-    expect(qualityCalls.length).toBeGreaterThan(1);
-    expect(qualityCalls.every((quality) => quality === "full")).toBe(true);
+    expect(drawPoints.mock.calls.length).toBeGreaterThan(1);
+    expect(drawPoints.mock.calls.flat()).not.toContain("draft");
     await session.destroy();
   });
 
