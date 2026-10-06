@@ -1051,6 +1051,16 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private listen(): void {
     const boundGeneration = this.currentViewerGeneration;
     const isBoundGenerationCurrent = (): boolean => !this.destroyed && boundGeneration === this.currentViewerGeneration;
+    const onDragStart = (event: DragEvent): void => {
+      if (!isBoundGenerationCurrent() || !isElement(event.target)) return;
+      // Obsidian's bundled PDF.js can throw continuously from
+      // AnnotationEditorUIManager.dragOver when native link dragging starts.
+      // Cancelling only the annotation-link drag default prevents that broken
+      // lifecycle while preserving normal link clicks and all unrelated drags.
+      if (event.target.closest(".annotationLayer a")) event.preventDefault();
+    };
+    this.host.addEventListener("dragstart", onDragStart, true);
+    this.registerCleanup(() => this.host.removeEventListener("dragstart", onDragStart, true));
     const notify = (source: ViewStateSource): void => {
       if (!isBoundGenerationCurrent()) return;
       this.callbacks.onViewStateChange?.(this.getViewState(), source);
