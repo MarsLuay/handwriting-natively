@@ -79,9 +79,12 @@ export class StrokeBuilder {
   }
 
   preview(simplifyEnabled = true): readonly PagePoint[] {
-    if (!simplifyEnabled) return this.points.map((point) => ({ ...point }));
+    // These arrays are append-only during a live stroke. Returning the readonly
+    // view avoids cloning the entire path on every display frame; the finished
+    // stroke still copies its points at the persistence boundary.
+    if (!simplifyEnabled) return this.points;
     // Causal smoothed path (not batch stabilizePoints) — prior coords stay fixed.
-    return this.smoothedPoints.map((point) => ({ ...point }));
+    return this.smoothedPoints;
   }
 
   finish(simplifyEnabled = true): InkStroke {

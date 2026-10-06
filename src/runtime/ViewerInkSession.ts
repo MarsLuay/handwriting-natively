@@ -11976,6 +11976,9 @@ export class ViewerInkSession {
       return { draftPoints: 0, incremental: false, compositeMatched, stabilization, draftResized };
     }
     const style = builder.style;
+    // Pencil texture is intentionally cheaper while the pointer is down; the
+    // committed pointer-up paint still uses full graphite quality.
+    const liveGraphiteQuality = style.tool === "pencil" ? "draft" : "full";
     const context = surface.draftContext;
     const shapeMorph = surface.shapePreview !== null;
     const predicted = surface.predictedPreview;
@@ -11995,7 +11998,7 @@ export class ViewerInkSession {
         style.tool,
         false,
         builder.id,
-        "full",
+        liveGraphiteQuality,
         context
       );
     };
@@ -12014,7 +12017,7 @@ export class ViewerInkSession {
         style.tool,
         false,
         builder.id,
-        "full",
+        liveGraphiteQuality,
         context
       );
       surface.liveDrawPaintedPoints = 0;
@@ -12038,7 +12041,7 @@ export class ViewerInkSession {
         style.tool,
         false,
         builder.id,
-        "full",
+        liveGraphiteQuality,
         context
       );
       paintPredicted();
@@ -12069,7 +12072,7 @@ export class ViewerInkSession {
         style.tool,
         false,
         builder.id,
-        "full",
+        liveGraphiteQuality,
         context
       );
       surface.liveDrawPaintedPoints = points.length;
@@ -12092,7 +12095,7 @@ export class ViewerInkSession {
       style.tool,
       false,
       builder.id,
-      "full",
+      liveGraphiteQuality,
       context
     );
     surface.liveDrawPaintedPoints = points.length;
