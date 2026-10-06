@@ -58,7 +58,7 @@ import {
   inkVisibilityCause,
   inkVisibilityFlash,
   probeInkCanvas,
-  replacementInkReady,
+  replacementInkReadyForActivePages,
   type InkVisibilityPhase,
   type InkVisibilitySnapshot
 } from "./InkVisibility";
@@ -1152,6 +1152,7 @@ export class ViewerInkSession {
   /** Bounded release gate timer/frame; native replacement keeps this held. */
   private zoomCompositeReleaseFrame: number | null = null;
   private readonly lastInkPixelByPage = new Map<number, boolean>();
+  private readonly lastInkVisibilityByPage = new Map<number, InkVisibilitySnapshot>();
   private zoomCompositeReleaseTimer: number | null = null;
   private zoomCompositeSettledAt = 0;
   private lastZoomHandoffSettledAt = 0;
@@ -5737,7 +5738,7 @@ export class ViewerInkSession {
     // become a second visible refresh after the overlay is removed.
     this.flushPendingMobileScrollRemount();
     this.recordInkVisibility("after-final-canonical");
-    if (!this.replacementInkReady() && !this.destroyed) {
+    if (!this.replacementInkReady(true) && !this.destroyed) {
       this.logger.zoomComposite("release-scheduled", {
         pages: this.surfaces.size,
         delayMs: ViewerInkSession.ZOOM_RELEASE_GATE_RETRY_MS,
@@ -5807,9 +5808,35 @@ export class ViewerInkSession {
     this.scheduleViewportPaint();
   }
 
-  private replacementInkReady(): boolean {
+  /**
+   * The retry loop runs every 32ms while PDF.js replaces page content. Do not
+   * sample canvas pixels there: one getImageData call per sample multiplied by
+   * 64 samples per mounted page can starve the pointer/rAF path. Geometry and
+   * canonical-layer state are the cheap gate; the bounded pixel probe remains
+   * at the actual release boundary below.
+   */
+  private replacementInkReady(requirePixelEvidence = false): boolean {
+    const activePageNumber = this.options.adapter.getViewState().pageNumber;
+    if (requirePixelEvidence) {
+      const evidence: InkVisibilitySnapshot[] = [];
+      for (const pageNumber of this.surfaces.keys()) {
+        const snapshot = this.lastInkVisibilityByPage.get(pageNumber);
+        if (!snapshot) return false;
+        evidence.push(snapshot);
+      }
+      return replacementInkReadyForActivePages(evidence, activePageNumber);
+    }
     for (const [pageNumber, surface] of this.surfaces) {
-      if (!replacementInkReady(this.inkVisibilitySnapshot(pageNumber, surface, "before-composite-release"))) return false;
+      const geometryUnavailable = !surface.overlay.isConnected
+        || !surface.canvas.isConnected
+        || surface.canvas.width <= 0
+        || surface.canvas.height <= 0;
+      if (geometryUnavailable && pageNumber !== activePageNumber) continue;
+      if (geometryUnavailable) return false;
+      if (
+        this.ink.page(pageNumber).length > 0
+        && (!surface.inkLayerValid || surface.inkLayerBurstCapture)
+      ) return false;
     }
     return true;
   }
@@ -5818,6 +5845,7 @@ export class ViewerInkSession {
     for (const [pageNumber, surface] of this.surfaces) {
       const snapshot = this.inkVisibilitySnapshot(pageNumber, surface, phase);
       const previous = this.lastInkPixelByPage.has(pageNumber) ? this.lastInkPixelByPage.get(pageNumber)! : null;
+      this.lastInkVisibilityByPage.set(pageNumber, snapshot);
       this.logger.inkVisibility({ ...snapshot, cause: inkVisibilityCause(snapshot) });
       const flash = inkVisibilityFlash({ previousHasInk: previous, current: snapshot });
       if (flash) {

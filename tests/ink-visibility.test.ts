@@ -4,6 +4,7 @@ import {
   inkVisibilityFlash,
   probeInkCanvas,
   replacementInkReady,
+  replacementInkReadyForActivePages,
   type InkVisibilitySnapshot
 } from "../src/runtime/InkVisibility";
 
@@ -76,5 +77,20 @@ describe("ink visibility", () => {
     expect(replacementInkReady(snapshot({ pixelProbeHasInk: false, pixelProbeNonTransparentSamples: 0 }))).toBe(false);
     expect(replacementInkReady(snapshot())).toBe(true);
     expect(replacementInkReady(snapshot({ pixelProbeRan: false, canonicalPaintComplete: true }))).toBe(true);
+  });
+
+  it("does not let an unrendered offscreen page hold the active page release", () => {
+    const active = snapshot({ pageNumber: 1 });
+    const offscreen = snapshot({
+      pageNumber: 2,
+      overlayConnected: false,
+      canvasConnected: false,
+      canvasWidth: 0,
+      canvasHeight: 0,
+      pixelProbeRan: false
+    });
+
+    expect(replacementInkReadyForActivePages([active, offscreen], 1)).toBe(true);
+    expect(replacementInkReadyForActivePages([active, offscreen], 2)).toBe(false);
   });
 });
