@@ -46,11 +46,6 @@ function contains(shape: SelectionShape, point: Point): boolean {
   return shapeContainsPoint(shape, point);
 }
 
-function strokeBoundsCenter(stroke: InkStroke): Point {
-  const bounds = strokeBounds(stroke);
-  return { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
-}
-
 /** Return whether a point is covered by a highlighter's destination-out mask. */
 function pointErasedByMask(point: Point, mask: NonNullable<InkStroke["eraseMasks"]>[number]): boolean {
   const radius = Math.max(0, mask.radius);
@@ -104,6 +99,26 @@ function segmentErasedByMasks(start: Point, end: Point, masks: InkStroke["eraseM
   return masks?.some((mask) => segmentErasedByMask(start, end, mask)) ?? false;
 }
 
+/** Interpolate a centerline point when a mask crosses between sparse samples. */
+function interpolateVisiblePoint(start: PagePoint, end: PagePoint, amount: number): PagePoint {
+  return {
+    x: start.x + (end.x - start.x) * amount,
+    y: start.y + (end.y - start.y) * amount,
+    pressure: start.pressure + (end.pressure - start.pressure) * amount,
+    time: start.time + (end.time - start.time) * amount,
+    ...(start.tiltX === undefined && end.tiltX === undefined
+      ? {}
+      : { tiltX: (start.tiltX ?? end.tiltX ?? 0) + ((end.tiltX ?? start.tiltX ?? 0) - (start.tiltX ?? end.tiltX ?? 0)) * amount }),
+    ...(start.tiltY === undefined && end.tiltY === undefined
+      ? {}
+      : { tiltY: (start.tiltY ?? end.tiltY ?? 0) + ((end.tiltY ?? start.tiltY ?? 0) - (start.tiltY ?? end.tiltY ?? 0)) * amount })
+  };
+}
+
+function sameVisiblePoint(first: Point, second: Point): boolean {
+  return Math.abs(first.x - second.x) <= 1e-9 && Math.abs(first.y - second.y) <= 1e-9;
+}
+
 /** Split a selected highlighter path so its blue selection dash never crosses a hole. */
 export function visibleStrokeSegments(
   points: readonly PagePoint[],
@@ -117,41 +132,134 @@ export function visibleStrokeSegments(
     if (current.length) segments.push(current);
     current = [];
   };
-  for (let index = 0; index < points.length; index += 1) {
-    const point = points[index]!;
-    if (pointErasedByMasks(point, masks)) {
-      flush();
-      continue;
+  const append = (point: PagePoint): void => {
+    if (!current.length || !sameVisiblePoint(current[current.length - 1]!, point)) current.push(point);
+  };
+  const transition = (start: PagePoint, end: PagePoint, startVisible: boolean, endVisible: boolean): PagePoint => {
+    let low = 0;
+    let high = 1;
+    for (let iteration = 0; iteration < 12; iteration += 1) {
+      const middle = (low + high) / 2;
+      const visible = !pointErasedByMasks(interpolateVisiblePoint(start, end, middle), masks);
+      if (visible === startVisible) low = middle;
+      else high = middle;
     }
-    const previous = points[index - 1];
-    if (previous && !pointErasedByMasks(previous, masks) && segmentErasedByMasks(previous, point, masks)) {
-      flush();
+    return interpolateVisiblePoint(start, end, (low + high) / 2);
+  };
+
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1]!;
+    const end = points[index]!;
+    const startVisible = !pointErasedByMasks(start, masks);
+    const endVisible = !pointErasedByMasks(end, masks);
+    // Unmasked segments stay allocation-free. Masked candidates are sampled
+    // only here, preserving the full visible ribbon on either side of a hole
+    // even when the persisted centerline has just two far-apart points.
+    const steps = segmentErasedByMasks(start, end, masks) ? 24 : 1;
+    let previous = start;
+    let previousVisible = startVisible;
+    if (startVisible) append(start);
+    for (let step = 1; step <= steps; step += 1) {
+      const amount = step / steps;
+      const next = step === steps ? end : interpolateVisiblePoint(start, end, amount);
+      const nextVisible = !pointErasedByMasks(next, masks);
+      if (previousVisible && nextVisible) {
+        append(next);
+      } else if (previousVisible && !nextVisible) {
+        append(transition(previous, next, true, false));
+        flush();
+      } else if (!previousVisible && nextVisible) {
+        current = [transition(previous, next, false, true)];
+        append(next);
+      }
+      previous = next;
+      previousVisible = nextVisible;
     }
-    current.push(point);
+    if (!endVisible) flush();
   }
+  // A one-point stroke is still a valid visible dot.
+  if (points.length === 1 && !pointErasedByMasks(points[0]!, masks)) segments.push([points[0]!]);
   flush();
   return segments;
 }
 
+function segmentLengthInsideShape(start: Point, end: Point, shape: SelectionShape): number {
+  const length = Math.hypot(end.x - start.x, end.y - start.y);
+  if (length <= 1e-9) return 0;
+
+  // Break at lasso boundaries instead of relying only on captured stroke
+  // points. Sparse/highlighter paths can have a large painted interval between
+  // two points, and a small lasso must still be able to hit that interval.
+  const cuts = [0, 1];
+  const polygon = shape.type === "freeform"
+    ? shape.points
+    : [
+      { x: shape.bounds.minX, y: shape.bounds.minY },
+      { x: shape.bounds.maxX, y: shape.bounds.minY },
+      { x: shape.bounds.maxX, y: shape.bounds.maxY },
+      { x: shape.bounds.minX, y: shape.bounds.maxY }
+    ];
+  const lineX = end.x - start.x;
+  const lineY = end.y - start.y;
+  for (let index = 0; index < polygon.length; index += 1) {
+    const edgeStart = polygon[index]!;
+    const edgeEnd = polygon[(index + 1) % polygon.length]!;
+    const edgeX = edgeEnd.x - edgeStart.x;
+    const edgeY = edgeEnd.y - edgeStart.y;
+    const denominator = lineX * edgeY - lineY * edgeX;
+    if (Math.abs(denominator) <= 1e-9) continue;
+    const fromStartX = edgeStart.x - start.x;
+    const fromStartY = edgeStart.y - start.y;
+    const alongStroke = (fromStartX * edgeY - fromStartY * edgeX) / denominator;
+    const alongEdge = (fromStartX * lineY - fromStartY * lineX) / denominator;
+    if (alongStroke >= -1e-9 && alongStroke <= 1 + 1e-9
+      && alongEdge >= -1e-9 && alongEdge <= 1 + 1e-9) {
+      cuts.push(Math.max(0, Math.min(1, alongStroke)));
+    }
+  }
+  cuts.sort((a, b) => a - b);
+  let insideLength = 0;
+  for (let index = 1; index < cuts.length; index += 1) {
+    const from = cuts[index - 1]!;
+    const to = cuts[index]!;
+    if (to - from <= 1e-9) continue;
+    const midpoint = {
+      x: start.x + lineX * ((from + to) / 2),
+      y: start.y + lineY * ((from + to) / 2)
+    };
+    if (contains(shape, midpoint)) insideLength += length * (to - from);
+  }
+  return insideLength;
+}
+
 function strokeMatchesSelection(stroke: InkStroke, shape: SelectionShape): boolean {
   if (!stroke.points.length) return false;
-  // Highlighter erasing keeps the original centerline and records holes as
-  // masks. Do not let points (or the bounds-center fallback) inside one of
-  // those holes make the whole highlighter selectable again.
-  const visiblePoints = stroke.eraseMasks?.length
-    ? stroke.points.filter((point) => !pointErasedByMasks(point, stroke.eraseMasks))
-    : stroke.points;
-  if (!visiblePoints.length) return false;
-  const center = strokeBoundsCenter(stroke);
-  if (contains(shape, center) && !pointErasedByMasks(center, stroke.eraseMasks)) return true;
-  const insideCount = visiblePoints.filter((point) => contains(shape, point)).length;
-  if (insideCount === 0) return false;
-  if (stroke.points.length === 1) return true;
+  // Erased highlighters remain one model object, but their masked centerline
+  // is physically disconnected. Test each visible segment independently so a
+  // lasso cannot select an invisible hole or use the old bounds-center
+  // fallback to select unrelated visible portions.
+  const segments = stroke.eraseMasks?.length
+    ? visibleStrokeSegments(stroke.points, stroke.eraseMasks)
+    : [stroke.points];
+  if (!segments.length) return false;
+
+  let insideLength = 0;
+  let insidePointCount = 0;
+  for (const segment of segments) {
+    insidePointCount += segment.filter((point) => contains(shape, point)).length;
+    for (let index = 1; index < segment.length; index += 1) {
+      insideLength += segmentLengthInsideShape(segment[index - 1]!, segment[index]!, shape);
+    }
+  }
+  if (stroke.points.length === 1) return insidePointCount > 0;
   const bounds = strokeBounds(stroke);
   const span = Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
-  // i/j dots and tap marks: one point inside the lasso is enough
-  if (span <= Math.max(stroke.width * SHORT_STROKE_SPAN_WIDTHS, 8)) return true;
-  return insideCount >= 2;
+  // i/j dots and tap marks: one point inside the lasso is enough.
+  if (span <= Math.max(stroke.width * SHORT_STROKE_SPAN_WIDTHS, 8)) return insidePointCount > 0;
+  // Require a small painted interval, rather than merely touching a lasso
+  // edge. This retains tiny real selections while rejecting long-stroke
+  // grazing hits caused by one point just inside a boundary.
+  return insideLength >= Math.max(0.75, stroke.width * 0.5);
 }
 
 export function selectionShapeArea(shape: SelectionShape): number {

@@ -73,6 +73,18 @@ describe("coordinates and geometry", () => {
     expect(selectStrokes([grazing, inside, pair], shape).map((item) => item.id)).toEqual(["inside", "pair"]);
   });
 
+  it("selects a sparse stroke when a lasso encloses a segment between samples", () => {
+    const shape: SelectionShape = { type: "rectangle", bounds: { minX: 48, minY: 0, maxX: 52, maxY: 10 } };
+    const sparse = stroke("sparse", [point(0, 5), point(100, 5)]);
+    expect(selectStrokes([sparse], shape).map((item) => item.id)).toEqual(["sparse"]);
+  });
+
+  it("does not use a stroke bounds center as a disconnected selection hit", () => {
+    const shape: SelectionShape = { type: "rectangle", bounds: { minX: 48, minY: 48, maxX: 52, maxY: 52 } };
+    const outside = stroke("outside", [point(0, 0), point(0, 100), point(100, 100)]);
+    expect(selectStrokes([outside], shape)).toEqual([]);
+  });
+
   it("translates selection shapes and hit-tests interior points", () => {
     const shape: SelectionShape = { type: "rectangle", bounds: { minX: 0, minY: 0, maxX: 10, maxY: 10 } };
     const moved = translateShape(shape, 5, -3);
@@ -141,7 +153,11 @@ describe("coordinates and geometry", () => {
 
     expect(selectStrokes([erased], hole)).toEqual([]);
     expect(selectStrokes([erased], visible).map((item) => item.id)).toEqual(["highlight"]);
-    expect(visibleStrokeSegments(erased.points, erased.eraseMasks).map((segment) => segment.map((item) => item.x)))
-      .toEqual([[0, 10, 40], [60, 100]]);
+    const visibleSegments = visibleStrokeSegments(erased.points, erased.eraseMasks);
+    expect(visibleSegments).toHaveLength(2);
+    expect(visibleSegments[0]!.at(-1)!.x).toBeLessThan(50);
+    expect(visibleSegments[1]![0]!.x).toBeGreaterThan(50);
+    expect(visibleSegments[0]!.map((item) => item.x).slice(0, 3)).toEqual([0, 10, 40]);
+    expect(visibleSegments[1]!.map((item) => item.x).slice(-2)).toEqual([60, 100]);
   });
 });

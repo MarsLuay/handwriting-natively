@@ -3553,7 +3553,7 @@ describe("viewer runtime tracer", () => {
     const context = {
       setTransform: vi.fn(), clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(),
       beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), moveTo: vi.fn(), closePath: vi.fn(),
-      lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(), rect: vi.fn(), ellipse: vi.fn()
+      lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(), rect: vi.fn(), ellipse: vi.fn(), drawImage: vi.fn()
     };
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
 
@@ -3571,6 +3571,7 @@ describe("viewer runtime tracer", () => {
       writeExport: async () => undefined,
       notice: () => undefined
     });
+    context.drawImage.mockClear();
 
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 180, 220));
@@ -3579,6 +3580,7 @@ describe("viewer runtime tracer", () => {
     expect(context.moveTo).toHaveBeenCalled();
     expect(context.lineTo).toHaveBeenCalled();
     expect(context.stroke).toHaveBeenCalled();
+    expect(context.drawImage).not.toHaveBeenCalled();
     const canvas = adapter.pageElement.querySelector<HTMLCanvasElement>(".native-pdf-handwriting-canvas");
     expect(canvas?.classList.contains("is-selection-chrome-raised")).toBe(true);
     await session.destroy();
@@ -3639,6 +3641,13 @@ describe("viewer runtime tracer", () => {
     const canvas = adapter.pageElement.querySelector<HTMLCanvasElement>(".native-pdf-handwriting-canvas");
     expect(canvas?.classList.contains("is-selection-chrome-raised")).toBe(true);
     expect(adapter.pageElement.querySelector(".native-pdf-handwriting-text-box.is-selected")).not.toBeNull();
+
+    // Switching tools keeps the model selection available for shortcuts/move,
+    // but must remove the blue lasso chrome immediately.
+    settings.toolPreferences.activeTool = "pen";
+    session.selectTool("pen");
+    expect(canvas?.classList.contains("is-selection-chrome-raised")).toBe(false);
+    expect(internal.selectedTexts).toHaveLength(1);
     await session.destroy();
   });
 
