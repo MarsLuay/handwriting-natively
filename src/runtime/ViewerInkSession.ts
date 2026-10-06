@@ -7295,6 +7295,8 @@ export class ViewerInkSession {
       durationMs: roundMetric(performance.now() - startedAt),
       strokeCount: 1,
       pageStrokeCount: this.ink.page(surface.page.pageNumber).length,
+      tool: stroke.tool,
+      pointCount: stroke.points.length,
       deferredCanonicalUpgrade: true,
       rasterSource: "existing-deferred-raster",
       useLayerCache: false,
@@ -12087,6 +12089,9 @@ export class ViewerInkSession {
     const pointerUpToCommitMs = profile.pointerUpAt === null
       ? null
       : Math.max(0, completedAt - profile.pointerUpAt);
+    const strokeDurationMs = Math.max(0.001, completedAt - profile.startedAt);
+    const frameRateHz = frames.averageMs > 0 ? 1000 / frames.averageMs : null;
+    const inputRateHz = profile.pointerEvents > 0 ? (profile.pointerEvents * 1000) / strokeDurationMs : null;
     const latency: InkLatencyBreakdown = {
       inputMs: input.count ? roundMetric(input.maxMs) : null,
       routingMs: profile.routing.count ? roundMetric(profile.routing.maxMs) : null,
@@ -12133,7 +12138,9 @@ export class ViewerInkSession {
       strokeId: committedStrokeId,
       correlationId,
       outcome,
-      durationMs: roundMetric(completedAt - profile.startedAt),
+      durationMs: roundMetric(strokeDurationMs),
+      frameRateHz: frameRateHz === null ? null : roundMetric(frameRateHz),
+      inputRateHz: inputRateHz === null ? null : roundMetric(inputRateHz),
       pointerDownToStrokeStartMs: roundMetric(pointerDownToStrokeStartMs),
       strokeStartToFirstCanvasCommitMs: strokeStartToFirstCanvasCommitMs === null ? null : roundMetric(strokeStartToFirstCanvasCommitMs),
       totalPointerDownToFirstCanvasCommitMs: totalPointerDownToFirstCanvasCommitMs === null ? null : roundMetric(totalPointerDownToFirstCanvasCommitMs),
@@ -12898,6 +12905,7 @@ export class ViewerInkSession {
       return;
     }
     if (route === "draw" && surface.builder) {
+      if (surface.laserDraft && surface.strokePerformance) surface.strokePerformance.pointerEvents += samples.length;
       const simulate = surface.laserDraft ? false : surface.simulateMousePressure;
       const points = this.toPagePoints(surface, samples, simulate, surface.laserDraft ? undefined : surface.pressureConditioner);
       for (const point of points) surface.builder.add(point);
