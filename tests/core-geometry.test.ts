@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { InkStroke, PdfPoint, PdfTextAnnotation } from "../src/model";
 import { hitTestStroke } from "../src/ink/StrokeHitTesting";
 import { simplifyPoints } from "../src/ink/StrokeStabilizer";
+import { eraseStrokeSegments } from "../src/tools/EraserTool";
 import { PdfCoordinateMapper, type PageRotation } from "../src/pdf/PdfCoordinateMapper";
 import { boundingShapeFromSelection, selectStrokes, shapeContainsPoint, strokeDiscernibleInOverlay, translateShape, type SelectionShape } from "../src/tools/LassoTool";
 
@@ -127,5 +128,18 @@ describe("coordinates and geometry", () => {
     const dot = stroke("dot", [point(9.5, 5), point(10.5, 5)]);
     const long = stroke("long", [point(9.5, 5), point(30, 5)]);
     expect(selectStrokes([dot, long], shape).map((item) => item.id)).toEqual(["dot"]);
+  });
+
+  it("does not select a highlighter's erased hole, but keeps its visible paint selectable", () => {
+    const highlight: InkStroke = {
+      ...stroke("highlight", [point(0, 5), point(10, 5), point(50, 5), point(100, 5)]),
+      tool: "highlighter"
+    };
+    const erased = eraseStrokeSegments([highlight], [point(50, 5)], 16).fragments[0]!;
+    const hole: SelectionShape = { type: "rectangle", bounds: { minX: 45, minY: 0, maxX: 55, maxY: 10 } };
+    const visible: SelectionShape = { type: "rectangle", bounds: { minX: 0, minY: 0, maxX: 10, maxY: 10 } };
+
+    expect(selectStrokes([erased], hole)).toEqual([]);
+    expect(selectStrokes([erased], visible).map((item) => item.id)).toEqual(["highlight"]);
   });
 });
