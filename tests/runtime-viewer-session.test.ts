@@ -349,6 +349,7 @@ describe("viewer runtime tracer", () => {
 
   it("draws a stylus stroke, saves sidecar, exports copy, and cleans up", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const source = await PDFDocument.create();
     source.addPage([600, 800]);
     const sourceBytes = await source.save();
@@ -441,7 +442,7 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 130, 150));
     settings.toolPreferences.eraser.size = 1_000;
     adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150));
-    const erasePatch = debug.mock.calls.find((call) => call[1] === "ink render profile" && (call[2] as { operation?: string }).operation === "erase-patch");
+    const erasePatch = [...debug.mock.calls, ...warn.mock.calls].find((call) => call[1] === "ink render profile" && (call[2] as { operation?: string }).operation === "erase-patch");
     expect(erasePatch?.[2]).toMatchObject({ operation: "erase-patch", damageSource: "path-bounds" });
     await session.manualSave();
     const erasedSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
@@ -3372,6 +3373,41 @@ describe("viewer runtime tracer", () => {
       debug.mockRestore();
     }
   }, 15_000);
+
+  it("uses the committed canvas for bounded live eraser previews", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "eraser";
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/eraser-preview.pdf",
+      settings,
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 180, 220));
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+
+    const surface = (session as unknown as { surfaces: Map<number, {
+      wetPreviewActive: boolean;
+      wetPreviewUsesCommittedCanvas: boolean;
+      liveEraserPaintedPoints: number;
+    }> }).surfaces.get(1);
+    expect(surface).toMatchObject({
+      wetPreviewActive: true,
+      wetPreviewUsesCommittedCanvas: true,
+      liveEraserPaintedPoints: 2
+    });
+
+    adapter.pageElement.dispatchEvent(pointer("pointercancel", 180, 220));
+    await session.destroy();
+  });
 
   it("renders a lasso outline while dragging", async () => {
     const context = {
