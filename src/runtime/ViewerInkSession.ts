@@ -6917,10 +6917,10 @@ export class ViewerInkSession {
   private patchCommittedErase(surface: PageSurface, command: ReplacePageStrokesCommand): boolean {
     if (
       command.pageNumber !== surface.page.pageNumber
-      || !surface.wetPreviewActive
       || !surface.inkLayerValid
       || !surface.inkLayer
       || !surface.inkLayerContext
+      || typeof surface.inkLayerContext.clip !== "function"
       || !surface.inkLayer.width
       || !surface.inkLayer.height
       || surface.inkLayerBurstCapture
@@ -6928,7 +6928,15 @@ export class ViewerInkSession {
       || surface.canvas.width !== surface.inkLayer.width
       || surface.canvas.height !== surface.inkLayer.height
     ) return false;
-    const damage = surface.wetDamage.drain();
+    let damage = surface.wetDamage.drain();
+    let damageSource: "wet-preview" | "path-bounds" = "wet-preview";
+    if (damage.length === 0 && surface.editPath.length > 0 && surface.eraserSize !== undefined) {
+      const mapper = this.mapper(surface);
+      const points = surface.editPath.map((point) => mapper.toViewport(point));
+      const lineWidth = Math.max(1, surface.eraserSize * this.displayScale(surface));
+      damage = [pathBoundsWithPadding(points, lineWidth / 2)];
+      damageSource = "path-bounds";
+    }
     if (damage.length === 0) return false;
 
     const layout = this.pageLayout(surface);
@@ -7005,6 +7013,7 @@ export class ViewerInkSession {
       pageRevision: this.ink.pageRevision(surface.page.pageNumber),
       cachedLayerRevision: surface.inkLayerRevision,
       patchCount: patches.length,
+      damageSource,
       useLayerCache: true,
       includeActivePreview: false,
       zoomCompositing: this.zoomCompositing,
@@ -12764,8 +12773,10 @@ export class ViewerInkSession {
     const eraserSize = surface.eraserSize;
     const eraserWholeStrokes = surface.eraserWholeStrokes;
     surface.editTool = undefined;
-    surface.eraserSize = undefined;
-    surface.eraserWholeStrokes = undefined;
+    if (editTool !== "eraser") {
+      surface.eraserSize = undefined;
+      surface.eraserWholeStrokes = undefined;
+    }
     if (editTool === "eraser" && eraserSize !== undefined) {
       const startedAt = performance.now();
       const hadWetPreview = surface.wetPreviewActive;
@@ -12793,6 +12804,8 @@ export class ViewerInkSession {
         );
         historyPaintMs = performance.now() - historyStartedAt;
       }
+      surface.eraserSize = undefined;
+      surface.eraserWholeStrokes = undefined;
       this.logger.renderProfile({
         page: surface.page.pageNumber,
         operation: "erase-finalize",

@@ -179,7 +179,7 @@ describe("viewer runtime tracer", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       setTransform: vi.fn(), clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(),
       beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), moveTo: vi.fn(), closePath: vi.fn(),
-      lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(), rect: vi.fn(), ellipse: vi.fn(), drawImage: vi.fn()
+      lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(), rect: vi.fn(), clip: vi.fn(), ellipse: vi.fn(), drawImage: vi.fn()
     } as unknown as CanvasRenderingContext2D);
   });
 
@@ -348,6 +348,7 @@ describe("viewer runtime tracer", () => {
   });
 
   it("draws a stylus stroke, saves sidecar, exports copy, and cleans up", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const source = await PDFDocument.create();
     source.addPage([600, 800]);
     const sourceBytes = await source.save();
@@ -432,6 +433,8 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 130, 150));
     settings.toolPreferences.eraser.size = 1_000;
     adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150));
+    const erasePatch = debug.mock.calls.find((call) => call[1] === "ink render profile" && (call[2] as { operation?: string }).operation === "erase-patch");
+    expect(erasePatch?.[2]).toMatchObject({ operation: "erase-patch", damageSource: "path-bounds" });
     await session.manualSave();
     const erasedSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(JSON.parse(erasedSidecar![1]).pages[0].strokes).toHaveLength(3);
