@@ -77,10 +77,16 @@ describe("plugin-owned PDF.js runtime boundary", () => {
       getAnnotations: async () => []
     };
     const getPage = vi.fn(async (_pageNumber: number) => page);
+    const getPageIndex = vi.fn(async (ref: unknown) => ((ref as { num?: number }).num === 1 ? 1 : 0));
     const pdfDocument = {
       numPages: 2,
       getPage,
-      getOutline: async () => [{ title: "Chapter 1", dest: [0] }]
+      getOutline: async () => [
+        { title: "Chapter 1", dest: [{ num: 0, gen: 0 }] },
+        { title: "Chapter 2", dest: "second" }
+      ],
+      getDestination: async (id: string) => id === "second" ? [{ num: 1, gen: 0 }] : null,
+      getPageIndex
     };
     const runtime: PdfJsRuntime = {
       module: { getDocument: () => ({ promise: Promise.resolve(pdfDocument) }) },
@@ -121,7 +127,11 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect((host.querySelector(".hn-owned-pdf-thumbnail-ink") as HTMLCanvasElement | null)?.hidden).toBe(false);
     host.querySelector('button[aria-label="Toggle outline"]')?.dispatchEvent(new Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect((host.querySelector(".hn-owned-pdf-outline-ink") as HTMLCanvasElement | null)?.hidden).toBe(false);
+    const outlinePreviews = [...host.querySelectorAll<HTMLCanvasElement>(".hn-owned-pdf-outline-ink")];
+    expect(outlinePreviews).toHaveLength(2);
+    expect(outlinePreviews[0]?.hidden).toBe(false);
+    expect(outlinePreviews[1]?.hidden).toBe(true);
+    expect(getPageIndex).toHaveBeenCalledTimes(2);
 
     const pageInput = host.querySelector('input[aria-label="Page number"]') as HTMLInputElement;
     pageInput.value = "2";

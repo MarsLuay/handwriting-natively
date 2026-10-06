@@ -901,6 +901,24 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     });
   }
 
+  private async outlineDestinationPage(destination: unknown): Promise<number | undefined> {
+    let resolved = destination;
+    if (typeof resolved === "string") {
+      if (!this.pdfDocument.getDestination) return undefined;
+      try { resolved = await this.pdfDocument.getDestination(resolved); } catch { return undefined; }
+    }
+    if (!Array.isArray(resolved) || resolved.length === 0) return undefined;
+    const pageReference = resolved[0];
+    let pageIndex: number | undefined;
+    if (typeof pageReference === "number") {
+      pageIndex = pageReference;
+    } else if (this.pdfDocument.getPageIndex) {
+      try { pageIndex = await this.pdfDocument.getPageIndex(pageReference); } catch { return undefined; }
+    }
+    if (typeof pageIndex !== "number" || !Number.isSafeInteger(pageIndex) || pageIndex < 0 || pageIndex >= this.pdfDocument.numPages) return undefined;
+    return pageIndex + 1;
+  }
+
   private async loadOutline(): Promise<void> {
     let outline: readonly unknown[] | null = null;
     try { outline = this.pdfDocument.getOutline ? await this.pdfDocument.getOutline() : null; } catch { outline = null; }
@@ -910,7 +928,10 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     for (const entry of outline.slice(0, 500)) {
       if (!entry || typeof entry !== "object") continue;
       const item = entry as { title?: unknown; dest?: unknown };
-      const page = Array.isArray(item.dest) && typeof item.dest[0] === "number" ? item.dest[0] + 1 : undefined;
+      // PDF.js normally returns a RefProxy here, not the numeric page index used by
+      // the small test adapter. Resolve both forms so outline previews are mapped
+      // to the same page as outline navigation.
+      const page = await this.outlineDestinationPage(item.dest);
       const button = createElement(this.outlinePanel.ownerDocument, "button");
       button.type = "button";
       const title = createElement(this.outlinePanel.ownerDocument, "span");
