@@ -110,7 +110,7 @@ import { consumeTouchDoubleTap, type TouchDoubleTapPoint, type TouchDoubleTapSta
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
 import { InkSession, type InkLifecycleEvent } from "../ink/InkSession";
 import { DamageLedger } from "../ink/DamageLedger";
-import type { Bounds } from "../ink/StrokeHitTesting";
+import { strokeBounds, type Bounds } from "../ink/StrokeHitTesting";
 import { StrokeBuilder } from "../ink/StrokeBuilder";
 import { StrokeClipboard } from "../ink/StrokeClipboard";
 import { simplifyPoints } from "../ink/StrokeStabilizer";
@@ -6813,6 +6813,7 @@ export class ViewerInkSession {
     const startedAt = performance.now();
     surface.paintGeneration = ++this.nextPaintGeneration;
     const layerContext = surface.inkLayerContext;
+    const strokeRegion = this.strokeDamageBounds(surface, stroke);
     const previewTransferReady = surface.liveDrawPreviewStrokeId === stroke.id
       && surface.draftCanvas.width === pixelWidth
       && surface.draftCanvas.height === pixelHeight
@@ -6826,7 +6827,15 @@ export class ViewerInkSession {
       layerContext.save();
       layerContext.setTransform(1, 0, 0, 1, 0, 0);
       layerContext.globalCompositeOperation = "source-over";
-      layerContext.drawImage(surface.draftCanvas, 0, 0);
+      const left = Math.max(0, Math.floor(strokeRegion.minX * backingScale) - 2);
+      const top = Math.max(0, Math.floor(strokeRegion.minY * backingScale) - 2);
+      const right = Math.min(pixelWidth, Math.ceil(strokeRegion.maxX * backingScale) + 2);
+      const bottom = Math.min(pixelHeight, Math.ceil(strokeRegion.maxY * backingScale) + 2);
+      if (right > left && bottom > top) {
+        layerContext.drawImage(surface.draftCanvas, left, top, right - left, bottom - top, left, top, right - left, bottom - top);
+      } else {
+        layerContext.drawImage(surface.draftCanvas, 0, 0);
+      }
       layerContext.restore();
       layerContext.setTransform(backingScale, 0, 0, backingScale, 0, 0);
       this.recordStrokeRendered(surface, stroke);
@@ -6836,7 +6845,13 @@ export class ViewerInkSession {
     }
     surface.inkLayerBackingScale = backingScale;
     surface.inkLayerRevision = pageRevision;
-    this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
+    const blitPixels = this.blitInkLayerRegionsToCanvas(
+      surface,
+      [strokeRegion],
+      pixelWidth,
+      pixelHeight,
+      backingScale
+    );
     if (previousStroke && beforeEvidence) {
       const afterEvidence = this.strokeCachePixelEvidence(surface, previousStroke);
       this.recordStrokeCacheHandoff(surface, stroke, "after", pageRevision, expectedLayerRevision, afterEvidence);
@@ -6903,7 +6918,11 @@ export class ViewerInkSession {
       useLayerCache: true,
       includeActivePreview: false,
       zoomCompositing: false,
-      visiblePageCount: this.surfaces.size
+      visiblePageCount: this.surfaces.size,
+      blitMode: "damage-region",
+      blitRegionCount: 1,
+      blitPixels,
+      previewTransferMode: previewTransferReady ? "damage-region" : "vector-stamp"
     });
     return true;
   }
@@ -6997,7 +7016,7 @@ export class ViewerInkSession {
     surface.inkLayerRevision = this.ink.pageRevision(surface.page.pageNumber);
     surface.inkLayerBackingScale = backingScale;
     surface.inkLayerBurstCapture = false;
-    this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
+    const blitPixels = this.blitInkLayerRegionsToCanvas(surface, patches, pixelWidth, pixelHeight, backingScale);
     this.paintLaserTrails(surface, surface.page.pageNumber);
     this.clearLiveDrawPreview(surface);
     this.lastPagePaintAt.set(surface.page.pageNumber, { at: performance.now(), reason: "erase-patch" });
@@ -7013,6 +7032,9 @@ export class ViewerInkSession {
       cachedLayerRevision: surface.inkLayerRevision,
       patchCount: patches.length,
       damageSource,
+      blitMode: "damage-region",
+      blitRegionCount: patches.length,
+      blitPixels,
       useLayerCache: true,
       includeActivePreview: false,
       zoomCompositing: this.zoomCompositing,
@@ -14435,6 +14457,55 @@ export class ViewerInkSession {
     if (traceStartedAt !== null) {
       this.zoomPipelineTrace.noteStage("ink-blit", performance.now() - traceStartedAt, 1, "ink-layer-blit");
     }
+  }
+
+  /** Copy only changed canonical pixels into the visible canvas. */
+  private blitInkLayerRegionsToCanvas(
+    surface: PageSurface,
+    regions: readonly Bounds[],
+    pixelWidth: number,
+    pixelHeight: number,
+    backingScale: number
+  ): number {
+    if (!surface.inkLayer || regions.length === 0) return 0;
+    const context = surface.context;
+    const maxWidth = Math.max(0, pixelWidth);
+    const maxHeight = Math.max(0, pixelHeight);
+    let copiedPixels = 0;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.imageSmoothingEnabled = false;
+    for (const region of regions) {
+      const left = Math.max(0, Math.floor(region.minX * backingScale) - 2);
+      const top = Math.max(0, Math.floor(region.minY * backingScale) - 2);
+      const right = Math.min(maxWidth, Math.ceil(region.maxX * backingScale) + 2);
+      const bottom = Math.min(maxHeight, Math.ceil(region.maxY * backingScale) + 2);
+      if (right <= left || bottom <= top) continue;
+      const width = right - left;
+      const height = bottom - top;
+      context.clearRect(left, top, width, height);
+      context.drawImage(surface.inkLayer, left, top, width, height, left, top, width, height);
+      copiedPixels += width * height;
+    }
+    context.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+    return copiedPixels;
+  }
+
+  private strokeDamageBounds(surface: PageSurface, stroke: InkStroke): Bounds {
+    const bounds = strokeBounds(stroke);
+    const mapper = this.mapper(surface);
+    const corners = [
+      mapper.toViewport({ x: bounds.minX, y: bounds.minY }),
+      mapper.toViewport({ x: bounds.maxX, y: bounds.minY }),
+      mapper.toViewport({ x: bounds.minX, y: bounds.maxY }),
+      mapper.toViewport({ x: bounds.maxX, y: bounds.maxY })
+    ];
+    const padding = Math.max(2, stroke.width * this.displayScale(surface) / 2 + 2);
+    return {
+      minX: Math.min(...corners.map((point) => point.x)) - padding,
+      minY: Math.min(...corners.map((point) => point.y)) - padding,
+      maxX: Math.max(...corners.map((point) => point.x)) + padding,
+      maxY: Math.max(...corners.map((point) => point.y)) + padding
+    };
   }
 
   /** Durable proof that the final zoom surface is canonical, PDF-space ink. */
