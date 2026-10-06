@@ -394,6 +394,14 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 160, { pointerType: "mouse", pointerId: 3 }));
     expect(dragDown.defaultPrevented).toBe(true);
     expect(dragMove.defaultPrevented).toBe(true);
+    const appendProfile = debug.mock.calls.find((call) => call[1] === "ink render profile" && (call[2] as { operation?: string }).operation === "stroke-append");
+    expect(appendProfile?.[2]).toMatchObject({
+      operation: "stroke-append",
+      blitMode: "damage-region",
+      blitRegionCount: 1,
+      previewTransferMode: "damage-region"
+    });
+    expect((appendProfile?.[2] as { blitPixels?: number }).blitPixels).toBeLessThan(600 * 800);
 
     expect(adapter.toolbarHost.querySelector("[data-control='draw']")).toBeNull();
     expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
