@@ -183,6 +183,8 @@ export interface PointerRouterCallbacks {
   touchAnnotationEnabled?(): boolean;
   /** Qualified mobile-only custom pinch gate; false preserves native touch. */
   customPinchEnabled?(): boolean;
+  /** Compatibility alias for the unified custom navigation gate. */
+  customNavigationEnabled?(): boolean;
   onCustomPinchStart?(frame: CustomPinchFrame): void;
   /** Latest visual sample, delivered at most once per display frame. */
   onCustomPinchFrame?(frame: CustomPinchFrame): void;
@@ -308,7 +310,7 @@ export class PointerRouter {
   ) {
     this.generation = PointerRouter.nextGeneration++;
     const manipulationCapabilities = callbacks.manipulationCapabilities?.() ?? DEFAULT_MANIPULATION_PLATFORM_CAPABILITIES;
-    const customPinchEnabled = callbacks.customPinchEnabled?.() === true && manipulationCapabilities.supportsTouchAction;
+    const customPinchEnabled = this.customNavigationEnabled() && manipulationCapabilities.supportsTouchAction;
     this.manipulation = new ManipulationStateMachine({
       ...manipulationCapabilities,
       supportsCustomPinch: customPinchEnabled
@@ -524,8 +526,14 @@ export class PointerRouter {
     return this.ownership.snapshot().activeTouchIds.size;
   }
 
+  private customNavigationEnabled(): boolean {
+    return this.callbacks.customNavigationEnabled
+      ? this.callbacks.customNavigationEnabled() === true
+      : this.callbacks.customPinchEnabled?.() === true;
+  }
+
   private customPinchAllowed(): boolean {
-    return this.callbacks.customPinchEnabled?.() === true
+    return this.customNavigationEnabled()
       && this.inputCapabilities.pointerEvents
       && this.inputCapabilities.touchEvents;
   }
@@ -1243,11 +1251,7 @@ export class PointerRouter {
       || this.palmPolicy.hasActivePen();
     if (!owned) return;
 
-    if (this.activeDrag) {
-      safeReleasePointerCapture(this.element, this.activeDrag.pointerId);
-      this.activeDrag = null;
-      this.syncDragCursor(false);
-    }
+    this.cancelActiveDrag();
     for (const pointerId of [...this.routed.keys()]) {
       const pointerType = this.routedPointerTypes.get(pointerId) ?? "pen";
       this.finishRoutedPointer(this.syntheticPointerEvent(pointerId, "pointercancel", pointerType), "pointercancel");
@@ -1567,6 +1571,20 @@ export class PointerRouter {
    * so no second interaction state can retain a touch after the compositor is
    * released.
    */
+  /**
+   * Cancel plugin-owned navigation without retaining a phantom pinch or drag.
+   * Native one-finger touch navigation is left alone unless it was promoted to
+   * the custom pinch owner.
+   */
+  cancelNavigation(reason: "lifecycle" | "disabled" = "lifecycle"): void {
+    this.cancelActiveDrag();
+    this.cancelCustomPinch(reason);
+    this.clearManipulationRearm();
+    this.manipulation.reset();
+    this.syncTouchActionMode();
+    this.hideCustomCursors();
+  }
+
   cancelCustomPinch(reason: "lifecycle" | "disabled" = "lifecycle"): void {
     if (this.ownership.snapshot().owner !== "custom-touch-pinch" && !this.customPinchActive) return;
     this.ownership.setCustomPinchEnabled(false);
@@ -1575,6 +1593,22 @@ export class PointerRouter {
     this.manipulation.reset();
     this.clearManipulationRearm();
     this.syncTouchActionMode();
+  }
+
+  private cancelActiveDrag(): void {
+    const drag = this.activeDrag;
+    if (!drag) return;
+    const pointerType = drag.pointerType === "pen" || drag.pointerType === "touch" || drag.pointerType === "mouse"
+      ? drag.pointerType
+      : "mouse";
+    const event = this.syntheticPointerEvent(drag.pointerId, "pointercancel", pointerType);
+    safeReleasePointerCapture(this.element, drag.pointerId);
+    this.activeDrag = null;
+    this.syncDragCursor(false);
+    this.callbacks.onDragEnd?.(event);
+    this.callbacks.onViewportSettle?.();
+    this.releaseGestureOwnership(event, "pointercancel");
+    this.releasePenContact(event, "pointercancel");
   }
 
   syncToolState(): void {

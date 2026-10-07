@@ -52,6 +52,27 @@ function touchEvent(type: "touchstart" | "touchmove" | "touchend", touches: Touc
 }
 
 describe("mobile custom pinch ownership", () => {
+  it("accepts the unified custom navigation gate as the pinch capability", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const starts = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: (event) => event.pointerType === "pen",
+      customNavigationEnabled: () => true,
+      pointerInputCapabilities: () => ({ pointerEvents: true, pointerCapture: false, touchEvents: true }),
+      onCustomPinchStart: starts
+    });
+
+    element.dispatchEvent(pointer("pointerdown", "touch", 1));
+    element.dispatchEvent(pointer("pointerdown", "touch", 2, { isPrimary: false }));
+
+    expect(router.gesturePolicy().customPinchGuardClassPresent).toBe(true);
+    expect(starts).toHaveBeenCalledTimes(1);
+    router.destroy();
+    element.remove();
+  });
+
   it("promotes one-finger native navigation to custom pinch and cleans up", () => {
     const ownership = new GestureOwnership({ customPinchEnabled: true });
     const first = ownership.pointerDown({ pointerId: 1, pointerType: "touch" });
