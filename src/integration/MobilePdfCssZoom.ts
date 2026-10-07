@@ -68,6 +68,9 @@ export class MobilePdfCssZoom {
   private initialScale = 1;
   private initialZoom = 1;
   private previousInlineZoom = "";
+  private previousInlineTransform = "";
+  private previousInlineTransformOrigin = "";
+  private previousInlineTransition = "";
   private initialFocalPoint: MobilePdfCssZoomPoint = { x: 0, y: 0 };
   private initialRootRect: RectSnapshot | null = null;
   private initialScrollRect: RectSnapshot | null = null;
@@ -77,7 +80,9 @@ export class MobilePdfCssZoom {
   private scrollRoot: HTMLElement | null = null;
   private readonly pages = new Map<number, MobilePdfCssZoomPage>();
   private pendingSample: MobilePdfCssZoomSample | null = null;
+  private lastAppliedSample: MobilePdfCssZoomSample | null = null;
   private animationFrame: number | null = null;
+  private springTimer: number | null = null;
   private view: Window | null = null;
   private onFrame: ((frame: MobilePdfCssZoomFrame) => void) | undefined;
 
@@ -116,6 +121,9 @@ export class MobilePdfCssZoom {
     this.scrollRoot = options.scrollRoot;
     this.initialScale = options.initialScale;
     this.previousInlineZoom = options.root.style.getPropertyValue("zoom");
+    this.previousInlineTransform = options.root.style.getPropertyValue("transform");
+    this.previousInlineTransformOrigin = options.root.style.getPropertyValue("transform-origin");
+    this.previousInlineTransition = options.root.style.getPropertyValue("transition");
     this.initialZoom = readZoom(options.root);
     this.initialFocalPoint = { ...options.focalPoint };
     this.initialRootRect = rootRect;
@@ -126,6 +134,7 @@ export class MobilePdfCssZoom {
     };
     this.hadOverflowAnchorClass = options.scrollRoot.classList.contains(OVERFLOW_ANCHOR_OFF_CLASS);
     options.scrollRoot.classList.add(OVERFLOW_ANCHOR_OFF_CLASS);
+    options.root.classList.add("native-pdf-handwriting-pinch-active");
     this.view = options.root.ownerDocument.defaultView;
     this.onFrame = onFrame;
     this.active = true;
@@ -202,7 +211,13 @@ export class MobilePdfCssZoom {
       return;
     }
 
-    root.style.setProperty("zoom", String(this.initialZoom * ratio));
+    this.lastAppliedSample = {
+      previewScale: sample.previewScale,
+      focalPoint: { ...sample.focalPoint }
+    };
+
+    const currentZoom = this.initialZoom * ratio;
+    root.style.setProperty("zoom", String(currentZoom));
 
     // The root is a child of the scroll host. Solve scroll coordinates from
     // the original root/focal geometry instead of reading layout after every
@@ -212,8 +227,28 @@ export class MobilePdfCssZoom {
     const rootContentTop = rootRect.top - scrollRect.top + this.initialScroll.top;
     const localFocalX = this.initialFocalPoint.x - rootRect.left;
     const localFocalY = this.initialFocalPoint.y - rootRect.top;
-    scrollRoot.scrollLeft = rootContentLeft + localFocalX * ratio - (sample.focalPoint.x - scrollRect.left);
-    scrollRoot.scrollTop = rootContentTop + localFocalY * ratio - (sample.focalPoint.y - scrollRect.top);
+    const desiredScrollLeft = rootContentLeft + localFocalX * ratio - (sample.focalPoint.x - scrollRect.left);
+    const desiredScrollTop = rootContentTop + localFocalY * ratio - (sample.focalPoint.y - scrollRect.top);
+
+    scrollRoot.scrollLeft = desiredScrollLeft;
+    scrollRoot.scrollTop = desiredScrollTop;
+
+    // Mobile WebKit clamps scrollLeft/scrollTop to [0, maxScroll]. When zooming
+    // or panning side-to-side, any clamped offset (e.g. negative scrollLeft or
+    // centered margin-auto layout) cannot be fulfilled by native scrolling.
+    // Compensate with a direct GPU translation on the root so 2D panning tracks 1:1.
+    const unfulfilledX = desiredScrollLeft - scrollRoot.scrollLeft;
+    const unfulfilledY = desiredScrollTop - scrollRoot.scrollTop;
+
+    if (Math.abs(unfulfilledX) > 0.01 || Math.abs(unfulfilledY) > 0.01) {
+      const tx = -unfulfilledX / currentZoom;
+      const ty = -unfulfilledY / currentZoom;
+      root.style.setProperty("transform", `translate3d(${tx}px, ${ty}px, 0)`);
+      root.style.setProperty("transform-origin", "0 0");
+    } else {
+      root.style.removeProperty("transform");
+      root.style.removeProperty("transform-origin");
+    }
 
     const timestampMs = typeof performance === "undefined" ? Date.now() : performance.now();
     this.onFrame?.({
@@ -231,23 +266,86 @@ export class MobilePdfCssZoom {
       else (this.view?.clearTimeout ?? window.clearTimeout)(this.animationFrame);
       this.animationFrame = null;
     }
+    if (this.springTimer !== null) {
+      (this.view?.clearTimeout ?? window.clearTimeout)(this.springTimer);
+      this.springTimer = null;
+    }
     const root = this.root;
     const scrollRoot = this.scrollRoot;
+    if (root) {
+      root.classList.remove("native-pdf-handwriting-pinch-active");
+    }
+
     if (!preserveZoom && root) {
       if (this.previousInlineZoom) root.style.setProperty("zoom", this.previousInlineZoom);
       else root.style.removeProperty("zoom");
+      if (this.previousInlineTransform) root.style.setProperty("transform", this.previousInlineTransform);
+      else root.style.removeProperty("transform");
+      if (this.previousInlineTransformOrigin) root.style.setProperty("transform-origin", this.previousInlineTransformOrigin);
+      else root.style.removeProperty("transform-origin");
+      if (this.previousInlineTransition) root.style.setProperty("transition", this.previousInlineTransition);
+      else root.style.removeProperty("transition");
     }
+
     if (!preserveZoom && scrollRoot) {
       scrollRoot.scrollLeft = this.initialScroll.left;
       scrollRoot.scrollTop = this.initialScroll.top;
     }
+
+    if (preserveZoom && root && scrollRoot) {
+      // Re-sync final scroll position once layout has settled
+      if (this.lastAppliedSample && this.initialRootRect && this.initialScrollRect) {
+        const ratio = this.lastAppliedSample.previewScale / this.initialScale;
+        const rootRect = this.initialRootRect;
+        const scrollRect = this.initialScrollRect;
+        const rootContentLeft = rootRect.left - scrollRect.left + this.initialScroll.left;
+        const rootContentTop = rootRect.top - scrollRect.top + this.initialScroll.top;
+        const localFocalX = this.initialFocalPoint.x - rootRect.left;
+        const localFocalY = this.initialFocalPoint.y - rootRect.top;
+        const desiredScrollLeft = rootContentLeft + localFocalX * ratio - (this.lastAppliedSample.focalPoint.x - scrollRect.left);
+        const desiredScrollTop = rootContentTop + localFocalY * ratio - (this.lastAppliedSample.focalPoint.y - scrollRect.top);
+        scrollRoot.scrollLeft = desiredScrollLeft;
+        scrollRoot.scrollTop = desiredScrollTop;
+
+        const remainingUnfulfilledX = desiredScrollLeft - scrollRoot.scrollLeft;
+        const remainingUnfulfilledY = desiredScrollTop - scrollRoot.scrollTop;
+
+        // If there was an active transform (e.g. overscroll / off-center drag),
+        // animate it smoothly back to rest (rubber-band spring).
+        const currentTransform = root.style.getPropertyValue("transform");
+        if (currentTransform && currentTransform !== "none" && currentTransform !== "translate3d(0px, 0px, 0)") {
+          if (Math.abs(remainingUnfulfilledX) > 0.5 || Math.abs(remainingUnfulfilledY) > 0.5) {
+            root.style.setProperty("transition", "transform 200ms cubic-bezier(0.25, 1, 0.5, 1)");
+            root.style.setProperty("transform", "translate3d(0px, 0px, 0)");
+            const view = this.view;
+            this.springTimer = (view?.setTimeout ?? window.setTimeout)(() => {
+              this.springTimer = null;
+              if (root.isConnected) {
+                root.style.removeProperty("transform");
+                root.style.removeProperty("transform-origin");
+                root.style.removeProperty("transition");
+              }
+            }, 210);
+          } else {
+            root.style.removeProperty("transform");
+            root.style.removeProperty("transform-origin");
+            root.style.removeProperty("transition");
+          }
+        }
+      }
+    }
+
     if (scrollRoot && !this.hadOverflowAnchorClass) scrollRoot.classList.remove(OVERFLOW_ANCHOR_OFF_CLASS);
     this.pages.clear();
     this.pendingSample = null;
+    this.lastAppliedSample = null;
     this.active = false;
     this.initialScale = 1;
     this.initialZoom = 1;
     this.previousInlineZoom = "";
+    this.previousInlineTransform = "";
+    this.previousInlineTransformOrigin = "";
+    this.previousInlineTransition = "";
     this.initialFocalPoint = { x: 0, y: 0 };
     this.initialRootRect = null;
     this.initialScrollRect = null;

@@ -10197,6 +10197,12 @@ export class ViewerInkSession {
       if (this.mobileCssZoomPreviousInlineValue) target.style.setProperty("zoom", this.mobileCssZoomPreviousInlineValue);
       else target.style.removeProperty("zoom");
     }
+    if (target) {
+      target.style.removeProperty("transform");
+      target.style.removeProperty("transform-origin");
+      target.style.removeProperty("transition");
+      target.classList.remove("native-pdf-handwriting-pinch-active");
+    }
     this.mobileCssZoomTarget = null;
     this.mobileCssZoomPreviousInlineValue = null;
     this.mobileCssZoomScale = 1;
