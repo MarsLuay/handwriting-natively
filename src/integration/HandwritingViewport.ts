@@ -7,10 +7,16 @@
  * PDF.js renders underneath it.
  */
 
-import type { ViewerViewportState } from "../runtime/ViewerState";
-
-export type HandwritingViewportState = ViewerViewportState;
-export type { ViewerViewportState };
+/**
+ * Live viewport translation state. x/y are visual content translations in
+ * viewport CSS pixels, not DOM scroll offsets. Native scroll is only a
+ * projection of this state.
+ */
+export interface HandwritingViewportState {
+  scale: number;
+  x: number;
+  y: number;
+}
 
 export interface HandwritingViewportBounds {
   minX: number;
@@ -22,6 +28,8 @@ export interface HandwritingViewportBounds {
 export interface HandwritingViewportOptions {
   getContainerRect: () => { width: number; height: number; left: number; top: number } | null;
   getContentSize: () => { width: number; height: number } | null;
+  /** Native scroll host used only as a projection/compatibility surface. */
+  getScrollElement?: () => HTMLElement | null;
   minScale?: number;
   maxScale?: number;
   initialState?: Partial<HandwritingViewportState>;
@@ -38,6 +46,9 @@ export class HandwritingViewport {
   private pinchAnchor: { x: number; y: number } | null = null;
   private targetElement: HTMLElement | null = null;
   private animationId: number | null = null;
+  private lastProjectedScrollLeft = 0;
+  private lastProjectedScrollTop = 0;
+  private hasScrollProjection = false;
   private readonly options: HandwritingViewportOptions;
 
   private readonly requestFrame: (callback: (timestamp: number) => void) => number;
@@ -72,6 +83,37 @@ export class HandwritingViewport {
 
   getState(): HandwritingViewportState {
     return { ...this.state };
+  }
+
+  /**
+   * Reconcile an externally-originated native scroll (scrollbar, browser wheel,
+   * scrollIntoView, etc.) back into canonical viewport translation.
+   *
+   * Scroll events caused by this viewport's own projection are ignored.
+   */
+  syncFromScroll(scrollLeft?: number, scrollTop?: number, force = false): boolean {
+    const scroll = this.options.getScrollElement?.() ?? null;
+    const left = typeof scrollLeft === "number" && Number.isFinite(scrollLeft)
+      ? scrollLeft
+      : (scroll?.scrollLeft ?? 0);
+    const top = typeof scrollTop === "number" && Number.isFinite(scrollTop)
+      ? scrollTop
+      : (scroll?.scrollTop ?? 0);
+
+    if (!force && this.hasScrollProjection
+      && Math.abs(left - this.lastProjectedScrollLeft) < 0.5
+      && Math.abs(top - this.lastProjectedScrollTop) < 0.5) {
+      return false;
+    }
+
+    this.cancelAnimation();
+    this.pinchAnchor = null;
+    this.rawX = -left;
+    this.rawY = -top;
+    this.state.x = this.rawX;
+    this.state.y = this.rawY;
+    this.apply();
+    return true;
   }
 
   setTarget(element: HTMLElement | null): void {
@@ -365,8 +407,42 @@ export class HandwritingViewport {
   }
 
   apply(): void {
+    let translateX = this.state.x;
+    let translateY = this.state.y;
+    const scroll = this.options.getScrollElement?.() ?? null;
+
+    if (scroll?.isConnected) {
+      const maxScrollLeft = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
+      const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+      const desiredScrollLeft = Math.max(0, Math.min(maxScrollLeft, -this.state.x));
+      const desiredScrollTop = Math.max(0, Math.min(maxScrollTop, -this.state.y));
+
+      if (Math.abs(scroll.scrollLeft - desiredScrollLeft) > 0.01) {
+        scroll.scrollLeft = desiredScrollLeft;
+      }
+      if (Math.abs(scroll.scrollTop - desiredScrollTop) > 0.01) {
+        scroll.scrollTop = desiredScrollTop;
+      }
+
+      const actualScrollLeft = Number.isFinite(scroll.scrollLeft) ? scroll.scrollLeft : desiredScrollLeft;
+      const actualScrollTop = Number.isFinite(scroll.scrollTop) ? scroll.scrollTop : desiredScrollTop;
+      this.lastProjectedScrollLeft = actualScrollLeft;
+      this.lastProjectedScrollTop = actualScrollTop;
+      this.hasScrollProjection = true;
+
+      // Native scroll represents the in-bounds portion. Only the residual
+      // translation (centered/negative overflow, rubber-band overscroll, etc.)
+      // is emitted as a GPU transform.
+      translateX = this.state.x + actualScrollLeft;
+      translateY = this.state.y + actualScrollTop;
+    } else {
+      this.hasScrollProjection = false;
+    }
+
     if (this.targetElement && this.targetElement.isConnected) {
-      if (Math.abs(this.state.scale - 1) < 0.0001 && Math.abs(this.state.x) < 0.01 && Math.abs(this.state.y) < 0.01) {
+      if (Math.abs(this.state.scale - 1) < 0.0001
+        && Math.abs(translateX) < 0.01
+        && Math.abs(translateY) < 0.01) {
         this.targetElement.style.removeProperty("transform");
         this.targetElement.style.removeProperty("transform-origin");
         this.targetElement.classList.remove("native-pdf-handwriting-pinch-active");
@@ -374,7 +450,7 @@ export class HandwritingViewport {
         this.targetElement.style.setProperty("transform-origin", "0 0");
         this.targetElement.style.setProperty(
           "transform",
-          `translate3d(${this.state.x}px, ${this.state.y}px, 0) scale(${this.state.scale})`
+          `translate3d(${translateX}px, ${translateY}px, 0) scale(${this.state.scale})`
         );
         this.targetElement.classList.add("native-pdf-handwriting-pinch-active");
       }
@@ -392,6 +468,7 @@ export class HandwritingViewport {
   destroy(): void {
     this.cancelAnimation();
     this.pinchAnchor = null;
+    this.hasScrollProjection = false;
     if (this.targetElement) {
       this.targetElement.style.removeProperty("transform");
       this.targetElement.style.removeProperty("transform-origin");
