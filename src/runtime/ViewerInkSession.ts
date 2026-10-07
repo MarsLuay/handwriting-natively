@@ -57,6 +57,27 @@ function mountedToolbarRail(toolbar: HTMLElement): HTMLElement | null {
   return toolbar.closest<HTMLElement>(".native-pdf-handwriting-rail, .hn-owned-pdf-ink-rail");
 }
 
+function elementPresentationSnapshot(element: HTMLElement | null): Record<string, unknown> | null {
+  if (!element) return null;
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  const rounded = (value: number): number => Math.round(value * 10) / 10;
+  return {
+    connected: element.isConnected,
+    hasLayoutBox: element.getClientRects().length > 0 && rect.width > 0 && rect.height > 0,
+    display: style?.display ?? null,
+    visibility: style?.visibility ?? null,
+    opacity: style?.opacity ?? null,
+    pointerEvents: style?.pointerEvents ?? null,
+    bounds: {
+      x: rounded(rect.x),
+      y: rounded(rect.y),
+      width: rounded(rect.width),
+      height: rounded(rect.height)
+    }
+  };
+}
+
 import { PostZoomDurabilityTrace } from "./PostZoomDurabilityTrace";
 import { SLOW_SPAN_SYNC_MS, SlowSpanTrace, type InkLatencyBreakdown } from "./SlowSpanTrace";
 import {
@@ -73,6 +94,7 @@ import {
   shouldUseDenseZoomRasterFallback
 } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRoute, type PointerRouterHandoff } from "../input/PointerRouter";
+import { isObsidianSidebarOpen } from "../input/MobileSidebarSwipeBlocker";
 import { classifyInputTarget } from "../input/InputTargetClassification";
 import { detectPointerInputCapabilities } from "../input/PointerInputCapabilities";
 import { GestureOwnership } from "../input/GestureOwnership";
@@ -6809,7 +6831,8 @@ export class ViewerInkSession {
     session.reconcileToolbarMount("session-create");
     await urgent("session create toolbar ok", {
       document: options.documentPath,
-      toolbarPlacement: session.currentToolbarPlacement()
+      toolbarPlacement: session.currentToolbarPlacement(),
+      ...session.toolbarPresentationSnapshot()
     });
     session.logger.sessionAttach({
       scrollRoot: describeScrollElement(options.adapter.scrollElement()),
@@ -7841,7 +7864,7 @@ export class ViewerInkSession {
     ]);
     if (key === this.lastHandwritingUiMissingKey) return;
     this.lastHandwritingUiMissingKey = key;
-    this.logger.handwritingUiMissing(state);
+    this.logger.handwritingUiMissing({ ...state, ...this.toolbarPresentationSnapshot() });
   }
 
   private handwritingUiState(reason: string, details: Record<string, unknown> = {}): Record<string, unknown> {
@@ -7892,6 +7915,19 @@ export class ViewerInkSession {
     };
   }
 
+  private toolbarPresentationSnapshot(): Record<string, unknown> {
+    const document = this.options.adapter.host.ownerDocument;
+    const toolbar = this.toolbar.element;
+    return {
+      nativeSidebarOpen: {
+        left: isObsidianSidebarOpen(document, "left"),
+        right: isObsidianSidebarOpen(document, "right")
+      },
+      toolbarPresentation: elementPresentationSnapshot(toolbar),
+      sidebarRailPresentation: elementPresentationSnapshot(mountedToolbarRail(toolbar))
+    };
+  }
+
   /** Write a bounded UI snapshot into the vault log when Copy logs is pressed. */
   writeCopiedLogUiSnapshot(): Record<string, unknown> {
     this.ipadInputTrace?.start(this.options.debugEnabled?.() === true);
@@ -7920,6 +7956,7 @@ export class ViewerInkSession {
       }));
     const snapshot = {
       ...this.handwritingUiState("copy-logs"),
+      ...this.toolbarPresentationSnapshot(),
       rootConnected: root.isConnected,
       hostConnected: host.isConnected,
       customToolbarCount: host.querySelectorAll(".native-pdf-handwriting-toolbar").length,
@@ -17070,7 +17107,8 @@ export class ViewerInkSession {
         this.logger.toolbarPlacement("applied", {
           previousPlacement,
           requestedPlacement: placement,
-          resolvedPlacement: this.currentToolbarPlacement()
+          resolvedPlacement: this.currentToolbarPlacement(),
+          ...this.toolbarPresentationSnapshot()
         });
       } catch (error) {
         this.logger.toolbarPlacement("error", {

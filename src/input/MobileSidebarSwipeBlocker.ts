@@ -15,6 +15,12 @@ interface TouchCandidate {
   identifier: number;
   startX: number;
   startY: number;
+  blockDiagnosticEmitted: boolean;
+}
+
+export interface BlockedNavigationSwipeDiagnostic {
+  destination: "left-sidebar" | "right-sidebar" | "command-palette";
+  input: "pointer" | "touch";
 }
 
 /** Return the sidebar a dominant one-finger horizontal swipe would open. */
@@ -50,7 +56,7 @@ export function classifyCommandPaletteSwipe(
     && deltaY > Math.abs(deltaX) * COMMAND_PALETTE_VERTICAL_DOMINANCE_RATIO;
 }
 
-function sidebarIsOpen(ownerDocument: Document, direction: SidebarSwipeDirection): boolean {
+export function isObsidianSidebarOpen(ownerDocument: Document, direction: SidebarSwipeDirection): boolean {
   const body = ownerDocument.body;
   if (!body) return false;
   const openClasses = direction === "left"
@@ -78,7 +84,10 @@ export class MobileSidebarSwipeBlocker {
   private readonly listenerOptions: AddEventListenerOptions = { capture: true };
   private readonly moveListenerOptions: AddEventListenerOptions = { capture: true, passive: false };
 
-  constructor(private readonly ownerDocument: Document) {
+  constructor(
+    private readonly ownerDocument: Document,
+    private readonly onBlocked?: (diagnostic: BlockedNavigationSwipeDiagnostic) => void
+  ) {
     this.ownerWindow = ownerDocument.defaultView;
   }
 
@@ -122,7 +131,8 @@ export class MobileSidebarSwipeBlocker {
     this.candidate = {
       identifier: touch.identifier,
       startX: touch.clientX,
-      startY: touch.clientY
+      startY: touch.clientY,
+      blockDiagnosticEmitted: false
     };
   };
 
@@ -159,7 +169,8 @@ export class MobileSidebarSwipeBlocker {
     this.pointerCandidate = {
       identifier: event.pointerId,
       startX: event.clientX,
-      startY: event.clientY
+      startY: event.clientY,
+      blockDiagnosticEmitted: false
     };
   };
 
@@ -193,7 +204,7 @@ export class MobileSidebarSwipeBlocker {
     if (!this.enabled) return;
     const direction = classifySidebarSwipe(candidate.startX, candidate.startY, currentX, currentY);
     const blocksSidebar = direction !== null
-      && !sidebarIsOpen(this.ownerDocument, direction);
+      && !isObsidianSidebarOpen(this.ownerDocument, direction);
     const blocksCommandPalette = classifyCommandPaletteSwipe(
       candidate.startX,
       candidate.startY,
@@ -205,6 +216,23 @@ export class MobileSidebarSwipeBlocker {
     // Obsidian's edge listener can be on the same event target. Stopping only
     // propagation still lets a later same-target listener open the sidebar.
     event.stopImmediatePropagation();
+    if (candidate.blockDiagnosticEmitted) return;
+    candidate.blockDiagnosticEmitted = true;
+    let destination: BlockedNavigationSwipeDiagnostic["destination"] | null = null;
+    if (blocksSidebar && direction) {
+      destination = direction === "left" ? "left-sidebar" : "right-sidebar";
+    } else if (blocksCommandPalette) {
+      destination = "command-palette";
+    }
+    if (!destination) return;
+    try {
+      this.onBlocked?.({
+        destination,
+        input: event.type === "pointermove" ? "pointer" : "touch"
+      });
+    } catch {
+      // Diagnostics must never weaken gesture interception.
+    }
   }
 
   private removeListeners(): void {

@@ -12,7 +12,7 @@ import {
   type WorkspaceLeaf
 } from "obsidian";
 import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
-import { MobileSidebarSwipeBlocker } from "./input/MobileSidebarSwipeBlocker";
+import { isObsidianSidebarOpen, MobileSidebarSwipeBlocker } from "./input/MobileSidebarSwipeBlocker";
 import { getPhysicalContactCollectorSnapshot, type PhysicalContactCollectorSnapshot } from "./input/PhysicalContactCollector";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
@@ -286,7 +286,9 @@ export default class NativePdfInkPlugin extends Plugin {
           : String(pdfExtensionRegistration.error)
       });
     }
-    this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(document);
+    this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(activeDocument, (diagnostic) => {
+      this.vaultDebugLog.write("info", "mobile-navigation-swipe-blocked", { ...diagnostic });
+    });
     this.updateSidebarSwipeBlocker();
     this.addSettingTab(new NativePdfInkSettingTab(this.app, this));
     this.addRibbonIcon("file-plus-2", "Create handwritten PDF", () => void this.createPdfNote());
@@ -386,7 +388,10 @@ export default class NativePdfInkPlugin extends Plugin {
     void this.vaultDebugLog.writeUrgent("info", "plugin-onload", {
       mobile: Platform.isMobile,
       phone: Platform.isPhone,
-      vaultDebugLog: this.inkSettings.vaultDebugLog
+      vaultDebugLog: this.inkSettings.vaultDebugLog,
+      toolbarPlacement: this.inkSettings.toolbarPlacement,
+      disableSwipeNavigation: this.inkSettings.disableSwipeNavigation,
+      sidebarSwipeBlockerEnabled: Platform.isMobile && this.inkSettings.disableSwipeNavigation
     });
     // A plugin can be enabled/reloaded after Obsidian has already published
     // layout-ready. Mobile does not always emit another layout or file-open
@@ -641,6 +646,15 @@ export default class NativePdfInkPlugin extends Plugin {
     const snapshot = this.pdfSessionRegistrySnapshot();
     this.vaultDebugLog.write("info", "handwriting-ui-snapshot", {
       scope: "plugin",
+      mobileNavigation: {
+        mobile: Platform.isMobile,
+        disableSwipeNavigation: this.inkSettings.disableSwipeNavigation,
+        sidebarSwipeBlockerEnabled: Platform.isMobile && this.inkSettings.disableSwipeNavigation,
+        nativeSidebarOpen: {
+          left: isObsidianSidebarOpen(activeDocument, "left"),
+          right: isObsidianSidebarOpen(activeDocument, "right")
+        }
+      },
       ...snapshot
     });
     if (missingHandwritingSession(snapshot)) {
@@ -848,6 +862,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousMouseInkingEnabled = this.inkSettings.mouseInkingEnabled;
     const previousTouchDrawFallback = this.inkSettings.touchDrawFallback;
     const previousTouchDoubleTapEraser = this.inkSettings.touchDoubleTapEraser;
+    const previousDisableSwipeNavigation = this.inkSettings.disableSwipeNavigation;
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
     await this.saveData(settings);
@@ -878,8 +893,12 @@ export default class NativePdfInkPlugin extends Plugin {
         ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
         ...(previousMouseInkingEnabled !== settings.mouseInkingEnabled ? ["mouseInkingEnabled"] : []),
         ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : []),
-        ...(previousTouchDoubleTapEraser !== settings.touchDoubleTapEraser ? ["touchDoubleTapEraser"] : [])
-      ]
+        ...(previousTouchDoubleTapEraser !== settings.touchDoubleTapEraser ? ["touchDoubleTapEraser"] : []),
+        ...(previousDisableSwipeNavigation !== settings.disableSwipeNavigation ? ["disableSwipeNavigation"] : [])
+      ],
+      mobile: Platform.isMobile,
+      disableSwipeNavigation: settings.disableSwipeNavigation,
+      sidebarSwipeBlockerEnabled: Platform.isMobile && settings.disableSwipeNavigation
     });
     if (previousPlacement !== settings.toolbarPlacement) {
       for (const session of this.allSessions()) session.remountToolbar();

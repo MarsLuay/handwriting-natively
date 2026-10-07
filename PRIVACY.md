@@ -4,6 +4,8 @@ Last updated: July 12, 2026
 
 Handwriting Natively works locally inside Obsidian. It does not create an account, send telemetry, use analytics, load remote code, or transmit PDF contents, handwriting, settings, filenames, or usage data to the developer or any hosted service.
 
+When Vault debug logging is enabled, bounded troubleshooting events are stored only in the configured vault log. They may record whether swipe navigation blocking is enabled, which sidebar a blocked swipe targeted, Obsidian sidebar open-state booleans, and the plugin toolbar's computed visibility and layout bounds. Blocked-swipe events contain no touch coordinates or pointer identifiers. These diagnostics are not uploaded.
+
 ## Information we collect
 
 Handwriting Natively and its developer collect no information from your device. The plugin processes the following information locally only: PDF paths and contents, handwriting points, annotation metadata, tool preferences, save status, recovery records, and optional backups. None is sent to the developer.
