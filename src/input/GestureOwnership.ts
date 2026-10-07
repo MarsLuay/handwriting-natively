@@ -1,15 +1,11 @@
 export type InputOwner =
   | "idle"
   | "pen-ink"
-  | "touch-ink"
-  | "custom-touch-pinch"
-  | "native-touch-navigation"
   | "mouse-ink";
 
 export interface ActiveInputState {
   owner: InputOwner;
   activePenId: number | null;
-  activeTouchIds: ReadonlySet<number>;
   activeMousePointerId: number | null;
   activeMouseButtons: number;
   generation: number;
@@ -40,10 +36,7 @@ export interface GestureDecision {
 }
 
 function cloneState(state: ActiveInputState): ActiveInputState {
-  return {
-    ...state,
-    activeTouchIds: new Set(state.activeTouchIds)
-  };
+  return { ...state };
 }
 
 function mouseButtonMask(contact: Pick<GestureContact, "button" | "buttons">): number {
@@ -53,39 +46,29 @@ function mouseButtonMask(contact: Pick<GestureContact, "button" | "buttons">): n
 }
 
 /**
- * The single mutable owner for a session's active pointer contacts.
+ * Owns annotation pointer contacts. GestureNavigationController owns touch
+ * navigation and stylus exclusion for navigation gestures.
  *
  * Routers and sessions may retain stroke/rendering state, but they must not
- * independently decide whether a pen, finger, or mouse owns the gesture.
- * Touch contacts are tracked even while a pen owns ink so a companion palm
- * cannot steal the pen route or make the native gesture state disagree.
+ * independently decide whether a pen or mouse owns an annotation gesture.
  */
 export class GestureOwnership {
   private owner: InputOwner = "idle";
   private activePenId: number | null = null;
-  private customPinchEnabled: boolean;
-  private readonly activeTouchIds = new Set<number>();
   private activeMousePointerId: number | null = null;
   private activeMouseButtons = 0;
   private generation = 1;
 
-  constructor(options: GestureOwnershipOptions = {}) {
-    this.customPinchEnabled = options.customPinchEnabled === true;
-  }
+  constructor(options: GestureOwnershipOptions = {}) {}
 
-  setCustomPinchEnabled(enabled: boolean): ActiveInputState {
-    this.customPinchEnabled = enabled;
-    if (!enabled && this.owner === "custom-touch-pinch") {
-      this.owner = this.activeTouchIds.size > 0 ? "native-touch-navigation" : "idle";
-    }
-    return this.snapshot();
+  observeTouchEvent(): GestureDecision {
+    return this.observe("observe");
   }
 
   snapshot(): ActiveInputState {
     return cloneState({
       owner: this.owner,
       activePenId: this.activePenId,
-      activeTouchIds: this.activeTouchIds,
       activeMousePointerId: this.activeMousePointerId,
       activeMouseButtons: this.activeMouseButtons,
       generation: this.generation
@@ -98,12 +81,6 @@ export class GestureOwnership {
     return this.snapshot();
   }
 
-  clearTouchContacts(): ActiveInputState {
-    this.activeTouchIds.clear();
-    this.restoreOwnerAfterRelease();
-    return this.snapshot();
-  }
-
   adoptPenContact(pointerId: number): ActiveInputState {
     this.owner = "pen-ink";
     this.activePenId = pointerId;
@@ -113,27 +90,7 @@ export class GestureOwnership {
   pointerDown(contact: GestureContact): GestureDecision {
     if (contact.target === "ui") return this.observe("ignore");
 
-    if (contact.pointerType === "touch") {
-      this.activeTouchIds.add(contact.pointerId);
-      // A finger/palm observes an active pen; it never becomes the ink owner.
-      if (
-        this.activePenId !== null
-        || this.owner === "mouse-ink"
-        || this.owner === "touch-ink"
-      ) {
-        return this.observe("observe");
-      }
-      if (this.customPinchEnabled && this.activeTouchIds.size >= 2) {
-        this.owner = "custom-touch-pinch";
-        return this.decision("preview", true);
-      }
-      if (contact.target === "page" && contact.inkToolSelected && contact.inkIntent === true) {
-        this.owner = "touch-ink";
-        return this.claim("claim-ink");
-      }
-      this.owner = "native-touch-navigation";
-      return this.observe("observe");
-    }
+    if (contact.pointerType === "touch") return this.observe("observe");
 
     if (contact.pointerType === "pen") {
       if (contact.target !== "page" || !contact.inkToolSelected) return this.observe("observe");
@@ -163,16 +120,6 @@ export class GestureOwnership {
       this.activeMouseButtons = contact.buttons ?? this.activeMouseButtons;
       return this.append(contact);
     }
-    if (contact.pointerType === "touch"
-      && this.owner === "touch-ink"
-      && this.activeTouchIds.has(contact.pointerId)) {
-      return this.append(contact);
-    }
-    if (contact.pointerType === "touch"
-      && this.owner === "custom-touch-pinch"
-      && this.activeTouchIds.has(contact.pointerId)) {
-      return this.decision("preview", true);
-    }
     return this.observe("observe");
   }
 
@@ -188,12 +135,6 @@ export class GestureOwnership {
     return this.release(contact, "ignore");
   }
 
-  observeTouchEvent(): GestureDecision {
-    return this.owner === "custom-touch-pinch"
-      ? this.decision("preview", true)
-      : this.observe("observe");
-  }
-
   private release(contact: GestureContact, inkAction: "finalize-ink" | "ignore"): GestureDecision {
     if (contact.pointerType === "pen") {
       if (this.activePenId !== contact.pointerId) return this.observe("observe");
@@ -203,15 +144,7 @@ export class GestureOwnership {
       return this.decision(inkAction, wasInk);
     }
 
-    if (contact.pointerType === "touch") {
-      const wasInk = this.owner === "touch-ink";
-      const wasCustomPinch = this.owner === "custom-touch-pinch";
-      this.activeTouchIds.delete(contact.pointerId);
-      this.restoreOwnerAfterRelease();
-      if (wasInk) return this.decision(inkAction, true);
-      if (wasCustomPinch) return this.decision("preview", true);
-      return this.observe("observe");
-    }
+    if (contact.pointerType === "touch") return this.observe("observe");
 
     if (this.activeMousePointerId !== contact.pointerId) return this.observe("observe");
     this.activeMouseButtons &= ~mouseButtonMask(contact);
@@ -231,17 +164,12 @@ export class GestureOwnership {
       return;
     }
     if (this.activeMousePointerId !== null && this.activeMouseButtons !== 0) return;
-    if (this.activeTouchIds.size > 0) {
-      this.owner = "native-touch-navigation";
-      return;
-    }
     this.owner = "idle";
   }
 
   private clear(): void {
     this.owner = "idle";
     this.activePenId = null;
-    this.activeTouchIds.clear();
     this.activeMousePointerId = null;
     this.activeMouseButtons = 0;
   }
@@ -253,7 +181,7 @@ export class GestureOwnership {
   private claim(action: GestureDecision["action"]): GestureDecision {
     return this.decision(
       action,
-      this.owner === "pen-ink" || this.owner === "touch-ink" || this.owner === "mouse-ink"
+      this.owner === "pen-ink" || this.owner === "mouse-ink"
     );
   }
 

@@ -89,7 +89,7 @@ describe("deterministic gesture ownership matrix", () => {
     element.remove();
   });
 
-  it("keeps fingers native, blocks a companion palm, and preserves two-touch pinch ownership", () => {
+  it("keeps native fingers and tracks two-touch navigation while blocking a companion palm", () => {
     const element = document.createElement("div");
     document.body.append(element);
     const routes: string[] = [];
@@ -114,7 +114,8 @@ describe("deterministic gesture ownership matrix", () => {
     const secondFinger = pointer("pointerdown", "touch", 31, { isPrimary: false });
     element.dispatchEvent(firstFinger);
     element.dispatchEvent(secondFinger);
-    expect(routes.slice(-2)).toEqual(["touch-pan", "touch-zoom-pan"]);
+    expect(routes.slice(-2)).toEqual(["touch-pan", "touch-pan"]);
+    expect(router.activeTouchPointerIds()).toEqual([30, 31]);
     expect(firstFinger.defaultPrevented).toBe(false);
     expect(secondFinger.defaultPrevented).toBe(false);
 
