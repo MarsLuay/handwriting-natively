@@ -20,8 +20,9 @@ import {
   DEFAULT_POINTER_INPUT_CAPABILITIES,
   type PointerInputCapabilities
 } from "./PointerInputCapabilities";
+import { scrollPdfByDetailed } from "../integration/PdfScrollRoot";
 
-export type PointerRoute = "draw" | "edit" | "text" | "touch-pan" | "touch-zoom-pan" | "touch-custom-pinch" | "native" | "ignored";
+export type PointerRoute = "draw" | "edit" | "text" | "drag" | "touch-pan" | "touch-zoom-pan" | "touch-custom-pinch" | "native" | "ignored";
 
 export interface CustomPinchPoint {
   pointerId: number;
@@ -121,6 +122,9 @@ export interface PointerRouterCallbacks {
   onPredictedMove?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
   onEnd?(samples: PointerSample[], route: "draw" | "edit" | "text", event: PointerEvent): void;
   onCancel?(route: "draw" | "edit" | "text", event: PointerEvent): void;
+  onDragStart?(event: PointerEvent): void;
+  onDragMove?(deltaX: number, deltaY: number, event: PointerEvent): void;
+  onDragEnd?(event: PointerEvent): void;
   onRoute?(route: PointerRoute, event: PointerEvent): void;
   /** Diagnostic-only reason paired with the already-emitted route decision. */
   onRouteDecision?(route: PointerRoute, reason: string, event: PointerEvent): void;
@@ -204,6 +208,14 @@ export class PointerRouter {
   /** iOS can deliver TouchEvents without the promoting second PointerEvent. */
   private customPinchTouchFallbackActive = false;
   private touchTextContactActive = false;
+  private activeDrag: {
+    pointerId: number;
+    pointerType: string;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+  } | null = null;
 
   constructor(
     private readonly element: HTMLElement,
@@ -307,7 +319,7 @@ export class PointerRouter {
     // iPadOS also sends document-level Pencil hover moves. They cannot advance
     // an open tip stroke and would otherwise enter the capture-loss recovery path.
     if (event.buttons === 0 && event.pressure <= 0) return false;
-    if (!this.routed.has(event.pointerId)) return false;
+    if (!this.routed.has(event.pointerId) && this.activeDrag?.pointerId !== event.pointerId) return false;
     this.handleMove(event);
     return true;
   }
@@ -339,6 +351,13 @@ export class PointerRouter {
       }
       // Fingers leave native scroll/pinch unless the gesture starts on a text box.
       return { route: "touch-pan", reason: "touch-native" };
+    }
+    if (tool === "drag") {
+      if (isStylusEraserInput(event)) return { route: "edit", reason: "stylus-eraser" };
+      if (event.pointerType === "mouse" && event.button !== 0 && event.button !== -1) {
+        return { route: "native", reason: "mouse-primary-button-only" };
+      }
+      return { route: "drag", reason: "drag-tool" };
     }
     if (event.pointerType === "mouse" && !isStylusEraserInput(event) && event.button !== 0 && event.button !== -1) {
       return { route: "native", reason: "mouse-primary-button-only" };
@@ -702,6 +721,22 @@ export class PointerRouter {
         activePens: this.palmPolicy.hasActivePen(),
         touchCount: this.touchCount()
       });
+      return route;
+    }
+    if (route === "drag") {
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+      safeSetPointerCapture(this.element, event.pointerId);
+      this.activeDrag = {
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        startX: event.clientX,
+        startY: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY
+      };
+      this.syncDragCursor(true);
+      this.callbacks.onDragStart?.(event);
       return route;
     }
     if (route !== "draw" && route !== "edit" && route !== "text") return route;
@@ -1114,12 +1149,18 @@ export class PointerRouter {
     if (event.type === "visibilitychange" && this.element.ownerDocument.visibilityState !== "hidden") return;
     const trackedBefore = this.touchCount();
     const owned = this.routed.size > 0
+      || this.activeDrag !== null
       || this.stylusErasers.size > 0
       || this.touchCount() > 0
       || this.touchAxis !== null
       || this.palmPolicy.hasActivePen();
     if (!owned) return;
 
+    if (this.activeDrag) {
+      safeReleasePointerCapture(this.element, this.activeDrag.pointerId);
+      this.activeDrag = null;
+      this.syncDragCursor(false);
+    }
     for (const pointerId of [...this.routed.keys()]) {
       const pointerType = this.routedPointerTypes.get(pointerId) ?? "pen";
       this.finishRoutedPointer(this.syntheticPointerEvent(pointerId, "pointercancel", pointerType), "pointercancel");
@@ -1160,6 +1201,17 @@ export class PointerRouter {
 
   private readonly handleMove = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (this.activeDrag && this.activeDrag.pointerId === event.pointerId) {
+      const deltaX = event.clientX - this.activeDrag.lastX;
+      const deltaY = event.clientY - this.activeDrag.lastY;
+      this.activeDrag.lastX = event.clientX;
+      this.activeDrag.lastY = event.clientY;
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+      this.applyDragScroll(deltaX, deltaY, event.clientX, event.clientY);
+      this.callbacks.onDragMove?.(deltaX, deltaY, event);
+      return;
+    }
     this.scheduleCustomCursorUpdate(event);
     this.notePenSignal(event);
     this.palmPolicy.notePenActivity(event);
@@ -1210,6 +1262,19 @@ export class PointerRouter {
 
   private readonly handleEnd = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (this.activeDrag && this.activeDrag.pointerId === event.pointerId) {
+      safeReleasePointerCapture(this.element, event.pointerId);
+      this.activeDrag = null;
+      this.syncDragCursor(false);
+      this.callbacks.onDragEnd?.(event);
+      this.releaseGestureOwnership(event, "pointerup");
+      this.releasePenContact(event, "pointerup");
+      this.syncTouchActionMode();
+      this.hideCustomCursors();
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     if (event.pointerType === "touch" && this.customPinchTouchFallbackActive) {
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
@@ -1243,6 +1308,19 @@ export class PointerRouter {
 
   private readonly handleCancel = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (this.activeDrag && this.activeDrag.pointerId === event.pointerId) {
+      safeReleasePointerCapture(this.element, event.pointerId);
+      this.activeDrag = null;
+      this.syncDragCursor(false);
+      this.callbacks.onDragEnd?.(event);
+      this.releaseGestureOwnership(event, "pointercancel");
+      this.releasePenContact(event, "pointercancel");
+      this.syncTouchActionMode();
+      this.hideCustomCursors();
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     if (event.pointerType === "touch" && this.customPinchTouchFallbackActive) {
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
@@ -1270,6 +1348,15 @@ export class PointerRouter {
 
   private readonly handleLostPointerCapture = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (this.activeDrag && this.activeDrag.pointerId === event.pointerId) {
+      this.activeDrag = null;
+      this.syncDragCursor(false);
+      this.callbacks.onDragEnd?.(event);
+      this.releaseGestureOwnership(event, "lostpointercapture");
+      this.releasePenContact(event, "lostpointercapture");
+      this.syncTouchActionMode();
+      return;
+    }
     if (event.pointerType === "mouse" || event.pointerType === "pen") this.hideCustomCursors();
     // iOS drops page pointermove after capture leaves the page and reports
     // lostpointercapture at (0, 0). That is capture moving, not the pen lift.
@@ -1292,6 +1379,16 @@ export class PointerRouter {
 
   private readonly clearEndedTouch = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (this.activeDrag && this.activeDrag.pointerId === event.pointerId) {
+      safeReleasePointerCapture(this.element, event.pointerId);
+      this.activeDrag = null;
+      this.syncDragCursor(false);
+      this.callbacks.onDragEnd?.(event);
+      this.releaseGestureOwnership(event, event.type === "pointercancel" ? "pointercancel" : "pointerup");
+      this.releasePenContact(event, event.type === "pointercancel" ? "pointercancel" : "pointerup");
+      this.syncTouchActionMode();
+      return;
+    }
     // Document capture: Pencil terminal events often miss the page listener after
     // acceptPointerDown + setPointerCapture (same failure Ink documents).
     if (event.pointerType === "pen" && event.type === "lostpointercapture") return;
@@ -1476,7 +1573,8 @@ export class PointerRouter {
       ...this.routed.keys(),
       ...this.touchIds(),
       ...this.stylusErasers,
-      ...(this.touchAxis ? [this.touchAxis.pointerId] : [])
+      ...(this.touchAxis ? [this.touchAxis.pointerId] : []),
+      ...(this.activeDrag ? [this.activeDrag.pointerId] : [])
     ]);
     const released: number[] = [];
     for (const pointerId of ids) {
@@ -1493,10 +1591,36 @@ export class PointerRouter {
     }
   }
 
+  private applyDragScroll(deltaX: number, deltaY: number, clientX: number, clientY: number): void {
+    const root = this.callbacks.scrollRoot?.();
+    if (!root) return;
+    if (deltaY !== 0) {
+      scrollPdfByDetailed(root, -deltaY, clientX, clientY);
+    }
+    if (deltaX !== 0) {
+      if (typeof root.scrollBy === "function") {
+        root.scrollBy(-deltaX, 0);
+      } else {
+        root.scrollLeft -= deltaX;
+      }
+    }
+  }
+
+  private syncDragCursor(active: boolean): void {
+    const doc = this.element.ownerDocument;
+    doc.body?.classList.toggle("native-pdf-handwriting-panning", active);
+    this.element.classList.toggle("native-pdf-handwriting-panning", active);
+  }
+
   destroy(): void {
     if (this.abort.signal.aborted) return;
     this.cancelScheduledCursorUpdate();
     this.clearManipulationRearm();
+    if (this.activeDrag) {
+      safeReleasePointerCapture(this.element, this.activeDrag.pointerId);
+      this.activeDrag = null;
+      this.syncDragCursor(false);
+    }
     const handoff: PointerRouterHandoff = {
       routed: [...this.routed.entries()].map(([pointerId, route]) => ({ pointerId, route })),
       activePenIds: this.activePenIds()
@@ -1527,6 +1651,7 @@ export class PointerRouter {
       "native-pdf-handwriting-has-eraser-cursor",
       "native-pdf-handwriting-has-draw-cursor",
       "native-pdf-handwriting-pen-capturing",
+      "native-pdf-handwriting-panning",
       "native-pdf-handwriting-touch-none",
       "native-pdf-handwriting-touch-pan-xy",
       "native-pdf-handwriting-touch-custom-pinch"

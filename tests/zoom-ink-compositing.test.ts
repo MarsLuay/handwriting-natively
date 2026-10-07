@@ -356,6 +356,44 @@ describe("zoom ink compositing", () => {
     await session.destroy();
   });
 
+  it("coalesces mobile scroll events and does not trigger refresh when mount set is unchanged", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter, new MemoryFiles(), { mobile: true, phone: true });
+    vi.useFakeTimers();
+
+    const internal = session as unknown as {
+      onViewStateChange(state: PdfViewState, source: string): void;
+      mobileScrollRefreshFrame: number | null;
+      refresh(reason: string): void;
+    };
+
+    const refreshSpy = vi.spyOn(session, "refresh");
+
+    // Simulate 20 rapid scroll events during smooth scrolling
+    for (let i = 0; i < 20; i++) {
+      internal.onViewStateChange(adapter.getViewState(), "scroll");
+    }
+
+    // Only one rAF should be scheduled, coalescing all 20 scroll events
+    expect(internal.mobileScrollRefreshFrame).not.toBeNull();
+
+    // Advance frame
+    await vi.advanceTimersByTimeAsync(16);
+
+    // Because the mount set is unchanged, refresh("view-scroll-mobile") is skipped
+    expect(refreshSpy).not.toHaveBeenCalled();
+
+    // No "session refresh" or "refresh storm" events emitted
+    expect(debugCalls("session refresh").filter((call) => {
+      const details = call[2] as { reason?: string };
+      return details.reason?.startsWith("view-scroll-mobile");
+    })).toHaveLength(0);
+    expect(warnCalls("refresh storm")).toHaveLength(0);
+
+    refreshSpy.mockRestore();
+    await session.destroy();
+  });
+
   it("defers expensive stroke paint during zoom burst and repaints after settle", async () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);

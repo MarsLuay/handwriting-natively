@@ -1,6 +1,6 @@
 export type DrawingTool = "pen" | "pencil" | "highlighter";
 /** Annotation tools. Mouse inking is a separate input setting, not a tool. */
-export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser";
+export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser" | "drag";
 export type LassoType = "freeform" | "rectangle";
 export type ToolbarPlacement = "main" | "left" | "right";
 /** Which input source supplies pressure for new ink strokes. */
@@ -36,7 +36,7 @@ export function isInkDrawTool(tool: string): tool is DrawingTool | "laser" {
 }
 
 export function isToolId(tool: unknown): tool is ToolId {
-  return typeof tool === "string" && (isDrawingTool(tool) || tool === "text" || tool === "eraser" || tool === "lasso" || tool === "laser");
+  return typeof tool === "string" && (isDrawingTool(tool) || tool === "text" || tool === "eraser" || tool === "lasso" || tool === "laser" || tool === "drag");
 }
 
 /** Active drawing tool, or pen when a non-drawing tool is selected. */

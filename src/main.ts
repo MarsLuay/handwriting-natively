@@ -1719,6 +1719,7 @@ export default class NativePdfInkPlugin extends Plugin {
     registerTool("select-pdf-laser-pointer", "Switch to laser pointer", "laser");
     registerTool("select-pdf-lasso", "Switch to lasso", "lasso");
     registerTool("select-pdf-text", "Switch to text", "text");
+    registerTool("select-pdf-drag", "Switch to drag tool", "drag");
     registerHistory("undo-pdf-annotation", "Undo ink", "undo");
     registerHistory("redo-pdf-annotation", "Redo ink", "redo", true);
   }

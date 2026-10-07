@@ -3458,12 +3458,14 @@ export class ViewerInkSession {
     }
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
-      this.refresh("view-scroll-mobile");
+      const pages = this.pagesForInkMount();
+      if (!this.mobileMountSetUnchanged(pages)) {
+        this.refresh("view-scroll-mobile");
+      }
       return;
     }
     if (this.mobileScrollRefreshFrame !== null) {
-      view.cancelAnimationFrame(this.mobileScrollRefreshFrame);
-      this.mobileScrollRefreshFrame = null;
+      return;
     }
     const burst = ++this.mountBurst;
     if (this.zoomProfile) this.zoomProfile.mobileRefreshFramesScheduled += 1;
@@ -3473,6 +3475,10 @@ export class ViewerInkSession {
       if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
         this.markPendingMobileScrollRemount();
         if (this.zoomProfile) this.zoomProfile.mobileRefreshDeferred += 1;
+        return;
+      }
+      const pages = this.pagesForInkMount();
+      if (this.mobileMountSetUnchanged(pages)) {
         return;
       }
       if (this.zoomProfile) this.zoomProfile.mobileRefreshExecutions += 1;
@@ -6845,28 +6851,12 @@ export class ViewerInkSession {
     if (this.deferRefreshDuringZoom(reason)) return;
 
     const pages = this.pagesForInkMount();
-    // Scroll settle: layout-only when mount set already matches — avoid invalidate/repaint storm.
+    // Scroll settle: skip work when mount set already matches — avoid invalidate/repaint/refresh storm.
     if (
       (reason === "view-scroll-mobile" || reason === "view-pagechanging")
       && this.runtimePlatform().mobile
       && this.mobileMountSetUnchanged(pages)
     ) {
-      for (const page of pages) {
-        const surface = this.surfaces.get(page.pageNumber);
-        if (!surface) continue;
-        if (surface.page.element !== page.element) {
-          this.remountSurfaceOnPageReplacement(surface, page);
-          continue;
-        }
-        surface.page = page;
-        this.syncOverlayLayout(surface);
-        this.ensurePageRouter(surface, { reason: `${reason}-skip-unchanged` });
-      }
-      this.logger.refresh(`${reason}-skip-unchanged`, {
-        selected: this.selected.length,
-        surfaces: this.surfaces.size,
-        mountPages: pages.map((page) => page.pageNumber)
-      });
       return;
     }
 
@@ -9637,6 +9627,7 @@ export class ViewerInkSession {
       && this.mouseInkingEnabled()
       && (isInkDrawTool(tool) || tool === "eraser");
     this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
+    this.options.adapter.root.classList.toggle("native-pdf-handwriting-drag-tool", !forceOff && tool === "drag");
   }
 
   private isEffectiveDrawTool(tool: ToolId): boolean {
@@ -9687,9 +9678,11 @@ export class ViewerInkSession {
 
   /** Apply transient pen hit policy; never permanently disable PDF.js text/annotation layers. */
   private syncTouchDrawPolicy(reason: string): void {
+    const tool = this.activeTool();
     const penHit = this.hasActivePenCapability();
     const fallbackHit = this.touchAnnotationEnabled();
-    const annotationHit = penHit || fallbackHit;
+    const isDrag = tool === "drag";
+    const annotationHit = penHit || fallbackHit || isDrag;
     for (const surface of this.surfaces.values()) {
       this.applyTouchDrawPolicy(surface.page.element, annotationHit);
       this.ensurePageRouter(surface);
@@ -9727,7 +9720,8 @@ export class ViewerInkSession {
       "native-pdf-handwriting-touch-none",
       "native-pdf-handwriting-touch-pan-xy",
       "native-pdf-handwriting-touch-custom-pinch",
-      "native-pdf-handwriting-pen-capturing"
+      "native-pdf-handwriting-pen-capturing",
+      "native-pdf-handwriting-panning"
     );
     const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
     for (const layer of layers) {
