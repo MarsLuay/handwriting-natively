@@ -5,6 +5,7 @@ vi.mock("obsidian", async () => {
   return { ...actual, Plugin: class {}, PluginSettingTab: class {} };
 });
 import NativePdfInkPlugin, { scheduleSessionRecoveryAfterDestroy } from "../src/main";
+import { MobileSidebarSwipeBlocker } from "../src/input/MobileSidebarSwipeBlocker";
 import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from "../src/runtime/AnnotationSurface";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation, type ToolbarPlacement } from "../src/model";
@@ -141,6 +142,61 @@ function createScanSchedulerHarness(
   harness.scanPdfEmbeds = vi.fn();
   return harness;
 }
+
+describe("mobile swipe blocker lifecycle", () => {
+  it("removes touch and pointer listeners when the plugin unloads", () => {
+    const blocker = new MobileSidebarSwipeBlocker(document);
+    blocker.setEnabled(true);
+    const plugin = Object.create(NativePdfInkPlugin.prototype) as NativePdfInkPlugin;
+    Object.assign(plugin, {
+      sidebarSwipeBlocker: blocker,
+      scanDebounce: { clear: vi.fn() },
+      attachRetry: { clearAll: vi.fn() },
+      attachingLeaves: new Set(),
+      replacementAttachLeaves: new Set(),
+      missingSessionRecoveryLeaves: new Set(),
+      lastMissingRecoveryWakeKey: "",
+      pendingAddPageRestore: new Map(),
+      embedChrome: new Map(),
+      sessions: new Map(),
+      vaultDebugLog: { destroy: vi.fn() },
+      emergencyPersistAllSessions: vi.fn()
+    });
+
+    const dispatchTouch = (type: "touchstart" | "touchmove", x: number, y: number): Event => {
+      const event = new Event(type, { bubbles: true, cancelable: type === "touchmove" });
+      const touches = [{ identifier: 1, clientX: x, clientY: y, target: document.body }];
+      Object.defineProperty(event, "touches", { value: touches });
+      Object.defineProperty(event, "changedTouches", { value: touches });
+      document.dispatchEvent(event);
+      return event;
+    };
+    const dispatchPointer = (type: "pointerdown" | "pointermove", x: number): Event => {
+      const event = new Event(type, { bubbles: true, cancelable: type === "pointermove" });
+      Object.defineProperties(event, {
+        pointerType: { value: "touch" },
+        pointerId: { value: 1 },
+        clientX: { value: x },
+        clientY: { value: 100 }
+      });
+      document.dispatchEvent(event);
+      return event;
+    };
+
+    dispatchTouch("touchstart", 10, 100);
+    expect(dispatchTouch("touchmove", 60, 108).defaultPrevented).toBe(true);
+    dispatchPointer("pointerdown", 10);
+    expect(dispatchPointer("pointermove", 60).defaultPrevented).toBe(true);
+
+    plugin.onunload();
+    expect(Reflect.get(plugin, "sidebarSwipeBlocker")).toBeNull();
+
+    dispatchTouch("touchstart", 10, 100);
+    expect(dispatchTouch("touchmove", 60, 108).defaultPrevented).toBe(false);
+    dispatchPointer("pointerdown", 10);
+    expect(dispatchPointer("pointermove", 60).defaultPrevented).toBe(false);
+  });
+});
 
 function pointer(
   type: string,

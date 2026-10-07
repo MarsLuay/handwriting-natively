@@ -423,7 +423,8 @@ class PhysicalContactCollector {
     const duplicateObserverOwnerIds = args.observers
       .filter((owner) => owner !== args.selected)
       .map(({ ownerId }) => ownerId);
-    if (args.alreadySeen || duplicateObserverOwnerIds.length > 0) {
+    const isMove = args.eventType === "pointermove" || args.eventType === "touchmove";
+    if (!isMove && duplicateObserverOwnerIds.length > 0) {
       const anomalyKey = this.anomalyKey(args.eventType, args.pointerId, args.touchIdentifiers, args.eventTimeStamp, args.event.target);
       if (!this.duplicateAnomalies.has(anomalyKey)) {
         this.duplicateAnomalies.set(anomalyKey, Date.now());
@@ -431,7 +432,7 @@ class PhysicalContactCollector {
         args.selected.onPhysicalContactDuplicate({
           collectorId: this.collectorId,
           ownerCollectorId: args.selected.ownerId,
-          duplicateCollectorIds: duplicateObserverOwnerIds.length > 0 ? duplicateObserverOwnerIds : [this.collectorId],
+          duplicateCollectorIds: duplicateObserverOwnerIds,
           duplicateObserverOwnerIds,
           sessionId: args.selected.sessionId,
           viewerGeneration: args.selected.viewerGeneration,
@@ -510,10 +511,30 @@ class PhysicalContactCollector {
   }
 
   private pointerKey(event: PointerEvent, eventType: PointerEventType): string {
+    if (eventType === "pointermove") {
+      return [
+        eventType,
+        event.pointerId,
+        event.timeStamp,
+        event.clientX,
+        event.clientY,
+        getDebugNodeId(event.target) ?? "-"
+      ].join("|");
+    }
     return this.anomalyKey(eventType, event.pointerId, [], event.timeStamp, event.target);
   }
 
   private touchKey(event: TouchEvent, eventType: TouchEventType, identifiers: readonly number[]): string {
+    if (eventType === "touchmove") {
+      const first = event.changedTouches[0];
+      return [
+        eventType,
+        identifiers.join(","),
+        event.timeStamp,
+        first ? `${first.clientX},${first.clientY}` : "-",
+        getDebugNodeId(event.target) ?? "-"
+      ].join("|");
+    }
     return this.anomalyKey(eventType, null, identifiers, event.timeStamp, event.target);
   }
 

@@ -704,6 +704,16 @@
 .native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-selection-toolbar button {
   cursor: pointer;
 }
+.native-pdf-handwriting-drag-tool,
+.native-pdf-handwriting-drag-tool .page,
+.native-pdf-handwriting-drag-tool .page * {
+  cursor: grab;
+}
+.native-pdf-handwriting-drag-tool .native-pdf-handwriting-toolbar button,
+.native-pdf-handwriting-drag-tool .native-pdf-handwriting-toolbar .clickable-icon,
+.native-pdf-handwriting-drag-tool .native-pdf-handwriting-selection-toolbar button {
+  cursor: pointer;
+}
 .native-pdf-handwriting-panning { cursor: grabbing; }
 .native-pdf-handwriting-panning * { cursor: grabbing; }
 

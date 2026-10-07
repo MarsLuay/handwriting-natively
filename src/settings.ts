@@ -338,23 +338,12 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             }
           },
           {
-            name: "Disable one-finger sidebar swipe",
-            desc: "Prevent one-finger horizontal swipes on mobile/iPad from opening Obsidian's left or right sidebar. Off by default; buttons and commands still work.",
+            name: "Disable swipe-activated sidebars",
+            desc: "Prevent one-finger swipe gestures from opening Obsidian’s left sidebar, right sidebar, or command palette on mobile/iPad. Buttons and normal commands still work.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.disableSidebarSwipe).onChange(async (value) => {
-                  await this.persistPatch({ disableSidebarSwipe: value });
-                })
-              );
-            }
-          },
-          {
-            name: "Disable one-finger command palette swipe",
-            desc: "Prevent a one-finger downward swipe from the top edge on mobile/iPad from opening Obsidian's command palette. Off by default; normal page scrolling remains native.",
-            render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.disableCommandPaletteSwipe).onChange(async (value) => {
-                  await this.persistPatch({ disableCommandPaletteSwipe: value });
+                toggle.setValue(this.host.inkSettings.disableSwipeNavigation).onChange(async (value) => {
+                  await this.persistPatch({ disableSwipeNavigation: value });
                 })
               );
             }
