@@ -10049,6 +10049,14 @@ export class ViewerInkSession {
     if (this.destroyed) return true;
     this.ipadInputTrace?.release();
     this.stopFrameProfileSampling();
+    // Stop coordinator-driven mount work before any persistence/close await.
+    this.lifecycleVisibilityUnsubscribe?.();
+    this.lifecycleVisibilityUnsubscribe = null;
+    if (this.lifecycleInkReconcileFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.lifecycleInkReconcileFrame);
+      this.lifecycleInkReconcileFrame = null;
+    }
+    this.pendingLifecycleInkReconcile = false;
     // Remove document-level probes before any persistence/close await so a
     // registry removal cannot leave a stale session observing the next event.
     this.revokeDocumentInputOwnership("released");
