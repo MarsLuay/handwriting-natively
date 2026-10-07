@@ -25,3 +25,11 @@ Profile dense-page erasing and lasso resize/clipboard behavior on large document
 Paths: `docs/current-limitations.md`, `src/ink/`, `src/tools/`
 
 Checks: profile dense pages; profile lasso resize and clipboard behavior.
+
+## unified-gesture-navigation — pending
+
+Centralize touch, pinch, hand-tool, and modifier-wheel navigation and provide a movable toolbar fallback when a sidebar rail is unavailable.
+
+Paths: `src/input/GestureNavigationController.ts`, `src/input/PointerRouter.ts`, `src/runtime/ViewerInkSession.ts`, `docs/input-gesture-architecture.md`
+
+Checks: focused gesture, sidebar, settings, and toolbar fallback tests; `npm test`; `npm run lint`; `npm run build` when the shared generated `main.js` is no longer being edited.

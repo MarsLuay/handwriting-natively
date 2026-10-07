@@ -1,9 +1,34 @@
-import type { AnnotationSurface, AnnotationSurfaceCallbacks, AnnotationViewState } from "../runtime/AnnotationSurface";
+import type { AnnotationSurface, AnnotationSurfaceCallbacks, AnnotationViewState, ViewerState } from "../runtime/AnnotationSurface";
 import type { InkStroke, ToolbarPlacement } from "../model";
+import type { PageLifecycleCoordinator } from "../runtime/PageLifecycleCoordinator";
 import type { PdfFindControllerLike, PdfIntegrationProfile, PdfJsEventBus } from "./PdfViewerCompatibility";
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import type { PdfPageInfo } from "./PdfPageLocator";
 import type { MobilePdfZoomHandoff } from "./MobilePdfZoomHandoff";
+
+export type {
+  PageLifecycleCoordinator,
+  ManagedPageRecord,
+  PageLifecycleStage,
+  PageVisibility,
+  PagePriority,
+  PageLayerStatus,
+  InkOverlayStatus,
+  PageLifecycleChangeEvent,
+  PageLifecycleListener
+} from "../runtime/PageLifecycleCoordinator";
+import type { RenderScheduler } from "../runtime/RenderScheduler";
+
+export type {
+  RenderScheduler,
+  RenderPriority,
+  RenderPhase,
+  RenderJob,
+  RenderAbortSignal,
+  RenderMemoryBudget,
+  RenderedPageRecord,
+  RenderSchedulerOptions
+} from "../runtime/RenderScheduler";
 
 /** Compatibility aliases for PDF-only adapters and integrations. */
 export type PdfViewState = AnnotationViewState;
@@ -20,6 +45,8 @@ export type PdfInkPreviewProvider = (pageNumber: number) => PdfInkPreview;
 /** Optional PDF-only capabilities; generic annotation surfaces do not implement this contract. */
 export interface PdfSurfaceExtensions {
   readonly supportsPdfExport?: true;
+  readonly lifecycleCoordinator?: PageLifecycleCoordinator;
+  readonly renderScheduler?: RenderScheduler;
   nativeTextLayer?(pageNumber: number): HTMLElement | null;
   findController?(): PdfFindControllerLike | null;
   eventBus?(): PdfJsEventBus | null;
@@ -76,7 +103,7 @@ export interface ObsidianPdfAdapter extends AnnotationSurface, PdfSurfaceExtensi
   /** O(1) page lookup — prefer over `pages()` when only a few mounts are needed. */
   page(pageNumber: number): PdfPageInfo | undefined;
   getViewState(): PdfViewState;
-  restoreViewState(state: PdfViewState): void;
+  restoreViewState(state: PdfViewState | ViewerState): void;
   /** Brings one native PDF.js page into view without restoring an old scroll offset. */
   focusPage(pageNumber: number): boolean;
   scrollElement(): HTMLElement;
