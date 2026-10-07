@@ -2,8 +2,21 @@ import type { App, TFile } from "obsidian";
 import type { InkStroke, ToolbarPlacement } from "../model";
 import type {
   AnnotationSurfaceCallbacks,
-  AnnotationViewState
+  AnnotationViewState,
+  ViewerState,
+  ViewerScaleMode
 } from "../runtime/AnnotationSurface";
+import { normalizeScaleMode } from "../runtime/ViewerState";
+import {
+  PageLifecycleCoordinator,
+  type ManagedPageRecord
+} from "../runtime/PageLifecycleCoordinator";
+import {
+  RenderScheduler,
+  type RenderPriority,
+  type RenderJob,
+  type RenderAbortSignal
+} from "../runtime/RenderScheduler";
 import { setElementCssProps } from "../dom/typeGuards";
 import type { PdfIntegrationProfile } from "./PdfViewerCompatibility";
 import type { PdfPageInfo } from "./PdfPageLocator";
@@ -212,12 +225,11 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private readonly pdfDocument: PdfJsDocumentProxy;
   private readonly sourceData: Uint8Array;
   private readonly loadingTask: { destroy?(): Promise<void> | void };
+  readonly lifecycleCoordinator: PageLifecycleCoordinator;
+  readonly renderScheduler: RenderScheduler;
   private readonly pagesByNumber = new Map<number, OwnedPage>();
   private readonly mounted = new Set<HTMLElement>();
   private readonly cleanups: Array<() => void> = [];
-  private readonly pendingRenders = new Map<number, Promise<void>>();
-  private readonly visiblePages = new Set<number>();
-  private intersectionObserver: IntersectionObserver | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private lifecycleGeneration = 0;
   private thumbnailGeneration = 0;
@@ -225,7 +237,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private scale = DEFAULT_SCALE;
   private rotation = 0;
   private currentPageNumber = 1;
-  private currentScaleMode: string | number = "auto";
+  private currentScaleMode: ViewerScaleMode = "fit-width";
   private zoomTimer: number | null = null;
   private layoutFrame: number | null = null;
   private readonly toolbarHost: HTMLElement;
@@ -255,11 +267,6 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private findMatches: Array<{ pageNumber: number; offset: number }> = [];
   private findIndex = -1;
   private handToolActive = false;
-  private handPointerId: number | null = null;
-  private handStartX = 0;
-  private handStartY = 0;
-  private handScrollLeft = 0;
-  private handScrollTop = 0;
 
   private constructor(
     options: PdfJsViewAdapterOptions,
@@ -278,6 +285,19 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.root.tabIndex = 0;
     this.root.setAttribute("role", "document");
     this.root.setAttribute("aria-label", options.file.name);
+    this.lifecycleCoordinator = new PageLifecycleCoordinator({
+      neighborRadius: RENDER_NEIGHBOR_RADIUS,
+      totalPages: this.pdfDocument.numPages,
+      initialActivePage: 1,
+      onRenderRequested: (pageNumber) => this.queuePageRender(pageNumber),
+      onEvictPage: (record) => this.performPageEviction(record)
+    });
+    this.renderScheduler = new RenderScheduler({
+      coordinator: this.lifecycleCoordinator,
+      executeRender: (job, signal) => this.executePageRender(job, signal),
+      onEvict: (pageNumber) => this.performPageEvictionByNumber(pageNumber),
+      getDevicePixelRatio: () => Math.max(1, Math.min(3, this.root.ownerDocument.defaultView?.devicePixelRatio ?? 1))
+    });
     this.toolbarHost = createElement(ownerDocument, "div", "hn-owned-pdf-toolbar-host");
     this.toolbarHost.setAttribute("role", "toolbar");
     this.toolbarHost.setAttribute("aria-label", "PDF navigation");
@@ -319,7 +339,6 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.installControls(ownerDocument);
     this.installScrollTracking();
     this.installKeyboardNavigation();
-    this.installHandToolInteraction();
     this.installIntersectionObserver();
     this.installResizeObserver();
   }
@@ -356,11 +375,12 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     }
     const firstOwnedPage = this.pagesByNumber.get(1);
     if (firstOwnedPage) firstOwnedPage.page = first;
-    await this.loadPage(1);
-    const preloadPages = this.intersectionObserver
+    this.renderScheduler.setDocumentGeometry(this.pdfDocument.numPages, this.scale, this.rotation, 1);
+    await this.renderScheduler.requestPage(1, "immediate");
+    const preloadPages = typeof IntersectionObserver === "function"
       ? [2, 3].filter((value) => value <= this.pdfDocument.numPages)
       : Array.from({ length: Math.min(8, this.pdfDocument.numPages) }, (_, index) => index + 1);
-    for (const pageNumber of preloadPages) this.queuePageRender(pageNumber);
+    for (const pageNumber of preloadPages) this.queuePageRender(pageNumber, "high");
     await this.loadOutline();
     this.callbacks.onPagesChanged?.("pdfjs-document-ready");
     this.emitViewState("pages-dom");
@@ -377,6 +397,12 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     const annotationLayer = createElement(ownerDocument, "div", "hn-owned-pdf-annotation-layer");
     annotationLayer.setAttribute("aria-label", `PDF annotations on page ${pageNumber}`);
     shell.append(canvas, textLayer, annotationLayer);
+    const record = this.lifecycleCoordinator.registerPage({
+      pageNumber,
+      shell,
+      naturalWidth,
+      naturalHeight
+    });
     const page: OwnedPage = {
       pageNumber,
       shell,
@@ -386,15 +412,14 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       naturalWidth,
       naturalHeight,
       renderTask: undefined,
-      generation: 1,
-      mountGeneration: 1,
+      generation: record.generation,
+      mountGeneration: record.mountGeneration,
       renderedAtScale: undefined,
       renderedAtRotation: undefined,
       renderQueued: false
     };
     this.pagesByNumber.set(pageNumber, page);
     this.pageContainer.append(shell);
-    this.intersectionObserver?.observe(shell);
     setPixelSize(shell, naturalWidth * this.scale, naturalHeight * this.scale);
     if (pageNumber < this.pdfDocument.numPages) {
       const gap = createElement(ownerDocument, "div", "hn-owned-pdf-page-gap");
@@ -478,7 +503,11 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   }
 
   private installScrollTracking(): void {
-    const onScroll = (): void => { this.scheduleLayoutUpdate(); this.emitViewState("scroll"); };
+    const onScroll = (): void => {
+      this.renderScheduler.notifyScrollPosition(this.scroll.scrollTop, this.scroll.scrollLeft);
+      this.scheduleLayoutUpdate();
+      this.emitViewState("scroll");
+    };
     this.scroll.addEventListener("scroll", onScroll, { passive: true });
     this.cleanups.push(() => this.scroll.removeEventListener("scroll", onScroll));
   }
@@ -511,21 +540,9 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   private installIntersectionObserver(): void {
     if (typeof IntersectionObserver !== "function") return;
-    this.intersectionObserver = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        const pageNumber = Number((entry.target as HTMLElement).dataset.pageNumber);
-        if (entry.isIntersecting || entry.intersectionRatio > 0) {
-          this.visiblePages.add(pageNumber);
-          this.queuePageRender(pageNumber);
-        } else {
-          this.visiblePages.delete(pageNumber);
-        }
-      }
-      this.evictOffscreenPages();
-    }, { root: this.scroll, rootMargin: "800px 0px" });
+    this.lifecycleCoordinator.installIntersectionObserver(this.scroll, { rootMargin: "800px 0px" });
     this.cleanups.push(() => {
-      this.intersectionObserver?.disconnect();
-      this.visiblePages.clear();
+      this.lifecycleCoordinator.disconnectObserver();
     });
   }
 
@@ -549,6 +566,8 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       }
       if (pageNumber !== this.currentPageNumber) {
         this.currentPageNumber = pageNumber;
+        this.lifecycleCoordinator.setActivePage(pageNumber);
+        this.renderScheduler.setDocumentGeometry(this.pdfDocument.numPages, this.scale, this.rotation, pageNumber);
         this.updatePageIndicator();
         this.emitViewState("scroll");
       }
@@ -563,7 +582,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   }
 
   private updateZoomControl(): void {
-    const selected = this.currentScaleMode === "auto" ? "auto" : String(this.scale);
+    const selected = (this.currentScaleMode === "fit-width" || this.currentScaleMode === "fit-page") ? "auto" : String(this.scale);
     const option = [...this.zoomSelect.options].find((candidate) => candidate.value === selected);
     this.zoomSelect.value = option ? selected : "auto";
   }
@@ -573,7 +592,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   }
 
   private invalidatePage(page: OwnedPage): void {
-    page.generation += 1;
+    page.generation = this.lifecycleCoordinator.bumpGeneration(page.pageNumber);
     page.renderedAtScale = undefined;
     page.renderedAtRotation = undefined;
     page.renderTask?.cancel?.();
@@ -583,23 +602,41 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   }
 
   private evictOffscreenPages(): void {
-    const keep = new Set([...this.visiblePages, ...this.nearbyPages()]);
-    for (const page of this.pagesByNumber.values()) {
-      if (keep.has(page.pageNumber) || page.renderedAtScale === undefined) continue;
-      page.renderedAtScale = undefined;
-      page.renderedAtRotation = undefined;
-      page.generation += 1;
-      page.renderTask?.cancel?.();
-      page.renderTask = undefined;
-      page.textLayer.replaceChildren();
-      page.annotationLayer.replaceChildren();
-      page.canvas.width = 1;
-      page.canvas.height = 1;
-    }
+    this.lifecycleCoordinator.evictOffscreenPages((record) => this.performPageEviction(record));
   }
 
-  private queuePageRender(pageNumber: number): void {
-    void this.loadPage(pageNumber).catch((error: unknown) => {
+  private performPageEvictionByNumber(pageNumber: number): void {
+    const page = this.pagesByNumber.get(pageNumber);
+    if (!page) return;
+    page.renderedAtScale = undefined;
+    page.renderedAtRotation = undefined;
+    page.generation = this.lifecycleCoordinator.bumpGeneration(pageNumber);
+    page.renderTask?.cancel?.();
+    page.renderTask = undefined;
+    page.textLayer.replaceChildren();
+    page.annotationLayer.replaceChildren();
+    page.canvas.width = 1;
+    page.canvas.height = 1;
+    this.lifecycleCoordinator.markEvicted(pageNumber);
+  }
+
+  private performPageEviction(record: ManagedPageRecord): void {
+    const page = this.pagesByNumber.get(record.pageNumber);
+    if (!page) return;
+    this.renderScheduler.evictPage(record.pageNumber, false);
+    page.renderedAtScale = undefined;
+    page.renderedAtRotation = undefined;
+    page.generation = record.generation;
+    page.renderTask?.cancel?.();
+    page.renderTask = undefined;
+    page.textLayer.replaceChildren();
+    page.annotationLayer.replaceChildren();
+    page.canvas.width = 1;
+    page.canvas.height = 1;
+  }
+
+  private queuePageRender(pageNumber: number, priority?: RenderPriority): void {
+    void this.renderScheduler.requestPage(pageNumber, priority).catch((error: unknown) => {
       if (this.destroyed || (error instanceof Error && /cancel/i.test(error.message))) return;
       this.callbacks.onDebugLog?.("warn", "pdfjs-page-render-failed", {
         pageNumber,
@@ -608,66 +645,87 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     });
   }
 
-  private async loadPage(pageNumber: number): Promise<void> {
+  private async executePageRender(job: RenderJob, signal: RenderAbortSignal): Promise<void> {
     const lifecycleGeneration = this.lifecycleGeneration;
-    if (!this.isAlive(lifecycleGeneration)) return;
-    const page = this.pagesByNumber.get(pageNumber);
-    if (!page || page.renderQueued || (page.renderedAtScale === this.scale && page.renderedAtRotation === this.rotation)) return;
-    const pending = this.pendingRenders.get(pageNumber);
-    if (pending) return pending;
-    page.renderQueued = true;
+    if (!this.isAlive(lifecycleGeneration) || signal.aborted) return;
+    const page = this.pagesByNumber.get(job.pageNumber);
+    if (!page) return;
+
     let task: PdfJsRenderTask | undefined;
-    let work!: Promise<void>;
-    work = (async () => {
-      const generation = page.generation;
-      try {
-        if (!this.isAlive(lifecycleGeneration)) return;
-        if (!page.page) page.page = await this.pdfDocument.getPage(pageNumber);
-        if (!this.isAlive(lifecycleGeneration) || generation !== page.generation) return;
-        const canonicalViewport = page.page.getViewport({ scale: 1, rotation: 0 });
-        const viewport = page.page.getViewport({ scale: this.scale, rotation: this.rotation });
-        page.viewport = viewport;
-        page.naturalWidth = Math.max(1, canonicalViewport.width);
-        page.naturalHeight = Math.max(1, canonicalViewport.height);
-        setPixelSize(page.shell, viewport.width, viewport.height);
-        const dpr = Math.max(1, Math.min(3, this.root.ownerDocument.defaultView?.devicePixelRatio ?? 1));
-        page.canvas.width = Math.max(1, Math.ceil(viewport.width * dpr));
-        page.canvas.height = Math.max(1, Math.ceil(viewport.height * dpr));
-        setElementCssProps(page.canvas, { width: `${viewport.width}px`, height: `${viewport.height}px` });
-        const context = page.canvas.getContext("2d");
-        if (!context) throw new Error(`PDF.js canvas context unavailable for page ${pageNumber}`);
-        if (!this.isAlive(lifecycleGeneration) || generation !== page.generation) return;
-        task = dpr === 1
-          ? page.page.render({ canvasContext: context, viewport })
-          : page.page.render({ canvasContext: context, viewport, transform: [dpr, 0, 0, dpr, 0, 0] });
-        page.renderTask = task;
-        await task.promise;
-        if (!this.isAlive(lifecycleGeneration) || generation !== page.generation || page.viewport !== viewport) return;
-        await this.renderTextLayer(page, viewport, generation);
-        await this.renderAnnotationLayer(page, viewport, generation);
-        if (!this.isAlive(lifecycleGeneration) || generation !== page.generation) return;
-        page.renderedAtScale = this.scale;
-        page.renderedAtRotation = this.rotation;
-        this.callbacks.onPageLifecycleChange?.({
-          kind: "render", viewerGeneration: this.viewerGeneration, pageNumbers: [pageNumber],
-          mountGenerations: { [String(pageNumber)]: page.mountGeneration }, signalAt: Date.now()
-        });
-        this.evictOffscreenPages();
-      } finally {
-        const current = this.pendingRenders.get(pageNumber) === work;
-        if (page.renderTask === task) page.renderTask = undefined;
-        if (current) {
-          page.renderQueued = false;
-          this.pendingRenders.delete(pageNumber);
-          if (this.isAlive(lifecycleGeneration)
-            && (page.renderedAtScale !== this.scale || page.renderedAtRotation !== this.rotation)) {
-            this.queuePageRender(pageNumber);
-          }
-        }
+    const generation = page.generation;
+    try {
+      if (!this.isAlive(lifecycleGeneration) || signal.aborted) return;
+      if (!page.page) page.page = await this.pdfDocument.getPage(job.pageNumber);
+      if (!this.isAlive(lifecycleGeneration) || signal.aborted || generation !== page.generation) return;
+
+      const canonicalViewport = page.page.getViewport({ scale: 1, rotation: 0 });
+      const viewport = page.page.getViewport({ scale: job.scale, rotation: job.rotation });
+      page.viewport = viewport;
+      page.naturalWidth = Math.max(1, canonicalViewport.width);
+      page.naturalHeight = Math.max(1, canonicalViewport.height);
+      setPixelSize(page.shell, viewport.width, viewport.height);
+
+      const dpr = job.dpr;
+      page.canvas.width = Math.max(1, Math.ceil(viewport.width * dpr));
+      page.canvas.height = Math.max(1, Math.ceil(viewport.height * dpr));
+      setElementCssProps(page.canvas, { width: `${viewport.width}px`, height: `${viewport.height}px` });
+      const context = page.canvas.getContext("2d");
+      if (!context) throw new Error(`PDF.js canvas context unavailable for page ${job.pageNumber}`);
+      if (!this.isAlive(lifecycleGeneration) || signal.aborted || generation !== page.generation) return;
+
+      this.lifecycleCoordinator.beginPdfRaster(job.pageNumber);
+      task = dpr === 1
+        ? page.page.render({ canvasContext: context, viewport })
+        : page.page.render({ canvasContext: context, viewport, transform: [dpr, 0, 0, dpr, 0, 0] });
+      let taskCancelled = false;
+      const cancelTask = (): void => {
+        if (taskCancelled) return;
+        taskCancelled = true;
+        task?.cancel?.();
+      };
+      page.renderTask = {
+        promise: task.promise,
+        cancel: cancelTask
+      };
+
+      signal.onAbort(cancelTask);
+      if (signal.aborted) {
+        cancelTask();
       }
-    })();
-    this.pendingRenders.set(pageNumber, work);
-    return work;
+
+      await task.promise;
+      if (!this.isAlive(lifecycleGeneration) || signal.aborted || generation !== page.generation || page.viewport !== viewport) {
+        this.lifecycleCoordinator.finishPdfRaster(job.pageNumber, false);
+        return;
+      }
+      this.lifecycleCoordinator.finishPdfRaster(job.pageNumber, true);
+      this.lifecycleCoordinator.beginTextLayer(job.pageNumber);
+      await this.renderTextLayer(page, viewport, generation);
+      this.lifecycleCoordinator.finishTextLayer(job.pageNumber, true);
+      this.lifecycleCoordinator.beginAnnotationLayer(job.pageNumber);
+      await this.renderAnnotationLayer(page, viewport, generation);
+      this.lifecycleCoordinator.finishAnnotationLayer(job.pageNumber, true);
+
+      if (!this.isAlive(lifecycleGeneration) || signal.aborted || generation !== page.generation) return;
+      page.renderedAtScale = job.scale;
+      page.renderedAtRotation = job.rotation;
+      this.lifecycleCoordinator.setRenderedGeometry(job.pageNumber, job.scale, job.rotation);
+      this.callbacks.onPageLifecycleChange?.({
+        kind: "render", viewerGeneration: this.viewerGeneration, pageNumbers: [job.pageNumber],
+        mountGenerations: { [String(job.pageNumber)]: page.mountGeneration }, signalAt: Date.now()
+      });
+      this.evictOffscreenPages();
+    } catch (error) {
+      this.lifecycleCoordinator.finishPdfRaster(job.pageNumber, false);
+      if (signal.aborted || (error instanceof Error && /cancel/i.test(error.message))) {
+        return;
+      }
+      throw error;
+    } finally {
+      if (page.renderTask?.promise === task?.promise) {
+        page.renderTask = undefined;
+      }
+    }
   }
 
   private async renderTextLayer(page: OwnedPage, viewport: PdfJsViewport, generation: number): Promise<void> {
@@ -953,18 +1011,13 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   }
 
   private nearbyPages(): number[] {
-    const result = new Set<number>([this.currentPageNumber]);
-    for (let offset = 1; offset <= RENDER_NEIGHBOR_RADIUS; offset += 1) {
-      if (this.currentPageNumber - offset >= 1) result.add(this.currentPageNumber - offset);
-      if (this.currentPageNumber + offset <= this.pdfDocument.numPages) result.add(this.currentPageNumber + offset);
-    }
-    return [...result];
+    return this.lifecycleCoordinator.getWorkingSet();
   }
 
-  private setScale(next: number, mode: string | number = "manual"): void {
+  private setScale(next: number, mode: ViewerScaleMode | string | number = "custom"): void {
     const previous = this.scale;
     this.scale = clampScale(next);
-    this.currentScaleMode = mode;
+    this.currentScaleMode = normalizeScaleMode(mode);
     if (Math.abs(previous - this.scale) < 0.001) {
       this.updateZoomControl();
       return;
@@ -974,9 +1027,11 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     const ratio = this.scale / previous;
     this.scroll.scrollLeft = centerX * ratio - this.scroll.clientWidth / 2;
     this.scroll.scrollTop = centerY * ratio - this.scroll.clientHeight / 2;
+    this.renderScheduler.notifyScale(this.scale, this.rotation);
     for (const page of this.pagesByNumber.values()) {
       this.invalidatePage(page);
       setPixelSize(page.shell, this.displayWidth(page) * this.scale, this.displayHeight(page) * this.scale);
+      setElementCssProps(page.canvas, { width: `${this.displayWidth(page) * this.scale}px`, height: `${this.displayHeight(page) * this.scale}px` });
     }
     this.updateZoomControl();
     this.callbacks.onZoomChange?.({ phase: "begin", scale: this.scale, source: "geometry", viewerGeneration: this.viewerGeneration });
@@ -984,7 +1039,10 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     if (this.zoomTimer !== null) window.clearTimeout(this.zoomTimer);
     this.zoomTimer = window.setTimeout(() => {
       this.zoomTimer = null;
-      if (!this.destroyed) this.callbacks.onZoomChange?.({ phase: "settled", scale: this.scale, source: "geometry", viewerGeneration: this.viewerGeneration });
+      if (!this.destroyed) {
+        this.callbacks.onZoomChange?.({ phase: "settled", scale: this.scale, source: "geometry", viewerGeneration: this.viewerGeneration });
+        this.renderScheduler.notifySettled();
+      }
     }, 120);
     this.emitViewState("scalechanging");
   }
@@ -992,7 +1050,20 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private fitWidth(): void {
     const page = this.pagesByNumber.get(this.currentPageNumber);
     if (!page || page.naturalWidth <= 0) return;
-    this.setScale((this.scroll.clientWidth - 32) / this.displayWidth(page), "auto");
+    this.setScale((this.scroll.clientWidth - 32) / this.displayWidth(page), "fit-width");
+  }
+
+  private fitPage(): void {
+    const page = this.pagesByNumber.get(this.currentPageNumber);
+    if (!page || page.naturalWidth <= 0) return;
+    const availableWidth = this.scroll.clientWidth - 32;
+    const availableHeight = this.scroll.clientHeight - 32;
+    if (availableWidth <= 0 || availableHeight <= 0) return;
+    const scale = Math.min(
+      availableWidth / this.displayWidth(page),
+      availableHeight / this.displayHeight(page)
+    );
+    this.setScale(scale, "fit-page");
   }
 
   private displayWidth(page: OwnedPage): number {
@@ -1007,9 +1078,11 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     const next = normalizeRotation(nextRotation);
     if (next === this.rotation) return;
     this.rotation = next;
+    this.renderScheduler.notifyScale(this.scale, this.rotation);
     for (const page of this.pagesByNumber.values()) {
       this.invalidatePage(page);
       setPixelSize(page.shell, this.displayWidth(page) * this.scale, this.displayHeight(page) * this.scale);
+      setElementCssProps(page.canvas, { width: `${this.displayWidth(page) * this.scale}px`, height: `${this.displayHeight(page) * this.scale}px` });
     }
     this.thumbnailGeneration += 1;
     for (const task of this.thumbnailTasks) task.cancel?.();
@@ -1035,7 +1108,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   }
 
   private trimTextContentCache(): void {
-    const protectedPages = new Set([...this.visiblePages, this.currentPageNumber]);
+    const protectedPages = new Set(this.lifecycleCoordinator.getWorkingSet());
     for (const [pageNumber] of this.textContentByPage) {
       if (this.textContentByPage.size <= MAX_TEXT_CONTENT_CACHE_PAGES) break;
       if (protectedPages.has(pageNumber)) continue;
@@ -1150,41 +1223,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     if (match) this.focusPage(match.pageNumber);
   }
 
-  private installHandToolInteraction(): void {
-    const onPointerDown = (event: PointerEvent): void => {
-      if (!this.handToolActive || event.button !== 0 || event.isPrimary === false) return;
-      this.handPointerId = event.pointerId;
-      this.handStartX = event.clientX;
-      this.handStartY = event.clientY;
-      this.handScrollLeft = this.scroll.scrollLeft;
-      this.handScrollTop = this.scroll.scrollTop;
-      this.scroll.setPointerCapture?.(event.pointerId);
-      setElementCssProps(this.scroll, { cursor: "grabbing" });
-      event.preventDefault();
-    };
-    const onPointerMove = (event: PointerEvent): void => {
-      if (!this.handToolActive || this.handPointerId !== event.pointerId) return;
-      this.scroll.scrollLeft = this.handScrollLeft - (event.clientX - this.handStartX);
-      this.scroll.scrollTop = this.handScrollTop - (event.clientY - this.handStartY);
-      event.preventDefault();
-    };
-    const onPointerUp = (event: PointerEvent): void => {
-      if (this.handPointerId !== event.pointerId) return;
-      this.handPointerId = null;
-      this.scroll.releasePointerCapture?.(event.pointerId);
-      setElementCssProps(this.scroll, { cursor: this.handToolActive ? "grab" : "auto" });
-    };
-    this.scroll.addEventListener("pointerdown", onPointerDown, true);
-    this.scroll.addEventListener("pointermove", onPointerMove, true);
-    this.scroll.addEventListener("pointerup", onPointerUp, true);
-    this.scroll.addEventListener("pointercancel", onPointerUp, true);
-    this.cleanups.push(
-      () => this.scroll.removeEventListener("pointerdown", onPointerDown, true),
-      () => this.scroll.removeEventListener("pointermove", onPointerMove, true),
-      () => this.scroll.removeEventListener("pointerup", onPointerUp, true),
-      () => this.scroll.removeEventListener("pointercancel", onPointerUp, true)
-    );
-  }
+  
 
   private toggleHandTool(): void {
     this.handToolActive = !this.handToolActive;
@@ -1261,9 +1300,14 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     const page = this.pagesByNumber.get(pageNumber);
     return page ? this.pageInfo(page) : undefined;
   }
-  pageMountGeneration(pageNumber: number): number { return this.pagesByNumber.get(pageNumber)?.mountGeneration ?? 0; }
+  pageMountGeneration(pageNumber: number): number {
+    return this.lifecycleCoordinator.getRecord(pageNumber)?.mountGeneration
+      ?? this.pagesByNumber.get(pageNumber)?.mountGeneration
+      ?? 0;
+  }
 
   private pageInfo(page: OwnedPage): PdfPageInfo {
+    const record = this.lifecycleCoordinator.getRecord(page.pageNumber);
     return {
       pageNumber: page.pageNumber,
       width: Math.max(1, page.naturalWidth),
@@ -1272,7 +1316,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       rotation: this.rotation,
       coordinateOrigin: "bottom-left",
       element: page.shell,
-      mountGeneration: page.mountGeneration,
+      mountGeneration: record?.mountGeneration ?? page.mountGeneration,
       geometryConfidence: page.viewport ? "authoritative" : "derived",
       geometrySafe: page.shell.isConnected && Boolean(page.viewport),
       identityConfidence: "authoritative",
@@ -1281,44 +1325,69 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     };
   }
 
-  getViewState(): AnnotationViewState {
+  getViewState(): ViewerState & AnnotationViewState {
     const maxScroll = Math.max(1, this.scroll.scrollHeight - this.scroll.clientHeight);
+    const scrollFraction = Math.max(0, Math.min(1, this.scroll.scrollTop / maxScroll));
     return {
+      viewport: {
+        scale: this.scale,
+        x: this.scroll.scrollLeft,
+        y: this.scroll.scrollTop
+      },
       pageNumber: this.currentPageNumber,
-      scrollFraction: Math.max(0, Math.min(1, this.scroll.scrollTop / maxScroll)),
-      scale: this.scale,
       rotation: this.rotation,
-      scaleMode: this.currentScaleMode
+      scaleMode: this.currentScaleMode,
+      scrollFraction,
+      scale: this.scale
     };
   }
 
-  restoreViewState(state: AnnotationViewState): void {
+  restoreViewState(state: ViewerState | AnnotationViewState): void {
     const rotation = normalizeRotation(state.rotation);
     if (rotation !== this.rotation) this.setRotation(rotation);
-    const mode = state.scaleMode ?? "auto";
-    if (Number.isFinite(state.scale) && state.scale > 0) this.setScale(state.scale, mode);
-    else { this.currentScaleMode = mode; this.updateZoomControl(); }
+    const mode = normalizeScaleMode(state.scaleMode);
+    const scale = state.viewport?.scale ?? state.scale;
+    if (mode === "fit-width") {
+      this.fitWidth();
+    } else if (mode === "fit-page") {
+      this.fitPage();
+    } else if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) {
+      this.setScale(scale, mode);
+    } else {
+      this.currentScaleMode = mode;
+      this.updateZoomControl();
+    }
     this.currentPageNumber = Math.max(1, Math.min(this.pdfDocument.numPages, Math.round(state.pageNumber || 1)));
+    this.lifecycleCoordinator.setActivePage(this.currentPageNumber);
+    this.renderScheduler.setDocumentGeometry(this.pdfDocument.numPages, this.scale, this.rotation, this.currentPageNumber);
     const maxScroll = Math.max(0, this.scroll.scrollHeight - this.scroll.clientHeight);
-    this.scroll.scrollTop = maxScroll * Math.max(0, Math.min(1, state.scrollFraction));
+    if (state.viewport && (Number.isFinite(state.viewport.y) && state.viewport.y > 0 || Number.isFinite(state.viewport.x) && state.viewport.x > 0)) {
+      this.scroll.scrollTop = state.viewport.y;
+      this.scroll.scrollLeft = state.viewport.x;
+    } else if (typeof state.scrollFraction === "number" && Number.isFinite(state.scrollFraction)) {
+      this.scroll.scrollTop = maxScroll * Math.max(0, Math.min(1, state.scrollFraction));
+    }
     this.updatePageIndicator();
-    this.queuePageRender(this.currentPageNumber);
+    this.queuePageRender(this.currentPageNumber, "immediate");
   }
 
   focusPage(pageNumber: number): boolean {
     const page = this.pagesByNumber.get(pageNumber);
     if (!page) return false;
     this.currentPageNumber = pageNumber;
+    this.lifecycleCoordinator.setActivePage(pageNumber);
+    this.renderScheduler.setDocumentGeometry(this.pdfDocument.numPages, this.scale, this.rotation, pageNumber);
     page.shell.scrollIntoView?.({ block: "start" });
     this.updatePageIndicator();
-    this.queuePageRender(pageNumber);
+    this.queuePageRender(pageNumber, "immediate");
     this.emitViewState("scroll");
     return true;
   }
 
   onResize(): void {
     if (this.destroyed) return;
-    if (this.currentScaleMode === "auto") this.fitWidth();
+    if (this.currentScaleMode === "fit-width") this.fitWidth();
+    else if (this.currentScaleMode === "fit-page") this.fitPage();
     else this.scheduleLayoutUpdate();
   }
 
@@ -1334,6 +1403,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     setElementCssProps(overlay, { position: "absolute", inset: "0", pointerEvents: "none" });
     page.shell.append(overlay);
     this.mounted.add(overlay);
+    this.lifecycleCoordinator.setInkOverlayStatus(pageNumber, "mounting");
     return overlay;
   }
 
@@ -1376,7 +1446,8 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     const view = this.root.ownerDocument.defaultView;
     if (this.zoomTimer !== null) (view?.clearTimeout ?? window.clearTimeout)(this.zoomTimer);
     if (this.layoutFrame !== null) view?.cancelAnimationFrame(this.layoutFrame);
-    this.intersectionObserver?.disconnect();
+    this.lifecycleCoordinator.destroy();
+    this.renderScheduler.destroy();
     this.resizeObserver?.disconnect();
     this.thumbnailObserver?.disconnect();
     this.thumbnailObserver = null;
@@ -1393,9 +1464,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     for (const task of this.thumbnailTasks) task.cancel?.();
     this.thumbnailTasks.clear();
     for (const page of this.pagesByNumber.values()) { page.renderTask?.cancel?.(); page.page?.cleanup?.(); }
-    this.pendingRenders.clear();
     this.textContentByPage.clear();
-    this.visiblePages.clear();
     for (const cleanup of this.cleanups.splice(0).reverse()) cleanup();
     void this.pdfDocument.cleanup?.();
     void this.pdfDocument.destroy?.();
@@ -1404,4 +1473,3 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.root.remove();
   }
 }
-

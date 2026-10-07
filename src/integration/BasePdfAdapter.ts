@@ -4,7 +4,8 @@ import type { ViewStateSource } from "../logging/SessionLogger";
 import type {
   AnnotationPageContentMutation,
   AnnotationPageLifecycleChange,
-  AnnotationZoomChange
+  AnnotationZoomChange,
+  ViewerState
 } from "../runtime/AnnotationSurface";
 import type { ToolbarPlacement } from "../model";
 import type { ObsidianPdfAdapter, PdfAdapterCallbacks, PdfViewState } from "./ObsidianPdfAdapter";
@@ -257,6 +258,11 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       : (page?.scale ?? 1);
     const scaleMode = viewer?.currentScaleValue;
     return {
+      viewport: {
+        scale,
+        x: scroller.scrollLeft,
+        y: scroller.scrollTop
+      },
       pageNumber: page?.pageNumber ?? 1,
       scrollFraction: Math.max(0, Math.min(1, scroller.scrollTop / denominator)),
       scale,
@@ -308,23 +314,36 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     }
   }
 
-  restoreViewState(state: PdfViewState): void {
+  restoreViewState(state: PdfViewState | ViewerState): void {
     const viewer = this.compatibility.privateViewer;
+    const scale = state.viewport?.scale ?? state.scale;
     if (viewer) {
       try {
         if (state.rotation !== undefined) viewer.pagesRotation = state.rotation;
-        if (state.scaleMode !== undefined) viewer.currentScaleValue = state.scaleMode;
-        else if (Number.isFinite(state.scale) && state.scale > 0) viewer.currentScale = state.scale;
+        if (state.scaleMode !== undefined) {
+          if (state.scaleMode === "fit-width") viewer.currentScaleValue = "page-width";
+          else if (state.scaleMode === "fit-page") viewer.currentScaleValue = "page-fit";
+          else viewer.currentScaleValue = state.scaleMode;
+        } else if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) {
+          viewer.currentScale = scale;
+        }
       } catch {
         // Some Obsidian PDF.js builds expose a read-only scale property.
-        viewer.updateScale?.({ scaleFactor: state.scale });
+        if (typeof scale === "number" && Number.isFinite(scale)) {
+          viewer.updateScale?.({ scaleFactor: scale });
+        }
       }
     }
     const page = this.locator.page(state.pageNumber);
     page?.element.scrollIntoView?.({ block: "start" });
     const scroller = this.scrollElement();
-    const denominator = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-    scroller.scrollTop = denominator * Math.max(0, Math.min(1, state.scrollFraction));
+    if (state.viewport && (Number.isFinite(state.viewport.y) && state.viewport.y > 0 || Number.isFinite(state.viewport.x) && state.viewport.x > 0)) {
+      scroller.scrollTop = state.viewport.y;
+      scroller.scrollLeft = state.viewport.x;
+    } else if (typeof state.scrollFraction === "number" && Number.isFinite(state.scrollFraction)) {
+      const denominator = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      scroller.scrollTop = denominator * Math.max(0, Math.min(1, state.scrollFraction));
+    }
   }
 
   focusPage(pageNumber: number): boolean {

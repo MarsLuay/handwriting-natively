@@ -9,7 +9,7 @@ import {
   type AnnotationPageInfo,
   type AnnotationZoomChange
 } from "./AnnotationSurface";
-import { imageSurfaceExtensions, pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
+import { imageSurfaceExtensions, pdfSurfaceExtensions, type PageLifecycleCoordinator } from "../integration/ObsidianPdfAdapter";
 import { describeTarget } from "../dom/describeElement";
 import { PointerTypeOriginLog, pointerTypeOrigin, type PointerTypeListenerPhase } from "../input/PointerTypeOrigin";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
@@ -118,7 +118,12 @@ import { AddPageControl } from "../ui/AddPageControl";
 import { AddPageTiming } from "../ui/AddPageTiming";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, inkHotkeyCommand, type InkHotkeyCommand, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
-import { MobilePinchZoomController, type MobilePinchZoomFocalPoint, type MobilePinchZoomFrame } from "../input/MobilePinchZoomController";
+import {
+  GestureNavigationController,
+  type GestureNavigationEndReason,
+  type GestureNavigationFocalPoint,
+  type GestureNavigationFrame
+} from "../input/GestureNavigationController";
 import { HandwritingViewport, type HandwritingViewportState } from "../integration/HandwritingViewport";
 import { ViewerCommandController, type ViewerCommandHost } from "./ViewerCommandController";
 import type {
@@ -186,7 +191,8 @@ import {
   type ZoomNativeHandoffSummary
 } from "./ZoomNativeHandoffTrace";
 import type { VaultLogSink } from "../logging/VaultLogSink";
-import type { AnnotationViewState } from "./AnnotationSurface";
+import type { AnnotationViewState, ViewerState, ViewerViewportState, ViewerScaleMode } from "./AnnotationSurface";
+import { normalizeScaleMode } from "./ViewerState";
 import { describeScrollElement } from "../integration/PdfScrollRoot";
 import { TextAnnotationSession } from "../text/TextAnnotationSession";
 import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../text/TextAnnotationCommands";
@@ -1306,7 +1312,8 @@ export class ViewerInkSession {
   private readonly resizeObserver: ResizeObserver | null;
   private readonly logger: SessionLogger;
   private readonly ipadInputTrace: IpadPointerTouchTrace | null;
-  private readonly mobilePinchZoom: MobilePinchZoomController;
+  /** One navigation owner for page touch, hand-tool, and wheel gestures. */
+  private readonly gestureNavigation: GestureNavigationController;
   private activeMobilePinchSurface: PageSurface | null = null;
   private mobilePinchIndicator: HTMLElement | null = null;
   private mobilePinchIndicatorFadeTimer: number | null = null;
@@ -1634,29 +1641,33 @@ export class ViewerInkSession {
     });
     this.handwritingViewport.setTarget(adapter.root);
     this.commandController = new ViewerCommandController(this.createViewerCommandHost());
-    this.mobilePinchZoom = new MobilePinchZoomController({
+    this.gestureNavigation = new GestureNavigationController({
       minScale: 0.1,
       maxScale: 10,
-      getScale: () => {
-        try {
-          return this.handwritingViewport.getState().scale;
-        } catch {
-          return 1;
-        }
-      },
+      getScale: () => this.handwritingViewport.getState().scale,
+      getScrollRoot: () => this.options.adapter.scrollElement(),
       getViewportCenter: () => {
         const rect = adapter.root.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0
           ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
           : null;
       },
+      isHandMode: () => this.activeTool() === "drag",
       onStart: (frame) => this.startActiveMobilePinch(frame),
       onPreview: (scale, focalPoint) => this.previewActiveMobilePinch(scale, focalPoint),
       onEnd: (scale, reason) => this.endActiveMobilePinch(scale, reason),
       onCancel: (reason) => this.cancelActiveMobilePinch(reason),
       onSettled: (scale) => this.persistMobilePinchScale(scale),
       onEligibility: (target) => this.mobilePinchWheelEligible(target, adapter),
-      onIndicator: (scale, reset) => this.updateMobilePinchIndicator(scale, reset, adapter.host.ownerDocument)
+      onIndicator: (scale, reset) => this.updateMobilePinchIndicator(scale, reset, adapter.host.ownerDocument),
+      onPan: (deltaX, deltaY) => {
+        const scrollRoot = this.options.adapter.scrollElement();
+        const beforeLeft = scrollRoot.scrollLeft;
+        const beforeTop = scrollRoot.scrollTop;
+        scrollRoot.scrollLeft -= deltaX;
+        scrollRoot.scrollTop -= deltaY;
+        return scrollRoot.scrollLeft !== beforeLeft || scrollRoot.scrollTop !== beforeTop;
+      }
     });
     this.addPageControl = options.onInsertPage
       ? new AddPageControl({
@@ -1718,37 +1729,121 @@ export class ViewerInkSession {
     return this.handwritingViewport.getState();
   }
 
+  getViewerState(): ViewerState {
+    const adapterState = this.options.adapter.getViewState();
+    const vp = this.handwritingViewport.getState();
+    const scale = vp.scale || adapterState.viewport?.scale || adapterState.scale || 1;
+    return {
+      viewport: {
+        scale,
+        x: vp.x ?? adapterState.viewport?.x ?? 0,
+        y: vp.y ?? adapterState.viewport?.y ?? 0
+      },
+      pageNumber: adapterState.pageNumber || 1,
+      rotation: normalizeRotation(adapterState.rotation || 0),
+      scaleMode: normalizeScaleMode(adapterState.scaleMode),
+      ...(adapterState.scrollFraction !== undefined ? { scrollFraction: adapterState.scrollFraction } : {}),
+      scale
+    };
+  }
+
+  viewerState(): ViewerState {
+    return this.getViewerState();
+  }
+
+  setViewerState(patch: Partial<ViewerState> | ViewerState | AnnotationViewState): void {
+    const nextScale = patch.viewport?.scale ?? patch.scale;
+    const nextX = patch.viewport?.x;
+    const nextY = patch.viewport?.y;
+    const currentVp = this.handwritingViewport.getState();
+    const vpChanged = (nextScale !== undefined && Math.abs(nextScale - currentVp.scale) > 0.0001)
+      || (nextX !== undefined && Math.abs(nextX - currentVp.x) > 0.5)
+      || (nextY !== undefined && Math.abs(nextY - currentVp.y) > 0.5);
+
+    if (vpChanged) {
+      this.handwritingViewport.setState({
+        ...(nextScale !== undefined ? { scale: nextScale } : {}),
+        ...(nextX !== undefined ? { x: nextX } : {}),
+        ...(nextY !== undefined ? { y: nextY } : {})
+      });
+    }
+
+    const currentAdapterState = this.options.adapter.getViewState();
+    const nextAdapterState: ViewerState = {
+      viewport: this.handwritingViewport.getState(),
+      pageNumber: patch.pageNumber ?? currentAdapterState.pageNumber ?? 1,
+      rotation: patch.rotation !== undefined ? normalizeRotation(patch.rotation) : currentAdapterState.rotation,
+      scaleMode: patch.scaleMode !== undefined ? normalizeScaleMode(patch.scaleMode) : normalizeScaleMode(currentAdapterState.scaleMode),
+      ...(patch.scrollFraction !== undefined ? { scrollFraction: patch.scrollFraction } : currentAdapterState.scrollFraction !== undefined ? { scrollFraction: currentAdapterState.scrollFraction } : {}),
+      scale: nextScale ?? currentAdapterState.scale
+    };
+
+    try {
+      this.options.adapter.restoreViewState(nextAdapterState);
+    } catch {}
+
+    if (patch.pageNumber !== undefined && patch.pageNumber !== currentAdapterState.pageNumber) {
+      try {
+        this.options.adapter.focusPage(patch.pageNumber);
+      } catch {}
+    }
+  }
+
+  restoreViewerState(state: Partial<ViewerState> | ViewerState | AnnotationViewState): void {
+    this.setViewerState(state);
+  }
+
   private createViewerCommandHost(): ViewerCommandHost {
     return {
-      getScale: () => {
-        return this.handwritingViewport.getState().scale;
-      },
+      getViewerState: () => this.getViewerState(),
+      setViewerState: (patch) => this.setViewerState(patch),
+
+      getScale: () => this.getViewerState().viewport.scale,
       setScale: (scale: number) => {
-        this.handwritingViewport.setState({ scale });
-        try {
-          const current = this.options.adapter.getViewState();
-          if (Math.abs(current.scale - scale) > 0.001) {
-            this.options.adapter.restoreViewState({ ...current, scale });
-          }
-        } catch {}
+        const vp = this.handwritingViewport.getState();
+        this.setViewerState({
+          viewport: { ...vp, scale },
+          scale,
+          scaleMode: "custom"
+        });
       },
       fitWidth: () => {
         try {
           const scrollEl = this.options.adapter.scrollElement?.();
           const containerWidth = scrollEl?.clientWidth || this.options.adapter.root?.clientWidth || 0;
-          const pageNum = this.options.adapter.getViewState().pageNumber || 1;
+          const pageNum = this.getViewerState().pageNumber;
           const page = this.options.adapter.page(pageNum);
           const pageWidth = page?.width || 612;
           if (containerWidth > 0 && pageWidth > 0) {
             const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
-            this.handwritingViewport.setState({ scale: targetScale, x: 0 });
-            try {
-              this.options.adapter.restoreViewState({
-                ...this.options.adapter.getViewState(),
-                scale: targetScale,
-                scaleMode: "page-width"
-              });
-            } catch {}
+            const vp = this.handwritingViewport.getState();
+            this.setViewerState({
+              viewport: { scale: targetScale, x: 0, y: vp.y },
+              scale: targetScale,
+              scaleMode: "fit-width"
+            });
+          }
+        } catch {}
+      },
+      fitPage: () => {
+        try {
+          const scrollEl = this.options.adapter.scrollElement?.();
+          const containerWidth = scrollEl?.clientWidth || this.options.adapter.root?.clientWidth || 0;
+          const containerHeight = scrollEl?.clientHeight || this.options.adapter.root?.clientHeight || 0;
+          const pageNum = this.getViewerState().pageNumber;
+          const page = this.options.adapter.page(pageNum);
+          const pageWidth = page?.width || 612;
+          const pageHeight = page?.height || 792;
+          if (containerWidth > 0 && containerHeight > 0 && pageWidth > 0 && pageHeight > 0) {
+            const targetScale = Math.max(0.1, Math.min(10, Math.min(
+              (containerWidth - 32) / pageWidth,
+              (containerHeight - 32) / pageHeight
+            )));
+            this.setViewerState({
+              viewport: { scale: targetScale, x: 0, y: 0 },
+              scale: targetScale,
+              scaleMode: "fit-page"
+            });
           }
         } catch {}
       },
@@ -1761,19 +1856,13 @@ export class ViewerInkSession {
       },
       getPageWidth: (pageNumber?: number) => {
         try {
-          const page = this.options.adapter.page(pageNumber ?? this.options.adapter.getViewState().pageNumber);
+          const page = this.options.adapter.page(pageNumber ?? this.getViewerState().pageNumber);
           return page?.width || 612;
         } catch {
           return 612;
         }
       },
-      getCurrentPage: () => {
-        try {
-          return this.options.adapter.getViewState().pageNumber || 1;
-        } catch {
-          return 1;
-        }
-      },
+      getCurrentPage: () => this.getViewerState().pageNumber,
       getPageCount: () => {
         try {
           return this.options.adapter.pages().length || 1;
@@ -1783,26 +1872,18 @@ export class ViewerInkSession {
       },
       focusPage: (pageNumber: number) => {
         try {
-          return this.options.adapter.focusPage(pageNumber);
+          const ok = this.options.adapter.focusPage(pageNumber);
+          if (ok) {
+            this.setViewerState({ pageNumber });
+          }
+          return ok;
         } catch {
           return false;
         }
       },
-      getRotation: () => {
-        try {
-          return this.options.adapter.getViewState().rotation || 0;
-        } catch {
-          return 0;
-        }
-      },
+      getRotation: () => this.getViewerState().rotation,
       setRotation: (degrees: number) => {
-        try {
-          const current = this.options.adapter.getViewState();
-          this.options.adapter.restoreViewState({
-            ...current,
-            rotation: degrees
-          });
-        } catch {}
+        this.setViewerState({ rotation: degrees });
       },
       getActiveTool: () => {
         return this.options.settings.toolPreferences.activeTool;
@@ -3497,7 +3578,7 @@ export class ViewerInkSession {
     // observes them only; the unified controller owns explicit pinch zoom.
     doc.addEventListener("wheel", (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
-        if (this.mobilePinchZoom.handleWheel(e)) {
+        if (this.gestureNavigation.handleWheel(e)) {
           e.preventDefault();
           return;
         }
@@ -3537,7 +3618,9 @@ export class ViewerInkSession {
         logWheelPan(e, "outside-viewer", { deltaX: e.deltaX, deltaY: e.deltaY, within: false, target });
         return;
       }
-      logWheelPan(e, "in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target });
+      const changed = this.gestureNavigation.handleWheelPan(e);
+      if (changed) e.preventDefault();
+      logWheelPan(e, "in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
     }, { ...options, passive: false });
   }
 
@@ -7132,6 +7215,10 @@ export class ViewerInkSession {
     }
   }
 
+  private pdfLifecycleCoordinator(): PageLifecycleCoordinator | undefined {
+    return pdfSurfaceExtensions(this.options.adapter)?.lifecycleCoordinator;
+  }
+
   refresh(reason = "manual"): void {
     if (this.destroyed) return;
     this.reconcileToolbarMount(reason);
@@ -7176,6 +7263,7 @@ export class ViewerInkSession {
           this.releaseInputOwner(surface.page.element);
           this.releaseSurfaceBuffers(surface);
           surface.overlay.remove();
+          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
           this.surfaces.delete(pageNumber);
           continue;
         }
@@ -7186,6 +7274,7 @@ export class ViewerInkSession {
           this.releaseInputOwner(surface.page.element);
           this.releaseSurfaceBuffers(surface);
           surface.overlay.remove();
+          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
           this.surfaces.delete(pageNumber);
           continue;
         }
@@ -7196,6 +7285,7 @@ export class ViewerInkSession {
           this.releaseInputOwner(surface.page.element);
           this.releaseSurfaceBuffers(surface);
           surface.overlay.remove();
+          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
           this.surfaces.delete(pageNumber);
           continue;
         }
@@ -7216,6 +7306,7 @@ export class ViewerInkSession {
             this.releaseSurfaceBuffers(surface);
           }
           surface?.overlay.remove();
+          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
           this.surfaces.delete(pageNumber);
         }
       }
@@ -7233,6 +7324,16 @@ export class ViewerInkSession {
    * which stays zero until a device trace promotes one.
    */
   private pagesForInkMount(): AnnotationPageInfo[] {
+    const coordinator = this.pdfLifecycleCoordinator();
+    if (coordinator) {
+      const workingSet = coordinator.getWorkingSet();
+      const fromCoordinator: AnnotationPageInfo[] = [];
+      for (const pageNumber of workingSet) {
+        const page = this.options.adapter.page(pageNumber);
+        if (page) fromCoordinator.push(page);
+      }
+      if (fromCoordinator.length > 0) return fromCoordinator;
+    }
     const candidates: AnnotationPageInfo[] = [];
     const mobile = this.runtimePlatform().mobile;
     const policy = documentMountPolicy([], mobile ? "constrained" : "desktop");
@@ -8067,9 +8168,9 @@ export class ViewerInkSession {
     const mountedInSidebar = sidebarExpected
       && toolbar.isConnected
       && this.options.adapter.host.contains(toolbar)
-      && Boolean(mountedRail)
-      && this.options.adapter.host.contains(mountedRail!)
-      && mountedRail!.classList.contains(`is-${placement}`);
+      && mountedRail !== null
+      && this.options.adapter.host.contains(mountedRail)
+      && mountedRail.classList.contains(`is-${placement}`);
     const mountedInMainToolbar = placement === "main"
       && toolbar.isConnected
       && this.options.adapter.host.contains(toolbar)
@@ -8087,7 +8188,11 @@ export class ViewerInkSession {
     }
 
     this.clearFloatingToolbarFallback();
-    if (mountError !== undefined && reason === "session-create") throw mountError;
+    if (mountError !== undefined && reason === "session-create") {
+      if (mountError instanceof Error) throw mountError;
+      const message = typeof mountError === "string" ? mountError : "Toolbar mount failed";
+      throw new Error(message);
+    }
   }
 
   private mountFloatingToolbarFallback(toolbar: HTMLElement, placement: ToolbarPlacement): void {
@@ -8108,7 +8213,7 @@ export class ViewerInkSession {
     this.floatingToolbarPlacement = placement;
 
     if (!this.floatingToolbarHandle) {
-      const handle = toolbar.ownerDocument.createElement("button");
+      const handle = createDetachedEl(toolbar.ownerDocument, "button");
       handle.type = "button";
       handle.className = "native-pdf-handwriting-toolbar-drag-handle";
       handle.textContent = "⠿";
@@ -8125,10 +8230,12 @@ export class ViewerInkSession {
       const view = toolbar.ownerDocument.defaultView;
       const maxLeft = Math.max(0, (view?.innerWidth ?? hostRect.right) - rect.width);
       const maxTop = Math.max(0, (view?.innerHeight ?? hostRect.bottom) - rect.height);
-      toolbar.style.left = `${Math.min(Math.max(hostRect.left + 12, 0), maxLeft)}px`;
-      toolbar.style.top = `${Math.min(Math.max(hostRect.top + 12, 0), maxTop)}px`;
-      toolbar.style.right = "auto";
-      toolbar.style.bottom = "auto";
+      setElementCssProps(toolbar, {
+        left: `${Math.min(Math.max(hostRect.left + 12, 0), maxLeft)}px`,
+        top: `${Math.min(Math.max(hostRect.top + 12, 0), maxTop)}px`,
+        right: "auto",
+        bottom: "auto"
+      });
     }
 
     this.observeToolbarRailRecovery(toolbar, placement);
@@ -8169,8 +8276,7 @@ export class ViewerInkSession {
       const maxTop = Math.max(0, (view?.innerHeight ?? rect.bottom) - rect.height);
       const left = Math.min(Math.max(drag.left + event.clientX - drag.startX, 0), maxLeft);
       const top = Math.min(Math.max(drag.top + event.clientY - drag.startY, 0), maxTop);
-      toolbar.style.left = `${left}px`;
-      toolbar.style.top = `${top}px`;
+      setElementCssProps(toolbar, { left: `${left}px`, top: `${top}px` });
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
     }, { capture: true, passive: false, signal: abort.signal });
@@ -10001,6 +10107,7 @@ export class ViewerInkSession {
       this.clearTouchDrawPolicy(surface.page.element);
       this.releaseInputOwner(surface.page.element);
       this.releaseSurfaceBuffers(surface);
+      this.pdfLifecycleCoordinator()?.setInkOverlayStatus(surface.page.pageNumber, "unmounted");
     }
     this.surfaces.clear();
     this.selectionToolbar.destroy();
@@ -10008,7 +10115,7 @@ export class ViewerInkSession {
     this.textContextMenuSuppressTimer = null;
     this.textContextMenuTargetId = null;
     this.textContextMenu.destroy();
-    this.mobilePinchZoom.destroy();
+    this.gestureNavigation.destroy();
     this.handwritingViewport.destroy();
     if (this.mobilePinchIndicatorFadeTimer !== null) {
       const view = this.options.adapter.host.ownerDocument.defaultView;
@@ -10326,6 +10433,7 @@ export class ViewerInkSession {
       overlayId: getDebugNodeId(overlay),
       routerGeneration: surface.router?.generation ?? null
     });
+    this.pdfLifecycleCoordinator()?.setInkOverlayStatus(page.pageNumber, "mounted");
     return surface;
   }
 
@@ -10478,8 +10586,8 @@ export class ViewerInkSession {
     }
   }
 
-  private startActiveMobilePinch(frame: MobilePinchZoomFrame): { accepted: boolean; scale?: number } {
-    let surface = frame.generation === 0 ? null : this.activeMobilePinchSurface;
+  private startActiveMobilePinch(frame: GestureNavigationFrame): { accepted: boolean; scale?: number } {
+    let surface = this.activeMobilePinchSurface;
     if (!surface) {
       const first = frame.points[0];
       const second = frame.points[1];
@@ -10511,7 +10619,7 @@ export class ViewerInkSession {
     return { accepted: true, scale: this.handwritingViewport.getState().scale };
   }
 
-  private previewActiveMobilePinch(scale: number, focalPoint: MobilePinchZoomFocalPoint): void {
+  private previewActiveMobilePinch(scale: number, focalPoint: GestureNavigationFocalPoint): void {
     const surface = this.activeMobilePinchSurface;
     if (!surface) return;
     this.handwritingViewport.pinch(scale, focalPoint);
@@ -10520,7 +10628,7 @@ export class ViewerInkSession {
 
   private endActiveMobilePinch(
     scale: number,
-    reason: "pointerup" | "pointercancel" | "lostpointercapture" | "pen-contact" | "lifecycle" | "disabled"
+    reason: GestureNavigationEndReason
   ): void {
     const surface = this.activeMobilePinchSurface;
     if (!surface) return;
@@ -10534,7 +10642,7 @@ export class ViewerInkSession {
     } else {
       this.mobilePdfZoomTrace.cancel(reason);
     }
-    if (reason !== "pointerup") this.activeMobilePinchSurface = null;
+    this.activeMobilePinchSurface = null;
   }
 
   private cancelActiveMobilePinch(reason: string): void {
@@ -10702,10 +10810,7 @@ export class ViewerInkSession {
         this.refreshSurfaceCursors();
       },
       scrollRoot: () => this.options.adapter.scrollElement(),
-      // Drag-tool contacts must use the native PDF scroll root. Keeping the
-      // visual viewport callback here would translate the PDF root without
-      // advancing its native scrollbar, so PointerRouter's integration-owned
-      // scroll fallback remains authoritative for page drags.
+      navigationController: this.gestureNavigation,
       cursorParent: () => surface.overlay,
       eraserCursorDiameter: () => this.options.settings.toolPreferences.eraser.size * this.displayScale(surface),
       drawCursorColor: () => {
@@ -11727,7 +11832,7 @@ export class ViewerInkSession {
         listenerGeneration: surface.router.generation
       });
     }
-    surface.router?.destroy();
+    surface.router?.destroy({ preserveRoutedPointers: pageElement.isConnected });
     if (!pageElement.isConnected) {
       surface.router = null;
       this.logger.pageRouter("unavailable", {

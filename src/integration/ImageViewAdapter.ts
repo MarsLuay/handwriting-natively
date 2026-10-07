@@ -1,6 +1,6 @@
 import { createDetachedDiv } from "../vendor/createDetached";
 import type { ToolbarPlacement } from "../model";
-import type { AnnotationPageInfo, AnnotationSurface, AnnotationSurfaceCallbacks, AnnotationViewState } from "../runtime/AnnotationSurface";
+import type { AnnotationPageInfo, AnnotationSurface, AnnotationSurfaceCallbacks, AnnotationViewState, ViewerState } from "../runtime/AnnotationSurface";
 
 /**
  * Adapter for Obsidian's native image view. Images are represented as one
@@ -54,19 +54,30 @@ export class ImageViewAdapter implements AnnotationSurface {
     const scrollRoot = this.scrollElement();
     const denominator = Math.max(1, scrollRoot.scrollHeight - scrollRoot.clientHeight);
     return {
+      viewport: {
+        scale: page.scale,
+        x: scrollRoot.scrollLeft,
+        y: scrollRoot.scrollTop
+      },
       pageNumber: 1,
       scrollFraction: Math.max(0, Math.min(1, scrollRoot.scrollTop / denominator)),
       scale: page.scale,
-      rotation: 0
+      rotation: 0,
+      scaleMode: "custom"
     };
   }
 
-  restoreViewState(state: AnnotationViewState): void {
+  restoreViewState(state: AnnotationViewState | ViewerState): void {
     if (state.pageNumber !== 1) return;
     this.pageElement.scrollIntoView?.({ block: "start" });
     const scrollRoot = this.scrollElement();
-    const denominator = Math.max(0, scrollRoot.scrollHeight - scrollRoot.clientHeight);
-    scrollRoot.scrollTop = denominator * Math.max(0, Math.min(1, state.scrollFraction));
+    if (state.viewport && (Number.isFinite(state.viewport.y) && state.viewport.y > 0 || Number.isFinite(state.viewport.x) && state.viewport.x > 0)) {
+      scrollRoot.scrollTop = state.viewport.y;
+      scrollRoot.scrollLeft = state.viewport.x;
+    } else if (typeof state.scrollFraction === "number" && Number.isFinite(state.scrollFraction)) {
+      const denominator = Math.max(0, scrollRoot.scrollHeight - scrollRoot.clientHeight);
+      scrollRoot.scrollTop = denominator * Math.max(0, Math.min(1, state.scrollFraction));
+    }
   }
 
   focusPage(pageNumber: number): boolean {

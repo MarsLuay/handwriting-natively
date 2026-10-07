@@ -43,6 +43,23 @@
         "Profile dense pages",
         "Profile lasso resize and clipboard behavior"
       ]
+    },
+    {
+      "id": "unified-gesture-navigation",
+      "status": "pending",
+      "title": "Centralize touch, pinch, hand-tool, and modifier-wheel navigation and provide a movable toolbar fallback when a sidebar rail is unavailable.",
+      "paths": [
+        "src/input/GestureNavigationController.ts",
+        "src/input/PointerRouter.ts",
+        "src/runtime/ViewerInkSession.ts",
+        "docs/input-gesture-architecture.md"
+      ],
+      "checks": [
+        "Focused gesture, sidebar, settings, and toolbar fallback tests",
+        "npm test",
+        "npm run lint",
+        "npm run build when the shared generated main.js is no longer being edited"
+      ]
     }
   ]
 }

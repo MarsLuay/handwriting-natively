@@ -1,6 +1,9 @@
 import type { VaultLogLevel } from "../logging/VaultLogSink";
 import type { ViewStateSource } from "../logging/SessionLogger";
 import type { ToolbarPlacement } from "../model";
+import type { ViewerState, ViewerViewportState, ViewerScaleMode } from "./ViewerState";
+
+export type { ViewerState, ViewerViewportState, ViewerScaleMode };
 
 /** Stable content family used by future surface activation and adapter routing. */
 export type AnnotationSurfaceType = "pdf" | "image" | "markdown";
@@ -41,7 +44,9 @@ export interface AnnotationViewState {
   scale: number;
   rotation: number;
   /** PDF.js scale mode (`auto`, `page-fit`, etc.) when the host exposes it. */
-  scaleMode?: string | number;
+  scaleMode?: ViewerScaleMode | string | number;
+  /** Canonical visual interaction viewport (scale, x, y). */
+  viewport?: ViewerViewportState;
 }
 
 /** Bounded evidence gate shared by adapters and the annotation runtime. */
@@ -126,7 +131,7 @@ export interface AnnotationSurface {
   pages(): AnnotationPageInfo[];
   page(pageNumber: number): AnnotationPageInfo | undefined;
   getViewState(): AnnotationViewState;
-  restoreViewState(state: AnnotationViewState): void;
+  restoreViewState(state: AnnotationViewState | ViewerState): void;
   focusPage(pageNumber: number): boolean;
   scrollElement(): HTMLElement;
   mountOverlay(pageNumber: number): HTMLElement;

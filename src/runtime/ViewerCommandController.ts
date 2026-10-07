@@ -14,12 +14,18 @@
  */
 
 import type { ToolId } from "../model";
+import type { ViewerState } from "./ViewerState";
 
 export interface ViewerCommandHost {
+  // Canonical state
+  getViewerState?(): ViewerState;
+  setViewerState?(patch: Partial<ViewerState>): void;
+
   // Zoom
   getScale(): number;
   setScale(scale: number): void;
   fitWidth?(): void;
+  fitPage?(): void;
   getContainerWidth(): number;
   getPageWidth(pageNumber?: number): number;
 
@@ -61,17 +67,67 @@ export class ViewerCommandController {
   }
 
   // --------------------------------------------------------------------------
+  // Canonical ViewerState
+  // --------------------------------------------------------------------------
+
+  getViewerState(): ViewerState {
+    if (typeof this.host.getViewerState === "function") {
+      return this.host.getViewerState();
+    }
+    const scale = this.getZoom();
+    return {
+      viewport: { scale, x: 0, y: 0 },
+      pageNumber: this.getCurrentPage(),
+      rotation: this.getRotation(),
+      scaleMode: "custom",
+      scale
+    };
+  }
+
+  setViewerState(patch: Partial<ViewerState>): boolean {
+    if (typeof this.host.setViewerState === "function") {
+      this.host.setViewerState(patch);
+      this.host.logCommand?.("viewer-state-set", { patch });
+      return true;
+    }
+    const nextScale = patch.viewport?.scale ?? patch.scale;
+    if (nextScale !== undefined) {
+      this.setZoom(nextScale);
+    }
+    if (patch.pageNumber !== undefined) {
+      this.goToPage(patch.pageNumber);
+    }
+    if (patch.rotation !== undefined) {
+      this.setRotation(patch.rotation);
+    }
+    this.host.logCommand?.("viewer-state-set", { patch });
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
   // Zoom
   // --------------------------------------------------------------------------
 
   getZoom(): number {
+    if (typeof this.host.getViewerState === "function") {
+      return this.host.getViewerState().viewport.scale;
+    }
     return this.host.getScale();
   }
 
   setZoom(scale: number): boolean {
     if (!Number.isFinite(scale) || scale <= 0) return false;
     const clamped = Math.max(0.1, Math.min(10, scale));
-    this.host.setScale(clamped);
+    if (typeof this.host.setViewerState === "function") {
+      const current = this.getViewerState();
+      this.host.setViewerState({
+        viewport: { ...current.viewport, scale: clamped },
+        scale: clamped,
+        scaleMode: "custom"
+      });
+    } else {
+      this.host.setScale(clamped);
+    }
     this.host.logCommand?.("zoom-set", { scale: clamped });
     return true;
   }
@@ -106,8 +162,41 @@ export class ViewerCommandController {
     if (containerWidth <= 0 || pageWidth <= 0) return false;
     // Allow small padding (32px) for side margins
     const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
-    this.host.setScale(targetScale);
+    if (typeof this.host.setViewerState === "function") {
+      const current = this.getViewerState();
+      this.host.setViewerState({
+        viewport: { scale: targetScale, x: 0, y: current.viewport.y },
+        scale: targetScale,
+        scaleMode: "fit-width"
+      });
+    } else {
+      this.host.setScale(targetScale);
+    }
     this.host.logCommand?.("fit-width", { containerWidth, pageWidth, scale: targetScale });
+    return true;
+  }
+
+  fitPage(): boolean {
+    if (typeof this.host.fitPage === "function") {
+      this.host.fitPage();
+      this.host.logCommand?.("fit-page", { method: "host" });
+      return true;
+    }
+    const containerWidth = this.host.getContainerWidth();
+    const pageWidth = this.host.getPageWidth(this.getCurrentPage());
+    if (containerWidth <= 0 || pageWidth <= 0) return false;
+    const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
+    if (typeof this.host.setViewerState === "function") {
+      const current = this.getViewerState();
+      this.host.setViewerState({
+        viewport: { scale: targetScale, x: 0, y: 0 },
+        scale: targetScale,
+        scaleMode: "fit-page"
+      });
+    } else {
+      this.host.setScale(targetScale);
+    }
+    this.host.logCommand?.("fit-page", { scale: targetScale });
     return true;
   }
 
@@ -116,6 +205,9 @@ export class ViewerCommandController {
   // --------------------------------------------------------------------------
 
   getCurrentPage(): number {
+    if (typeof this.host.getViewerState === "function") {
+      return Math.max(1, this.host.getViewerState().pageNumber);
+    }
     return Math.max(1, this.host.getCurrentPage());
   }
 
@@ -136,6 +228,9 @@ export class ViewerCommandController {
     const target = Math.max(1, Math.min(total, Math.round(pageNumber)));
     const ok = this.host.focusPage(target);
     if (ok) {
+      if (typeof this.host.setViewerState === "function") {
+        this.host.setViewerState({ pageNumber: target });
+      }
       this.host.logCommand?.("page-nav", { target, total });
     }
     return ok;
@@ -164,13 +259,19 @@ export class ViewerCommandController {
   // --------------------------------------------------------------------------
 
   getRotation(): number {
-    const raw = this.host.getRotation();
+    const raw = typeof this.host.getViewerState === "function"
+      ? this.host.getViewerState().rotation
+      : this.host.getRotation();
     return ((raw % 360) + 360) % 360;
   }
 
   setRotation(degrees: number): boolean {
     const normalized = ((degrees % 360) + 360) % 360;
-    this.host.setRotation(normalized);
+    if (typeof this.host.setViewerState === "function") {
+      this.host.setViewerState({ rotation: normalized });
+    } else {
+      this.host.setRotation(normalized);
+    }
     this.host.logCommand?.("rotate-set", { rotation: normalized });
     return true;
   }

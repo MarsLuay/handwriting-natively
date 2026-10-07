@@ -9,49 +9,53 @@ Scribble, Apple Pencil hover, or native PDF pinch behavior.
 ## Authority and ownership
 
 Pointer Events are the authoritative input stream whenever the runtime exposes a
-usable Pointer Events surface. Each physical contact is classified once and
-enters one ownership state machine:
+usable Pointer Events surface. Annotation ownership and navigation ownership
+have separate state: `GestureOwnership` tracks annotation contacts, while the
+session's shared `GestureNavigationController` owns navigation movement and
+zoom. A physical contact must not be moved by both controllers.
 
 ```ts
 type InputOwner =
   | "idle"
   | "pen-ink"
-  | "native-touch-navigation"
   | "mouse-ink";
 
 interface ActiveInputState {
   owner: InputOwner;
   activePenId: number | null;
-  activeTouchIds: Set<number>;
   activeMouseButtons: number;
   generation: number;
 }
 ```
 
-The state machine owns contact identity and transitions. The stroke session
-owns stroke lifecycle and page-coordinate conversion; it must consume routed
-semantic actions rather than reclassifying a pointer as pen, finger, or palm.
-A router generation invalidates callbacks from a replaced or destroyed viewer.
+`GestureNavigationController` tracks navigation pointer IDs across the page
+routers in one viewer session. The stroke session owns stroke lifecycle and
+page-coordinate conversion; it consumes routed semantic actions rather than
+reclassifying a pointer as pen, finger, or palm. A router generation invalidates
+callbacks from a replaced or destroyed viewer.
 
 ### Transition policy
 
 | Current owner | Incoming contact | Result |
 | --- | --- | --- |
 | `idle` | pen down, ink-capable tool, annotatable page | claim `pen-ink` |
-| `idle` | finger down | pass through as `native-touch-navigation` |
+| `idle` | finger down | controller owns pan when custom mobile navigation is qualified; otherwise leave it native |
 | `idle` | mouse draw gesture | claim `mouse-ink` |
 | `idle` | mouse input disabled or non-primary button | leave the native event available |
 | `pen-ink` | matching pen move/up | append/finalize ink, then release |
 | `pen-ink` | matching pen cancel/lost capture | cancel safely, then release |
 | `pen-ink` | finger/palm contact | observe/track only; never transfer ink ownership |
-| `native-touch-navigation` | second finger | remain native; preserve pinch/pan |
+| controller-owned touch | second finger | controller owns two-finger pan and pinch when qualified; otherwise preserve native pinch/pan |
+| active pen | companion finger | block the companion navigation candidate until a real terminal or stale-pen recovery |
+| hand tool | primary mouse/pen or touch movement | controller owns pan and capture cleanup |
 | any | UI target before a gesture is claimed | leave the UI event alone |
 | any | blur, background, destroy, or generation replacement | clear every contact and capture |
 
 A recognized active pen may annotate with the selected ink tool without a
 separate Draw checkbox. Finger input remains navigation. Primary-button mouse
 inking is controlled by one explicit setting; disabled mouse input remains
-native because `pointerType="mouse"` does not identify the user's intent.
+native because `pointerType="mouse"` does not identify the user's intent. A
+`lostpointercapture` event alone does not clear active-pen exclusion.
 
 Width, height, radius, or pressure may be recorded as diagnostics, but they are
 not the primary pen/palm classifier. In particular, a large ordinary finger
@@ -64,23 +68,26 @@ is large.
 
 - `pointerdown` on an annotatable page claims pen ink only when the selected
   tool consumes ink. It records the pen ID and uses pointer capture when the
-  surface supports it. UI targets are excluded before claiming.
+  surface supports it. UI targets are excluded before claiming. Touch and hand
+  movement is delegated to the session's navigation controller.
 - `pointermove` appends samples only for the matching claimed pen ID. Coalesced
   samples are feature-detected and may improve a real stroke; predicted samples
   are preview-only and are never persisted as confirmed geometry.
-- `pointerup`, `pointercancel`, and `lostpointercapture` are all terminal paths.
-  None may leave a pen ID, capture, or wet stroke ownership behind.
-- Touch pointer events are tracked for bounded accounting and passed to the
-  native viewer without `preventDefault()` unless an explicitly supported
-  touch-only drawing mode owns that contact.
+- `pointerup`, `pointercancel`, and lifecycle cancellation release input. A
+  `lostpointercapture` event ends capture ownership but leaves the pen exclusion
+  guard until a real terminal or bounded stale-pen recovery.
+- Eligible mobile touch pointer events are handled by the navigation
+  controller. It waits for the existing movement threshold before one-finger
+  pan and owns two-finger pan/pinch through the session compositor. Unsupported
+  modes retain browser navigation without `preventDefault()`.
 
 ### Touch Events
 
-Touch Events are not a second gesture engine. In normal operation they are
-passive, bounded lifecycle/compatibility observations only. They may activate a
-fallback path only after capability detection proves Pointer Events unavailable
-or materially unusable. A fallback must be generation-scoped and must not run
-alongside the Pointer Events path for the same contact.
+Touch Events do not create a competing movement owner. The navigation
+controller uses them to reconcile terminal contacts and to recover a two-finger
+gesture when WKWebView omits the promoting PointerEvent. The fallback is scoped
+to the active page and does not process movement already claimed by the Pointer
+Events path.
 
 The implementation must not apply `touch-action: none` to the whole PDF/ink
 surface. The default hit-tested surface preserves native one-finger navigation,
@@ -90,11 +97,12 @@ an iPad trace.
 
 ## Lifecycle and diagnostics
 
-All terminal and lifecycle cleanup paths call the same state reset operation:
-`pointerup`, `pointercancel`, `lostpointercapture`, `blur`, `visibilitychange`,
-app background, viewer/session destroy, and generation replacement. Resetting
-must release captures, clear the pen ID, clear touch IDs, and invalidate stale
-callbacks without synthesizing a replacement gesture.
+Terminal and lifecycle cleanup releases captures and touch contacts through the
+navigation controller. `pointerup`, `pointercancel`, blur, visibility change,
+app background, viewer/session destroy, and generation replacement clear the
+active-pen guard; `lostpointercapture` alone preserves it until the real
+terminal or bounded stale-pen recovery. Cleanup never synthesizes a replacement
+gesture.
 
 The diagnostic profile is local, debug-gated, and bounded to a ring of the last
 50–100 transitions plus one summary. It records transition source, generation,
@@ -109,16 +117,18 @@ viewer/UI/Scribble ordering without participating in routing.
 
 ## Module boundaries
 
-- `PointerRouter.ts` is the single Pointer Events entry point and emits semantic
-  actions (`BEGIN_PEN_INK`, `APPEND_PEN_INK`, `END_PEN_INK`, `CANCEL_PEN_INK`,
-  `PASS_NATIVE_TOUCH`, and mouse actions).
+- `PointerRouter.ts` is the page Pointer Events entry point. It emits ink
+  actions and delegates touch/hand movement to `GestureNavigationController`.
+- `GestureNavigationController.ts` is the single movement owner for eligible
+  one-finger pan, two-finger pan/pinch, hand-tool movement, modifier-wheel zoom,
+  stylus exclusion, and navigation cleanup. It updates the session viewport or
+  PDF scroll root through one callback path.
 - `PointerCapabilities.ts` owns feature detection and sample extraction only:
   Pointer Events, capture, coalesced events, predicted events, and observed
   stylus capability. It does not decide ownership.
-- `ActiveTouches.ts` (or its replacement) is the one canonical touch-ID store;
-  no second set may silently classify the same contact.
-- `PalmRejectionPolicy.ts` is limited to ambiguous/touch-only policy and bounded
-  evidence. Active recognized-pen ownership already makes a touch non-ink.
+- `PalmRejectionPolicy.ts` owns bounded stylus evidence and stale-pen recovery;
+  the navigation controller receives active pen IDs so a companion finger
+  cannot become a navigation candidate.
 - `annotationInputPolicy.ts` remains declarative: selected tool, pointer type,
   target class, explicit touch-draw mode, and stylus capability are inputs; it
   has no mutable gesture state.
@@ -155,8 +165,9 @@ unit-test success must not promote them.
 
 1. **Instrument:** bounded transition/capability/capture/lifecycle evidence and
    a Pointer/Touch duplicate detector; remove no fallback yet.
-2. **Centralize:** make Pointer Events authoritative, use one ownership state and
-   one touch-ID set, and preserve native touch pass-through.
+2. **Centralize:** make Pointer Events authoritative, use one annotation owner
+   and one navigation owner, and preserve native touch pass-through when the
+   custom navigation path is not eligible.
 3. **Promote stylus:** let selected pen tools accept confirmed stylus input while
    retaining safe touch-only and mouse fallbacks.
 4. **Remove redundancy:** delete superseded PenPresence/ActiveTouches/palm or

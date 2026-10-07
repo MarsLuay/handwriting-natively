@@ -114,6 +114,27 @@ class OwnedRailAdapter extends FakeAdapter {
   }
 }
 
+class RecoveringRailAdapter extends FakeAdapter {
+  sidebarAvailable = false;
+
+  override mountToolbar(toolbar: HTMLElement, placement: ToolbarPlacement = "main"): void {
+    toolbar.remove();
+    toolbar.classList.toggle("is-sidebar-left", placement === "left");
+    toolbar.classList.toggle("is-sidebar-right", placement === "right");
+    if (placement === "main" || !this.sidebarAvailable) {
+      this.toolbarHost.append(toolbar);
+      return;
+    }
+    let rail = this.host.querySelector<HTMLElement>(`.native-pdf-handwriting-rail.is-${placement}`);
+    if (!rail) {
+      rail = document.createElement("div");
+      rail.className = `native-pdf-handwriting-rail is-${placement}`;
+      this.root.append(rail);
+    }
+    rail.append(toolbar);
+  }
+}
+
 class FakePdfSurface extends FakeAdapter {
   readonly supportsPdfExport = true as const;
 }
@@ -286,12 +307,85 @@ describe("viewer runtime tracer", () => {
     });
 
     expect(mountToolbar).toHaveBeenCalledWith(expect.any(HTMLElement), "left");
-    const more = adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='more']");
+    const more = adapter.host.querySelector<HTMLButtonElement>("[data-control='more']");
     more?.click();
     const pdfToolbarOption = document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']");
     expect(pdfToolbarOption?.textContent).toBe("Toolbar: PDF bar");
     pdfToolbarOption?.click();
     expect(settings.toolbarPlacement).toBe("main");
+    await session.destroy();
+  });
+
+  it("provides a draggable floating toolbar when the sidebar rail is missing and removes drag listeners on teardown", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolbarPlacement = "left";
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/floating-toolbar.pdf",
+      settings,
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: false })
+    });
+
+    const toolbar = adapter.host.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    const handle = toolbar?.querySelector<HTMLButtonElement>(".native-pdf-handwriting-toolbar-drag-handle");
+    expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(true);
+    expect(handle).not.toBeNull();
+    const startLeft = Number.parseFloat(toolbar?.style.left ?? "0");
+    const startTop = Number.parseFloat(toolbar?.style.top ?? "0");
+
+    handle?.dispatchEvent(pointer("pointerdown", 20, 30, { pointerType: "mouse", pointerId: 701 }));
+    handle?.dispatchEvent(pointer("pointermove", 45, 60, { pointerType: "mouse", pointerId: 701 }));
+    expect(Number.parseFloat(toolbar?.style.left ?? "0")).toBe(startLeft + 25);
+    expect(Number.parseFloat(toolbar?.style.top ?? "0")).toBe(startTop + 30);
+
+    await session.destroy();
+    const positionAfterDestroy = toolbar?.style.cssText;
+    expect(handle?.isConnected).toBe(false);
+    expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(false);
+    handle?.dispatchEvent(pointer("pointerdown", 20, 30, { pointerType: "mouse", pointerId: 702 }));
+    handle?.dispatchEvent(pointer("pointermove", 80, 90, { pointerType: "mouse", pointerId: 702 }));
+    expect(toolbar?.style.cssText).toBe(positionAfterDestroy);
+  });
+
+  it("moves the fallback toolbar back into a sidebar rail when that rail appears", async () => {
+    const files = new MemoryFiles();
+    const adapter = new RecoveringRailAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolbarPlacement = "left";
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/recovering-toolbar.pdf",
+      settings,
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      runtimePlatform: () => ({ mobile: true, phone: false })
+    });
+    const toolbar = adapter.host.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(true);
+    expect(toolbar?.querySelector(".native-pdf-handwriting-toolbar-drag-handle")).not.toBeNull();
+
+    adapter.sidebarAvailable = true;
+    const rail = document.createElement("div");
+    rail.className = "native-pdf-handwriting-rail is-left";
+    adapter.root.append(rail);
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+    expect(rail.contains(toolbar)).toBe(true);
+    expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(false);
+    expect(toolbar?.querySelector(".native-pdf-handwriting-toolbar-drag-handle")).toBeNull();
+    expect(toolbar?.style.left).toBe("");
     await session.destroy();
   });
 
@@ -1492,8 +1586,7 @@ describe("viewer runtime tracer", () => {
       const builderBefore = surface.builder;
       expect(builderBefore).toBeDefined();
 
-      surface.router!.destroy();
-      internal.ensurePageRouter(surface, { reason: "test-mobile-scroll-rebind" });
+      internal.ensurePageRouter(surface, { force: true, reason: "test-mobile-scroll-rebind" });
       adapter.pageElement.dispatchEvent(pointer("pointermove", 140, 160, { pointerType: "pen", pointerId: 303 }));
       expect(surface.builder).toBe(builderBefore);
       adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "pen", pointerId: 303 }));
