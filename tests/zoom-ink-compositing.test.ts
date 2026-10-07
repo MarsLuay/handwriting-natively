@@ -1676,4 +1676,41 @@ describe("zoom ink compositing", () => {
 
     await session.destroy();
   });
+
+  it("skips redundant final-canonical repaint and avoids double-paint window on already-canonical page", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const internal = session as unknown as {
+      zoomHandoffNeedsFinalRebase: boolean;
+      rebaseZoomAfterNativeRender(): void;
+      releaseZoomCompositeLayers(): void;
+    };
+    for (let index = 0; index < 3; index += 1) {
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", 100 + index * 10, 100));
+      adapter.pageElement.dispatchEvent(pointer("pointermove", 110 + index * 10, 110));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 120 + index * 10, 120));
+    }
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+
+    const stampsAfterSettle = paintStampCalls(context);
+
+    // Native content mutation without layout change:
+    internal.zoomHandoffNeedsFinalRebase = true;
+    internal.rebaseZoomAfterNativeRender();
+
+    // Since page 1 was already canonically rendered at 900x1200 with matching scale,
+    // rebaseZoomAfterNativeRender must skip repainting it!
+    expect(paintStampCalls(context)).toBe(stampsAfterSettle);
+    expect(logCalls("ink zoom flash proxy").filter(
+      (call) => (call[2] as { proxy?: string }).proxy === "double-paint-window"
+    )).toHaveLength(0);
+
+    await session.destroy();
+  });
 });
