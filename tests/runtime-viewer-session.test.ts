@@ -385,10 +385,29 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 120, { pointerType: "mouse", pointerId: 2 }));
     // Primary mouse input is native until the single mouse-inking toggle is enabled.
     expect(nativePointer.defaultPrevented).toBe(false);
+    expect(adapter.toolbarHost.querySelector("[data-control='mouse']")).toBeNull();
 
     settings.mouseInkingEnabled = true;
     session.updateMouseInputBindings();
+    const mouseMode = adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='mouse']");
+    expect(mouseMode).not.toBeNull();
 
+    const inkSelectAll = new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true, cancelable: true });
+    expect(session.handleKeyDown(inkSelectAll, "window")).toBe(true);
+    expect(inkSelectAll.defaultPrevented).toBe(true);
+
+    mouseMode?.click();
+    expect(mouseMode?.getAttribute("aria-pressed")).toBe("true");
+    const nativeSelectAll = new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true, cancelable: true });
+    expect(session.handleKeyDown(nativeSelectAll, "window")).toBe(false);
+    expect(nativeSelectAll.defaultPrevented).toBe(false);
+    const nativeModePointer = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 23 });
+    adapter.pageElement.dispatchEvent(nativeModePointer);
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 120, { pointerType: "mouse", pointerId: 23 }));
+    expect(nativeModePointer.defaultPrevented).toBe(false);
+
+    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='pen']")?.click();
+    expect(mouseMode?.getAttribute("aria-pressed")).toBe("false");
     const dragDown = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 3 });
     const dragMove = pointer("pointermove", 100, 160, { pointerType: "mouse", pointerId: 3 });
     adapter.pageElement.dispatchEvent(dragDown);
@@ -410,9 +429,11 @@ describe("viewer runtime tracer", () => {
     settings.mouseInkingEnabled = false;
     session.updateMouseInputBindings();
     expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(false);
+    expect(adapter.toolbarHost.querySelector("[data-control='mouse']")).toBeNull();
     settings.mouseInkingEnabled = true;
     session.updateMouseInputBindings();
     expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
+    expect(adapter.toolbarHost.querySelector("[data-control='mouse']")).not.toBeNull();
 
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 4 }));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 4 }));
