@@ -15,11 +15,17 @@ export function shouldIgnoreSelectionShortcut(target: EventTarget | null): boole
   return Boolean(el.isContentEditable);
 }
 
-/** Ink copy/cut/paste/select-all use Ctrl/Cmd+Alt. Plain Ctrl/Cmd stays with the text editor. */
-export function parseSelectionShortcut(event: KeyboardEvent): SelectionShortcutAction | null {
+/**
+ * Parse ink copy/cut/paste/select-all. Ctrl/Cmd+Alt is always the explicit ink
+ * chord; plain Ctrl/Cmd is accepted only while the caller owns mouse inking.
+ */
+export function parseSelectionShortcut(
+  event: KeyboardEvent,
+  plainModifierForInk = false
+): SelectionShortcutAction | null {
   const mod = event.ctrlKey || event.metaKey;
-  if (event.altKey) {
-    if (!mod || event.shiftKey) return null;
+  if (mod && (event.altKey || plainModifierForInk)) {
+    if (event.shiftKey) return null;
     const key = event.key.toLowerCase();
     if (key === "a") return "selectAll";
     if (key === "c") return "copy";
@@ -27,7 +33,7 @@ export function parseSelectionShortcut(event: KeyboardEvent): SelectionShortcutA
     if (key === "v") return "paste";
     return null;
   }
-  if (!mod && !event.shiftKey) {
+  if (!mod && !event.altKey && !event.shiftKey) {
     if (event.key === "Delete" || event.key === "Backspace" || event.code === "Delete" || event.code === "Backspace") {
       return "delete";
     }
@@ -35,9 +41,12 @@ export function parseSelectionShortcut(event: KeyboardEvent): SelectionShortcutA
   return null;
 }
 
-/** Ink undo/redo use Ctrl/Cmd+Alt. Plain Ctrl/Cmd+Z stays with the focused editor. */
-export function parseHistoryShortcut(event: KeyboardEvent): HistoryShortcutAction | null {
-  if (!event.altKey) return null;
+/** Ctrl/Cmd+Alt always targets ink history; plain Ctrl/Cmd does so only in ink mode. */
+export function parseHistoryShortcut(
+  event: KeyboardEvent,
+  plainModifierForInk = false
+): HistoryShortcutAction | null {
+  if (!event.altKey && !plainModifierForInk) return null;
   const mod = event.ctrlKey || event.metaKey;
   if (!mod) return null;
   const key = event.key.toLowerCase();
@@ -54,11 +63,11 @@ export type InkHotkeyCommand =
   | "undo-ink"
   | "redo-ink";
 
-export function inkHotkeyCommand(event: KeyboardEvent): InkHotkeyCommand | null {
-  const history = parseHistoryShortcut(event);
+export function inkHotkeyCommand(event: KeyboardEvent, plainModifierForInk = false): InkHotkeyCommand | null {
+  const history = parseHistoryShortcut(event, plainModifierForInk);
   if (history === "undo") return "undo-ink";
   if (history === "redo") return "redo-ink";
-  const action = parseSelectionShortcut(event);
+  const action = parseSelectionShortcut(event, plainModifierForInk);
   if (action === "selectAll") return "select-all-ink";
   if (action === "copy") return "copy-ink";
   if (action === "cut") return "cut-ink";

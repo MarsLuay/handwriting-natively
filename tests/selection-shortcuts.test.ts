@@ -19,9 +19,16 @@ describe("selection shortcuts", () => {
     expect(parseSelectionShortcut(keyEvent({ key: "Backspace" }))).toBe("delete");
   });
 
-  it("parses ink undo and redo only with Alt/Option", () => {
+  it("routes plain modifiers to ink only when the caller is in mouse-inking mode", () => {
+    expect(parseSelectionShortcut(keyEvent({ key: "a", ctrlKey: true }), true)).toBe("selectAll");
+    expect(parseSelectionShortcut(keyEvent({ key: "c", metaKey: true }), true)).toBe("copy");
+    expect(parseSelectionShortcut(keyEvent({ key: "Delete" }), true)).toBe("delete");
     expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true }))).toBeNull();
-    expect(parseHistoryShortcut(keyEvent({ key: "z", ctrlKey: true, shiftKey: true }))).toBeNull();
+    expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true }), true)).toBe("undo");
+    expect(parseHistoryShortcut(keyEvent({ key: "z", ctrlKey: true, shiftKey: true }), true)).toBe("redo");
+  });
+
+  it("keeps explicit Alt/Option ink undo and redo chords", () => {
     expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true, altKey: true }))).toBe("undo");
     expect(parseHistoryShortcut(keyEvent({ key: "Z", ctrlKey: true, altKey: true }))).toBe("undo");
     expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true, altKey: true, shiftKey: true }))).toBe("redo");

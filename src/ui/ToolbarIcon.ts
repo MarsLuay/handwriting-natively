@@ -1,6 +1,6 @@
 import { createDetachedSpan, createDetachedSvg } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
-export type ToolbarIcon = "pen" | "pencil" | "highlighter" | "text" | "eraser" | "palette" | "lasso" | "laser" | "drag" | "undo" | "redo" | "plus" | "more" | "save" | "chevron";
+export type ToolbarIcon = "pen" | "pencil" | "highlighter" | "text" | "eraser" | "palette" | "lasso" | "laser" | "mouse" | "drag" | "undo" | "redo" | "plus" | "more" | "save" | "chevron";
 
 const PATHS: Record<ToolbarIcon, readonly string[]> = {
   pen: ["M12 19 19 12 22 15 15 22 11 23 12 19Z", "M18 13 16.5 5.5 2 2 5.5 16.5 13 18", "M2 2 9.5 9.5"],
@@ -14,6 +14,7 @@ const PATHS: Record<ToolbarIcon, readonly string[]> = {
   eraser: ["M7 18 4 15 12 7 16 11 9 18Z", "M14 6 17 3 21 7 18 10", "M5 21H21"],
   palette: ["M12 3A9 9 0 0 0 12 21H13.5A2 2 0 0 0 15.5 19 2 2 0 0 0 13.5 17H12A5 5 0 0 1 12 3Z", "M7.5 10H7.51", "M10 6.5H10.01", "M15 7.5H15.01", "M17 12H17.01"],
   lasso: ["M7 17.5C4.5 16.5 3 14.5 3 12 3 7 7 3 12 3S21 6 21 10 17 17 12 17C10.8 17 9.7 16.9 8.7 16.6", "M8 19.5C8 21 6.8 22 5.5 22S3 21 3 19.5 4.2 17 5.5 17 8 18 8 19.5Z"],
+  mouse: ["M12 3A6 6 0 0 0 6 9V15A6 6 0 0 0 18 15V9A6 6 0 0 0 12 3Z", "M12 3V9", "M9 6H9.01"],
   laser: [
     // Presentation remote body (bottom-left → tip)
     "M5 19 12.5 11.5 14.5 13.5 7 21 5 19Z",
