@@ -191,7 +191,8 @@ import {
   type ZoomNativeHandoffSummary
 } from "./ZoomNativeHandoffTrace";
 import type { VaultLogSink } from "../logging/VaultLogSink";
-import type { AnnotationViewState } from "./AnnotationSurface";
+import type { AnnotationViewState, ViewerState, ViewerViewportState, ViewerScaleMode } from "./AnnotationSurface";
+import { normalizeScaleMode } from "./ViewerState";
 import { describeScrollElement } from "../integration/PdfScrollRoot";
 import { TextAnnotationSession } from "../text/TextAnnotationSession";
 import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../text/TextAnnotationCommands";
@@ -1728,37 +1729,121 @@ export class ViewerInkSession {
     return this.handwritingViewport.getState();
   }
 
+  getViewerState(): ViewerState {
+    const adapterState = this.options.adapter.getViewState();
+    const vp = this.handwritingViewport.getState();
+    const scale = vp.scale || adapterState.viewport?.scale || adapterState.scale || 1;
+    return {
+      viewport: {
+        scale,
+        x: vp.x ?? adapterState.viewport?.x ?? 0,
+        y: vp.y ?? adapterState.viewport?.y ?? 0
+      },
+      pageNumber: adapterState.pageNumber || 1,
+      rotation: normalizeRotation(adapterState.rotation || 0),
+      scaleMode: normalizeScaleMode(adapterState.scaleMode),
+      ...(adapterState.scrollFraction !== undefined ? { scrollFraction: adapterState.scrollFraction } : {}),
+      scale
+    };
+  }
+
+  viewerState(): ViewerState {
+    return this.getViewerState();
+  }
+
+  setViewerState(patch: Partial<ViewerState> | ViewerState | AnnotationViewState): void {
+    const nextScale = patch.viewport?.scale ?? patch.scale;
+    const nextX = patch.viewport?.x;
+    const nextY = patch.viewport?.y;
+    const currentVp = this.handwritingViewport.getState();
+    const vpChanged = (nextScale !== undefined && Math.abs(nextScale - currentVp.scale) > 0.0001)
+      || (nextX !== undefined && Math.abs(nextX - currentVp.x) > 0.5)
+      || (nextY !== undefined && Math.abs(nextY - currentVp.y) > 0.5);
+
+    if (vpChanged) {
+      this.handwritingViewport.setState({
+        ...(nextScale !== undefined ? { scale: nextScale } : {}),
+        ...(nextX !== undefined ? { x: nextX } : {}),
+        ...(nextY !== undefined ? { y: nextY } : {})
+      });
+    }
+
+    const currentAdapterState = this.options.adapter.getViewState();
+    const nextAdapterState: ViewerState = {
+      viewport: this.handwritingViewport.getState(),
+      pageNumber: patch.pageNumber ?? currentAdapterState.pageNumber ?? 1,
+      rotation: patch.rotation !== undefined ? normalizeRotation(patch.rotation) : currentAdapterState.rotation,
+      scaleMode: patch.scaleMode !== undefined ? normalizeScaleMode(patch.scaleMode) : normalizeScaleMode(currentAdapterState.scaleMode),
+      ...(patch.scrollFraction !== undefined ? { scrollFraction: patch.scrollFraction } : currentAdapterState.scrollFraction !== undefined ? { scrollFraction: currentAdapterState.scrollFraction } : {}),
+      scale: nextScale ?? currentAdapterState.scale
+    };
+
+    try {
+      this.options.adapter.restoreViewState(nextAdapterState);
+    } catch {}
+
+    if (patch.pageNumber !== undefined && patch.pageNumber !== currentAdapterState.pageNumber) {
+      try {
+        this.options.adapter.focusPage(patch.pageNumber);
+      } catch {}
+    }
+  }
+
+  restoreViewerState(state: Partial<ViewerState> | ViewerState | AnnotationViewState): void {
+    this.setViewerState(state);
+  }
+
   private createViewerCommandHost(): ViewerCommandHost {
     return {
-      getScale: () => {
-        return this.handwritingViewport.getState().scale;
-      },
+      getViewerState: () => this.getViewerState(),
+      setViewerState: (patch) => this.setViewerState(patch),
+
+      getScale: () => this.getViewerState().viewport.scale,
       setScale: (scale: number) => {
-        this.handwritingViewport.setState({ scale });
-        try {
-          const current = this.options.adapter.getViewState();
-          if (Math.abs(current.scale - scale) > 0.001) {
-            this.options.adapter.restoreViewState({ ...current, scale });
-          }
-        } catch {}
+        const vp = this.handwritingViewport.getState();
+        this.setViewerState({
+          viewport: { ...vp, scale },
+          scale,
+          scaleMode: "custom"
+        });
       },
       fitWidth: () => {
         try {
           const scrollEl = this.options.adapter.scrollElement?.();
           const containerWidth = scrollEl?.clientWidth || this.options.adapter.root?.clientWidth || 0;
-          const pageNum = this.options.adapter.getViewState().pageNumber || 1;
+          const pageNum = this.getViewerState().pageNumber;
           const page = this.options.adapter.page(pageNum);
           const pageWidth = page?.width || 612;
           if (containerWidth > 0 && pageWidth > 0) {
             const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
-            this.handwritingViewport.setState({ scale: targetScale, x: 0 });
-            try {
-              this.options.adapter.restoreViewState({
-                ...this.options.adapter.getViewState(),
-                scale: targetScale,
-                scaleMode: "page-width"
-              });
-            } catch {}
+            const vp = this.handwritingViewport.getState();
+            this.setViewerState({
+              viewport: { scale: targetScale, x: 0, y: vp.y },
+              scale: targetScale,
+              scaleMode: "fit-width"
+            });
+          }
+        } catch {}
+      },
+      fitPage: () => {
+        try {
+          const scrollEl = this.options.adapter.scrollElement?.();
+          const containerWidth = scrollEl?.clientWidth || this.options.adapter.root?.clientWidth || 0;
+          const containerHeight = scrollEl?.clientHeight || this.options.adapter.root?.clientHeight || 0;
+          const pageNum = this.getViewerState().pageNumber;
+          const page = this.options.adapter.page(pageNum);
+          const pageWidth = page?.width || 612;
+          const pageHeight = page?.height || 792;
+          if (containerWidth > 0 && containerHeight > 0 && pageWidth > 0 && pageHeight > 0) {
+            const targetScale = Math.max(0.1, Math.min(10, Math.min(
+              (containerWidth - 32) / pageWidth,
+              (containerHeight - 32) / pageHeight
+            )));
+            this.setViewerState({
+              viewport: { scale: targetScale, x: 0, y: 0 },
+              scale: targetScale,
+              scaleMode: "fit-page"
+            });
           }
         } catch {}
       },
@@ -1771,19 +1856,13 @@ export class ViewerInkSession {
       },
       getPageWidth: (pageNumber?: number) => {
         try {
-          const page = this.options.adapter.page(pageNumber ?? this.options.adapter.getViewState().pageNumber);
+          const page = this.options.adapter.page(pageNumber ?? this.getViewerState().pageNumber);
           return page?.width || 612;
         } catch {
           return 612;
         }
       },
-      getCurrentPage: () => {
-        try {
-          return this.options.adapter.getViewState().pageNumber || 1;
-        } catch {
-          return 1;
-        }
-      },
+      getCurrentPage: () => this.getViewerState().pageNumber,
       getPageCount: () => {
         try {
           return this.options.adapter.pages().length || 1;
@@ -1793,26 +1872,18 @@ export class ViewerInkSession {
       },
       focusPage: (pageNumber: number) => {
         try {
-          return this.options.adapter.focusPage(pageNumber);
+          const ok = this.options.adapter.focusPage(pageNumber);
+          if (ok) {
+            this.setViewerState({ pageNumber });
+          }
+          return ok;
         } catch {
           return false;
         }
       },
-      getRotation: () => {
-        try {
-          return this.options.adapter.getViewState().rotation || 0;
-        } catch {
-          return 0;
-        }
-      },
+      getRotation: () => this.getViewerState().rotation,
       setRotation: (degrees: number) => {
-        try {
-          const current = this.options.adapter.getViewState();
-          this.options.adapter.restoreViewState({
-            ...current,
-            rotation: degrees
-          });
-        } catch {}
+        this.setViewerState({ rotation: degrees });
       },
       getActiveTool: () => {
         return this.options.settings.toolPreferences.activeTool;

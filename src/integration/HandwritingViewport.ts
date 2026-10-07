@@ -7,11 +7,10 @@
  * PDF.js renders underneath it.
  */
 
-export interface HandwritingViewportState {
-  scale: number;
-  x: number;
-  y: number;
-}
+import type { ViewerViewportState } from "../runtime/ViewerState";
+
+export type HandwritingViewportState = ViewerViewportState;
+export type { ViewerViewportState };
 
 export interface HandwritingViewportBounds {
   minX: number;
