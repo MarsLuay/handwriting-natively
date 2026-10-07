@@ -10141,8 +10141,6 @@ export class ViewerInkSession {
       this.lifecycleInkReconcileFrame = null;
     }
     this.pendingLifecycleInkReconcile = false;
-    this.lifecycleVisibilityUnsubscribe?.();
-    this.lifecycleVisibilityUnsubscribe = null;
     if (this.mobileScrollRefreshFrame !== null) {
       this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.mobileScrollRefreshFrame);
       this.mobileScrollRefreshFrame = null;
