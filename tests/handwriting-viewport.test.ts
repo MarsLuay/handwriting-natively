@@ -201,6 +201,98 @@ describe("HandwritingViewport", () => {
     expect(pageLocal).toEqual({ x: 150, y: 170 });
   });
 
+  it("projects in-bounds canonical pan into native scroll without double transform", () => {
+    const scroll = document.createElement("div");
+    const target = document.createElement("div");
+    scroll.append(target);
+    document.body.append(scroll);
+
+    let scrollLeft = 100;
+    let scrollTop = 200;
+    Object.defineProperties(scroll, {
+      scrollWidth: { value: 1400, configurable: true },
+      clientWidth: { value: 600, configurable: true },
+      scrollHeight: { value: 1800, configurable: true },
+      clientHeight: { value: 800, configurable: true },
+      scrollLeft: {
+        get: () => scrollLeft,
+        set: (value: number) => { scrollLeft = value; },
+        configurable: true
+      },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value; },
+        configurable: true
+      }
+    });
+
+    const vp = new HandwritingViewport({
+      getContainerRect: () => rect(0, 0, 600, 800),
+      getContentSize: () => ({ width: 1400, height: 1800 }),
+      getScrollElement: () => scroll,
+      initialState: { scale: 1, x: -100, y: -200 }
+    });
+
+    vp.setTarget(target);
+    expect(target.style.transform).toBe("");
+
+    vp.pan(40, 20);
+
+    expect(vp.getState()).toEqual({ scale: 1, x: -60, y: -180 });
+    expect(scrollLeft).toBe(60);
+    expect(scrollTop).toBe(180);
+    expect(target.style.transform).toBe("");
+
+    vp.destroy();
+    scroll.remove();
+  });
+
+  it("reconciles external native scrolling back into canonical viewport state", () => {
+    const scroll = document.createElement("div");
+    const target = document.createElement("div");
+    scroll.append(target);
+    document.body.append(scroll);
+
+    let scrollLeft = 0;
+    let scrollTop = 0;
+    Object.defineProperties(scroll, {
+      scrollWidth: { value: 1400, configurable: true },
+      clientWidth: { value: 600, configurable: true },
+      scrollHeight: { value: 1800, configurable: true },
+      clientHeight: { value: 800, configurable: true },
+      scrollLeft: {
+        get: () => scrollLeft,
+        set: (value: number) => { scrollLeft = value; },
+        configurable: true
+      },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value; },
+        configurable: true
+      }
+    });
+
+    const vp = new HandwritingViewport({
+      getContainerRect: () => rect(0, 0, 600, 800),
+      getContentSize: () => ({ width: 1400, height: 1800 }),
+      getScrollElement: () => scroll
+    });
+    vp.setTarget(target);
+
+    scrollLeft = 125;
+    scrollTop = 275;
+    expect(vp.syncFromScroll(scrollLeft, scrollTop)).toBe(true);
+    expect(vp.getState()).toEqual({ scale: 1, x: -125, y: -275 });
+    expect(target.style.transform).toBe("");
+
+    // The scroll values now match the viewport's own latest projection, so a
+    // delayed programmatic scroll event must not become a second state update.
+    expect(vp.syncFromScroll(scrollLeft, scrollTop)).toBe(false);
+
+    vp.destroy();
+    scroll.remove();
+  });
+
   it("updates target DOM element with GPU transform and pinch-active class", () => {
     const target = document.createElement("div");
     document.body.append(target);
