@@ -21,6 +21,39 @@
   min-width: 0;
 }
 
+.native-pdf-handwriting-toolbar.native-pdf-handwriting-toolbar-floating-fallback {
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--background-modifier-border, #d1d5db);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 24%);
+  max-height: calc(100vh - 24px);
+  max-width: calc(100vw - 24px);
+  overflow: hidden;
+  position: fixed;
+  width: 48px;
+  z-index: var(--layer-popover, 1000);
+}
+
+.native-pdf-handwriting-toolbar-drag-handle {
+  align-items: center;
+  background: var(--background-secondary, #f3f4f6);
+  border: 0;
+  border-radius: 5px;
+  color: var(--text-muted, #6b7280);
+  cursor: grab;
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 18px;
+  justify-content: center;
+  line-height: 1;
+  min-height: 24px;
+  padding: 2px;
+  touch-action: none;
+  width: 100%;
+}
+
+.native-pdf-handwriting-toolbar-drag-handle:active { cursor: grabbing; }
+
 .native-pdf-handwriting-chrome {
   /* Fill Obsidian's absolute .pdf-content-container the same way
      .pdf-viewer-container does (top/bottom/inline insets), so wrapping
@@ -512,8 +545,7 @@
 .pdfViewer .pdf-page-view.native-pdf-handwriting-touch-pan-xy {
   touch-action: pan-x pan-y pinch-zoom;
 }
-/* Qualified custom pinch keeps one-finger panning but suppresses WebKit's
-   native pinch recognizer so the second PointerEvent reaches the page router. */
+/* The unified controller owns pan and pinch once the mobile path is qualified. */
 .pdf-viewer .page.native-pdf-handwriting-touch-custom-pinch,
 .pdf-viewer .page.native-pdf-handwriting-touch-custom-pinch *,
 .pdfViewer .page.native-pdf-handwriting-touch-custom-pinch,
@@ -522,7 +554,7 @@
 .pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch *,
 .pdfViewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch,
 .pdfViewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch * {
-  touch-action: pan-x pan-y;
+  touch-action: none;
 }
 /* Legacy finger-draw class (pre-0.1.28). Kept inert so old sessions clear cleanly. */
 .pdf-viewer .native-pdf-handwriting-touch-draw-page,
@@ -648,14 +680,11 @@
 .native-pdf-handwriting-text-style-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
 .native-pdf-handwriting-text-style-buttons button[aria-pressed="true"] { background: var(--interactive-accent, #2563eb); color: var(--text-on-accent, #fff); }
 .native-pdf-handwriting-text-menu-note { color: var(--text-muted); font-size: .85em; line-height: 1.35; margin: 0; }
-/* Let the pinch handoff own the single post-commit scroll rebase instead of
-   allowing browser scroll anchoring to reposition the page independently. */
-.native-pdf-handwriting-pinch-overflow-anchor-off { overflow-anchor: none !important; }
 /* Allow smooth GPU translation on the PDF root during active mobile pinch gestures. */
 .pdfViewer.native-pdf-handwriting-pinch-active,
 .pdf-viewer.native-pdf-handwriting-pinch-active {
   transform-origin: 0 0;
-  will-change: transform, zoom;
+  will-change: transform;
 }
 /* Keep the annotation overlay in its own compositor layer while PDF.js replaces
    its underlying canvas/text layers after a pinch zoom. */
