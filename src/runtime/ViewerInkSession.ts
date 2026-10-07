@@ -10806,12 +10806,10 @@ export class ViewerInkSession {
         this.refreshSurfaceCursors();
       },
       scrollRoot: () => this.options.adapter.scrollElement(),
-      onViewportPan: (deltaX, deltaY) => {
-        this.handwritingViewport.pan(deltaX, deltaY);
-      },
-      onViewportSettle: () => {
-        this.handwritingViewport.settle();
-      },
+      // Drag-tool contacts must use the native PDF scroll root. Keeping the
+      // visual viewport callback here would translate the PDF root without
+      // advancing its native scrollbar, so PointerRouter's integration-owned
+      // scroll fallback remains authoritative for page drags.
       cursorParent: () => surface.overlay,
       eraserCursorDiameter: () => this.options.settings.toolPreferences.eraser.size * this.displayScale(surface),
       drawCursorColor: () => {
