@@ -89,3 +89,70 @@ export class PageCoordinateMapper {
     return this.toPage(viewport);
   }
 }
+
+/**
+ * Minimal viewport contract used by the composed coordinate pipeline.
+ * HandwritingViewport implements this without making the mapper depend on the
+ * integration layer.
+ */
+export interface ElementViewportTransform {
+  screenToElementLocal(
+    element: HTMLElement,
+    screenPoint: ViewportPoint,
+    rect?: DOMRect
+  ): ViewportPoint;
+  elementLocalToScreen(
+    element: HTMLElement,
+    localPoint: ViewportPoint,
+    rect?: DOMRect
+  ): ViewportPoint;
+}
+
+/**
+ * Canonical composed coordinate path for interaction code:
+ * client <-> rendered page viewport <-> stable page/PDF coordinates.
+ */
+export class PageCoordinateSpace {
+  constructor(
+    private readonly viewport: ElementViewportTransform,
+    private readonly element: HTMLElement,
+    private readonly pageMapper: PageCoordinateMapper
+  ) {}
+
+  clientToViewport(point: ViewportPoint, rect?: DOMRect): ViewportPoint {
+    return this.viewport.screenToElementLocal(this.element, point, rect);
+  }
+
+  viewportToClient(point: ViewportPoint, rect?: DOMRect): ViewportPoint {
+    return this.viewport.elementLocalToScreen(this.element, point, rect);
+  }
+
+  viewportToPage(point: ViewportPoint): ViewportPoint {
+    return this.pageMapper.toPage(point);
+  }
+
+  pageToViewport(point: ViewportPoint): ViewportPoint {
+    return this.pageMapper.toViewport(point);
+  }
+
+  clientToPage(point: ViewportPoint, rect?: DOMRect): ViewportPoint {
+    return this.viewportToPage(this.clientToViewport(point, rect));
+  }
+
+  pageToClient(point: ViewportPoint, rect?: DOMRect): ViewportPoint {
+    return this.viewportToClient(this.pageToViewport(point), rect);
+  }
+
+  /**
+   * PDF surfaces use bottom-left stable page coordinates, so this is the
+   * canonical client -> PDF path there. Top-left image surfaces keep their
+   * native page coordinate origin through the same API.
+   */
+  clientToPdf(point: ViewportPoint, rect?: DOMRect): ViewportPoint {
+    return this.clientToPage(point, rect);
+  }
+
+  pdfToClient(point: ViewportPoint, rect?: DOMRect): ViewportPoint {
+    return this.pageToClient(point, rect);
+  }
+}
