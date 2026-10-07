@@ -295,7 +295,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         items: [
           {
             name: "Enable mouse for inking",
-            desc: "Allow the left mouse button to draw or edit with the active tool on PDF pages. When off, mouse input remains native; mouse drag-to-pan is not provided by the plugin.",
+            desc: "Allow the left mouse button to draw or edit with the active tool on PDF pages. The toolbar mouse button temporarily returns the mouse and standard shortcuts to native PDF selection; choosing an ink tool switches them back to annotations.",
             render: (setting: Setting) => {
               setting.addToggle((toggle) =>
                 toggle.setValue(this.host.inkSettings.mouseInkingEnabled).onChange(async (value) => {
