@@ -2,8 +2,11 @@ import type { App, TFile } from "obsidian";
 import type { InkStroke, ToolbarPlacement } from "../model";
 import type {
   AnnotationSurfaceCallbacks,
-  AnnotationViewState
+  AnnotationViewState,
+  ViewerState,
+  ViewerScaleMode
 } from "../runtime/AnnotationSurface";
+import { normalizeScaleMode } from "../runtime/ViewerState";
 import { setElementCssProps } from "../dom/typeGuards";
 import type { PdfIntegrationProfile } from "./PdfViewerCompatibility";
 import type { PdfPageInfo } from "./PdfPageLocator";
@@ -225,7 +228,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private scale = DEFAULT_SCALE;
   private rotation = 0;
   private currentPageNumber = 1;
-  private currentScaleMode: string | number = "auto";
+  private currentScaleMode: ViewerScaleMode = "fit-width";
   private zoomTimer: number | null = null;
   private layoutFrame: number | null = null;
   private readonly toolbarHost: HTMLElement;
@@ -557,7 +560,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   }
 
   private updateZoomControl(): void {
-    const selected = this.currentScaleMode === "auto" ? "auto" : String(this.scale);
+    const selected = (this.currentScaleMode === "fit-width" || this.currentScaleMode === "fit-page") ? "auto" : String(this.scale);
     const option = [...this.zoomSelect.options].find((candidate) => candidate.value === selected);
     this.zoomSelect.value = option ? selected : "auto";
   }
@@ -955,10 +958,10 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     return [...result];
   }
 
-  private setScale(next: number, mode: string | number = "manual"): void {
+  private setScale(next: number, mode: ViewerScaleMode | string | number = "custom"): void {
     const previous = this.scale;
     this.scale = clampScale(next);
-    this.currentScaleMode = mode;
+    this.currentScaleMode = normalizeScaleMode(mode);
     if (Math.abs(previous - this.scale) < 0.001) {
       this.updateZoomControl();
       return;
@@ -986,7 +989,20 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private fitWidth(): void {
     const page = this.pagesByNumber.get(this.currentPageNumber);
     if (!page || page.naturalWidth <= 0) return;
-    this.setScale((this.scroll.clientWidth - 32) / this.displayWidth(page), "auto");
+    this.setScale((this.scroll.clientWidth - 32) / this.displayWidth(page), "fit-width");
+  }
+
+  private fitPage(): void {
+    const page = this.pagesByNumber.get(this.currentPageNumber);
+    if (!page || page.naturalWidth <= 0) return;
+    const availableWidth = this.scroll.clientWidth - 32;
+    const availableHeight = this.scroll.clientHeight - 32;
+    if (availableWidth <= 0 || availableHeight <= 0) return;
+    const scale = Math.min(
+      availableWidth / this.displayWidth(page),
+      availableHeight / this.displayHeight(page)
+    );
+    this.setScale(scale, "fit-page");
   }
 
   private displayWidth(page: OwnedPage): number {
@@ -1241,26 +1257,46 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     };
   }
 
-  getViewState(): AnnotationViewState {
+  getViewState(): ViewerState & AnnotationViewState {
     const maxScroll = Math.max(1, this.scroll.scrollHeight - this.scroll.clientHeight);
+    const scrollFraction = Math.max(0, Math.min(1, this.scroll.scrollTop / maxScroll));
     return {
+      viewport: {
+        scale: this.scale,
+        x: this.scroll.scrollLeft,
+        y: this.scroll.scrollTop
+      },
       pageNumber: this.currentPageNumber,
-      scrollFraction: Math.max(0, Math.min(1, this.scroll.scrollTop / maxScroll)),
-      scale: this.scale,
       rotation: this.rotation,
-      scaleMode: this.currentScaleMode
+      scaleMode: this.currentScaleMode,
+      scrollFraction,
+      scale: this.scale
     };
   }
 
-  restoreViewState(state: AnnotationViewState): void {
+  restoreViewState(state: ViewerState | AnnotationViewState): void {
     const rotation = normalizeRotation(state.rotation);
     if (rotation !== this.rotation) this.setRotation(rotation);
-    const mode = state.scaleMode ?? "auto";
-    if (Number.isFinite(state.scale) && state.scale > 0) this.setScale(state.scale, mode);
-    else { this.currentScaleMode = mode; this.updateZoomControl(); }
+    const mode = normalizeScaleMode(state.scaleMode);
+    const scale = state.viewport?.scale ?? state.scale;
+    if (mode === "fit-width") {
+      this.fitWidth();
+    } else if (mode === "fit-page") {
+      this.fitPage();
+    } else if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) {
+      this.setScale(scale, mode);
+    } else {
+      this.currentScaleMode = mode;
+      this.updateZoomControl();
+    }
     this.currentPageNumber = Math.max(1, Math.min(this.pdfDocument.numPages, Math.round(state.pageNumber || 1)));
     const maxScroll = Math.max(0, this.scroll.scrollHeight - this.scroll.clientHeight);
-    this.scroll.scrollTop = maxScroll * Math.max(0, Math.min(1, state.scrollFraction));
+    if (state.viewport && (Number.isFinite(state.viewport.y) && state.viewport.y > 0 || Number.isFinite(state.viewport.x) && state.viewport.x > 0)) {
+      this.scroll.scrollTop = state.viewport.y;
+      this.scroll.scrollLeft = state.viewport.x;
+    } else if (typeof state.scrollFraction === "number" && Number.isFinite(state.scrollFraction)) {
+      this.scroll.scrollTop = maxScroll * Math.max(0, Math.min(1, state.scrollFraction));
+    }
     this.updatePageIndicator();
     this.queuePageRender(this.currentPageNumber);
   }
@@ -1278,7 +1314,8 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   onResize(): void {
     if (this.destroyed) return;
-    if (this.currentScaleMode === "auto") this.fitWidth();
+    if (this.currentScaleMode === "fit-width") this.fitWidth();
+    else if (this.currentScaleMode === "fit-page") this.fitPage();
     else this.scheduleLayoutUpdate();
   }
 

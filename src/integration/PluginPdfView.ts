@@ -44,10 +44,11 @@ export class PluginPdfView extends ItemView {
   getIcon(): string { return "file-text"; }
 
   getState(): Record<string, unknown> {
+    const viewer = this.session?.getViewerState() ?? this.adapter?.getViewState();
     return {
       ...this.state,
       ...(this.file ? { file: this.file.path } : {}),
-      ...(this.adapter ? { viewer: this.adapter.getViewState() } : {})
+      ...(viewer ? { viewer } : {})
     };
   }
 
@@ -93,7 +94,11 @@ export class PluginPdfView extends ItemView {
       this.session = session;
       this.options.onSessionAttached?.(this, session);
       const viewer = this.state.viewer;
-      if (viewer && typeof viewer === "object") this.adapter.restoreViewState(viewer as Parameters<PdfJsViewAdapter["restoreViewState"]>[0]);
+      if (viewer && typeof viewer === "object") {
+        const viewerState = viewer as Parameters<PdfJsViewAdapter["restoreViewState"]>[0];
+        this.adapter.restoreViewState(viewerState);
+        this.session?.setViewerState(viewerState);
+      }
       this.options.onDiagnostic?.("owned-pdf-view-ready", { document: abstract.path, reason });
     } catch (error) {
       adapter?.destroy();
@@ -110,7 +115,10 @@ export class PluginPdfView extends ItemView {
 
   private callbacks(): AnnotationSurfaceCallbacks {
     return {
-      onViewStateChange: (state, source) => { this.state = { ...this.state, viewer: state }; this.session?.onViewStateChange(state, source); },
+      onViewStateChange: (state, source) => {
+        this.state = { ...this.state, viewer: this.session?.getViewerState() ?? state };
+        this.session?.onViewStateChange(state, source);
+      },
       onPagesChanged: (reason) => this.session?.onPagesChanged(reason),
       onPageLifecycleChange: (change) => this.session?.onPageLifecycleChange(change),
       onZoomChange: (change) => this.session?.onZoomChange(change),
