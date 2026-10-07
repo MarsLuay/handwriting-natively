@@ -17,6 +17,18 @@ export type {
   PageLifecycleChangeEvent,
   PageLifecycleListener
 } from "../runtime/PageLifecycleCoordinator";
+import type { RenderScheduler } from "../runtime/RenderScheduler";
+
+export type {
+  RenderScheduler,
+  RenderPriority,
+  RenderPhase,
+  RenderJob,
+  RenderAbortSignal,
+  RenderMemoryBudget,
+  RenderedPageRecord,
+  RenderSchedulerOptions
+} from "../runtime/RenderScheduler";
 
 /** Compatibility aliases for PDF-only adapters and integrations. */
 export type PdfViewState = AnnotationViewState;
@@ -34,6 +46,7 @@ export type PdfInkPreviewProvider = (pageNumber: number) => PdfInkPreview;
 export interface PdfSurfaceExtensions {
   readonly supportsPdfExport?: true;
   readonly lifecycleCoordinator?: PageLifecycleCoordinator;
+  readonly renderScheduler?: RenderScheduler;
   nativeTextLayer?(pageNumber: number): HTMLElement | null;
   findController?(): PdfFindControllerLike | null;
   eventBus?(): PdfJsEventBus | null;
