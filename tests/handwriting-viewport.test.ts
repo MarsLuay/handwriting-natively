@@ -175,30 +175,30 @@ describe("HandwritingViewport", () => {
     vi.useRealTimers();
   });
 
-  it("converts screen to viewport, viewport to screen, and screen to page-local coordinates", () => {
+  it("converts client, viewport, and element-local coordinates through one transform", () => {
     const vp = new HandwritingViewport({
-      getContainerRect: () => rect(0, 0, 600, 800),
+      getContainerRect: () => rect(20, 30, 600, 800),
       getContentSize: () => ({ width: 1000, height: 1200 }),
       initialState: { scale: 2.0, x: -100, y: -50 }
     });
 
-    const screenPoint = { x: 300, y: 450 };
+    const screenPoint = { x: 320, y: 480 };
     const docPoint = vp.screenToViewport(screenPoint);
-    // x = (300 - (-100)) / 2 = 200
-    // y = (450 - (-50)) / 2 = 250
+    // x = (320 - 20 - (-100)) / 2 = 200
+    // y = (480 - 30 - (-50)) / 2 = 250
     expect(docPoint).toEqual({ x: 200, y: 250 });
 
     const roundtrip = vp.viewportToScreen(docPoint);
     expect(roundtrip).toEqual(screenPoint);
 
     const mockPage = document.createElement("div");
-    Object.defineProperty(mockPage, "offsetLeft", { value: 50 });
-    Object.defineProperty(mockPage, "offsetTop", { value: 80 });
+    Object.defineProperty(mockPage, "getBoundingClientRect", {
+      value: () => ({ left: 20, top: 140, right: 220, bottom: 340, width: 200, height: 200, x: 20, y: 140, toJSON: () => ({}) })
+    });
 
     const pageLocal = vp.screenToPageLocal(mockPage, screenPoint);
-    // pageLocal x = 200 - 50 = 150
-    // pageLocal y = 250 - 80 = 170
     expect(pageLocal).toEqual({ x: 150, y: 170 });
+    expect(vp.elementLocalToScreen(mockPage, pageLocal)).toEqual(screenPoint);
   });
 
   it("projects in-bounds canonical pan into native scroll without double transform", () => {
