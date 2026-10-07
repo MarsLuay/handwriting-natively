@@ -1046,6 +1046,46 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
+  it("keeps hand-mode page drags on the native PDF scroll root", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    let scrollTop = 100;
+    Object.defineProperties(adapter.root, {
+      scrollHeight: { value: 2_000, configurable: true },
+      clientHeight: { value: 800, configurable: true },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value; },
+        configurable: true
+      }
+    });
+    Object.assign(adapter.pageElement, {
+      setPointerCapture: vi.fn(),
+      releasePointerCapture: vi.fn(),
+      hasPointerCapture: () => true
+    });
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/hand-mode.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    expect(session.commandController.setHandMode(true)).toBe(true);
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerId: 41 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 100, 140, { pointerId: 41 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 140, { pointerId: 41, pressure: 0 }));
+
+    expect(scrollTop).toBe(80);
+    expect(adapter.root.style.transform).toBe("");
+    await session.destroy();
+  });
+
   it("routes an in-view MockTab wheel pan to its PDF when another HN session claimed the document event", async () => {
     const files = new MemoryFiles();
     const inactiveAdapter = new FakeAdapter();
