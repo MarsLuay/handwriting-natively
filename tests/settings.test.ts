@@ -15,6 +15,7 @@ vi.mock("obsidian", () => {
 });
 
 const {
+  NativePdfInkSettingTab,
   buildCopiedLogDiagnostics,
   COPIED_LOG_DIAGNOSTICS_SEPARATOR,
   getCopiedLogText,
@@ -138,14 +139,47 @@ describe("safe defaults", () => {
     expect(mergeSettings({ touchDoubleTapEraser: "false" } as never).touchDoubleTapEraser).toBe(true);
   });
 
-  it("keeps one-finger sidebar and command-palette swipe blocking opt-in and migratable", () => {
-    expect(DEFAULT_SETTINGS.disableSidebarSwipe).toBe(false);
-    expect(DEFAULT_SETTINGS.disableCommandPaletteSwipe).toBe(false);
-    expect(mergeSettings({ disableSidebarSwipe: true }).disableSidebarSwipe).toBe(true);
-    expect(mergeSettings({ disableSidebarSwipe: false }).disableSidebarSwipe).toBe(false);
-    expect(mergeSettings({ disableCommandPaletteSwipe: true }).disableCommandPaletteSwipe).toBe(true);
-    expect(mergeSettings({ disableCommandPaletteSwipe: false }).disableCommandPaletteSwipe).toBe(false);
-    expect(mergeSettings({ disableSearchBarSwipe: true } as never).disableCommandPaletteSwipe).toBe(true);
+  it("keeps swipe navigation blocking opt-in and migrates legacy settings", () => {
+    expect(DEFAULT_SETTINGS.disableSwipeNavigation).toBe(false);
+    expect(mergeSettings({ disableSwipeNavigation: false }).disableSwipeNavigation).toBe(false);
+    expect(mergeSettings({ disableSidebarSwipe: true } as never).disableSwipeNavigation).toBe(true);
+    expect(mergeSettings({ disableCommandPaletteSwipe: true } as never).disableSwipeNavigation).toBe(true);
+    expect(mergeSettings({ disableSidebarSwipe: false, disableCommandPaletteSwipe: false } as never)
+      .disableSwipeNavigation).toBe(false);
+    expect(mergeSettings({ disableSearchBarSwipe: true } as never).disableSwipeNavigation).toBe(true);
+
+    const explicitlyDisabled = mergeSettings({
+      disableSwipeNavigation: false,
+      disableSidebarSwipe: true,
+      disableCommandPaletteSwipe: true
+    } as never);
+    expect(explicitlyDisabled.disableSwipeNavigation).toBe(false);
+    expect("disableSidebarSwipe" in explicitlyDisabled).toBe(false);
+    expect("disableCommandPaletteSwipe" in explicitlyDisabled).toBe(false);
+
+    expect(mergeSettings({
+      disableSwipeNavigation: true,
+      disableSidebarSwipe: false,
+      disableCommandPaletteSwipe: false
+    } as never).disableSwipeNavigation).toBe(true);
+  });
+
+  it("shows one combined swipe-navigation setting with the requested copy", () => {
+    const tab = Object.create(NativePdfInkSettingTab.prototype) as InstanceType<typeof NativePdfInkSettingTab>;
+    Object.assign(tab, { host: { inkSettings: DEFAULT_SETTINGS } });
+    const navigationGroup = tab.getSettingDefinitions().find((definition) =>
+      "heading" in definition && definition.heading === "PDF navigation"
+    );
+    const swipeSettings = navigationGroup && "items" in navigationGroup
+      ? navigationGroup.items
+        .filter((item) => item.name.toLowerCase().includes("swipe"))
+        .map(({ name, desc }) => ({ name, desc }))
+      : [];
+
+    expect(swipeSettings).toEqual([{
+      name: "Disable swipe-activated sidebars",
+      desc: "Prevent one-finger swipe gestures from opening Obsidian’s left sidebar, right sidebar, or command palette on mobile/iPad. Buttons and normal commands still work."
+    }]);
   });
 
   it("enables custom mobile PDF pinch zoom by default while preserving an explicit opt-out", () => {

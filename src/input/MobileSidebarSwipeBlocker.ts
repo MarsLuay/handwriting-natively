@@ -69,8 +69,7 @@ function sidebarIsOpen(ownerDocument: Document, direction: SidebarSwipeDirection
  * Pencil are tracked so their companion TouchEvents never become candidates.
  */
 export class MobileSidebarSwipeBlocker {
-  private sidebarEnabled = false;
-  private commandPaletteEnabled = false;
+  private enabled = false;
   private candidate: TouchCandidate | null = null;
   private pointerCandidate: TouchCandidate | null = null;
   private readonly activePenPointers = new Set<number>();
@@ -83,12 +82,11 @@ export class MobileSidebarSwipeBlocker {
     this.ownerWindow = ownerDocument.defaultView;
   }
 
-  setEnabled(sidebarEnabled: boolean, commandPaletteEnabled = false): void {
-    if (this.sidebarEnabled === sidebarEnabled && this.commandPaletteEnabled === commandPaletteEnabled) return;
+  setEnabled(enabled: boolean): void {
+    if (this.enabled === enabled) return;
     this.removeListeners();
-    this.sidebarEnabled = sidebarEnabled;
-    this.commandPaletteEnabled = commandPaletteEnabled;
-    if (!sidebarEnabled && !commandPaletteEnabled) return;
+    this.enabled = enabled;
+    if (!enabled) return;
     this.ownerDocument.addEventListener("touchstart", this.handleTouchStart, this.listenerOptions);
     this.ownerDocument.addEventListener("touchmove", this.handleTouchMove, this.moveListenerOptions);
     this.ownerDocument.addEventListener("touchend", this.handleTouchEnd, this.listenerOptions);
@@ -111,8 +109,7 @@ export class MobileSidebarSwipeBlocker {
 
   destroy(): void {
     this.removeListeners();
-    this.sidebarEnabled = false;
-    this.commandPaletteEnabled = false;
+    this.enabled = false;
   }
 
   private readonly handleTouchStart = (event: TouchEvent): void => {
@@ -193,12 +190,16 @@ export class MobileSidebarSwipeBlocker {
   };
 
   private blockGesture(candidate: TouchCandidate, currentX: number, currentY: number, event: Event): void {
+    if (!this.enabled) return;
     const direction = classifySidebarSwipe(candidate.startX, candidate.startY, currentX, currentY);
-    const blocksSidebar = this.sidebarEnabled
-      && direction !== null
+    const blocksSidebar = direction !== null
       && !sidebarIsOpen(this.ownerDocument, direction);
-    const blocksCommandPalette = this.commandPaletteEnabled
-      && classifyCommandPaletteSwipe(candidate.startX, candidate.startY, currentX, currentY);
+    const blocksCommandPalette = classifyCommandPaletteSwipe(
+      candidate.startX,
+      candidate.startY,
+      currentX,
+      currentY
+    );
     if (!blocksSidebar && !blocksCommandPalette) return;
     event.preventDefault();
     // Obsidian's edge listener can be on the same event target. Stopping only
