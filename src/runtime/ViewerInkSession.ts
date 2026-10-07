@@ -118,7 +118,12 @@ import { AddPageControl } from "../ui/AddPageControl";
 import { AddPageTiming } from "../ui/AddPageTiming";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, inkHotkeyCommand, type InkHotkeyCommand, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
-import { MobilePinchZoomController, type MobilePinchZoomFocalPoint, type MobilePinchZoomFrame } from "../input/MobilePinchZoomController";
+import {
+  GestureNavigationController,
+  type GestureNavigationEndReason,
+  type GestureNavigationFocalPoint,
+  type GestureNavigationFrame
+} from "../input/GestureNavigationController";
 import { HandwritingViewport, type HandwritingViewportState } from "../integration/HandwritingViewport";
 import { ViewerCommandController, type ViewerCommandHost } from "./ViewerCommandController";
 import type {
@@ -1306,7 +1311,8 @@ export class ViewerInkSession {
   private readonly resizeObserver: ResizeObserver | null;
   private readonly logger: SessionLogger;
   private readonly ipadInputTrace: IpadPointerTouchTrace | null;
-  private readonly mobilePinchZoom: MobilePinchZoomController;
+  /** One navigation owner for page touch, hand-tool, and wheel gestures. */
+  private readonly gestureNavigation: GestureNavigationController;
   private activeMobilePinchSurface: PageSurface | null = null;
   private mobilePinchIndicator: HTMLElement | null = null;
   private mobilePinchIndicatorFadeTimer: number | null = null;
@@ -1634,29 +1640,37 @@ export class ViewerInkSession {
     });
     this.handwritingViewport.setTarget(adapter.root);
     this.commandController = new ViewerCommandController(this.createViewerCommandHost());
-    this.mobilePinchZoom = new MobilePinchZoomController({
+    this.gestureNavigation = new GestureNavigationController({
       minScale: 0.1,
       maxScale: 10,
-      getScale: () => {
-        try {
-          return this.handwritingViewport.getState().scale;
-        } catch {
-          return 1;
-        }
-      },
+      getScale: () => this.handwritingViewport.getState().scale,
+      getScrollRoot: () => this.options.adapter.scrollElement(),
       getViewportCenter: () => {
         const rect = adapter.root.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0
           ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
           : null;
       },
+      isHandMode: () => this.activeTool() === "drag",
       onStart: (frame) => this.startActiveMobilePinch(frame),
       onPreview: (scale, focalPoint) => this.previewActiveMobilePinch(scale, focalPoint),
       onEnd: (scale, reason) => this.endActiveMobilePinch(scale, reason),
       onCancel: (reason) => this.cancelActiveMobilePinch(reason),
       onSettled: (scale) => this.persistMobilePinchScale(scale),
       onEligibility: (target) => this.mobilePinchWheelEligible(target, adapter),
-      onIndicator: (scale, reset) => this.updateMobilePinchIndicator(scale, reset, adapter.host.ownerDocument)
+      onIndicator: (scale, reset) => this.updateMobilePinchIndicator(scale, reset, adapter.host.ownerDocument),
+      onPan: (deltaX, deltaY) => {
+        if (this.activeTool() === "drag") {
+          this.handwritingViewport.pan(deltaX, deltaY);
+          return true;
+        }
+        const scrollRoot = this.options.adapter.scrollElement();
+        const beforeLeft = scrollRoot.scrollLeft;
+        const beforeTop = scrollRoot.scrollTop;
+        scrollRoot.scrollLeft -= deltaX;
+        scrollRoot.scrollTop -= deltaY;
+        return scrollRoot.scrollLeft !== beforeLeft || scrollRoot.scrollTop !== beforeTop;
+      }
     });
     this.addPageControl = options.onInsertPage
       ? new AddPageControl({
@@ -3497,7 +3511,7 @@ export class ViewerInkSession {
     // observes them only; the unified controller owns explicit pinch zoom.
     doc.addEventListener("wheel", (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
-        if (this.mobilePinchZoom.handleWheel(e)) {
+        if (this.gestureNavigation.handleWheel(e)) {
           e.preventDefault();
           return;
         }
@@ -3537,7 +3551,9 @@ export class ViewerInkSession {
         logWheelPan(e, "outside-viewer", { deltaX: e.deltaX, deltaY: e.deltaY, within: false, target });
         return;
       }
-      logWheelPan(e, "in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target });
+      const changed = this.gestureNavigation.handleWheelPan(e);
+      if (changed) e.preventDefault();
+      logWheelPan(e, "in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
     }, { ...options, passive: false });
   }
 
@@ -10008,7 +10024,7 @@ export class ViewerInkSession {
     this.textContextMenuSuppressTimer = null;
     this.textContextMenuTargetId = null;
     this.textContextMenu.destroy();
-    this.mobilePinchZoom.destroy();
+    this.gestureNavigation.destroy();
     this.handwritingViewport.destroy();
     if (this.mobilePinchIndicatorFadeTimer !== null) {
       const view = this.options.adapter.host.ownerDocument.defaultView;
@@ -10478,8 +10494,8 @@ export class ViewerInkSession {
     }
   }
 
-  private startActiveMobilePinch(frame: MobilePinchZoomFrame): { accepted: boolean; scale?: number } {
-    let surface = frame.generation === 0 ? null : this.activeMobilePinchSurface;
+  private startActiveMobilePinch(frame: GestureNavigationFrame): { accepted: boolean; scale?: number } {
+    let surface = this.activeMobilePinchSurface;
     if (!surface) {
       const first = frame.points[0];
       const second = frame.points[1];
@@ -10511,7 +10527,7 @@ export class ViewerInkSession {
     return { accepted: true, scale: this.handwritingViewport.getState().scale };
   }
 
-  private previewActiveMobilePinch(scale: number, focalPoint: MobilePinchZoomFocalPoint): void {
+  private previewActiveMobilePinch(scale: number, focalPoint: GestureNavigationFocalPoint): void {
     const surface = this.activeMobilePinchSurface;
     if (!surface) return;
     this.handwritingViewport.pinch(scale, focalPoint);
@@ -10520,7 +10536,7 @@ export class ViewerInkSession {
 
   private endActiveMobilePinch(
     scale: number,
-    reason: "pointerup" | "pointercancel" | "lostpointercapture" | "pen-contact" | "lifecycle" | "disabled"
+    reason: GestureNavigationEndReason
   ): void {
     const surface = this.activeMobilePinchSurface;
     if (!surface) return;
@@ -10534,7 +10550,7 @@ export class ViewerInkSession {
     } else {
       this.mobilePdfZoomTrace.cancel(reason);
     }
-    if (reason !== "pointerup") this.activeMobilePinchSurface = null;
+    this.activeMobilePinchSurface = null;
   }
 
   private cancelActiveMobilePinch(reason: string): void {
@@ -10702,12 +10718,7 @@ export class ViewerInkSession {
         this.refreshSurfaceCursors();
       },
       scrollRoot: () => this.options.adapter.scrollElement(),
-      onViewportPan: (deltaX, deltaY) => {
-        this.handwritingViewport.pan(deltaX, deltaY);
-      },
-      onViewportSettle: () => {
-        this.handwritingViewport.settle();
-      },
+      navigationController: this.gestureNavigation,
       cursorParent: () => surface.overlay,
       eraserCursorDiameter: () => this.options.settings.toolPreferences.eraser.size * this.displayScale(surface),
       drawCursorColor: () => {
@@ -11729,7 +11740,7 @@ export class ViewerInkSession {
         listenerGeneration: surface.router.generation
       });
     }
-    surface.router?.destroy();
+    surface.router?.destroy({ preserveRoutedPointers: pageElement.isConnected });
     if (!pageElement.isConnected) {
       surface.router = null;
       this.logger.pageRouter("unavailable", {

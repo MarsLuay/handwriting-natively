@@ -67,7 +67,7 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
-  it("keeps native touch and pinch available before a stylus tip goes down", () => {
+  it("keeps browser touch navigation available until a stylus tip goes down", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -82,8 +82,7 @@ describe("PointerRouter", () => {
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
     expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
     expect(router.gesturePolicy()).toMatchObject({
-      manipulationState: "armed",
-      manipulationTouchAction: "pan-xy",
+      customNavigationEnabled: false,
       touchPanXyClassPresent: true,
       touchNoneClassPresent: false
     });
@@ -158,7 +157,7 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
-  it("classifies a second finger as zoom/pan without intercepting it", () => {
+  it("keeps native touch navigation for both fingers without intercepting it", () => {
     const element = document.createElement("div");
     const routes: string[] = [];
     const router = new PointerRouter(element, { activeTool: () => "pen", canAnnotatePointer: () => false, onRoute: (route) => routes.push(route) });
@@ -166,7 +165,7 @@ describe("PointerRouter", () => {
     const second = pointer("touch", 11, { isPrimary: false });
     element.dispatchEvent(first);
     element.dispatchEvent(second);
-    expect(routes).toEqual(["touch-pan", "touch-zoom-pan"]);
+    expect(routes).toEqual(["touch-pan", "touch-pan"]);
     expect(first.defaultPrevented).toBe(false);
     expect(second.defaultPrevented).toBe(false);
     router.destroy();
@@ -251,7 +250,7 @@ describe("PointerRouter", () => {
     element.dispatchEvent(pointer("pen", 50, { eventType: "pointerup", pressure: 0 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
     expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
-    expect(router.gesturePolicy().manipulationState).toBe("armed");
+    expect(router.gesturePolicy().stylusActive).toBe(false);
 
     const fingerScroll = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
     Object.defineProperty(fingerScroll, "touches", { value: [{ identifier: 99 }] });
@@ -368,7 +367,7 @@ describe("PointerRouter", () => {
     element.dispatchEvent(pointer("touch", 80));
     expect(routes.at(-1)).toBe("touch-pan");
     element.dispatchEvent(pointer("touch", 81, { isPrimary: false }));
-    expect(routes.at(-1)).toBe("touch-zoom-pan");
+    expect(routes.at(-1)).toBe("touch-pan");
 
     const touchEnd = new Event("touchend", { bubbles: true, cancelable: true }) as TouchEvent;
     Object.defineProperty(touchEnd, "touches", { value: [] });
@@ -381,7 +380,7 @@ describe("PointerRouter", () => {
       "touchend",
       touchEnd,
       expect.objectContaining({
-        reason: "touchend-all-clear",
+        reason: "touchend-terminal",
         trackedBefore: 2,
         trackedAfter: 0,
         touchCount: 0,
@@ -432,7 +431,7 @@ describe("PointerRouter", () => {
     expect(lifecycle).toHaveBeenCalledWith(
       "touchend",
       earlyEnd,
-      expect.objectContaining({ reason: "touchend-all-clear", stalePenCleared: false, activePens: true })
+      expect.objectContaining({ reason: "touchend-terminal", stalePenCleared: false, activePens: true })
     );
 
     now = 200;
@@ -446,7 +445,7 @@ describe("PointerRouter", () => {
       "touchcancel",
       lateCancel,
       expect.objectContaining({
-        reason: "touchcancel-all-clear",
+        reason: "touchcancel-terminal",
         stalePenCleared: true,
         activePens: false
       })
@@ -477,6 +476,10 @@ describe("PointerRouter", () => {
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
     element.dispatchEvent(pointer("pen", 71, { eventType: "lostpointercapture", pressure: 0, buttons: 0, clientX: 0, clientY: 0 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    const companionTouch = pointer("touch", 72);
+    element.dispatchEvent(companionTouch);
+    expect(companionTouch.defaultPrevented).toBe(true);
+    expect(router.activeTouchPointerIds()).toEqual([]);
     element.dispatchEvent(pointer("pen", 71, { eventType: "pointerup", pressure: 0, buttons: 0, clientX: 40, clientY: 50 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
     router.destroy();
@@ -611,7 +614,7 @@ describe("PointerRouter", () => {
     expect(starts).not.toHaveBeenCalled();
     const second = pointer("touch", 22, { isPrimary: false });
     element.dispatchEvent(second);
-    expect(routes.at(-1)).toBe("touch-zoom-pan");
+    expect(routes.at(-1)).toBe("touch-pan");
     expect(second.defaultPrevented).toBe(false);
     router.destroy();
     element.remove();
@@ -1350,112 +1353,8 @@ describe("safeReleasePointerCapture", () => {
   });
 });
 
-describe("manipulation touch-action integration", () => {
-  function mountedRouter(starts = vi.fn()): { element: HTMLElement; router: PointerRouter; starts: ReturnType<typeof vi.fn>; routes: string[] } {
-    const element = document.createElement("div");
-    document.body.append(element);
-    Object.assign(element, {
-      setPointerCapture: vi.fn(),
-      hasPointerCapture: () => false,
-      releasePointerCapture: vi.fn()
-    });
-    const routes: string[] = [];
-    const router = new PointerRouter(element, {
-      activeTool: () => "pen",
-      canAnnotatePointer: (event) => event.pointerType === "pen",
-      onStart: starts,
-      onRoute: (route) => routes.push(route)
-    });
-    return { element, router, starts, routes };
-  }
-
-  it("keeps the first and second fingers native while the machine enters pinch", () => {
-    const { element, router, starts, routes } = mountedRouter();
-    element.dispatchEvent(pointer("touch", 1, { isPrimary: true }));
-    expect(routes.at(-1)).toBe("touch-pan");
-    expect(router.gesturePolicy()).toMatchObject({
-      manipulationState: "native-touch",
-      manipulationActiveTouches: 1,
-      manipulationTouchAction: "pan-xy",
-      touchPanXyClassPresent: true
-    });
-    element.dispatchEvent(pointer("touch", 2, { isPrimary: false }));
-    expect(routes.at(-1)).toBe("touch-zoom-pan");
-    expect(router.gesturePolicy()).toMatchObject({
-      manipulationState: "pinch",
-      manipulationActiveTouches: 2,
-      touchNoneClassPresent: false,
-      touchPanXyClassPresent: true
-    });
-    expect(starts).not.toHaveBeenCalled();
-    element.dispatchEvent(pointer("touch", 1, { eventType: "pointerup", buttons: 0, pressure: 0 }));
-    element.dispatchEvent(pointer("touch", 2, { eventType: "pointerup", buttons: 0, pressure: 0, isPrimary: false }));
-    expect(router.gesturePolicy()).toMatchObject({
-      manipulationState: "armed",
-      manipulationActiveTouches: 0,
-      manipulationTouchAction: "pan-xy",
-      touchPanXyClassPresent: true,
-      touchNoneClassPresent: false
-    });
-    router.destroy();
-    element.remove();
-  });
-
-  it("restores pan-xy on a replacement page before the next contact", () => {
-    const first = document.createElement("div");
-    const second = document.createElement("div");
-    document.body.append(first, second);
-    const oldRouter = new PointerRouter(first, {
-      activeTool: () => "pen",
-      canAnnotatePointer: () => true
-    });
-    oldRouter.destroy();
-    const router = new PointerRouter(second, {
-      activeTool: () => "pen",
-      canAnnotatePointer: (event) => event.pointerType === "pen"
-    });
-    expect(router.gesturePolicy()).toMatchObject({
-      manipulationState: "armed",
-      touchPanXyClassPresent: true,
-      touchNoneClassPresent: false,
-      manipulationTouchAction: "pan-xy"
-    });
-    router.destroy();
-    first.remove();
-    second.remove();
-  });
-
-  it("returns to pan-xy after pen, pinch, and pinch end before the next pen down", () => {
-    const { element, router, starts, routes } = mountedRouter();
-    const pen = pointer("pen", 9, { pressure: 0.6 });
-    element.dispatchEvent(pen);
-    expect(pen.pointerType).toBe("pen");
-    expect(routes.at(-1)).toBe("draw");
-    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
-    element.dispatchEvent(pointer("pen", 9, { eventType: "pointerup", pressure: 0, buttons: 0 }));
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
-    element.dispatchEvent(pointer("touch", 1));
-    element.dispatchEvent(pointer("touch", 2, { isPrimary: false }));
-    element.dispatchEvent(pointer("touch", 1, { eventType: "pointerup", buttons: 0, pressure: 0 }));
-    element.dispatchEvent(pointer("touch", 2, { eventType: "pointerup", buttons: 0, pressure: 0, isPrimary: false }));
-    expect(router.gesturePolicy()).toMatchObject({
-      manipulationState: "armed",
-      touchPanXyClassPresent: true,
-      touchNoneClassPresent: false
-    });
-    const nextPen = pointer("pen", 11, { pressure: 0.4 });
-    element.dispatchEvent(nextPen);
-    expect(nextPen.pointerType).toBe("pen");
-    expect(routes.at(-1)).toBe("draw");
-    expect(starts).toHaveBeenCalled();
-    router.destroy();
-    element.remove();
-  });
-});
-
 describe("Regression Tests", () => {
-  it("applies pan-xy from the manipulation machine, not from annotation availability", () => {
+  it("applies native touch policy independently from annotation availability", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -1497,24 +1396,19 @@ describe("Regression Tests", () => {
       releasePointerCapture: releaseCapture
     });
 
-    const dragStarts: PointerEvent[] = [];
-    const dragMoves: { deltaX: number; deltaY: number }[] = [];
-    const dragEnds: PointerEvent[] = [];
     const routes: string[] = [];
 
     const router = new PointerRouter(element, {
       activeTool: () => "drag",
       canAnnotatePointer: () => true,
       scrollRoot: () => scrollRoot,
-      onRoute: (route) => routes.push(route),
-      onDragStart: (event) => dragStarts.push(event),
-      onDragMove: (deltaX, deltaY) => dragMoves.push({ deltaX, deltaY }),
-      onDragEnd: (event) => dragEnds.push(event)
+      onRoute: (route) => routes.push(route)
     });
 
     const down = new PointerEvent("pointerdown", {
       pointerId: 7,
       pointerType: "pen",
+      isPrimary: true,
       clientX: 200,
       clientY: 300,
       bubbles: true,
@@ -1523,13 +1417,13 @@ describe("Regression Tests", () => {
     element.dispatchEvent(down);
 
     expect(routes).toContain("drag");
-    expect(dragStarts).toHaveLength(1);
     expect(setCapture).toHaveBeenCalledWith(7);
     expect(element.classList.contains("native-pdf-handwriting-panning")).toBe(true);
 
     const move = new PointerEvent("pointermove", {
       pointerId: 7,
       pointerType: "pen",
+      isPrimary: true,
       clientX: 205,
       clientY: 320,
       buttons: 1,
@@ -1538,9 +1432,9 @@ describe("Regression Tests", () => {
     });
     element.dispatchEvent(move);
 
-    expect(dragMoves).toHaveLength(1);
-    expect(dragMoves[0]).toEqual({ deltaX: 5, deltaY: 20 });
-    // clientY moved down (+20), so content scrolled up (-20 delta to scrollTop)
+    expect(move.defaultPrevented).toBe(true);
+    expect(scrollRoot.scrollLeft).toBe(45);
+    // clientY moved down (+20), so the controller moves the PDF scroll root up.
     expect(scrollRoot.scrollTop).toBe(80);
 
     const up = new PointerEvent("pointerup", {
@@ -1553,7 +1447,6 @@ describe("Regression Tests", () => {
     });
     element.dispatchEvent(up);
 
-    expect(dragEnds).toHaveLength(1);
     expect(releaseCapture).toHaveBeenCalledWith(7);
     expect(element.classList.contains("native-pdf-handwriting-panning")).toBe(false);
 
@@ -1580,7 +1473,6 @@ describe("Regression Tests", () => {
       value: () => ({ left: 0, top: 0, right: 515, bottom: 500, width: 515, height: 500 })
     });
     const setCapture = vi.fn();
-    const dragStarts = vi.fn();
     const routes: string[] = [];
     const decisions: string[] = [];
     Object.assign(scrollRoot, {
@@ -1593,8 +1485,7 @@ describe("Regression Tests", () => {
       canAnnotatePointer: () => true,
       scrollRoot: () => scrollRoot,
       onRoute: (route) => routes.push(route),
-      onRouteDecision: (_route, reason) => decisions.push(reason),
-      onDragStart: dragStarts
+      onRouteDecision: (_route, reason) => decisions.push(reason)
     });
 
     const verticalScrollbar = new PointerEvent("pointerdown", {
@@ -1607,7 +1498,6 @@ describe("Regression Tests", () => {
     });
     scrollRoot.dispatchEvent(verticalScrollbar);
     expect(verticalScrollbar.defaultPrevented).toBe(false);
-    expect(dragStarts).not.toHaveBeenCalled();
     expect(setCapture).not.toHaveBeenCalled();
     expect(decisions).toContain("native-scrollbar");
 
@@ -1621,11 +1511,12 @@ describe("Regression Tests", () => {
     });
     scrollRoot.dispatchEvent(horizontalScrollbar);
     expect(horizontalScrollbar.defaultPrevented).toBe(false);
-    expect(dragStarts).not.toHaveBeenCalled();
+    expect(setCapture).not.toHaveBeenCalled();
 
     const page = new PointerEvent("pointerdown", {
       pointerId: 33,
       pointerType: "pen",
+      isPrimary: true,
       clientX: 300,
       clientY: 300,
       bubbles: true,
@@ -1634,11 +1525,24 @@ describe("Regression Tests", () => {
     scrollRoot.dispatchEvent(page);
     expect(page.defaultPrevented).toBe(true);
     expect(routes).toContain("drag");
-    expect(dragStarts).toHaveBeenCalledTimes(1);
+    expect(setCapture).toHaveBeenCalledWith(33);
+    scrollRoot.scrollTop = 100;
+    scrollRoot.dispatchEvent(new PointerEvent("pointermove", {
+      pointerId: 33,
+      pointerType: "pen",
+      isPrimary: true,
+      buttons: 1,
+      clientX: 320,
+      clientY: 320,
+      bubbles: true,
+      cancelable: true
+    }));
+    expect(scrollRoot.scrollTop).toBe(80);
 
     scrollRoot.dispatchEvent(new PointerEvent("pointerup", {
       pointerId: 33,
       pointerType: "pen",
+      isPrimary: true,
       clientX: 300,
       clientY: 300,
       bubbles: true,

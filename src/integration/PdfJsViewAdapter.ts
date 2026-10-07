@@ -255,11 +255,6 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private findMatches: Array<{ pageNumber: number; offset: number }> = [];
   private findIndex = -1;
   private handToolActive = false;
-  private handPointerId: number | null = null;
-  private handStartX = 0;
-  private handStartY = 0;
-  private handScrollLeft = 0;
-  private handScrollTop = 0;
 
   private constructor(
     options: PdfJsViewAdapterOptions,
@@ -319,7 +314,6 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.installControls(ownerDocument);
     this.installScrollTracking();
     this.installKeyboardNavigation();
-    this.installHandToolInteraction();
     this.installIntersectionObserver();
     this.installResizeObserver();
   }
@@ -1150,41 +1144,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     if (match) this.focusPage(match.pageNumber);
   }
 
-  private installHandToolInteraction(): void {
-    const onPointerDown = (event: PointerEvent): void => {
-      if (!this.handToolActive || event.button !== 0 || event.isPrimary === false) return;
-      this.handPointerId = event.pointerId;
-      this.handStartX = event.clientX;
-      this.handStartY = event.clientY;
-      this.handScrollLeft = this.scroll.scrollLeft;
-      this.handScrollTop = this.scroll.scrollTop;
-      this.scroll.setPointerCapture?.(event.pointerId);
-      setElementCssProps(this.scroll, { cursor: "grabbing" });
-      event.preventDefault();
-    };
-    const onPointerMove = (event: PointerEvent): void => {
-      if (!this.handToolActive || this.handPointerId !== event.pointerId) return;
-      this.scroll.scrollLeft = this.handScrollLeft - (event.clientX - this.handStartX);
-      this.scroll.scrollTop = this.handScrollTop - (event.clientY - this.handStartY);
-      event.preventDefault();
-    };
-    const onPointerUp = (event: PointerEvent): void => {
-      if (this.handPointerId !== event.pointerId) return;
-      this.handPointerId = null;
-      this.scroll.releasePointerCapture?.(event.pointerId);
-      setElementCssProps(this.scroll, { cursor: this.handToolActive ? "grab" : "auto" });
-    };
-    this.scroll.addEventListener("pointerdown", onPointerDown, true);
-    this.scroll.addEventListener("pointermove", onPointerMove, true);
-    this.scroll.addEventListener("pointerup", onPointerUp, true);
-    this.scroll.addEventListener("pointercancel", onPointerUp, true);
-    this.cleanups.push(
-      () => this.scroll.removeEventListener("pointerdown", onPointerDown, true),
-      () => this.scroll.removeEventListener("pointermove", onPointerMove, true),
-      () => this.scroll.removeEventListener("pointerup", onPointerUp, true),
-      () => this.scroll.removeEventListener("pointercancel", onPointerUp, true)
-    );
-  }
+  
 
   private toggleHandTool(): void {
     this.handToolActive = !this.handToolActive;
@@ -1404,4 +1364,3 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.root.remove();
   }
 }
-

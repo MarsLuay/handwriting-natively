@@ -36,13 +36,14 @@ describe("GestureOwnership", () => {
     expect(move.previewSamples.every((sample) => !move.persistSamples.includes(sample))).toBe(true);
   });
 
-  it("keeps two fingers on native navigation and clears on cancel, capture loss, and generation change", () => {
+  it("leaves touch navigation to GestureNavigationController", () => {
     const ownership = new GestureOwnership();
-    ownership.pointerDown({ pointerId: 1, pointerType: "touch" });
-    ownership.pointerDown({ pointerId: 2, pointerType: "touch" });
-    expect(ownership.snapshot().owner).toBe("native-touch-navigation");
-    expect(ownership.observeTouchEvent().preventDefault).toBe(false);
-    expect(ownership.snapshot().owner).toBe("native-touch-navigation");
+    const first = ownership.pointerDown({ pointerId: 1, pointerType: "touch" });
+    const second = ownership.pointerDown({ pointerId: 2, pointerType: "touch" });
+    expect(first.action).toBe("observe");
+    expect(second.action).toBe("observe");
+    expect(first.state.owner).toBe("idle");
+    expect(second.state.owner).toBe("idle");
     ownership.pointerCancel({ pointerId: 1, pointerType: "touch" });
     ownership.pointerUp({ pointerId: 2, pointerType: "touch" });
     expect(ownership.snapshot().owner).toBe("idle");

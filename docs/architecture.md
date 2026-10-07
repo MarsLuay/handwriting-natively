@@ -6,7 +6,7 @@ Handwriting Natively adds one annotation system to Obsidian's direct and embedde
 
 - `integration/`: only owner of undocumented Obsidian PDF objects, DOM selectors, PDF.js compatibility probes, viewer discovery, page location, and reversible patches.
 - `focus-view/`: embed Annotate chrome and helpers that open a PDF leaf (not a private-class viewer).
-- `input/`: Pointer Events policy. It decides before capture or `preventDefault()` and follows the single ownership contract in `docs/input-gesture-architecture.md`.
+- `input/`: Pointer Events policy. `GestureNavigationController` is shared by a viewer session's page routers and owns eligible touch pan/pinch, hand-tool movement, modifier-wheel zoom, and pen exclusion. `PointerRouter` delegates navigation movement and keeps annotation routing at the page boundary. See `docs/input-gesture-architecture.md`.
 - `runtime/AnnotationSurface.ts`: the minimal page-surface contract (`AnnotationPageInfo`, page-local geometry, view/scroll lifecycle, overlay/UI mounting, and teardown). PDF capability extensions live in `integration/ObsidianPdfAdapter.ts` and are never required by the shared runtime. `surfaceType` distinguishes PDF, image, and future Markdown content without changing the direct/embedded host distinction.
 - `ink/`: strokes, filtering, rendering, simplification, hit testing. Coordinates use page-local document space for every surface.
 - `tools/`: tool state and behavior. Preferences stay outside annotation documents.
@@ -35,12 +35,13 @@ Each attached viewer owns one disposable session. Closing PDF, removing embed, s
 
 ## First use
 
-Open PDF, select Pen, Pencil, Highlighter, or Laser. Pen/pencil/highlighter persist to the sidecar. Laser trails fade away after a short hold and are never saved. Stylus input annotates directly, touch keeps native PDF navigation, and mouse behavior follows the selected input policy. Status reads `Saved`, `Saving…`, `Unsaved changes`, or `Save failed`.
+Open PDF, select Pen, Pencil, Highlighter, or Laser. Pen/pencil/highlighter persist to the sidecar. Laser trails fade away after a short hold and are never saved. Stylus input annotates directly, qualified mobile PDF navigation goes through the shared controller, unsupported modes retain browser navigation, and mouse behavior follows the selected input policy. Status reads `Saved`, `Saving…`, `Unsaved changes`, or `Save failed`.
 
 ## Coordinate and input invariants
 
 - Persisted annotation geometry is page-local document data; viewport CSS pixels, scroll offsets, zoom, rotation, and device-pixel-ratio are render-time inputs only.
-- Pointer Events are the authoritative input stream when available. Pen ownership is plugin-local, touch remains host navigation, and no global `touch-action: none` is applied.
+- Pointer Events are the authoritative input stream when available. `GestureOwnership` tracks annotation contacts; `GestureNavigationController` owns movement and zoom contacts. Losing pointer capture alone does not release active-pen exclusion. No global `touch-action: none` is applied.
+- A sidebar toolbar that cannot mount in its requested rail becomes a floating toolbar with a drag handle. A host observer restores it to the rail if that rail appears; session teardown aborts drag listeners and disconnects the observer.
 - Viewer/page generations invalidate stale async work. A replacement page is revalidated before an overlay accepts input.
 - A non-PDF surface may expose only page geometry and lifecycle. The shared session does not require PDF.js objects, PDF selectors, native text layers, or source-PDF mutation callbacks.
 

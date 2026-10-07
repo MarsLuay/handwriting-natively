@@ -5,7 +5,7 @@ import {
   planMobileCustomPdfZoom,
   type MobileCustomPdfZoomGateInput
 } from "../src/integration/MobileCustomPdfZoom";
-import { GestureOwnership } from "../src/input/GestureOwnership";
+import { GestureNavigationController } from "../src/input/GestureNavigationController";
 import type { PdfIntegrationProfile } from "../src/integration/PdfViewerCompatibility";
 import { probePlatformCapabilities } from "../src/integration/PlatformCapabilities";
 
@@ -147,27 +147,45 @@ describe("mobile custom PDF zoom contract", () => {
     ]));
   });
 
-  it("keeps one-finger navigation and pen-plus-finger input out of custom pinch", () => {
-    const ownership = new GestureOwnership({ customPinchEnabled: true });
-    expect(ownership.pointerDown({ pointerId: 1, pointerType: "touch" }).state.owner)
-      .toBe("native-touch-navigation");
-    expect(ownership.pointerDown({ pointerId: 2, pointerType: "touch" }).state.owner)
-      .toBe("custom-touch-pinch");
+  it("keeps an active pen from turning a companion finger into navigation", () => {
+    const surface = document.createElement("div");
+    const controller = new GestureNavigationController({
+      minScale: 0.1,
+      maxScale: 10,
+      getScale: () => 1,
+      onStart: () => ({ accepted: true, scale: 1 }),
+      onPreview: () => undefined,
+      onEnd: () => undefined,
+      onCancel: () => undefined
+    });
+    const event = (pointerType: "pen" | "touch", pointerId: number): PointerEvent => {
+      const pointer = new Event("pointerdown", { bubbles: true, cancelable: true }) as PointerEvent;
+      Object.assign(pointer, { pointerType, pointerId, button: 0, isPrimary: pointerType === "pen", clientX: 20, clientY: 30 });
+      return pointer;
+    };
 
-    const penOwnership = new GestureOwnership({ customPinchEnabled: true });
-    penOwnership.pointerDown({ pointerId: 3, pointerType: "pen", target: "page", inkToolSelected: true });
-    expect(penOwnership.pointerDown({ pointerId: 4, pointerType: "touch", target: "page" }).state.owner)
-      .toBe("pen-ink");
+    controller.handlePointerDown(event("pen", 3), {
+      surface,
+      route: "draw",
+      customNavigationEnabled: true
+    });
+    const companion = event("touch", 4);
+    const result = controller.handlePointerDown(companion, {
+      surface,
+      route: "touch-pan",
+      customNavigationEnabled: true
+    });
+
+    expect(result).toMatchObject({ handled: true, route: "ignored", reason: "stylus-active" });
+    expect(companion.defaultPrevented).toBe(true);
+    expect(controller.activeTouchIds()).toEqual([]);
+    controller.destroy();
   });
 
-  it("turns every cancellation signal into a compositor release decision", () => {
+  it("maps cancellation signals to a native handoff reason", () => {
     expect(cancellationReason("pointer-cancel")).toBe("pointer-cancel");
     expect(cancellationReason("visibility-hidden")).toBe("visibility-hidden");
     expect(cancellationReason(null)).toBeNull();
-    const ownership = new GestureOwnership({ customPinchEnabled: true });
-    ownership.pointerDown({ pointerId: 1, pointerType: "touch" });
-    ownership.pointerDown({ pointerId: 2, pointerType: "touch" });
-    expect(ownership.pointerCancel({ pointerId: 2, pointerType: "touch" }).action).toBe("preview");
   });
 
   it("never carries a temporary transform across a viewer generation replacement", () => {
