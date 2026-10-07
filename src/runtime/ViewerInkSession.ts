@@ -123,6 +123,7 @@ import { MobilePinchZoomController, type MobilePinchZoomFocalPoint, type MobileP
 import { MobilePdfCssZoom, type MobilePdfCssZoomPage } from "../integration/MobilePdfCssZoom";
 import { MobilePdfCssZoomTransaction } from "../integration/MobilePdfCssZoomTransaction";
 import { HandwritingViewport, type HandwritingViewportState } from "../integration/HandwritingViewport";
+import { ViewerCommandController, type ViewerCommandHost } from "./ViewerCommandController";
 import type {
   MobilePdfZoomHandoffCancelReason,
   MobilePdfZoomHandoffSignal
@@ -1095,6 +1096,8 @@ export class ViewerInkSession {
   private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
   /** Authoritative persistent handwriting viewport state (scale, x, y). */
   readonly handwritingViewport: HandwritingViewport;
+  /** Authoritative command controller for zoom, pan, hand mode, search, navigation, and rotation. */
+  readonly commandController: ViewerCommandController;
   /** Visual mobile PDF zoom is persistent CSS/container state, not PDF.js scale. */
   private mobileCssZoomScale = 1;
   private mobileCssZoomTarget: HTMLElement | null = null;
@@ -1432,6 +1435,7 @@ export class ViewerInkSession {
         ...(options.openScanDocument && options.onInsertScannedPages && (options.runtimePlatform?.().mobile ?? false)
           ? ["scan-document" as const]
           : []),
+        ...(["zoom-in", "zoom-out", "fit-width", "rotate-cw", "rotate-ccw", "search"] as const),
         // Keep the PDF-bar action available on mobile too. `main` is an
         // explicit placement now; hiding it here made the setting impossible
         // to select from the live PDF toolbar on mobile.
@@ -1541,6 +1545,7 @@ export class ViewerInkSession {
         activeTextStyle: () => this.activeTextStyle(),
         onUndo: () => this.undo(),
         onRedo: () => this.redo(),
+        onHandMode: () => this.commandController.toggleHandMode(),
         onSave: () => this.manualSave(),
         onMore: (action) => void this.handleMore(action),
         toolbarPlacement: () => this.currentToolbarPlacement()
@@ -1651,6 +1656,7 @@ export class ViewerInkSession {
       }
     });
     this.handwritingViewport.setTarget(adapter.root);
+    this.commandController = new ViewerCommandController(this.createViewerCommandHost());
     this.mobilePinchZoom = new MobilePinchZoomController({
       minScale: 0.1,
       maxScale: 10,
@@ -1736,6 +1742,256 @@ export class ViewerInkSession {
 
   viewportState(): HandwritingViewportState {
     return this.handwritingViewport.getState();
+  }
+
+  private createViewerCommandHost(): ViewerCommandHost {
+    return {
+      getScale: () => {
+        return this.handwritingViewport.getState().scale;
+      },
+      setScale: (scale: number) => {
+        this.handwritingViewport.setState({ scale });
+        try {
+          const current = this.options.adapter.getViewState();
+          if (Math.abs(current.scale - scale) > 0.001) {
+            this.options.adapter.restoreViewState({ ...current, scale });
+          }
+        } catch {}
+      },
+      fitWidth: () => {
+        try {
+          const scrollEl = this.options.adapter.scrollElement?.();
+          const containerWidth = scrollEl?.clientWidth || this.options.adapter.root?.clientWidth || 0;
+          const pageNum = this.options.adapter.getViewState().pageNumber || 1;
+          const page = this.options.adapter.page(pageNum);
+          const pageWidth = page?.width || 612;
+          if (containerWidth > 0 && pageWidth > 0) {
+            const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
+            this.handwritingViewport.setState({ scale: targetScale, x: 0 });
+            try {
+              this.options.adapter.restoreViewState({
+                ...this.options.adapter.getViewState(),
+                scale: targetScale,
+                scaleMode: "page-width"
+              });
+            } catch {}
+          }
+        } catch {}
+      },
+      getContainerWidth: () => {
+        try {
+          return this.options.adapter.scrollElement?.().clientWidth || this.options.adapter.root?.clientWidth || 0;
+        } catch {
+          return 0;
+        }
+      },
+      getPageWidth: (pageNumber?: number) => {
+        try {
+          const page = this.options.adapter.page(pageNumber ?? this.options.adapter.getViewState().pageNumber);
+          return page?.width || 612;
+        } catch {
+          return 612;
+        }
+      },
+      getCurrentPage: () => {
+        try {
+          return this.options.adapter.getViewState().pageNumber || 1;
+        } catch {
+          return 1;
+        }
+      },
+      getPageCount: () => {
+        try {
+          return this.options.adapter.pages().length || 1;
+        } catch {
+          return 1;
+        }
+      },
+      focusPage: (pageNumber: number) => {
+        try {
+          return this.options.adapter.focusPage(pageNumber);
+        } catch {
+          return false;
+        }
+      },
+      getRotation: () => {
+        try {
+          return this.options.adapter.getViewState().rotation || 0;
+        } catch {
+          return 0;
+        }
+      },
+      setRotation: (degrees: number) => {
+        try {
+          const current = this.options.adapter.getViewState();
+          this.options.adapter.restoreViewState({
+            ...current,
+            rotation: degrees
+          });
+        } catch {}
+      },
+      getActiveTool: () => {
+        return this.options.settings.toolPreferences.activeTool;
+      },
+      selectTool: (tool: ToolId) => {
+        this.selectTool(tool);
+      },
+      openSearch: () => {
+        return this.openViewerSearch();
+      },
+      closeSearch: () => {
+        return this.closeViewerSearch();
+      },
+      isSearchOpen: () => {
+        return this.isViewerSearchOpen();
+      },
+      findNext: () => {
+        return this.findNextViewerMatch();
+      },
+      findPrevious: () => {
+        return this.findPreviousViewerMatch();
+      },
+      search: (query: string) => {
+        return this.searchViewer(query);
+      },
+      logCommand: (name: string, details?: Record<string, unknown>) => {
+        if (details) {
+          this.options.vaultLog?.write("info", `cmd:${name}`, details);
+        } else {
+          this.options.vaultLog?.write("info", `cmd:${name}`);
+        }
+      }
+    };
+  }
+
+  private getViewerFindBar(): HTMLElement | null {
+    return this.options.adapter.root.querySelector<HTMLElement>(".hn-owned-pdf-find-bar, .pdf-find-bar, .findbar")
+      ?? this.options.adapter.host.querySelector<HTMLElement>(".hn-owned-pdf-find-bar, .pdf-find-bar, .findbar")
+      ?? null;
+  }
+
+  private isViewerSearchOpen(): boolean {
+    const bar = this.getViewerFindBar();
+    if (bar) return !bar.hidden && bar.style.display !== "none";
+    const controller = pdfSurfaceExtensions(this.options.adapter)?.findController?.();
+    return Boolean(controller);
+  }
+
+  private openViewerSearch(): boolean {
+    const bar = this.getViewerFindBar();
+    if (bar) {
+      bar.hidden = false;
+      bar.style.removeProperty("display");
+      const input = bar.querySelector<HTMLInputElement>("input");
+      if (input) {
+        input.focus();
+        input.select();
+      }
+      return true;
+    }
+    const adapterAny = this.options.adapter as unknown as { toggleFindBar?(force?: boolean): void };
+    if (typeof adapterAny.toggleFindBar === "function") {
+      adapterAny.toggleFindBar(true);
+      return true;
+    }
+    const controller = pdfSurfaceExtensions(this.options.adapter)?.findController?.();
+    return Boolean(controller);
+  }
+
+  private closeViewerSearch(): boolean {
+    const bar = this.getViewerFindBar();
+    if (bar) {
+      bar.hidden = true;
+      return true;
+    }
+    const adapterAny = this.options.adapter as unknown as { toggleFindBar?(force?: boolean): void };
+    if (typeof adapterAny.toggleFindBar === "function") {
+      adapterAny.toggleFindBar(false);
+      return true;
+    }
+    return false;
+  }
+
+  private findNextViewerMatch(): boolean {
+    const bar = this.getViewerFindBar();
+    const nextBtn = bar?.querySelector<HTMLButtonElement>("button[data-find='next'], button.find-next, button:has(svg)");
+    if (nextBtn) {
+      nextBtn.click();
+      return true;
+    }
+    const pdfExt = pdfSurfaceExtensions(this.options.adapter);
+    const controller = pdfExt?.findController?.();
+    if (controller && typeof controller.executeCommand === "function") {
+      controller.executeCommand("findagain", {
+        findPrevious: false
+      });
+      return true;
+    }
+    const bus = pdfExt?.eventBus?.();
+    if (bus?.dispatch) {
+      bus.dispatch("findagain", { findPrevious: false });
+      return true;
+    }
+    return false;
+  }
+
+  private findPreviousViewerMatch(): boolean {
+    const bar = this.getViewerFindBar();
+    const prevBtn = bar?.querySelector<HTMLButtonElement>("button[data-find='prev'], button.find-prev");
+    if (prevBtn) {
+      prevBtn.click();
+      return true;
+    }
+    const pdfExt = pdfSurfaceExtensions(this.options.adapter);
+    const controller = pdfExt?.findController?.();
+    if (controller && typeof controller.executeCommand === "function") {
+      controller.executeCommand("findagain", {
+        findPrevious: true
+      });
+      return true;
+    }
+    const bus = pdfExt?.eventBus?.();
+    if (bus?.dispatch) {
+      bus.dispatch("findagain", { findPrevious: true });
+      return true;
+    }
+    return false;
+  }
+
+  private searchViewer(query: string): boolean {
+    const bar = this.getViewerFindBar();
+    const input = bar?.querySelector<HTMLInputElement>("input");
+    if (input) {
+      input.value = query;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const pdfExt = pdfSurfaceExtensions(this.options.adapter);
+    const controller = pdfExt?.findController?.();
+    if (controller && typeof controller.executeCommand === "function") {
+      controller.executeCommand("find", {
+        query,
+        phraseSearch: true,
+        caseSensitive: false,
+        entireWord: false,
+        highlightAll: true,
+        findPrevious: false
+      });
+      return true;
+    }
+    const bus = pdfExt?.eventBus?.();
+    if (bus?.dispatch) {
+      bus.dispatch("find", {
+        query,
+        phraseSearch: true,
+        caseSensitive: false,
+        entireWord: false,
+        highlightAll: true,
+        findPrevious: false
+      });
+      return true;
+    }
+    return Boolean(input);
   }
 
   private installPointerProbe(adapter: ViewerInkSessionOptions["adapter"]): void {
@@ -9197,6 +9453,9 @@ export class ViewerInkSession {
         return true;
       }
       return false;
+    }
+    if (this.commandController.handleKeyDown(event, textFocused)) {
+      return true;
     }
     if (!action || !this.canSelectionShortcut(action)) {
       const command = inkHotkeyCommand(event, plainModifierForInk);
@@ -17151,6 +17410,30 @@ export class ViewerInkSession {
     }
     if (action === "export-editable") {
       await this.exportCopy("editable").catch((error) => this.options.notice(`Export failed: ${this.errorMessage(error)}`));
+      return;
+    }
+    if (action === "zoom-in") {
+      this.commandController.zoomIn();
+      return;
+    }
+    if (action === "zoom-out") {
+      this.commandController.zoomOut();
+      return;
+    }
+    if (action === "fit-width") {
+      this.commandController.fitWidth();
+      return;
+    }
+    if (action === "rotate-cw") {
+      this.commandController.rotateClockwise();
+      return;
+    }
+    if (action === "rotate-ccw") {
+      this.commandController.rotateCounterclockwise();
+      return;
+    }
+    if (action === "search") {
+      this.commandController.toggleSearch();
       return;
     }
     if (action === "toolbar-main" || action === "toolbar-left" || action === "toolbar-right") {

@@ -25,7 +25,13 @@ export type MoreAction =
   | "scan-document"
   | "toolbar-main"
   | "toolbar-left"
-  | "toolbar-right";
+  | "toolbar-right"
+  | "zoom-in"
+  | "zoom-out"
+  | "fit-width"
+  | "rotate-cw"
+  | "rotate-ccw"
+  | "search";
 
 /** Identifies whether a preference change also needs a whole-session redraw. */
 export type PreferenceChangeReason = "general" | "text-style" | "tool";
@@ -40,6 +46,7 @@ export interface AnnotationToolbarCallbacks {
   activeTextStyle?(): TextStyle | undefined;
   onUndo?(): void;
   onRedo?(): void;
+  onHandMode?(): void;
   onSave?(): void | Promise<void>;
   onMore?(action: MoreAction): void;
   /** True selects native PDF mouse interaction; false returns mouse to the active ink tool. */
@@ -101,7 +108,13 @@ export class AnnotationToolbar {
     this.controls.append(this.groupedTool("laser", () => this.laserMenuOptions()));
     this.controls.append(this.groupedTool("lasso", () => ({ label: "Lasso options", options: this.lassoMenu() })));
     this.controls.append(this.groupedTool("text", () => this.textMenuOptions()));
-    this.controls.append(this.actionButton("drag", "Drag", () => this.activate("drag")));
+    this.controls.append(this.actionButton("drag", "Drag", () => {
+      if (this.callbacks.onHandMode) {
+        this.callbacks.onHandMode();
+      } else {
+        this.activate("drag");
+      }
+    }));
     this.controls.append(this.actionButton("undo", "Undo", () => this.callbacks.onUndo?.(), !this.callbacks.onUndo));
     this.controls.append(this.actionButton("redo", "Redo", () => this.callbacks.onRedo?.(), !this.callbacks.onRedo));
     const supportedMore = options.supportedMoreActions ?? [];
@@ -383,7 +396,13 @@ export class AnnotationToolbar {
       "scan-document": "Scan document",
       "toolbar-main": "Toolbar: PDF bar",
       "toolbar-left": "Toolbar: Left sidebar",
-      "toolbar-right": "Toolbar: Right sidebar"
+      "toolbar-right": "Toolbar: Right sidebar",
+      "zoom-in": "Zoom in",
+      "zoom-out": "Zoom out",
+      "fit-width": "Fit to width",
+      "rotate-cw": "Rotate clockwise",
+      "rotate-ccw": "Rotate counterclockwise",
+      search: "Find in document"
     };
     return supported.map((id) => ({
       id,

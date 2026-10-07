@@ -341,6 +341,7 @@ export default class NativePdfInkPlugin extends Plugin {
     });
     this.registerSelectionCommands();
     this.registerToolbarHotkeyCommands();
+    this.registerViewerCommands();
     this.registerClearDrawingCommands();
     this.registerCrashBreadcrumbs();
 
@@ -1740,6 +1741,49 @@ export default class NativePdfInkPlugin extends Plugin {
     registerTool("select-pdf-drag", "Switch to drag tool", "drag");
     registerHistory("undo-pdf-annotation", "Undo ink", "undo");
     registerHistory("redo-pdf-annotation", "Redo ink", "redo", true);
+  }
+
+  private registerViewerCommands(): void {
+    const register = (
+      id: string,
+      name: string,
+      action: (session: ViewerInkSession) => boolean | void
+    ): void => {
+      this.addCommand({
+        id,
+        name,
+        checkCallback: (checking) => {
+          const session = this.activeSession();
+          if (!session) return false;
+          if (!checking) action(session);
+          return true;
+        }
+      });
+    };
+
+    // Zoom
+    register("zoom-in-pdf", "Zoom in PDF", (s) => s.commandController.zoomIn());
+    register("zoom-out-pdf", "Zoom out PDF", (s) => s.commandController.zoomOut());
+    register("reset-zoom-pdf", "Reset PDF zoom (100%)", (s) => s.commandController.resetZoom());
+    register("fit-width-pdf", "Fit PDF to width", (s) => s.commandController.fitWidth());
+
+    // Navigation
+    register("next-page-pdf", "Next page PDF", (s) => s.commandController.nextPage());
+    register("prev-page-pdf", "Previous page PDF", (s) => s.commandController.previousPage());
+    register("first-page-pdf", "First page PDF", (s) => s.commandController.firstPage());
+    register("last-page-pdf", "Last page PDF", (s) => s.commandController.lastPage());
+
+    // Rotation
+    register("rotate-clockwise-pdf", "Rotate PDF clockwise (90°)", (s) => s.commandController.rotateClockwise());
+    register("rotate-counterclockwise-pdf", "Rotate PDF counterclockwise (90°)", (s) => s.commandController.rotateCounterclockwise());
+
+    // Hand mode
+    register("toggle-hand-mode-pdf", "Toggle PDF hand mode (pan/drag tool)", (s) => s.commandController.toggleHandMode());
+
+    // Search
+    register("search-pdf", "Search / Find in PDF", (s) => s.commandController.toggleSearch());
+    register("find-next-pdf", "Find next match in PDF", (s) => s.commandController.findNext());
+    register("find-prev-pdf", "Find previous match in PDF", (s) => s.commandController.findPrevious());
   }
 
   /**
