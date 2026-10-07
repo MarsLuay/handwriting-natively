@@ -1,4 +1,4 @@
-import { FuzzySuggestModal, Plugin, PluginSettingTab, Setting, TFile, TFolder } from "obsidian";
+import { FuzzySuggestModal, Platform, Plugin, PluginSettingTab, Setting, TFile, TFolder } from "obsidian";
 import { DEFAULT_SETTINGS, mergeSettings, type PluginSettings } from "./model";
 
 export { mergeSettings, DEFAULT_SETTINGS };
@@ -337,7 +337,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
               );
             }
           },
-          {
+          ...(Platform.isMobile ? [{
             name: "Disable swipe-activated sidebars",
             desc: "Prevent one-finger swipe gestures from opening Obsidian’s left sidebar, right sidebar, or command palette on mobile/iPad. Buttons and normal commands still work.",
             render: (setting: Setting) => {
@@ -347,7 +347,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
                 })
               );
             }
-          },
+          }] : []),
           {
             name: "Ink toolbar placement",
             desc: "Put the ink controls on the PDF toolbar, or as a left/right sidebar beside the pages.",
