@@ -12,7 +12,7 @@ import {
   type WorkspaceLeaf
 } from "obsidian";
 import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
-import { MobileSidebarSwipeBlocker } from "./input/MobileSidebarSwipeBlocker";
+import { isObsidianSidebarOpen, MobileSidebarSwipeBlocker } from "./input/MobileSidebarSwipeBlocker";
 import { getPhysicalContactCollectorSnapshot, type PhysicalContactCollectorSnapshot } from "./input/PhysicalContactCollector";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
@@ -286,7 +286,9 @@ export default class NativePdfInkPlugin extends Plugin {
           : String(pdfExtensionRegistration.error)
       });
     }
-    this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(document);
+    this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(activeDocument, (diagnostic) => {
+      this.vaultDebugLog.write("info", "mobile-navigation-swipe-blocked", { ...diagnostic });
+    });
     this.updateSidebarSwipeBlocker();
     this.addSettingTab(new NativePdfInkSettingTab(this.app, this));
     this.addRibbonIcon("file-plus-2", "Create handwritten PDF", () => void this.createPdfNote());
@@ -339,6 +341,7 @@ export default class NativePdfInkPlugin extends Plugin {
     });
     this.registerSelectionCommands();
     this.registerToolbarHotkeyCommands();
+    this.registerViewerCommands();
     this.registerClearDrawingCommands();
     this.registerCrashBreadcrumbs();
 
@@ -386,7 +389,10 @@ export default class NativePdfInkPlugin extends Plugin {
     void this.vaultDebugLog.writeUrgent("info", "plugin-onload", {
       mobile: Platform.isMobile,
       phone: Platform.isPhone,
-      vaultDebugLog: this.inkSettings.vaultDebugLog
+      vaultDebugLog: this.inkSettings.vaultDebugLog,
+      toolbarPlacement: this.inkSettings.toolbarPlacement,
+      disableSwipeNavigation: this.inkSettings.disableSwipeNavigation,
+      sidebarSwipeBlockerEnabled: Platform.isMobile && this.inkSettings.disableSwipeNavigation
     });
     // A plugin can be enabled/reloaded after Obsidian has already published
     // layout-ready. Mobile does not always emit another layout or file-open
@@ -641,6 +647,15 @@ export default class NativePdfInkPlugin extends Plugin {
     const snapshot = this.pdfSessionRegistrySnapshot();
     this.vaultDebugLog.write("info", "handwriting-ui-snapshot", {
       scope: "plugin",
+      mobileNavigation: {
+        mobile: Platform.isMobile,
+        disableSwipeNavigation: this.inkSettings.disableSwipeNavigation,
+        sidebarSwipeBlockerEnabled: Platform.isMobile && this.inkSettings.disableSwipeNavigation,
+        nativeSidebarOpen: {
+          left: isObsidianSidebarOpen(activeDocument, "left"),
+          right: isObsidianSidebarOpen(activeDocument, "right")
+        }
+      },
       ...snapshot
     });
     if (missingHandwritingSession(snapshot)) {
@@ -848,6 +863,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousMouseInkingEnabled = this.inkSettings.mouseInkingEnabled;
     const previousTouchDrawFallback = this.inkSettings.touchDrawFallback;
     const previousTouchDoubleTapEraser = this.inkSettings.touchDoubleTapEraser;
+    const previousDisableSwipeNavigation = this.inkSettings.disableSwipeNavigation;
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
     await this.saveData(settings);
@@ -878,8 +894,12 @@ export default class NativePdfInkPlugin extends Plugin {
         ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
         ...(previousMouseInkingEnabled !== settings.mouseInkingEnabled ? ["mouseInkingEnabled"] : []),
         ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : []),
-        ...(previousTouchDoubleTapEraser !== settings.touchDoubleTapEraser ? ["touchDoubleTapEraser"] : [])
-      ]
+        ...(previousTouchDoubleTapEraser !== settings.touchDoubleTapEraser ? ["touchDoubleTapEraser"] : []),
+        ...(previousDisableSwipeNavigation !== settings.disableSwipeNavigation ? ["disableSwipeNavigation"] : [])
+      ],
+      mobile: Platform.isMobile,
+      disableSwipeNavigation: settings.disableSwipeNavigation,
+      sidebarSwipeBlockerEnabled: Platform.isMobile && settings.disableSwipeNavigation
     });
     if (previousPlacement !== settings.toolbarPlacement) {
       for (const session of this.allSessions()) session.remountToolbar();
@@ -1721,6 +1741,49 @@ export default class NativePdfInkPlugin extends Plugin {
     registerTool("select-pdf-drag", "Switch to drag tool", "drag");
     registerHistory("undo-pdf-annotation", "Undo ink", "undo");
     registerHistory("redo-pdf-annotation", "Redo ink", "redo", true);
+  }
+
+  private registerViewerCommands(): void {
+    const register = (
+      id: string,
+      name: string,
+      action: (session: ViewerInkSession) => boolean | void
+    ): void => {
+      this.addCommand({
+        id,
+        name,
+        checkCallback: (checking) => {
+          const session = this.activeSession();
+          if (!session) return false;
+          if (!checking) action(session);
+          return true;
+        }
+      });
+    };
+
+    // Zoom
+    register("zoom-in-pdf", "Zoom in PDF", (s) => s.commandController.zoomIn());
+    register("zoom-out-pdf", "Zoom out PDF", (s) => s.commandController.zoomOut());
+    register("reset-zoom-pdf", "Reset PDF zoom (100%)", (s) => s.commandController.resetZoom());
+    register("fit-width-pdf", "Fit PDF to width", (s) => s.commandController.fitWidth());
+
+    // Navigation
+    register("next-page-pdf", "Next page PDF", (s) => s.commandController.nextPage());
+    register("prev-page-pdf", "Previous page PDF", (s) => s.commandController.previousPage());
+    register("first-page-pdf", "First page PDF", (s) => s.commandController.firstPage());
+    register("last-page-pdf", "Last page PDF", (s) => s.commandController.lastPage());
+
+    // Rotation
+    register("rotate-clockwise-pdf", "Rotate PDF clockwise (90°)", (s) => s.commandController.rotateClockwise());
+    register("rotate-counterclockwise-pdf", "Rotate PDF counterclockwise (90°)", (s) => s.commandController.rotateCounterclockwise());
+
+    // Hand mode
+    register("toggle-hand-mode-pdf", "Toggle PDF hand mode (pan/drag tool)", (s) => s.commandController.toggleHandMode());
+
+    // Search
+    register("search-pdf", "Search / Find in PDF", (s) => s.commandController.toggleSearch());
+    register("find-next-pdf", "Find next match in PDF", (s) => s.commandController.findNext());
+    register("find-prev-pdf", "Find previous match in PDF", (s) => s.commandController.findPrevious());
   }
 
   /**

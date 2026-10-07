@@ -57,6 +57,27 @@ function mountedToolbarRail(toolbar: HTMLElement): HTMLElement | null {
   return toolbar.closest<HTMLElement>(".native-pdf-handwriting-rail, .hn-owned-pdf-ink-rail");
 }
 
+function elementPresentationSnapshot(element: HTMLElement | null): Record<string, unknown> | null {
+  if (!element) return null;
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  const rounded = (value: number): number => Math.round(value * 10) / 10;
+  return {
+    connected: element.isConnected,
+    hasLayoutBox: element.getClientRects().length > 0 && rect.width > 0 && rect.height > 0,
+    display: style?.display ?? null,
+    visibility: style?.visibility ?? null,
+    opacity: style?.opacity ?? null,
+    pointerEvents: style?.pointerEvents ?? null,
+    bounds: {
+      x: rounded(rect.x),
+      y: rounded(rect.y),
+      width: rounded(rect.width),
+      height: rounded(rect.height)
+    }
+  };
+}
+
 import { PostZoomDurabilityTrace } from "./PostZoomDurabilityTrace";
 import { SLOW_SPAN_SYNC_MS, SlowSpanTrace, type InkLatencyBreakdown } from "./SlowSpanTrace";
 import {
@@ -73,6 +94,7 @@ import {
   shouldUseDenseZoomRasterFallback
 } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRoute, type PointerRouterHandoff } from "../input/PointerRouter";
+import { isObsidianSidebarOpen } from "../input/MobileSidebarSwipeBlocker";
 import { classifyInputTarget } from "../input/InputTargetClassification";
 import { detectPointerInputCapabilities } from "../input/PointerInputCapabilities";
 import { GestureOwnership } from "../input/GestureOwnership";
@@ -100,6 +122,8 @@ import type { CustomPinchFrame } from "../input/PointerRouter";
 import { MobilePinchZoomController, type MobilePinchZoomFocalPoint, type MobilePinchZoomFrame } from "../input/MobilePinchZoomController";
 import { MobilePdfCssZoom, type MobilePdfCssZoomPage } from "../integration/MobilePdfCssZoom";
 import { MobilePdfCssZoomTransaction } from "../integration/MobilePdfCssZoomTransaction";
+import { HandwritingViewport, type HandwritingViewportState } from "../integration/HandwritingViewport";
+import { ViewerCommandController, type ViewerCommandHost } from "./ViewerCommandController";
 import type {
   MobilePdfZoomHandoffCancelReason,
   MobilePdfZoomHandoffSignal
@@ -1070,6 +1094,10 @@ export class ViewerInkSession {
   private temporaryStylusEraserPointers = 0;
   private debugState: DebugState = {};
   private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
+  /** Authoritative persistent handwriting viewport state (scale, x, y). */
+  readonly handwritingViewport: HandwritingViewport;
+  /** Authoritative command controller for zoom, pan, hand mode, search, navigation, and rotation. */
+  readonly commandController: ViewerCommandController;
   /** Visual mobile PDF zoom is persistent CSS/container state, not PDF.js scale. */
   private mobileCssZoomScale = 1;
   private mobileCssZoomTarget: HTMLElement | null = null;
@@ -1407,6 +1435,7 @@ export class ViewerInkSession {
         ...(options.openScanDocument && options.onInsertScannedPages && (options.runtimePlatform?.().mobile ?? false)
           ? ["scan-document" as const]
           : []),
+        ...(["zoom-in", "zoom-out", "fit-width", "rotate-cw", "rotate-ccw", "search"] as const),
         // Keep the PDF-bar action available on mobile too. `main` is an
         // explicit placement now; hiding it here made the setting impossible
         // to select from the live PDF toolbar on mobile.
@@ -1516,6 +1545,7 @@ export class ViewerInkSession {
         activeTextStyle: () => this.activeTextStyle(),
         onUndo: () => this.undo(),
         onRedo: () => this.redo(),
+        onHandMode: () => this.commandController.toggleHandMode(),
         onSave: () => this.manualSave(),
         onMore: (action) => void this.handleMore(action),
         toolbarPlacement: () => this.currentToolbarPlacement()
@@ -1597,6 +1627,36 @@ export class ViewerInkSession {
       });
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
+    this.handwritingViewport = new HandwritingViewport({
+      getContainerRect: () => {
+        try {
+          const scrollEl = adapter.scrollElement();
+          const rect = scrollEl.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0
+            ? { width: rect.width, height: rect.height, left: rect.left, top: rect.top }
+            : null;
+        } catch {
+          return null;
+        }
+      },
+      getContentSize: () => {
+        try {
+          const root = adapter.root;
+          const width = root.offsetWidth || root.scrollWidth || 0;
+          const height = root.offsetHeight || root.scrollHeight || 0;
+          return width > 0 && height > 0 ? { width, height } : null;
+        } catch {
+          return null;
+        }
+      },
+      minScale: 0.1,
+      maxScale: 10,
+      onStateChange: (state) => {
+        this.mobileCssZoomScale = state.scale;
+      }
+    });
+    this.handwritingViewport.setTarget(adapter.root);
+    this.commandController = new ViewerCommandController(this.createViewerCommandHost());
     this.mobilePinchZoom = new MobilePinchZoomController({
       minScale: 0.1,
       maxScale: 10,
@@ -1604,7 +1664,7 @@ export class ViewerInkSession {
         try {
           const surface = this.mobilePinchSurfaceAt(null, null);
           return surface && this.customMobilePdfPinchZoomEnabled(surface)
-            ? this.mobileCssZoomScale
+            ? this.handwritingViewport.getState().scale
             : adapter.getViewState().scale;
         } catch {
           return 1;
@@ -1678,6 +1738,260 @@ export class ViewerInkSession {
     }) : null;
     this.installPointerProbe(adapter);
     this.startFrameProfileSampling();
+  }
+
+  viewportState(): HandwritingViewportState {
+    return this.handwritingViewport.getState();
+  }
+
+  private createViewerCommandHost(): ViewerCommandHost {
+    return {
+      getScale: () => {
+        return this.handwritingViewport.getState().scale;
+      },
+      setScale: (scale: number) => {
+        this.handwritingViewport.setState({ scale });
+        try {
+          const current = this.options.adapter.getViewState();
+          if (Math.abs(current.scale - scale) > 0.001) {
+            this.options.adapter.restoreViewState({ ...current, scale });
+          }
+        } catch {}
+      },
+      fitWidth: () => {
+        try {
+          const scrollEl = this.options.adapter.scrollElement?.();
+          const containerWidth = scrollEl?.clientWidth || this.options.adapter.root?.clientWidth || 0;
+          const pageNum = this.options.adapter.getViewState().pageNumber || 1;
+          const page = this.options.adapter.page(pageNum);
+          const pageWidth = page?.width || 612;
+          if (containerWidth > 0 && pageWidth > 0) {
+            const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
+            this.handwritingViewport.setState({ scale: targetScale, x: 0 });
+            try {
+              this.options.adapter.restoreViewState({
+                ...this.options.adapter.getViewState(),
+                scale: targetScale,
+                scaleMode: "page-width"
+              });
+            } catch {}
+          }
+        } catch {}
+      },
+      getContainerWidth: () => {
+        try {
+          return this.options.adapter.scrollElement?.().clientWidth || this.options.adapter.root?.clientWidth || 0;
+        } catch {
+          return 0;
+        }
+      },
+      getPageWidth: (pageNumber?: number) => {
+        try {
+          const page = this.options.adapter.page(pageNumber ?? this.options.adapter.getViewState().pageNumber);
+          return page?.width || 612;
+        } catch {
+          return 612;
+        }
+      },
+      getCurrentPage: () => {
+        try {
+          return this.options.adapter.getViewState().pageNumber || 1;
+        } catch {
+          return 1;
+        }
+      },
+      getPageCount: () => {
+        try {
+          return this.options.adapter.pages().length || 1;
+        } catch {
+          return 1;
+        }
+      },
+      focusPage: (pageNumber: number) => {
+        try {
+          return this.options.adapter.focusPage(pageNumber);
+        } catch {
+          return false;
+        }
+      },
+      getRotation: () => {
+        try {
+          return this.options.adapter.getViewState().rotation || 0;
+        } catch {
+          return 0;
+        }
+      },
+      setRotation: (degrees: number) => {
+        try {
+          const current = this.options.adapter.getViewState();
+          this.options.adapter.restoreViewState({
+            ...current,
+            rotation: degrees
+          });
+        } catch {}
+      },
+      getActiveTool: () => {
+        return this.options.settings.toolPreferences.activeTool;
+      },
+      selectTool: (tool: ToolId) => {
+        this.selectTool(tool);
+      },
+      openSearch: () => {
+        return this.openViewerSearch();
+      },
+      closeSearch: () => {
+        return this.closeViewerSearch();
+      },
+      isSearchOpen: () => {
+        return this.isViewerSearchOpen();
+      },
+      findNext: () => {
+        return this.findNextViewerMatch();
+      },
+      findPrevious: () => {
+        return this.findPreviousViewerMatch();
+      },
+      search: (query: string) => {
+        return this.searchViewer(query);
+      },
+      logCommand: (name: string, details?: Record<string, unknown>) => {
+        if (details) {
+          this.options.vaultLog?.write("info", `cmd:${name}`, details);
+        } else {
+          this.options.vaultLog?.write("info", `cmd:${name}`);
+        }
+      }
+    };
+  }
+
+  private getViewerFindBar(): HTMLElement | null {
+    return this.options.adapter.root.querySelector<HTMLElement>(".hn-owned-pdf-find-bar, .pdf-find-bar, .findbar")
+      ?? this.options.adapter.host.querySelector<HTMLElement>(".hn-owned-pdf-find-bar, .pdf-find-bar, .findbar")
+      ?? null;
+  }
+
+  private isViewerSearchOpen(): boolean {
+    const bar = this.getViewerFindBar();
+    if (bar) return !bar.hidden && bar.style.display !== "none";
+    const controller = pdfSurfaceExtensions(this.options.adapter)?.findController?.();
+    return Boolean(controller);
+  }
+
+  private openViewerSearch(): boolean {
+    const bar = this.getViewerFindBar();
+    if (bar) {
+      bar.hidden = false;
+      bar.style.removeProperty("display");
+      const input = bar.querySelector<HTMLInputElement>("input");
+      if (input) {
+        input.focus();
+        input.select();
+      }
+      return true;
+    }
+    const adapterAny = this.options.adapter as unknown as { toggleFindBar?(force?: boolean): void };
+    if (typeof adapterAny.toggleFindBar === "function") {
+      adapterAny.toggleFindBar(true);
+      return true;
+    }
+    const controller = pdfSurfaceExtensions(this.options.adapter)?.findController?.();
+    return Boolean(controller);
+  }
+
+  private closeViewerSearch(): boolean {
+    const bar = this.getViewerFindBar();
+    if (bar) {
+      bar.hidden = true;
+      return true;
+    }
+    const adapterAny = this.options.adapter as unknown as { toggleFindBar?(force?: boolean): void };
+    if (typeof adapterAny.toggleFindBar === "function") {
+      adapterAny.toggleFindBar(false);
+      return true;
+    }
+    return false;
+  }
+
+  private findNextViewerMatch(): boolean {
+    const bar = this.getViewerFindBar();
+    const nextBtn = bar?.querySelector<HTMLButtonElement>("button[data-find='next'], button.find-next, button:has(svg)");
+    if (nextBtn) {
+      nextBtn.click();
+      return true;
+    }
+    const pdfExt = pdfSurfaceExtensions(this.options.adapter);
+    const controller = pdfExt?.findController?.();
+    if (controller && typeof controller.executeCommand === "function") {
+      controller.executeCommand("findagain", {
+        findPrevious: false
+      });
+      return true;
+    }
+    const bus = pdfExt?.eventBus?.();
+    if (bus?.dispatch) {
+      bus.dispatch("findagain", { findPrevious: false });
+      return true;
+    }
+    return false;
+  }
+
+  private findPreviousViewerMatch(): boolean {
+    const bar = this.getViewerFindBar();
+    const prevBtn = bar?.querySelector<HTMLButtonElement>("button[data-find='prev'], button.find-prev");
+    if (prevBtn) {
+      prevBtn.click();
+      return true;
+    }
+    const pdfExt = pdfSurfaceExtensions(this.options.adapter);
+    const controller = pdfExt?.findController?.();
+    if (controller && typeof controller.executeCommand === "function") {
+      controller.executeCommand("findagain", {
+        findPrevious: true
+      });
+      return true;
+    }
+    const bus = pdfExt?.eventBus?.();
+    if (bus?.dispatch) {
+      bus.dispatch("findagain", { findPrevious: true });
+      return true;
+    }
+    return false;
+  }
+
+  private searchViewer(query: string): boolean {
+    const bar = this.getViewerFindBar();
+    const input = bar?.querySelector<HTMLInputElement>("input");
+    if (input) {
+      input.value = query;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const pdfExt = pdfSurfaceExtensions(this.options.adapter);
+    const controller = pdfExt?.findController?.();
+    if (controller && typeof controller.executeCommand === "function") {
+      controller.executeCommand("find", {
+        query,
+        phraseSearch: true,
+        caseSensitive: false,
+        entireWord: false,
+        highlightAll: true,
+        findPrevious: false
+      });
+      return true;
+    }
+    const bus = pdfExt?.eventBus?.();
+    if (bus?.dispatch) {
+      bus.dispatch("find", {
+        query,
+        phraseSearch: true,
+        caseSensitive: false,
+        entireWord: false,
+        highlightAll: true,
+        findPrevious: false
+      });
+      return true;
+    }
+    return Boolean(input);
   }
 
   private installPointerProbe(adapter: ViewerInkSessionOptions["adapter"]): void {
@@ -6809,7 +7123,8 @@ export class ViewerInkSession {
     session.reconcileToolbarMount("session-create");
     await urgent("session create toolbar ok", {
       document: options.documentPath,
-      toolbarPlacement: session.currentToolbarPlacement()
+      toolbarPlacement: session.currentToolbarPlacement(),
+      ...session.toolbarPresentationSnapshot()
     });
     session.logger.sessionAttach({
       scrollRoot: describeScrollElement(options.adapter.scrollElement()),
@@ -7841,7 +8156,7 @@ export class ViewerInkSession {
     ]);
     if (key === this.lastHandwritingUiMissingKey) return;
     this.lastHandwritingUiMissingKey = key;
-    this.logger.handwritingUiMissing(state);
+    this.logger.handwritingUiMissing({ ...state, ...this.toolbarPresentationSnapshot() });
   }
 
   private handwritingUiState(reason: string, details: Record<string, unknown> = {}): Record<string, unknown> {
@@ -7892,6 +8207,19 @@ export class ViewerInkSession {
     };
   }
 
+  private toolbarPresentationSnapshot(): Record<string, unknown> {
+    const document = this.options.adapter.host.ownerDocument;
+    const toolbar = this.toolbar.element;
+    return {
+      nativeSidebarOpen: {
+        left: isObsidianSidebarOpen(document, "left"),
+        right: isObsidianSidebarOpen(document, "right")
+      },
+      toolbarPresentation: elementPresentationSnapshot(toolbar),
+      sidebarRailPresentation: elementPresentationSnapshot(mountedToolbarRail(toolbar))
+    };
+  }
+
   /** Write a bounded UI snapshot into the vault log when Copy logs is pressed. */
   writeCopiedLogUiSnapshot(): Record<string, unknown> {
     this.ipadInputTrace?.start(this.options.debugEnabled?.() === true);
@@ -7920,6 +8248,7 @@ export class ViewerInkSession {
       }));
     const snapshot = {
       ...this.handwritingUiState("copy-logs"),
+      ...this.toolbarPresentationSnapshot(),
       rootConnected: root.isConnected,
       hostConnected: host.isConnected,
       customToolbarCount: host.querySelectorAll(".native-pdf-handwriting-toolbar").length,
@@ -9125,6 +9454,9 @@ export class ViewerInkSession {
       }
       return false;
     }
+    if (this.commandController.handleKeyDown(event, textFocused)) {
+      return true;
+    }
     if (!action || !this.canSelectionShortcut(action)) {
       const command = inkHotkeyCommand(event, plainModifierForInk);
       if (command) this.logKeyboardShortcut(event, "ignored", command, false);
@@ -9589,6 +9921,7 @@ export class ViewerInkSession {
     this.textContextMenuTargetId = null;
     this.textContextMenu.destroy();
     this.mobilePinchZoom.destroy();
+    this.handwritingViewport.destroy();
     this.clearMobileCssZoom();
     if (this.mobilePinchIndicatorFadeTimer !== null) {
       const view = this.options.adapter.host.ownerDocument.defaultView;
@@ -10070,6 +10403,14 @@ export class ViewerInkSession {
     if (!surface || !this.customMobilePdfPinchZoomEnabled(surface)) return { accepted: false };
     if (surface.mobileCustomPinch) this.cancelMobileCustomPinch(surface, "capability-lost");
     this.activeMobilePinchSurface = surface;
+    const first = frame.points[0];
+    const second = frame.points[1];
+    if (first && second) {
+      this.handwritingViewport.startPinch({
+        x: (first.clientX + second.clientX) / 2,
+        y: (first.clientY + second.clientY) / 2
+      });
+    }
     this.startMobileCustomPinch(surface, frame);
     const state = surface.mobileCustomPinch;
     return state
@@ -10080,6 +10421,7 @@ export class ViewerInkSession {
   private previewActiveMobilePinch(scale: number, focalPoint: MobilePinchZoomFocalPoint): void {
     const surface = this.activeMobilePinchSurface;
     if (!surface) return;
+    this.handwritingViewport.pinch(scale, focalPoint);
     this.previewMobileCustomPinch(surface, scale, focalPoint);
   }
 
@@ -10089,11 +10431,13 @@ export class ViewerInkSession {
   ): void {
     const surface = this.activeMobilePinchSurface;
     if (!surface) return;
+    this.handwritingViewport.endPinch();
     this.endMobileCustomPinch(surface, reason, scale);
     if (reason !== "pointerup") this.activeMobilePinchSurface = null;
   }
 
   private cancelActiveMobilePinch(reason: string): void {
+    this.handwritingViewport.settle();
     const surface = this.activeMobilePinchSurface;
     if (surface?.mobileCustomPinch) this.cancelMobileCustomPinch(surface, "capability-lost");
     this.activeMobilePinchSurface = null;
@@ -10176,6 +10520,10 @@ export class ViewerInkSession {
   }
 
   private mobilePdfCssZoomFactor(): number {
+    const vp = this.handwritingViewport?.getState();
+    if (vp && Number.isFinite(vp.scale) && vp.scale > 0 && vp.scale !== 1) {
+      return vp.scale;
+    }
     const target = this.mobileCssZoomTarget;
     if (!target?.isConnected) return 1;
     try {
@@ -10219,6 +10567,12 @@ export class ViewerInkSession {
     if (target && this.mobileCssZoomPreviousInlineValue !== null) {
       if (this.mobileCssZoomPreviousInlineValue) target.style.setProperty("zoom", this.mobileCssZoomPreviousInlineValue);
       else target.style.removeProperty("zoom");
+    }
+    if (target) {
+      target.style.removeProperty("transform");
+      target.style.removeProperty("transform-origin");
+      target.style.removeProperty("transition");
+      target.classList.remove("native-pdf-handwriting-pinch-active");
     }
     this.mobileCssZoomTarget = null;
     this.mobileCssZoomPreviousInlineValue = null;
@@ -10452,6 +10806,12 @@ export class ViewerInkSession {
         this.refreshSurfaceCursors();
       },
       scrollRoot: () => this.options.adapter.scrollElement(),
+      onViewportPan: (deltaX, deltaY) => {
+        this.handwritingViewport.pan(deltaX, deltaY);
+      },
+      onViewportSettle: () => {
+        this.handwritingViewport.settle();
+      },
       cursorParent: () => surface.overlay,
       eraserCursorDiameter: () => this.options.settings.toolPreferences.eraser.size * this.displayScale(surface),
       drawCursorColor: () => {
@@ -17052,6 +17412,30 @@ export class ViewerInkSession {
       await this.exportCopy("editable").catch((error) => this.options.notice(`Export failed: ${this.errorMessage(error)}`));
       return;
     }
+    if (action === "zoom-in") {
+      this.commandController.zoomIn();
+      return;
+    }
+    if (action === "zoom-out") {
+      this.commandController.zoomOut();
+      return;
+    }
+    if (action === "fit-width") {
+      this.commandController.fitWidth();
+      return;
+    }
+    if (action === "rotate-cw") {
+      this.commandController.rotateClockwise();
+      return;
+    }
+    if (action === "rotate-ccw") {
+      this.commandController.rotateCounterclockwise();
+      return;
+    }
+    if (action === "search") {
+      this.commandController.toggleSearch();
+      return;
+    }
     if (action === "toolbar-main" || action === "toolbar-left" || action === "toolbar-right") {
       const placement = action.replace("toolbar-", "") as ToolbarPlacement;
       const previousPlacement = this.currentToolbarPlacement();
@@ -17064,7 +17448,8 @@ export class ViewerInkSession {
         this.logger.toolbarPlacement("applied", {
           previousPlacement,
           requestedPlacement: placement,
-          resolvedPlacement: this.currentToolbarPlacement()
+          resolvedPlacement: this.currentToolbarPlacement(),
+          ...this.toolbarPresentationSnapshot()
         });
       } catch (error) {
         this.logger.toolbarPlacement("error", {

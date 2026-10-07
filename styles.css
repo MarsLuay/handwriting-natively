@@ -651,6 +651,12 @@
 /* Let the pinch handoff own the single post-commit scroll rebase instead of
    allowing browser scroll anchoring to reposition the page independently. */
 .native-pdf-handwriting-pinch-overflow-anchor-off { overflow-anchor: none !important; }
+/* Allow smooth GPU translation on the PDF root during active mobile pinch gestures. */
+.pdfViewer.native-pdf-handwriting-pinch-active,
+.pdf-viewer.native-pdf-handwriting-pinch-active {
+  transform-origin: 0 0;
+  will-change: transform, zoom;
+}
 /* Keep the annotation overlay in its own compositor layer while PDF.js replaces
    its underlying canvas/text layers after a pinch zoom. */
 .native-pdf-handwriting-page-overlay.native-pdf-handwriting-zoom-compositing {
