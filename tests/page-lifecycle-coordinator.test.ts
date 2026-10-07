@@ -3,7 +3,8 @@ import {
   PageLifecycleCoordinator,
   derivePagePriority,
   derivePageStage,
-  type PageLifecycleChangeEvent
+  type PageLifecycleChangeEvent,
+  type PageVisibilityChangeEvent
 } from "../src/runtime/PageLifecycleCoordinator";
 
 describe("PageLifecycleCoordinator", () => {
@@ -72,6 +73,10 @@ describe("PageLifecycleCoordinator", () => {
     expect(coordinator.getVisiblePages()).toEqual([1]);
     expect(coordinator.getNearbyPages()).toEqual([2]);
     expect(coordinator.getWorkingSet()).toEqual([1, 2]);
+    expect(coordinator.getInkMountPages()).toEqual([1, 2]);
+    expect(coordinator.shouldMountInkOverlay(1)).toBe(true);
+    expect(coordinator.shouldMountInkOverlay(2)).toBe(true);
+    expect(coordinator.shouldMountInkOverlay(5)).toBe(false);
     expect(coordinator.isPageActive(1)).toBe(true);
     expect(coordinator.isPageNearby(2)).toBe(true);
     expect(coordinator.isPageCold(5)).toBe(true);
@@ -107,6 +112,48 @@ describe("PageLifecycleCoordinator", () => {
     expect(coordinator.getPriority(1)).toBe("idle");
 
     expect(events.length).toBeGreaterThan(0);
+  });
+
+  it("notifies ink residency changes even when the derived PDF stage stays ready", () => {
+    const coordinator = new PageLifecycleCoordinator({
+      neighborRadius: 1,
+      totalPages: 4,
+      initialActivePage: 1
+    });
+    for (let pageNumber = 1; pageNumber <= 4; pageNumber += 1) {
+      const shell = document.createElement("section");
+      shell.dataset.pageNumber = String(pageNumber);
+      coordinator.registerPage({ pageNumber, shell, naturalWidth: 600, naturalHeight: 800 });
+      coordinator.beginPdfRaster(pageNumber);
+      coordinator.finishPdfRaster(pageNumber, true);
+    }
+
+    const events: PageVisibilityChangeEvent[] = [];
+    coordinator.onVisibilityChange((event) => events.push(event));
+
+    expect(coordinator.getStage(1)).toBe("ready");
+    expect(coordinator.getStage(3)).toBe("ready");
+    expect(coordinator.getInkMountPages()).toEqual([1, 2]);
+
+    coordinator.setActivePage(3);
+
+    // Raster stage remains ready, but residency still moves with the canonical
+    // active/nearby working set.
+    expect(coordinator.getStage(1)).toBe("ready");
+    expect(coordinator.getStage(3)).toBe("ready");
+    expect(coordinator.getInkMountPages()).toEqual([2, 3, 4]);
+    expect(coordinator.shouldMountInkOverlay(1)).toBe(false);
+    expect(coordinator.shouldMountInkOverlay(3)).toBe(true);
+    expect(events.some((event) =>
+      event.pageNumber === 1
+      && event.previousVisibility === "active"
+      && event.currentVisibility === "cold"
+    )).toBe(true);
+    expect(events.some((event) =>
+      event.pageNumber === 3
+      && event.previousVisibility === "cold"
+      && event.currentVisibility === "active"
+    )).toBe(true);
   });
 
   it("coordinates rendering lifecycle, layer readiness, and ink overlay mounting", () => {
