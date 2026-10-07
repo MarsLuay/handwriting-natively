@@ -539,11 +539,27 @@ describe("PostZoomInputTrace", () => {
     expect(report.activePinchTouchesAtSettle).toEqual([]);
   });
 
-  it("emits one browser identity regression after a pen stroke without calling touch a Pencil", () => {
+  it("emits one browser identity regression after a pen stroke only when physical tool is claimed", () => {
     const trace = new PostZoomInputTrace();
     trace.begin();
     trace.noteCaptureRecovery("release-annotation-pointer-captures", 0);
     trace.settle(1_000, { scaleBefore: 4.68, scaleAfter: 2.96, pageMountGeneration: 1, routerGeneration: 1 });
+    const unclaimed = stylusIdentityRegression({
+      zoomBurstId: trace.currentBurstId(),
+      preZoomPointerType: "pen",
+      preZoomPointerEventPenSeen: true,
+      postZoomPointerType: "touch",
+      postZoomPointerEventPenSeen: false,
+      postZoomStylusIdentity: "absent",
+      strokeStarted: false,
+      preZoomPageMountGeneration: 1,
+      postZoomPageMountGeneration: 1,
+      preZoomRouterGeneration: 1,
+      postZoomRouterGeneration: 1,
+      recoveryExperiment: "release-annotation-pointer-captures"
+    });
+    expect(unclaimed).toBeNull();
+
     const regression = stylusIdentityRegression({
       zoomBurstId: trace.currentBurstId(),
       preZoomPointerType: "pen",
@@ -551,6 +567,7 @@ describe("PostZoomInputTrace", () => {
       postZoomPointerType: "touch",
       postZoomPointerEventPenSeen: false,
       postZoomStylusIdentity: "absent",
+      physicalToolClaimed: true,
       strokeStarted: false,
       preZoomPageMountGeneration: 1,
       postZoomPageMountGeneration: 1,
@@ -566,7 +583,7 @@ describe("PostZoomInputTrace", () => {
       postZoomStylusIdentity: "absent",
       samePageMountGeneration: true,
       sameRouterGeneration: true,
-      physicalToolClaimed: false,
+      physicalToolClaimed: true,
       recoveryExperiment: "release-annotation-pointer-captures"
     });
     expect(stylusIdentityRegression({

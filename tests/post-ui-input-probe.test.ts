@@ -361,4 +361,30 @@ describe("PostUiInputProbe", () => {
     expect(expired?.penContactId).toBeNull();
     expect(expired?.outcome).toBe("post-ui-probe-expired-no-pen");
   });
+
+  it("resolves a handoff contact with stroke-start stage to post-ui-pen-success", () => {
+    const probe = new PostUiInputProbe();
+    probe.observeDocument(1_000, 50, "pen");
+    probe.handoffStage(1_001, 50, "document-capture");
+    probe.handoffStage(1_002, 50, "hit-test", { page: 1 });
+    probe.handoffStage(1_003, 50, "router-received", { page: 1 });
+    probe.handoffStage(1_004, 50, "route", { route: "draw", routeReason: "stylus-draw" });
+    probe.handoffStage(1_005, 50, "claim", { captureSucceeded: true });
+    probe.handoffStage(1_006, 50, "stroke-start", { page: 1 });
+
+    const result = probe.finishHandoff(1_010, 50, "pointerup");
+    expect(result?.outcome).toBe("post-ui-pen-success");
+    expect(result?.outcomeClass).toBe("lifecycle");
+  });
+
+  it("resolves expired handoff with strokeStarted detail to post-ui-pen-success", () => {
+    const probe = new PostUiInputProbe();
+    probe.observeDocument(1_000, 51, "pen");
+    probe.handoffStage(1_003, 51, "router-received", { page: 1 });
+    probe.handoffStage(1_006, 51, "stroke-start", { page: 1, strokeStarted: true });
+
+    const [expired] = probe.expireHandoffs(1_000 + PostUiInputProbe.WINDOW_MS + 10);
+    expect(expired?.outcome).toBe("post-ui-pen-success");
+    expect(expired?.outcomeClass).toBe("lifecycle");
+  });
 });

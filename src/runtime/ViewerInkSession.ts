@@ -2013,13 +2013,15 @@ export class ViewerInkSession {
         contact: result.contact,
         trace: result.details.trace ?? null
       });
-      this.logger.penRoutingRegression({
-        outcome: result.outcome,
-        correlationId: result.correlationId,
-        page: result.contact?.page ?? null,
-        previousSuccessfulCorrelationId: this.logger.lastSuccessfulStroke().lastCorrelationId,
-        toolChangeId: this.lastToolChange?.id ?? null
-      });
+      if (result.outcome !== "post-ui-pen-success" && result.outcome !== "post-ui-pen-cancelled-before-ink") {
+        this.logger.penRoutingRegression({
+          outcome: result.outcome,
+          correlationId: result.correlationId,
+          page: result.contact?.page ?? null,
+          previousSuccessfulCorrelationId: this.logger.lastSuccessfulStroke().lastCorrelationId,
+          toolChangeId: this.lastToolChange?.id ?? null
+        });
+      }
     }
   }
 
@@ -2117,12 +2119,14 @@ export class ViewerInkSession {
         contact: expired.contact,
         details: expired.details
       });
-      this.logger.penRoutingRegression({
-        outcome: expired.outcome,
-        correlationId: expired.correlationId,
-        page: expired.contact?.page ?? null,
-        toolChangeId: this.lastToolChange?.id ?? null
-      });
+      if (expired.outcome !== "post-ui-pen-success" && expired.outcome !== "post-ui-pen-cancelled-before-ink") {
+        this.logger.penRoutingRegression({
+          outcome: expired.outcome,
+          correlationId: expired.correlationId,
+          page: expired.contact?.page ?? null,
+          toolChangeId: this.lastToolChange?.id ?? null
+        });
+      }
     }
     const page = hitTest.geometricPage?.element ?? null;
     const surface = hitTest.geometricPage ? this.surfaces.get(hitTest.geometricPage.pageNumber) : undefined;
@@ -2367,7 +2371,7 @@ export class ViewerInkSession {
   ): void {
     if (!(this.options.debugEnabled?.() ?? false)) return;
     const path = this.safeComposedPath(event);
-    const contact = this.postUiInputProbe.stage(Date.now(), event.pointerId, stage, {
+    const stageDetails = {
       eventPhase: event.eventPhase,
       targetId: getDebugNodeId(event.target),
       currentTargetId: getDebugNodeId(event.currentTarget),
@@ -2376,17 +2380,19 @@ export class ViewerInkSession {
       cancelable: event.cancelable,
       defaultPrevented: event.defaultPrevented,
       ...details
-    });
-    if (!contact) return;
-    this.logger.postUiProbe(stage, {
-      ...contact,
-      pointerType: event.pointerType || "(empty)",
-      targetId: getDebugNodeId(event.target),
-      currentTargetId: getDebugNodeId(event.currentTarget),
-      ...details
-    });
+    };
+    const contact = this.postUiInputProbe.stage(Date.now(), event.pointerId, stage, stageDetails);
+    if (contact) {
+      this.logger.postUiProbe(stage, {
+        ...contact,
+        pointerType: event.pointerType || "(empty)",
+        targetId: getDebugNodeId(event.target),
+        currentTargetId: getDebugNodeId(event.currentTarget),
+        ...details
+      });
+    }
     const handoff = event.pointerType === "pen"
-      ? this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, stage, details)
+      ? this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, stage, stageDetails)
       : null;
     if (handoff) {
       this.logger.inputHandoff(stage, {
@@ -2567,9 +2573,6 @@ export class ViewerInkSession {
       geometricPageHit: Boolean(geometricPage?.element.isConnected)
     });
     const overPage = decision.recordPageContact;
-    if (record.phase === "start" && overPage && record.contact.pointerEventPenSeen) {
-      this.slowSpans.notePenDown(performance.now());
-    }
     if (record.phase === "start" && decision.rejection) {
       this.postZoomTrace.noteRejectedPageContact({
         ...decision.rejection,
@@ -2712,6 +2715,7 @@ export class ViewerInkSession {
         postZoomPointerType: record.contact.rawPointer.first?.pointerType ?? null,
         postZoomPointerEventPenSeen: record.contact.pointerEventPenSeen,
         postZoomStylusIdentity: stylusIdentity,
+        physicalToolClaimed: this.postZoomDurability.hasClaimedPhysicalTool(record.contact.physicalContactId),
         strokeStarted,
         preZoomPageMountGeneration: typeof settleSnapshot?.pageMountGeneration === "number" ? settleSnapshot.pageMountGeneration : null,
         postZoomPageMountGeneration: typeof surface?.page.mountGeneration === "number" ? surface.page.mountGeneration : null,
@@ -10613,6 +10617,9 @@ export class ViewerInkSession {
           this.pointerDownPerformanceAt.set(event.pointerId, receivedAt);
           this.pointerRouteReceivedAt.set(event.pointerId, receivedAt);
           this.pointerInputAt.set(event.pointerId, normalizedPointerEventTime(event, receivedAt));
+          if (event.pointerType === "pen") {
+            this.slowSpans.notePenDown(receivedAt);
+          }
         }
         this.notePointerTypeOrigin(event, "page-pointer-router", "capture");
         this.recordPostUiProbeStage(event, "router-received", {
@@ -11606,6 +11613,9 @@ export class ViewerInkSession {
       hqUpgrades: 0
     };
     surface.strokePerformance.routing.add(Math.max(0, startedAt - routeReceivedAt));
+    if (event.pointerType === "pen") {
+      this.slowSpans.notePenDown(surface.strokePerformance.pointerDownAt);
+    }
   }
 
   private noteStrokeCanvasCommit(surface: PageSurface, at: number, startedAt?: number): void {

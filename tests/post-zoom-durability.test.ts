@@ -130,14 +130,17 @@ describe("PostZoomDurabilityTrace", () => {
       pointerCaptureStale: false
     }, settleAt + 120_000)).toBeNull();
 
-    expect(events).toEqual([expect.objectContaining({
+    expect(events).toEqual([]);
+    durability.claimPhysicalTool("pen-claimed", "apple-pencil");
+    const claimedEvents = durability.note(genericTouch("pen-claimed", settleAt + 125_000));
+    expect(claimedEvents).toEqual([expect.objectContaining({
       event: "post-zoom-recovery-regressed",
       previousSuccessfulPenAt: new Date(settleAt + 400).toISOString(),
       currentPointerType: "touch",
       currentStylusIdentity: "absent",
-      physicalToolClaimed: false
+      physicalToolClaimed: true
     })]);
-    const copy = durability.snapshot(settleAt + 120_000);
+    const copy = durability.snapshot(settleAt + 125_000);
     expect(copy.successfulPenContactsAfterZoom).toBe(3);
     expect(copy.firstLaterGenericTouchAfterPenRecovery).toMatchObject({
       physicalContactId: "touch-later",
@@ -223,10 +226,9 @@ describe("PostZoomDurabilityTrace", () => {
       panObserved: true
     }));
     expect(events.map((event) => event.event)).toEqual([
-      "post-zoom-recovery-regressed",
       "post-zoom-page-drag-contact"
     ]);
-    const drag = events[1];
+    const drag = events[0];
     expect(drag).toMatchObject({
       event: "post-zoom-page-drag-contact",
       pointerType: "touch",
@@ -305,5 +307,13 @@ describe("PostZoomDurabilityTrace", () => {
       physicalToolClaimed: true,
       physicalTool: "apple-pencil"
     });
+  });
+
+  it("checks physical tool claim status via hasClaimedPhysicalTool", () => {
+    const trace = openTrace();
+    expect(trace.hasClaimedPhysicalTool("contact-1")).toBe(false);
+    trace.claimPhysicalTool("contact-1", "apple-pencil");
+    expect(trace.hasClaimedPhysicalTool("contact-1")).toBe(true);
+    expect(trace.hasClaimedPhysicalTool("contact-2")).toBe(false);
   });
 });
