@@ -109,6 +109,34 @@ export interface ElementViewportTransform {
 }
 
 /**
+ * Shared unscaled element-rect transform for surfaces that do not have a
+ * HandwritingViewport, such as the bounded native PDF zoom handoff.
+ */
+export class ElementRectViewportTransform implements ElementViewportTransform {
+  screenToElementLocal(
+    element: HTMLElement,
+    screenPoint: ViewportPoint,
+    rect = element.getBoundingClientRect()
+  ): ViewportPoint {
+    return {
+      x: screenPoint.x - rect.left,
+      y: screenPoint.y - rect.top
+    };
+  }
+
+  elementLocalToScreen(
+    element: HTMLElement,
+    localPoint: ViewportPoint,
+    rect = element.getBoundingClientRect()
+  ): ViewportPoint {
+    return {
+      x: rect.left + localPoint.x,
+      y: rect.top + localPoint.y
+    };
+  }
+}
+
+/**
  * Canonical composed coordinate path for interaction code:
  * client <-> rendered page viewport <-> stable page/PDF coordinates.
  */
