@@ -208,10 +208,8 @@ export interface PluginSettings {
   customMobilePdfPinchZoom: boolean;
   /** Advanced accessibility opt-out; the page label remains visible by default. */
   hideStylusAnnotationLabel: boolean;
-  /** Mobile-only opt-in to suppress Obsidian's one-finger sidebar swipe. */
-  disableSidebarSwipe: boolean;
-  /** Mobile-only opt-in to suppress Obsidian's downward command-palette swipe. */
-  disableCommandPaletteSwipe: boolean;
+  /** Mobile-only opt-in to suppress swipe gestures that open sidebars or the command palette. */
+  disableSwipeNavigation: boolean;
   toolbarPlacement: ToolbarPlacement;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
@@ -308,8 +306,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   simplifyStrokes: true,
   customMobilePdfPinchZoom: true,
   hideStylusAnnotationLabel: false,
-  disableSidebarSwipe: false,
-  disableCommandPaletteSwipe: false,
+  disableSwipeNavigation: false,
   toolbarPlacement: "main",
   vaultDebugLog: false,
   vaultDebugLogPath,
@@ -343,12 +340,23 @@ export function mergeSettings(
   const defaults = createDefaultSettings(configDir);
   const raw = { ...(saved ?? {}) } as Record<string, unknown>;
   const legacyDisableSearchBarSwipe = raw.disableSearchBarSwipe === true;
+  const savedDisableSwipeNavigation = raw.disableSwipeNavigation;
+  const legacyDisableSidebarSwipe = raw.disableSidebarSwipe === true;
+  const legacyDisableCommandPaletteSwipeSetting = raw.disableCommandPaletteSwipe;
+  const legacyDisableCommandPaletteSwipe = legacyDisableCommandPaletteSwipeSetting === true;
   const legacyMouseInputMode = raw.mouseInputMode;
   const legacyMouseLeftDragDraw = raw.mouseLeftDragDraw;
   const savedMouseInkingEnabled = raw.mouseInkingEnabled;
   const legacyMouseInkingEnabled = legacyMouseInputMode === "annotate"
     ? legacyMouseLeftDragDraw !== false
     : legacyMouseInputMode === undefined && legacyMouseLeftDragDraw === true;
+  const disableSwipeNavigation = typeof savedDisableSwipeNavigation === "boolean"
+    ? savedDisableSwipeNavigation
+    : legacyDisableSidebarSwipe
+      || legacyDisableCommandPaletteSwipe
+      || (legacyDisableCommandPaletteSwipeSetting === undefined && legacyDisableSearchBarSwipe);
+  delete raw.disableSidebarSwipe;
+  delete raw.disableCommandPaletteSwipe;
   delete raw.disableSearchBarSwipe;
   delete raw.mouseInputMode;
   delete raw.mouseDragScroll;
@@ -413,9 +421,7 @@ export function mergeSettings(
       ? cleaned.customMobilePdfPinchZoom
       : defaults.customMobilePdfPinchZoom,
     hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,
-    disableSidebarSwipe: cleaned.disableSidebarSwipe === true,
-    disableCommandPaletteSwipe: cleaned.disableCommandPaletteSwipe === true
-      || (cleaned.disableCommandPaletteSwipe === undefined && legacyDisableSearchBarSwipe),
+    disableSwipeNavigation,
     pressureProfile: pressureProfile === "pen" || pressureProfile === "mouse" || pressureProfile === "auto"
       ? pressureProfile
       : defaults.pressureProfile,

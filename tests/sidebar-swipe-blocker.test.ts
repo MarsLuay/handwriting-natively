@@ -5,8 +5,8 @@ import {
   MobileSidebarSwipeBlocker
 } from "../src/input/MobileSidebarSwipeBlocker";
 
-function touch(identifier: number, clientX: number, clientY: number): Touch {
-  return { identifier, clientX, clientY, target: document.body } as unknown as Touch;
+function touch(identifier: number, clientX: number, clientY: number, target: EventTarget = document.body): Touch {
+  return { identifier, clientX, clientY, target } as unknown as Touch;
 }
 
 function touchEvent(type: "touchstart" | "touchmove" | "touchend", touches: Touch[]): Event {
@@ -57,7 +57,23 @@ describe("MobileSidebarSwipeBlocker", () => {
     expect(classifyCommandPaletteSwipe(100, 20, 104, 0)).toBe(false);
   });
 
-  it("blocks a one-finger swipe toward a closed left sidebar", () => {
+  it("allows sidebar and command-palette swipes while disabled", () => {
+    const blocker = new MobileSidebarSwipeBlocker(document);
+    blocker.setEnabled(false);
+
+    document.dispatchEvent(touchEvent("touchstart", [touch(1, 10, 100)]));
+    const sidebarSwipe = touchEvent("touchmove", [touch(1, 60, 108)]);
+    document.dispatchEvent(sidebarSwipe);
+    expect(sidebarSwipe.defaultPrevented).toBe(false);
+
+    document.dispatchEvent(touchEvent("touchstart", [touch(2, 100, 20)]));
+    const commandPaletteSwipe = touchEvent("touchmove", [touch(2, 104, 70)]);
+    document.dispatchEvent(commandPaletteSwipe);
+    expect(commandPaletteSwipe.defaultPrevented).toBe(false);
+    blocker.destroy();
+  });
+
+  it("blocks a one-finger swipe right from opening a closed left sidebar", () => {
     const blocker = new MobileSidebarSwipeBlocker(document);
     blocker.setEnabled(true);
     document.dispatchEvent(touchEvent("touchstart", [touch(1, 10, 100)]));
@@ -67,7 +83,7 @@ describe("MobileSidebarSwipeBlocker", () => {
     blocker.destroy();
   });
 
-  it("blocks the opposite direction for a closed right sidebar and allows open sidebars", () => {
+  it("blocks a one-finger swipe left from opening a closed right sidebar and allows closing an open sidebar", () => {
     const blocker = new MobileSidebarSwipeBlocker(document);
     blocker.setEnabled(true);
 
@@ -81,6 +97,13 @@ describe("MobileSidebarSwipeBlocker", () => {
     const allowedMove = touchEvent("touchmove", [touch(2, 840, 108)]);
     document.dispatchEvent(allowedMove);
     expect(allowedMove.defaultPrevented).toBe(false);
+
+    document.body.classList.remove("is-right-sidebar-open");
+    document.body.classList.add("is-left-sidebar-open");
+    document.dispatchEvent(touchEvent("touchstart", [touch(3, 10, 100)]));
+    const leftSidebarClose = touchEvent("touchmove", [touch(3, 60, 108)]);
+    document.dispatchEvent(leftSidebarClose);
+    expect(leftSidebarClose.defaultPrevented).toBe(false);
     blocker.destroy();
   });
 
@@ -103,17 +126,17 @@ describe("MobileSidebarSwipeBlocker", () => {
     blocker.destroy();
   });
 
-  it("blocks the opt-in top-edge command-palette swipe without blocking page scrolling", () => {
+  it("blocks the top-edge command-palette swipe without blocking ordinary vertical page scrolling", () => {
     const blocker = new MobileSidebarSwipeBlocker(document);
-    blocker.setEnabled(false, true);
+    blocker.setEnabled(true);
 
     document.dispatchEvent(touchEvent("touchstart", [touch(1, 100, 20)]));
     const commandPaletteMove = touchEvent("touchmove", [touch(1, 104, 70)]);
     document.dispatchEvent(commandPaletteMove);
     expect(commandPaletteMove.defaultPrevented).toBe(true);
 
-    document.dispatchEvent(touchEvent("touchstart", [touch(2, 100, 100)]));
-    const pageScroll = touchEvent("touchmove", [touch(2, 104, 180)]);
+    document.dispatchEvent(touchEvent("touchstart", [touch(2, 100, 110)]));
+    const pageScroll = touchEvent("touchmove", [touch(2, 104, 190)]);
     document.dispatchEvent(pageScroll);
     expect(pageScroll.defaultPrevented).toBe(false);
     blocker.destroy();
@@ -121,7 +144,7 @@ describe("MobileSidebarSwipeBlocker", () => {
 
   it("blocks pointer-routed command-palette swipes from the safe-area edge", () => {
     const blocker = new MobileSidebarSwipeBlocker(document);
-    blocker.setEnabled(false, true);
+    blocker.setEnabled(true);
 
     document.dispatchEvent(pointerEvent("pointerdown", 9, 100, 64));
     const move = pointerEvent("pointermove", 9, 104, 76);
@@ -131,23 +154,25 @@ describe("MobileSidebarSwipeBlocker", () => {
     blocker.destroy();
   });
 
-  it("leaves vertical scrolling, pinch, and Pencil companion touches native", () => {
+  it("leaves PDF scrolling, pinch, and Pencil companion touches native", () => {
     const blocker = new MobileSidebarSwipeBlocker(document);
     blocker.setEnabled(true);
+    const pdfPage = document.createElement("div");
+    document.body.append(pdfPage);
 
-    document.dispatchEvent(touchEvent("touchstart", [touch(1, 10, 10)]));
-    const verticalMove = touchEvent("touchmove", [touch(1, 20, 80)]);
+    document.dispatchEvent(touchEvent("touchstart", [touch(1, 10, 110, pdfPage)]));
+    const verticalMove = touchEvent("touchmove", [touch(1, 20, 180, pdfPage)]);
     document.dispatchEvent(verticalMove);
     expect(verticalMove.defaultPrevented).toBe(false);
 
-    document.dispatchEvent(touchEvent("touchstart", [touch(2, 10, 10)]));
-    const pinchMove = touchEvent("touchmove", [touch(2, 60, 15), touch(3, 100, 15)]);
+    document.dispatchEvent(touchEvent("touchstart", [touch(2, 10, 110, pdfPage)]));
+    const pinchMove = touchEvent("touchmove", [touch(2, 60, 115, pdfPage), touch(3, 100, 115, pdfPage)]);
     document.dispatchEvent(pinchMove);
     expect(pinchMove.defaultPrevented).toBe(false);
 
+    document.dispatchEvent(touchEvent("touchstart", [touch(4, 10, 110)]));
     document.dispatchEvent(penEvent("pointerdown", 7));
-    document.dispatchEvent(touchEvent("touchstart", [touch(4, 10, 10)]));
-    const pencilMove = touchEvent("touchmove", [touch(4, 70, 12)]);
+    const pencilMove = touchEvent("touchmove", [touch(4, 70, 112)]);
     document.dispatchEvent(pencilMove);
     expect(pencilMove.defaultPrevented).toBe(false);
     document.dispatchEvent(penEvent("pointerup", 7));
@@ -168,6 +193,33 @@ describe("MobileSidebarSwipeBlocker", () => {
     const disabled = touchEvent("touchmove", [touch(2, 70, 12)]);
     document.dispatchEvent(disabled);
     expect(disabled.defaultPrevented).toBe(false);
+
+    blocker.setEnabled(true);
+    document.dispatchEvent(touchEvent("touchstart", [touch(3, 10, 100)]));
+    const reenabled = touchEvent("touchmove", [touch(3, 70, 108)]);
+    document.dispatchEvent(reenabled);
+    expect(reenabled.defaultPrevented).toBe(true);
+
+    blocker.destroy();
+    document.dispatchEvent(touchEvent("touchstart", [touch(4, 10, 100)]));
+    const destroyed = touchEvent("touchmove", [touch(4, 70, 108)]);
+    document.dispatchEvent(destroyed);
+    expect(destroyed.defaultPrevented).toBe(false);
+  });
+
+  it("does not block small or ambiguous movement", () => {
+    const blocker = new MobileSidebarSwipeBlocker(document);
+    blocker.setEnabled(true);
+
+    document.dispatchEvent(touchEvent("touchstart", [touch(1, 10, 100)]));
+    const smallMove = touchEvent("touchmove", [touch(1, 17, 101)]);
+    document.dispatchEvent(smallMove);
+    expect(smallMove.defaultPrevented).toBe(false);
+
+    document.dispatchEvent(touchEvent("touchstart", [touch(2, 10, 100)]));
+    const ambiguousMove = touchEvent("touchmove", [touch(2, 35, 112)]);
+    document.dispatchEvent(ambiguousMove);
+    expect(ambiguousMove.defaultPrevented).toBe(false);
     blocker.destroy();
   });
 });
