@@ -1065,6 +1065,8 @@ export class ViewerInkSession {
   private textMoveDrag: TextMoveDrag | null = null;
   private textBoxTransformDrag: TextBoxTransformDrag | null = null;
   private textToolActive = false;
+  /** Session-local toolbar mode: mouse stays native while stylus tools remain available. */
+  private mouseNavigationActive = false;
   private temporaryStylusEraserPointers = 0;
   private debugState: DebugState = {};
   private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
@@ -1392,6 +1394,8 @@ export class ViewerInkSession {
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
+      mouseInkingEnabled: this.mouseInkingConfigured(),
+      mouseNavigationActive: this.mouseNavigationActive,
       supportedMoreActions: [
         ...(pdfExtensions && options.writeExport
           ? ["export", "export-editable"] as const
@@ -1497,6 +1501,15 @@ export class ViewerInkSession {
         onLassoCopyAll: () => {
           this.selectAllOnCurrentPage();
           this.copySelection();
+        },
+        onMouseModeChange: (nativeSelection) => {
+          this.mouseNavigationActive = nativeSelection;
+          if (nativeSelection) {
+            this.commitActiveTextEditor("mouse-navigation-mode");
+            this.clearSelection({ refresh: false });
+          }
+          this.updateMouseInputBindings();
+          this.refreshToolChrome("mouse-mode");
         },
         onTextStyleChange: (change) => this.applyTextStyleToActiveEditor(change),
         onTextFormatPointerDown: () => this.captureActiveTextSelection("toolbar-pointerdown"),
@@ -4367,8 +4380,12 @@ export class ViewerInkSession {
   }
 
 
-  private mouseInkingEnabled(): boolean {
+  private mouseInkingConfigured(): boolean {
     return this.options.mouseInkingEnabled?.() ?? this.options.settings.mouseInkingEnabled;
+  }
+
+  private mouseInkingEnabled(): boolean {
+    return this.mouseInkingConfigured() && !this.mouseNavigationActive;
   }
 
   private isDesktopPdfPageEvent(
@@ -9073,8 +9090,9 @@ export class ViewerInkSession {
       return true;
     }
     const textFocused = Boolean(this.activeTextEditor) || shouldIgnoreSelectionShortcut(event.target);
-    const historyAction = parseHistoryShortcut(event);
-    const action = parseSelectionShortcut(event);
+    const plainModifierForInk = this.mouseInkingEnabled();
+    const historyAction = parseHistoryShortcut(event, plainModifierForInk);
+    const action = parseSelectionShortcut(event, plainModifierForInk);
     if (textFocused && !event.altKey) {
       this.logKeyboardShortcut(event, "native-text", null, false);
       return false;
@@ -9108,13 +9126,14 @@ export class ViewerInkSession {
       return false;
     }
     if (!action || !this.canSelectionShortcut(action)) {
-      if (inkHotkeyCommand(event)) this.logKeyboardShortcut(event, "ignored", inkHotkeyCommand(event), false);
+      const command = inkHotkeyCommand(event, plainModifierForInk);
+      if (command) this.logKeyboardShortcut(event, "ignored", command, false);
       return false;
     }
     this.applySelectionShortcut(action);
     event.preventDefault();
     event.stopPropagation();
-    this.logKeyboardShortcut(event, "ink-command", inkHotkeyCommand(event), true);
+    this.logKeyboardShortcut(event, "ink-command", inkHotkeyCommand(event, plainModifierForInk), true);
     return true;
   }
 
@@ -9617,8 +9636,11 @@ export class ViewerInkSession {
     for (const surface of this.surfaces.values()) surface.router?.syncToolState();
   }
 
-  /** Apply live mouse-button setting changes without recreating the viewer. */
+  /** Apply live mouse-button setting or toolbar mode changes without recreating the viewer. */
   updateMouseInputBindings(): void {
+    const configured = this.mouseInkingConfigured();
+    if (!configured) this.mouseNavigationActive = false;
+    this.toolbar.setMouseModeState(configured, this.mouseNavigationActive);
     this.syncAnnotationCursorMode();
     this.syncTouchDrawPolicy("input-settings");
     this.refreshSurfaceCursors();
@@ -9740,8 +9762,9 @@ export class ViewerInkSession {
       : this.options.settings.toolPreferences.activeTool;
   }
 
-  /** Text boxes steal hits only in Text/lasso — pen/eraser/laser must pass through. */
+  /** Text boxes steal hits only in Text/lasso, never in native mouse navigation mode. */
   private textBoxesInteractable(): boolean {
+    if (this.mouseNavigationActive) return false;
     const tool = this.activeTool();
     return tool === "text" || tool === "lasso";
   }

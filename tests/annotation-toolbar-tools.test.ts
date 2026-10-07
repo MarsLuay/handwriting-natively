@@ -24,6 +24,39 @@ describe("AnnotationToolbar drawing tools", () => {
     toolbar.destroy();
   });
 
+  it("shows the mouse selector only when mouse inking is enabled and returns to ink on tool selection", () => {
+    const modeChanged = vi.fn();
+    const toolbar = new AnnotationToolbar({
+      preferences: createDefaultToolPreferences(),
+      autosave: true,
+      mouseInkingEnabled: true,
+      callbacks: { onPreferencesChange: vi.fn(), onMouseModeChange: modeChanged }
+    });
+    document.body.append(toolbar.element);
+
+    const mouse = toolbar.element.querySelector<HTMLButtonElement>("[data-control='mouse']");
+    const pen = toolbar.element.querySelector<HTMLButtonElement>("[data-control='pen']");
+    expect(mouse).not.toBeNull();
+    expect(mouse?.parentElement?.firstElementChild).toBe(mouse);
+    expect(mouse?.querySelector("svg")).not.toBeNull();
+    expect(mouse?.getAttribute("aria-pressed")).toBe("false");
+
+    mouse?.click();
+    expect(mouse?.getAttribute("aria-pressed")).toBe("true");
+    expect(mouse?.getAttribute("aria-label")).toBe("Switch mouse to inking");
+    expect(pen?.getAttribute("aria-pressed")).toBe("false");
+    expect(modeChanged).toHaveBeenLastCalledWith(true);
+
+    pen?.click();
+    expect(mouse?.getAttribute("aria-pressed")).toBe("false");
+    expect(pen?.getAttribute("aria-pressed")).toBe("true");
+    expect(modeChanged).toHaveBeenLastCalledWith(false);
+
+    toolbar.setMouseModeState(false, false);
+    expect(toolbar.element.querySelector("[data-control='mouse']")).toBeNull();
+    toolbar.destroy();
+  });
+
   it("switches tools directly and restores each tool's independent settings", () => {
     const preferences = createDefaultToolPreferences();
     preferences.pen.width = 2.5;
