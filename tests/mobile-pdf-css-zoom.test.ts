@@ -106,4 +106,81 @@ describe("mobile PDF CSS zoom", () => {
     expect(calls).toEqual(["cancel"]);
     expect(completions).toEqual([{ phase: "cancelled", reason: "native-scale-observed" }]);
   });
+
+  it("compensates with 2D GPU transform when horizontal scroll is clamped to zero (moving right)", () => {
+    vi.useFakeTimers();
+    const { scrollRoot, root, pages } = fixture();
+    // Simulate real WebKit behavior where scrollLeft clamps at 0 (non-negative)
+    let internalScrollLeft = 0;
+    Object.defineProperty(scrollRoot, "scrollLeft", {
+      configurable: true,
+      get: () => internalScrollLeft,
+      set: (val: number) => {
+        internalScrollLeft = Math.max(0, val);
+      }
+    });
+
+    const compositor = new MobilePdfCssZoom();
+    expect(compositor.begin({
+      root,
+      scrollRoot,
+      pages,
+      initialScale: 1,
+      focalPoint: { x: 300, y: 300 }
+    })).toBe(true);
+
+    // Fingers move 100px to the right at scale 1 (pure side-to-side pan)
+    compositor.submit({ previewScale: 1, focalPoint: { x: 400, y: 300 } });
+    compositor.flush();
+
+    // scrollLeft would be -100, which clamped to 0
+    expect(scrollRoot.scrollLeft).toBe(0);
+    // Root translates +100px on the GPU to follow the fingers 1:1
+    expect(root.style.getPropertyValue("transform")).toBe("translate3d(100px, 0px, 0)");
+
+    // Settle triggers rubber-band spring back to rest
+    compositor.settle();
+    expect(root.style.getPropertyValue("transform")).toBe("translate3d(0px, 0px, 0)");
+    expect(root.style.getPropertyValue("transition")).toContain("transform 200ms");
+
+    // After spring completes, transform is cleaned up
+    vi.advanceTimersByTime(220);
+    expect(root.style.getPropertyValue("transform")).toBe("");
+  });
+
+  it("compensates with 2D GPU transform when document width has no horizontal headroom (moving left)", () => {
+    vi.useFakeTimers();
+    const { scrollRoot, root, pages } = fixture();
+    // Simulate container with 0 horizontal headroom (scrollWidth <= clientWidth, clamps to 0)
+    let internalScrollLeft = 0;
+    Object.defineProperty(scrollRoot, "scrollLeft", {
+      configurable: true,
+      get: () => internalScrollLeft,
+      set: (_val: number) => {
+        internalScrollLeft = 0; // Clamped to 0 in both directions
+      }
+    });
+
+    const compositor = new MobilePdfCssZoom();
+    expect(compositor.begin({
+      root,
+      scrollRoot,
+      pages,
+      initialScale: 1,
+      focalPoint: { x: 300, y: 300 }
+    })).toBe(true);
+
+    // Fingers move 80px to the left
+    compositor.submit({ previewScale: 1, focalPoint: { x: 220, y: 300 } });
+    compositor.flush();
+
+    expect(scrollRoot.scrollLeft).toBe(0);
+    // Root translates -80px to follow the fingers
+    expect(root.style.getPropertyValue("transform")).toBe("translate3d(-80px, 0px, 0)");
+
+    // Cancel cleans up immediately without spring animation
+    compositor.cancel();
+    expect(root.style.getPropertyValue("transform")).toBe("");
+    expect(root.style.getPropertyValue("transition")).toBe("");
+  });
 });
