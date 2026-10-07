@@ -1,5 +1,10 @@
 import { annotationPageSafetyReason, type AnnotationPageInfo, type AnnotationViewState } from "../runtime/AnnotationSurface";
-import { PageCoordinateMapper, type ViewportPoint } from "../runtime/PageCoordinateMapper";
+import {
+  ElementRectViewportTransform,
+  PageCoordinateMapper,
+  PageCoordinateSpace,
+  type ViewportPoint
+} from "../runtime/PageCoordinateMapper";
 
 export type MobilePdfZoomHandoffPhase = "idle" | "preview" | "committing" | "settled" | "cancelled";
 
@@ -65,6 +70,8 @@ function finitePoint(point: ViewportPoint): boolean {
   return Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
+const rectViewportTransform = new ElementRectViewportTransform();
+
 function pageMapper(page: AnnotationPageInfo, rect: DOMRect): PageCoordinateMapper {
   const rotated = page.rotation === 90 || page.rotation === 270;
   const renderedWidth = Math.max(1, rotated ? page.height : page.width);
@@ -78,6 +85,10 @@ function pageMapper(page: AnnotationPageInfo, rect: DOMRect): PageCoordinateMapp
     rotation: page.rotation === 90 || page.rotation === 180 || page.rotation === 270 ? page.rotation : 0,
     origin: page.coordinateOrigin ?? "bottom-left"
   });
+}
+
+function pageCoordinateSpace(page: AnnotationPageInfo, rect: DOMRect): PageCoordinateSpace {
+  return new PageCoordinateSpace(rectViewportTransform, page.element, pageMapper(page, rect));
 }
 
 function samePageMount(page: AnnotationPageInfo, anchor: Anchor): boolean {
@@ -111,11 +122,7 @@ export class MobilePdfZoomHandoff {
     if (!page || annotationPageSafetyReason(page) !== null || !finitePoint(options.focalPoint)) return false;
     const rect = page.element.getBoundingClientRect();
     if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 1 || rect.height <= 1) return false;
-    const localPoint = {
-      x: options.focalPoint.x - rect.left,
-      y: options.focalPoint.y - rect.top
-    };
-    const pagePoint = pageMapper(page, rect).toPage(localPoint);
+    const pagePoint = pageCoordinateSpace(page, rect).clientToPage(options.focalPoint, rect);
     if (!finitePoint(pagePoint)) return false;
     const scroll = this.host.scrollElement();
     const hadOverflowAnchorClass = scroll.classList.contains(PINCH_OVERFLOW_ANCHOR_OFF_CLASS);
@@ -225,12 +232,11 @@ export class MobilePdfZoomHandoff {
       this.cancelWith("stable-geometry-unavailable");
       return { phase: this.phase, released: false, reason: "stable-geometry-unavailable", scrollDelta: empty };
     }
-    const viewportPoint = pageMapper(page, rect).toViewport(anchor.pagePoint);
-    if (!finitePoint(viewportPoint)) {
+    const nextScreenPoint = pageCoordinateSpace(page, rect).pageToClient(anchor.pagePoint, rect);
+    if (!finitePoint(nextScreenPoint)) {
       this.cancelWith("stable-geometry-unavailable");
       return { phase: this.phase, released: false, reason: "stable-geometry-unavailable", scrollDelta: empty };
     }
-    const nextScreenPoint = { x: rect.left + viewportPoint.x, y: rect.top + viewportPoint.y };
     const delta = {
       left: nextScreenPoint.x - anchor.focalPoint.x,
       top: nextScreenPoint.y - anchor.focalPoint.y
