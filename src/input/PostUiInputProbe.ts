@@ -610,7 +610,9 @@ export class PostUiInputProbe {
 
   private outcomeFor(contact: ProbeContact): PostUiProbeOutcome {
     if (contact.pointerType !== "pen") return "post-ui-probe-expired-no-pen";
-    if (contact.strokeStarted) return "post-ui-pen-success";
+    if (contact.strokeStarted || contact.stages.includes("stroke-start") || contact.details.strokeStarted === true) {
+      return "post-ui-pen-success";
+    }
     if (contact.details.pageOccludedByUi === true || contact.details.occluded === true) {
       return "post-ui-pen-ui-occluded";
     }

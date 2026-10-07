@@ -82,14 +82,14 @@ export interface StylusIdentityRegression {
   sameSession: true;
   samePageMountGeneration: boolean | null;
   sameRouterGeneration: boolean | null;
-  /** Browser properties only. This does not claim the physical tool was Pencil. */
-  physicalToolClaimed: false;
+  physicalToolClaimed: boolean;
   recoveryExperiment: string | null;
 }
 
 /**
  * Compare the last successful pen PointerEvent with a later page contact that
- * has no stylus evidence. Returns null unless that browser-property change is real.
+ * claims stylus identity but has no browser stylus evidence. Returns null unless
+ * that browser-property change is real.
  */
 export function stylusIdentityRegression(input: {
   zoomBurstId: string | null;
@@ -98,6 +98,7 @@ export function stylusIdentityRegression(input: {
   postZoomPointerType: string | null;
   postZoomPointerEventPenSeen: boolean;
   postZoomStylusIdentity: StylusIdentity;
+  physicalToolClaimed?: boolean;
   strokeStarted: boolean;
   preZoomPageMountGeneration: number | null;
   postZoomPageMountGeneration: number | null;
@@ -106,6 +107,7 @@ export function stylusIdentityRegression(input: {
   recoveryExperiment: string | null;
 }): StylusIdentityRegression | null {
   if (!input.zoomBurstId || input.strokeStarted) return null;
+  if (input.physicalToolClaimed !== true) return null;
   if (input.preZoomPointerType !== "pen" || input.preZoomPointerEventPenSeen !== true) return null;
   if (input.postZoomPointerEventPenSeen || input.postZoomStylusIdentity === "established") return null;
   const postZoomPointerType = input.postZoomPointerType ?? "unknown";
@@ -125,7 +127,7 @@ export function stylusIdentityRegression(input: {
     sameRouterGeneration: input.preZoomRouterGeneration !== null && input.postZoomRouterGeneration !== null
       ? input.preZoomRouterGeneration === input.postZoomRouterGeneration
       : null,
-    physicalToolClaimed: false,
+    physicalToolClaimed: true,
     recoveryExperiment: input.recoveryExperiment
   };
 }
