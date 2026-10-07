@@ -125,6 +125,8 @@ export interface PointerRouterCallbacks {
   onDragStart?(event: PointerEvent): void;
   onDragMove?(deltaX: number, deltaY: number, event: PointerEvent): void;
   onDragEnd?(event: PointerEvent): void;
+  onViewportPan?(deltaX: number, deltaY: number): void;
+  onViewportSettle?(): void;
   onRoute?(route: PointerRoute, event: PointerEvent): void;
   /** Diagnostic-only reason paired with the already-emitted route decision. */
   onRouteDecision?(route: PointerRoute, reason: string, event: PointerEvent): void;
@@ -1267,6 +1269,7 @@ export class PointerRouter {
       this.activeDrag = null;
       this.syncDragCursor(false);
       this.callbacks.onDragEnd?.(event);
+      this.callbacks.onViewportSettle?.();
       this.releaseGestureOwnership(event, "pointerup");
       this.releasePenContact(event, "pointerup");
       this.syncTouchActionMode();
@@ -1313,6 +1316,7 @@ export class PointerRouter {
       this.activeDrag = null;
       this.syncDragCursor(false);
       this.callbacks.onDragEnd?.(event);
+      this.callbacks.onViewportSettle?.();
       this.releaseGestureOwnership(event, "pointercancel");
       this.releasePenContact(event, "pointercancel");
       this.syncTouchActionMode();
@@ -1352,6 +1356,7 @@ export class PointerRouter {
       this.activeDrag = null;
       this.syncDragCursor(false);
       this.callbacks.onDragEnd?.(event);
+      this.callbacks.onViewportSettle?.();
       this.releaseGestureOwnership(event, "lostpointercapture");
       this.releasePenContact(event, "lostpointercapture");
       this.syncTouchActionMode();
@@ -1384,6 +1389,7 @@ export class PointerRouter {
       this.activeDrag = null;
       this.syncDragCursor(false);
       this.callbacks.onDragEnd?.(event);
+      this.callbacks.onViewportSettle?.();
       this.releaseGestureOwnership(event, event.type === "pointercancel" ? "pointercancel" : "pointerup");
       this.releasePenContact(event, event.type === "pointercancel" ? "pointercancel" : "pointerup");
       this.syncTouchActionMode();
@@ -1592,6 +1598,10 @@ export class PointerRouter {
   }
 
   private applyDragScroll(deltaX: number, deltaY: number, clientX: number, clientY: number): void {
+    if (this.callbacks.onViewportPan) {
+      this.callbacks.onViewportPan(deltaX, deltaY);
+      return;
+    }
     const root = this.callbacks.scrollRoot?.();
     if (!root) return;
     if (deltaY !== 0) {

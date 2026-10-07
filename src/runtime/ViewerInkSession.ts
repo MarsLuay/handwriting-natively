@@ -122,6 +122,7 @@ import type { CustomPinchFrame } from "../input/PointerRouter";
 import { MobilePinchZoomController, type MobilePinchZoomFocalPoint, type MobilePinchZoomFrame } from "../input/MobilePinchZoomController";
 import { MobilePdfCssZoom, type MobilePdfCssZoomPage } from "../integration/MobilePdfCssZoom";
 import { MobilePdfCssZoomTransaction } from "../integration/MobilePdfCssZoomTransaction";
+import { HandwritingViewport, type HandwritingViewportState } from "../integration/HandwritingViewport";
 import type {
   MobilePdfZoomHandoffCancelReason,
   MobilePdfZoomHandoffSignal
@@ -1092,6 +1093,8 @@ export class ViewerInkSession {
   private temporaryStylusEraserPointers = 0;
   private debugState: DebugState = {};
   private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
+  /** Authoritative persistent handwriting viewport state (scale, x, y). */
+  readonly handwritingViewport: HandwritingViewport;
   /** Visual mobile PDF zoom is persistent CSS/container state, not PDF.js scale. */
   private mobileCssZoomScale = 1;
   private mobileCssZoomTarget: HTMLElement | null = null;
@@ -1619,6 +1622,35 @@ export class ViewerInkSession {
       });
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
+    this.handwritingViewport = new HandwritingViewport({
+      getContainerRect: () => {
+        try {
+          const scrollEl = adapter.scrollElement();
+          const rect = scrollEl.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0
+            ? { width: rect.width, height: rect.height, left: rect.left, top: rect.top }
+            : null;
+        } catch {
+          return null;
+        }
+      },
+      getContentSize: () => {
+        try {
+          const root = adapter.root;
+          const width = root.offsetWidth || root.scrollWidth || 0;
+          const height = root.offsetHeight || root.scrollHeight || 0;
+          return width > 0 && height > 0 ? { width, height } : null;
+        } catch {
+          return null;
+        }
+      },
+      minScale: 0.1,
+      maxScale: 10,
+      onStateChange: (state) => {
+        this.mobileCssZoomScale = state.scale;
+      }
+    });
+    this.handwritingViewport.setTarget(adapter.root);
     this.mobilePinchZoom = new MobilePinchZoomController({
       minScale: 0.1,
       maxScale: 10,
@@ -1626,7 +1658,7 @@ export class ViewerInkSession {
         try {
           const surface = this.mobilePinchSurfaceAt(null, null);
           return surface && this.customMobilePdfPinchZoomEnabled(surface)
-            ? this.mobileCssZoomScale
+            ? this.handwritingViewport.getState().scale
             : adapter.getViewState().scale;
         } catch {
           return 1;
@@ -1700,6 +1732,10 @@ export class ViewerInkSession {
     }) : null;
     this.installPointerProbe(adapter);
     this.startFrameProfileSampling();
+  }
+
+  viewportState(): HandwritingViewportState {
+    return this.handwritingViewport.getState();
   }
 
   private installPointerProbe(adapter: ViewerInkSessionOptions["adapter"]): void {
@@ -9626,6 +9662,7 @@ export class ViewerInkSession {
     this.textContextMenuTargetId = null;
     this.textContextMenu.destroy();
     this.mobilePinchZoom.destroy();
+    this.handwritingViewport.destroy();
     this.clearMobileCssZoom();
     if (this.mobilePinchIndicatorFadeTimer !== null) {
       const view = this.options.adapter.host.ownerDocument.defaultView;
@@ -10107,6 +10144,14 @@ export class ViewerInkSession {
     if (!surface || !this.customMobilePdfPinchZoomEnabled(surface)) return { accepted: false };
     if (surface.mobileCustomPinch) this.cancelMobileCustomPinch(surface, "capability-lost");
     this.activeMobilePinchSurface = surface;
+    const first = frame.points[0];
+    const second = frame.points[1];
+    if (first && second) {
+      this.handwritingViewport.startPinch({
+        x: (first.clientX + second.clientX) / 2,
+        y: (first.clientY + second.clientY) / 2
+      });
+    }
     this.startMobileCustomPinch(surface, frame);
     const state = surface.mobileCustomPinch;
     return state
@@ -10117,6 +10162,7 @@ export class ViewerInkSession {
   private previewActiveMobilePinch(scale: number, focalPoint: MobilePinchZoomFocalPoint): void {
     const surface = this.activeMobilePinchSurface;
     if (!surface) return;
+    this.handwritingViewport.pinch(scale, focalPoint);
     this.previewMobileCustomPinch(surface, scale, focalPoint);
   }
 
@@ -10126,11 +10172,13 @@ export class ViewerInkSession {
   ): void {
     const surface = this.activeMobilePinchSurface;
     if (!surface) return;
+    this.handwritingViewport.endPinch();
     this.endMobileCustomPinch(surface, reason, scale);
     if (reason !== "pointerup") this.activeMobilePinchSurface = null;
   }
 
   private cancelActiveMobilePinch(reason: string): void {
+    this.handwritingViewport.settle();
     const surface = this.activeMobilePinchSurface;
     if (surface?.mobileCustomPinch) this.cancelMobileCustomPinch(surface, "capability-lost");
     this.activeMobilePinchSurface = null;
@@ -10213,6 +10261,10 @@ export class ViewerInkSession {
   }
 
   private mobilePdfCssZoomFactor(): number {
+    const vp = this.handwritingViewport?.getState();
+    if (vp && Number.isFinite(vp.scale) && vp.scale > 0 && vp.scale !== 1) {
+      return vp.scale;
+    }
     const target = this.mobileCssZoomTarget;
     if (!target?.isConnected) return 1;
     try {
@@ -10495,6 +10547,12 @@ export class ViewerInkSession {
         this.refreshSurfaceCursors();
       },
       scrollRoot: () => this.options.adapter.scrollElement(),
+      onViewportPan: (deltaX, deltaY) => {
+        this.handwritingViewport.pan(deltaX, deltaY);
+      },
+      onViewportSettle: () => {
+        this.handwritingViewport.settle();
+      },
       cursorParent: () => surface.overlay,
       eraserCursorDiameter: () => this.options.settings.toolPreferences.eraser.size * this.displayScale(surface),
       drawCursorColor: () => {
