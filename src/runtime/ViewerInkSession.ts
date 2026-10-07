@@ -1614,6 +1614,8 @@ export class ViewerInkSession {
       });
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
+    const initialViewState = adapter.getViewState();
+    const initialScroll = adapter.scrollElement();
     this.handwritingViewport = new HandwritingViewport({
       getContainerRect: () => {
         try {
@@ -1628,16 +1630,23 @@ export class ViewerInkSession {
       },
       getContentSize: () => {
         try {
+          const scrollEl = adapter.scrollElement();
           const root = adapter.root;
-          const width = root.offsetWidth || root.scrollWidth || 0;
-          const height = root.offsetHeight || root.scrollHeight || 0;
+          const width = scrollEl.scrollWidth || root.offsetWidth || root.scrollWidth || 0;
+          const height = scrollEl.scrollHeight || root.offsetHeight || root.scrollHeight || 0;
           return width > 0 && height > 0 ? { width, height } : null;
         } catch {
           return null;
         }
       },
+      getScrollElement: () => adapter.scrollElement(),
       minScale: 0.1,
-      maxScale: 10
+      maxScale: 10,
+      initialState: {
+        scale: initialViewState.viewport?.scale ?? initialViewState.scale ?? 1,
+        x: -(Number.isFinite(initialScroll.scrollLeft) ? initialScroll.scrollLeft : 0),
+        y: -(Number.isFinite(initialScroll.scrollTop) ? initialScroll.scrollTop : 0)
+      }
     });
     this.handwritingViewport.setTarget(adapter.root);
     this.commandController = new ViewerCommandController(this.createViewerCommandHost());
@@ -1661,12 +1670,10 @@ export class ViewerInkSession {
       onEligibility: (target) => this.mobilePinchWheelEligible(target, adapter),
       onIndicator: (scale, reset) => this.updateMobilePinchIndicator(scale, reset, adapter.host.ownerDocument),
       onPan: (deltaX, deltaY) => {
-        const scrollRoot = this.options.adapter.scrollElement();
-        const beforeLeft = scrollRoot.scrollLeft;
-        const beforeTop = scrollRoot.scrollTop;
-        scrollRoot.scrollLeft -= deltaX;
-        scrollRoot.scrollTop -= deltaY;
-        return scrollRoot.scrollLeft !== beforeLeft || scrollRoot.scrollTop !== beforeTop;
+        const before = this.handwritingViewport.getState();
+        this.handwritingViewport.pan(deltaX, deltaY);
+        const after = this.handwritingViewport.getState();
+        return Math.abs(after.x - before.x) > 0.01 || Math.abs(after.y - before.y) > 0.01;
       }
     });
     this.addPageControl = options.onInsertPage
@@ -1732,12 +1739,15 @@ export class ViewerInkSession {
   getViewerState(): ViewerState {
     const adapterState = this.options.adapter.getViewState();
     const vp = this.handwritingViewport.getState();
+    const scrollRoot = this.options.adapter.scrollElement();
     const scale = vp.scale || adapterState.viewport?.scale || adapterState.scale || 1;
     return {
       viewport: {
         scale,
-        x: vp.x ?? adapterState.viewport?.x ?? 0,
-        y: vp.y ?? adapterState.viewport?.y ?? 0
+        // ViewerState persists the native-scroll projection; HandwritingViewport
+        // keeps the live visual translation internally as the authority.
+        x: adapterState.viewport?.x ?? scrollRoot.scrollLeft ?? 0,
+        y: adapterState.viewport?.y ?? scrollRoot.scrollTop ?? 0
       },
       pageNumber: adapterState.pageNumber || 1,
       rotation: normalizeRotation(adapterState.rotation || 0),
@@ -1752,30 +1762,27 @@ export class ViewerInkSession {
   }
 
   setViewerState(patch: Partial<ViewerState> | ViewerState | AnnotationViewState): void {
-    const nextScale = patch.viewport?.scale ?? patch.scale;
-    const nextX = patch.viewport?.x;
-    const nextY = patch.viewport?.y;
-    const currentVp = this.handwritingViewport.getState();
-    const vpChanged = (nextScale !== undefined && Math.abs(nextScale - currentVp.scale) > 0.0001)
-      || (nextX !== undefined && Math.abs(nextX - currentVp.x) > 0.5)
-      || (nextY !== undefined && Math.abs(nextY - currentVp.y) > 0.5);
-
-    if (vpChanged) {
-      this.handwritingViewport.setState({
-        ...(nextScale !== undefined ? { scale: nextScale } : {}),
-        ...(nextX !== undefined ? { x: nextX } : {}),
-        ...(nextY !== undefined ? { y: nextY } : {})
-      });
-    }
-
     const currentAdapterState = this.options.adapter.getViewState();
+    const scrollRoot = this.options.adapter.scrollElement();
+    const currentScale = this.handwritingViewport.getState().scale;
+    const nextScale = patch.viewport?.scale ?? patch.scale ?? currentScale;
+    const nextX = patch.viewport?.x ?? currentAdapterState.viewport?.x ?? scrollRoot.scrollLeft;
+    const nextY = patch.viewport?.y ?? currentAdapterState.viewport?.y ?? scrollRoot.scrollTop;
     const nextAdapterState: ViewerState = {
-      viewport: this.handwritingViewport.getState(),
+      viewport: {
+        scale: nextScale,
+        x: Number.isFinite(nextX) ? nextX : 0,
+        y: Number.isFinite(nextY) ? nextY : 0
+      },
       pageNumber: patch.pageNumber ?? currentAdapterState.pageNumber ?? 1,
       rotation: patch.rotation !== undefined ? normalizeRotation(patch.rotation) : currentAdapterState.rotation,
       scaleMode: patch.scaleMode !== undefined ? normalizeScaleMode(patch.scaleMode) : normalizeScaleMode(currentAdapterState.scaleMode),
-      ...(patch.scrollFraction !== undefined ? { scrollFraction: patch.scrollFraction } : currentAdapterState.scrollFraction !== undefined ? { scrollFraction: currentAdapterState.scrollFraction } : {}),
-      scale: nextScale ?? currentAdapterState.scale
+      ...(patch.scrollFraction !== undefined
+        ? { scrollFraction: patch.scrollFraction }
+        : currentAdapterState.scrollFraction !== undefined
+          ? { scrollFraction: currentAdapterState.scrollFraction }
+          : {}),
+      scale: nextScale
     };
 
     try {
@@ -1786,6 +1793,26 @@ export class ViewerInkSession {
       try {
         this.options.adapter.focusPage(patch.pageNumber);
       } catch {}
+    }
+
+    // ViewerState x/y are native-scroll projection coordinates. Convert them
+    // back into HandwritingViewport's canonical visual translation only when
+    // the caller explicitly supplied a viewport position. Otherwise reconcile
+    // whatever scroll/page navigation the adapter actually produced.
+    if (patch.viewport?.x !== undefined || patch.viewport?.y !== undefined) {
+      this.handwritingViewport.setState({
+        scale: nextScale,
+        x: -(Number.isFinite(nextX) ? nextX : 0),
+        y: -(Number.isFinite(nextY) ? nextY : 0)
+      });
+    } else {
+      this.handwritingViewport.setState({ scale: nextScale }, false);
+      const projectedScroll = this.options.adapter.scrollElement();
+      this.handwritingViewport.syncFromScroll(
+        projectedScroll.scrollLeft,
+        projectedScroll.scrollTop,
+        true
+      );
     }
   }
 
@@ -1800,9 +1827,9 @@ export class ViewerInkSession {
 
       getScale: () => this.getViewerState().viewport.scale,
       setScale: (scale: number) => {
-        const vp = this.handwritingViewport.getState();
+        const viewer = this.getViewerState();
         this.setViewerState({
-          viewport: { ...vp, scale },
+          viewport: { ...viewer.viewport, scale },
           scale,
           scaleMode: "custom"
         });
@@ -1816,9 +1843,9 @@ export class ViewerInkSession {
           const pageWidth = page?.width || 612;
           if (containerWidth > 0 && pageWidth > 0) {
             const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
-            const vp = this.handwritingViewport.getState();
+            const viewer = this.getViewerState();
             this.setViewerState({
-              viewport: { scale: targetScale, x: 0, y: vp.y },
+              viewport: { scale: targetScale, x: 0, y: viewer.viewport.y },
               scale: targetScale,
               scaleMode: "fit-width"
             });
@@ -7960,6 +7987,10 @@ export class ViewerInkSession {
       if (source === "pagechanging") this.zoomProfile.pageChangingEvents += 1;
     }
     if (source === "scroll") {
+      try {
+        const scrollRoot = this.options.adapter.scrollElement();
+        this.handwritingViewport.syncFromScroll(scrollRoot.scrollLeft, scrollRoot.scrollTop);
+      } catch {}
       if (this.selected.length) this.selectionToolbar.relayout();
       // Mobile only mounts current±pad — debounce remount; never full-refresh mid-zoom.
       if (this.runtimePlatform().mobile) this.scheduleMobileScrollRefresh();
