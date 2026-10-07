@@ -1253,7 +1253,8 @@ export class ViewerInkSession {
     strokesRedrawn: 0,
     skippedDisconnected: 0,
     skippedCulled: 0,
-    skippedBlitOnly: 0
+    skippedBlitOnly: 0,
+    activeWorkMs: 0
   };
   /**
    * Quiet ms after last scale tick before HQ settle paint (resize + stroke redraw).
@@ -5007,7 +5008,8 @@ export class ViewerInkSession {
       strokesRedrawn: 0,
       skippedDisconnected: 0,
       skippedCulled: 0,
-      skippedBlitOnly: 0
+      skippedBlitOnly: 0,
+      activeWorkMs: 0
     };
     this.zoomSettlePaintedPages.clear();
     const order = this.zoomSettlePageOrder();
@@ -5118,10 +5120,18 @@ export class ViewerInkSession {
       return;
     }
 
-    const item = this.zoomSettleQueue.pop()!;
-    const started = performance.now();
-    this.paintOneZoomSettlePage(item.page, item.tier);
-    this.recordZoomPipelineFrame(performance.now(), performance.now() - started);
+    const budgetMs = this.frameTimingProfile().frameBudgetMs;
+    const sliceBudgetMs = Math.max(8, budgetMs * 0.7);
+    const frameStarted = performance.now();
+    while (this.zoomSettleQueue.length > 0) {
+      const item = this.zoomSettleQueue.pop()!;
+      const started = performance.now();
+      this.paintOneZoomSettlePage(item.page, item.tier);
+      this.recordZoomPipelineFrame(performance.now(), performance.now() - started);
+      if (this.zoomSettleQueue.length > 0 && performance.now() - frameStarted >= sliceBudgetMs) {
+        break;
+      }
+    }
 
     if (this.zoomSettleQueue.length === 0) {
       this.finishZoomSettleSlices();
@@ -5214,6 +5224,7 @@ export class ViewerInkSession {
       }
     }
     const durationMs = performance.now() - started;
+    this.zoomSettleStats.activeWorkMs += durationMs;
     if (paintPath === "canonical-vector") {
       this.zoomPipelineTrace.noteStage("canonical-paint", durationMs, 1, "canonical-paint");
     } else if (paintPath === "blit-stretch") {
@@ -5243,6 +5254,7 @@ export class ViewerInkSession {
     const burst = this.zoomSettleBurst;
     const stats = this.zoomSettleStats;
     const durationMs = roundMs(performance.now() - this.zoomSettleSliceStartedAt);
+    const activeWorkMs = roundMs(stats.activeWorkMs);
     const toolbarStartedAt = performance.now();
     this.ensureSelectionToolbar();
     this.zoomPipelineTrace.noteStage("toolbar-refresh", performance.now() - toolbarStartedAt, 1, "selection-toolbar");
@@ -5250,10 +5262,10 @@ export class ViewerInkSession {
     this.refreshZoomWorkingSurfaceCursors();
     this.zoomPipelineTrace.noteStage("cursor-refresh", performance.now() - cursorStartedAt, 1, "settle-cursor-refresh");
     const view = this.options.adapter.getViewState();
-    if (durationMs >= this.frameTimingProfile().lateFrameThresholdMs && this.isZoomHandoffActive()) {
+    if (activeWorkMs >= this.frameTimingProfile().lateFrameThresholdMs && this.isZoomHandoffActive()) {
       this.logger.zoomFlashProxy("paint-duration-spike", {
         reason: burst?.reason ?? this.zoomBurstReason,
-        durationMs,
+        durationMs: activeWorkMs,
         pagesRepainted: stats.pagesRepainted,
         strokesRedrawn: stats.strokesRedrawn,
         canvasesResized: stats.canvasesResized,
@@ -6304,6 +6316,23 @@ export class ViewerInkSession {
     try {
       for (const surface of reconciled) {
         const pageNumber = surface.page.pageNumber;
+        const layout = layouts.get(pageNumber) ?? this.pageLayout(surface);
+        const width = Math.max(1, layout.contentWidth || 1);
+        const height = Math.max(1, layout.contentHeight || 1);
+        const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height, "full");
+        const needsResize = surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight;
+        const alreadyCanonical = !needsResize
+          && !surface.settleUpgradePending
+          && surface.inkLayerValid
+          && !surface.inkLayerBurstCapture
+          && surface.inkLayer !== null
+          && surface.inkLayerBackingScale !== null
+          && Math.abs(surface.inkLayerBackingScale - backingScale) < 1e-6
+          && this.ink.page(pageNumber).length < ViewerInkSession.LARGE_ZOOM_RASTER_FALLBACK_STROKES;
+        if (alreadyCanonical) {
+          this.logZoomInkLayout(surface, "handoff-final", layout, geometry.snapshots.get(pageNumber));
+          continue;
+        }
         // A dense page can keep the already-captured committed raster visible
         // while the final PDF-space vector rebase is queued after handoff.
         // This avoids blocking release on a multi-second HQ repaint.
@@ -15407,8 +15436,15 @@ export class ViewerInkSession {
       renderPhaseDurations[phase] = roundMetric(performance.now() - startedAt);
     };
     const previousPaint = this.lastPagePaintAt.get(pageNumber);
+    const isIntentionalFocusUpgrade = Boolean(
+      previousPaint
+      && previousPaint.reason.includes("settle-focus-fast")
+      && reason.includes("settle-focus")
+      && !reason.includes("settle-focus-fast")
+    );
     if (
       previousPaint
+      && !isIntentionalFocusUpgrade
       && paintStarted - previousPaint.at < ViewerInkSession.FLASH_DOUBLE_PAINT_MS
       && this.isZoomHandoffActive()
     ) {
