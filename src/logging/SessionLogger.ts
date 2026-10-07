@@ -187,6 +187,14 @@ export class SessionLogger {
   isEnabled(): boolean { return this.debugEnabled(); }
 
   refresh(reason: string, details: Record<string, unknown> = {}): void {
+    if (reason.endsWith("-skip-unchanged")) {
+      this.emit("info", "session refresh skipped", {
+        document: this.documentPath,
+        reason,
+        ...details
+      });
+      return;
+    }
     const now = Date.now();
     if (!this.refreshWindowStart || now - this.refreshWindowStart > 250) {
       this.refreshWindowStart = now;

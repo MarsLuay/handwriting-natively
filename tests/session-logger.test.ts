@@ -575,4 +575,21 @@ describe("SessionLogger", () => {
     expect(write).not.toHaveBeenCalled();
     debug.mockRestore();
   });
+
+  it("does not count skip-unchanged refreshes toward refresh storms", () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const logger = new SessionLogger("Notes/example.pdf");
+
+    for (let i = 0; i < 20; i++) {
+      logger.refresh("view-scroll-mobile-skip-unchanged", { surfaces: 1 });
+    }
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenCalledTimes(20);
+    expect(debug.mock.calls[0]?.[1]).toBe("session refresh skipped");
+
+    debug.mockRestore();
+    warn.mockRestore();
+  });
 });
