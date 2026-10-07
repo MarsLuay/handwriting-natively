@@ -373,37 +373,74 @@ export class HandwritingViewport {
   }
 
   /**
-   * Convert screen coordinates (clientX, clientY) to document viewport coordinates.
+   * Convert client/screen coordinates to the canonical unscaled viewer viewport.
+   * The container's client-space origin is part of the transform; x/y remain
+   * visual content translations relative to that container.
    */
   screenToViewport(screenPoint: { x: number; y: number }): { x: number; y: number } {
+    const container = this.options.getContainerRect();
+    const originX = container?.left ?? 0;
+    const originY = container?.top ?? 0;
     return {
-      x: (screenPoint.x - this.state.x) / this.state.scale,
-      y: (screenPoint.y - this.state.y) / this.state.scale
+      x: (screenPoint.x - originX - this.state.x) / this.state.scale,
+      y: (screenPoint.y - originY - this.state.y) / this.state.scale
     };
   }
 
   /**
-   * Convert document viewport coordinates to screen coordinates.
+   * Convert canonical unscaled viewer viewport coordinates back to client space.
    */
   viewportToScreen(docPoint: { x: number; y: number }): { x: number; y: number } {
+    const container = this.options.getContainerRect();
+    const originX = container?.left ?? 0;
+    const originY = container?.top ?? 0;
     return {
-      x: this.state.x + docPoint.x * this.state.scale,
-      y: this.state.y + docPoint.y * this.state.scale
+      x: originX + this.state.x + docPoint.x * this.state.scale,
+      y: originY + this.state.y + docPoint.y * this.state.scale
     };
   }
 
   /**
-   * Convert screen coordinates directly to unscaled page-local coordinates.
+   * Convert client coordinates to an element's unscaled local viewport.
+   * Both points pass through the authoritative viewport transform so callers
+   * never independently divide client deltas by zoom.
+   */
+  screenToElementLocal(
+    element: HTMLElement,
+    screenPoint: { x: number; y: number },
+    rect = element.getBoundingClientRect()
+  ): { x: number; y: number } {
+    const point = this.screenToViewport(screenPoint);
+    const origin = this.screenToViewport({ x: rect.left, y: rect.top });
+    return {
+      x: point.x - origin.x,
+      y: point.y - origin.y
+    };
+  }
+
+  /**
+   * Convert an element-local unscaled viewport point back to client space.
+   */
+  elementLocalToScreen(
+    element: HTMLElement,
+    localPoint: { x: number; y: number },
+    rect = element.getBoundingClientRect()
+  ): { x: number; y: number } {
+    const origin = this.screenToViewport({ x: rect.left, y: rect.top });
+    return this.viewportToScreen({
+      x: origin.x + localPoint.x,
+      y: origin.y + localPoint.y
+    });
+  }
+
+  /**
+   * @deprecated Prefer PageCoordinateSpace for page/PDF conversions.
    */
   screenToPageLocal(
     pageElement: HTMLElement,
     screenPoint: { x: number; y: number }
   ): { x: number; y: number } {
-    const doc = this.screenToViewport(screenPoint);
-    return {
-      x: doc.x - pageElement.offsetLeft,
-      y: doc.y - pageElement.offsetTop
-    };
+    return this.screenToElementLocal(pageElement, screenPoint);
   }
 
   apply(): void {
