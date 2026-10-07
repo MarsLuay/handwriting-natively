@@ -312,6 +312,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     const viewer = this.compatibility.privateViewer;
     if (viewer) {
       try {
+        if (state.rotation !== undefined) viewer.pagesRotation = state.rotation;
         if (state.scaleMode !== undefined) viewer.currentScaleValue = state.scaleMode;
         else if (Number.isFinite(state.scale) && state.scale > 0) viewer.currentScale = state.scale;
       } catch {
