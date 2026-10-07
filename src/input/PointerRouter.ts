@@ -46,6 +46,86 @@ export function isAnnotationChromeTarget(target: EventTarget | null): boolean {
   ));
 }
 
+function cssPixelValue(value: string | undefined): number {
+  const pixels = Number.parseFloat(value ?? "");
+  return Number.isFinite(pixels) && pixels >= 0 ? pixels : 0;
+}
+
+function hasNativeScrollbarOverflow(axisValue: string | undefined, shorthand: string | undefined): boolean {
+  // jsdom leaves overflow-x/y as `visible` for an `overflow: auto`
+  // declaration; the shorthand is also the effective fallback for CSS's
+  // visible/clip overflow conversion.
+  const value = axisValue && axisValue !== "visible" ? axisValue : shorthand ?? axisValue;
+  return value === undefined || value === "" || value === "auto" || value === "scroll" || value === "overlay";
+}
+
+/**
+ * Native scrollbars are exposed as the scroll root itself, so drag mode must
+ * leave a contact that starts in their gutter to the browser. The layout
+ * gutter covers classic scrollbars; the edge fallback covers overlay
+ * scrollbars whose hit target has no measurable layout width.
+ */
+export function isNativeScrollbarHit(
+  root: HTMLElement,
+  clientX: number,
+  clientY: number,
+  target?: EventTarget | null
+): boolean {
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+  const view = root.ownerDocument.defaultView;
+  const style = view?.getComputedStyle(root);
+  const vertical = root.scrollHeight > root.clientHeight + 1
+    && hasNativeScrollbarOverflow(style?.overflowY, style?.overflow);
+  const horizontal = root.scrollWidth > root.clientWidth + 1
+    && hasNativeScrollbarOverflow(style?.overflowX, style?.overflow);
+  if (!vertical && !horizontal) return false;
+
+  let rect: DOMRect;
+  try {
+    rect = root.getBoundingClientRect();
+  } catch {
+    return false;
+  }
+  const borderLeft = cssPixelValue(style?.borderLeftWidth);
+  const borderRight = cssPixelValue(style?.borderRightWidth);
+  const borderTop = cssPixelValue(style?.borderTopWidth);
+  const borderBottom = cssPixelValue(style?.borderBottomWidth);
+  const left = rect.left;
+  const top = rect.top;
+  const right = Number.isFinite(rect.right) ? rect.right : left + root.offsetWidth;
+  const bottom = Number.isFinite(rect.bottom) ? rect.bottom : top + root.offsetHeight;
+  const contentLeft = left + borderLeft;
+  const contentRight = left + root.clientLeft + root.clientWidth;
+  const contentBottom = top + borderTop + root.clientHeight;
+  const rightGutterEnd = right - borderRight;
+  const bottomGutterEnd = bottom - borderBottom;
+
+  if (vertical) {
+    // In RTL, clientLeft includes the left scrollbar and left border.
+    const leftGutterEnd = left + root.clientLeft;
+    if (leftGutterEnd - contentLeft > 1
+      && clientX >= contentLeft && clientX < leftGutterEnd
+      && clientY >= top && clientY < bottom) return true;
+    if (rightGutterEnd - contentRight > 1
+      && clientX >= contentRight && clientX < rightGutterEnd
+      && clientY >= top && clientY < bottom) return true;
+  }
+  if (horizontal
+    && bottomGutterEnd - contentBottom > 1
+    && clientY >= contentBottom && clientY < bottomGutterEnd
+    && clientX >= left && clientX < right) return true;
+
+  // Overlay scrollbars do not change client/offset dimensions. Their native
+  // hit target is the root, and the final edge slop is smaller than the
+  // platform scrollbar hit area while avoiding normal page content.
+  if (target !== root) return false;
+  const edgeSlop = 16;
+  if (vertical && clientX >= right - edgeSlop && clientX < right
+    && clientY >= top && clientY < bottom) return true;
+  return horizontal && clientY >= bottom - edgeSlop && clientY < bottom
+    && clientX >= left && clientX < right;
+}
+
 /** W3C Pointer Events reports an eraser stylus tip as button 5 / buttons bit 32. */
 export function isStylusEraserInput(event: Pick<PointerEvent, "pointerType" | "button" | "buttons">): boolean {
   return (event.pointerType === "pen" || event.pointerType === "mouse")
@@ -599,6 +679,11 @@ export class PointerRouter {
     const targetClass = classifyInputTarget(event.target);
     if (targetClass.targetClass !== "page") {
       this.callbacks.onPointerRejected?.("annotation-chrome", event, this.generation);
+      return "native";
+    }
+    const scrollRoot = this.callbacks.scrollRoot?.();
+    if (scrollRoot && isNativeScrollbarHit(scrollRoot, event.clientX, event.clientY, event.target)) {
+      this.callbacks.onRouteDecision?.("native", "native-scrollbar", event);
       return "native";
     }
     if (this.callbacks.isPointerHandled?.(event.pointerId, this.generation)) {
