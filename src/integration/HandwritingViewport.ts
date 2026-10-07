@@ -228,9 +228,10 @@ export class HandwritingViewport {
   startPinch(focalPoint: { x: number; y: number }): void {
     this.cancelAnimation();
     if (this.state.scale > 0) {
+      const focal = this.screenToContainer(focalPoint);
       this.pinchAnchor = {
-        x: (focalPoint.x - this.rawX) / this.state.scale,
-        y: (focalPoint.y - this.rawY) / this.state.scale
+        x: (focal.x - this.rawX) / this.state.scale,
+        y: (focal.y - this.rawY) / this.state.scale
       };
     }
   }
@@ -258,8 +259,9 @@ export class HandwritingViewport {
     }
 
     if (this.pinchAnchor) {
-      const newX = focalPoint.x - this.pinchAnchor.x * effectiveScale;
-      const newY = focalPoint.y - this.pinchAnchor.y * effectiveScale;
+      const focal = this.screenToContainer(focalPoint);
+      const newX = focal.x - this.pinchAnchor.x * effectiveScale;
+      const newY = focal.y - this.pinchAnchor.y * effectiveScale;
 
       this.rawX = newX;
       this.rawY = newY;
@@ -372,18 +374,24 @@ export class HandwritingViewport {
     this.apply();
   }
 
+  private screenToContainer(screenPoint: { x: number; y: number }): { x: number; y: number } {
+    const container = this.options.getContainerRect();
+    return {
+      x: screenPoint.x - (container?.left ?? 0),
+      y: screenPoint.y - (container?.top ?? 0)
+    };
+  }
+
   /**
    * Convert client/screen coordinates to the canonical unscaled viewer viewport.
    * The container's client-space origin is part of the transform; x/y remain
    * visual content translations relative to that container.
    */
   screenToViewport(screenPoint: { x: number; y: number }): { x: number; y: number } {
-    const container = this.options.getContainerRect();
-    const originX = container?.left ?? 0;
-    const originY = container?.top ?? 0;
+    const point = this.screenToContainer(screenPoint);
     return {
-      x: (screenPoint.x - originX - this.state.x) / this.state.scale,
-      y: (screenPoint.y - originY - this.state.y) / this.state.scale
+      x: (point.x - this.state.x) / this.state.scale,
+      y: (point.y - this.state.y) / this.state.scale
     };
   }
 
