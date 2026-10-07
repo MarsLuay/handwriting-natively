@@ -2233,7 +2233,18 @@ describe("viewer runtime tracer", () => {
     expect(appended.every((payload) => payload.vectorRepaintCount === 0)).toBe(true);
     expect(appended.map((payload) => payload.pageStrokeCount)).toEqual([1, 2, 3]);
 
-    session.writeCopiedLogUiSnapshot();
+    document.body.classList.remove(
+      "is-left-sidebar-open",
+      "is-left-sidedock-open",
+      "is-right-sidebar-open",
+      "is-right-sidedock-open"
+    );
+    const uiSnapshot = session.writeCopiedLogUiSnapshot();
+    expect(uiSnapshot).toMatchObject({
+      nativeSidebarOpen: { left: false, right: false },
+      toolbarPresentation: { connected: true, hasLayoutBox: false },
+      sidebarRailPresentation: null
+    });
     const copiedTrace = logs.find(({ event }) => event === "last-zoom-trace");
     expect(copiedTrace?.payload.slowInkStrokeSummary).toMatchObject({
       totalSlowStrokes: expect.any(Number),
