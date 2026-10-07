@@ -74,12 +74,17 @@ describe("MobileSidebarSwipeBlocker", () => {
   });
 
   it("blocks a one-finger swipe right from opening a closed left sidebar", () => {
-    const blocker = new MobileSidebarSwipeBlocker(document);
+    const blocked: Array<{ destination: string; input: string }> = [];
+    const blocker = new MobileSidebarSwipeBlocker(document, (diagnostic) => blocked.push(diagnostic));
     blocker.setEnabled(true);
     document.dispatchEvent(touchEvent("touchstart", [touch(1, 10, 100)]));
     const move = touchEvent("touchmove", [touch(1, 60, 108)]);
     document.dispatchEvent(move);
+    const nextMove = touchEvent("touchmove", [touch(1, 80, 110)]);
+    document.dispatchEvent(nextMove);
     expect(move.defaultPrevented).toBe(true);
+    expect(nextMove.defaultPrevented).toBe(true);
+    expect(blocked).toEqual([{ destination: "left-sidebar", input: "touch" }]);
     blocker.destroy();
   });
 
