@@ -145,7 +145,7 @@ import { StrokeBuilder } from "../ink/StrokeBuilder";
 import { StrokeClipboard } from "../ink/StrokeClipboard";
 import { simplifyPoints } from "../ink/StrokeStabilizer";
 import { WetInkRenderer } from "../ink/WetInkRenderer";
-import { PageCoordinateMapper, type PageRotation } from "./PageCoordinateMapper";
+import { PageCoordinateMapper, PageCoordinateSpace, type PageRotation } from "./PageCoordinateMapper";
 import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type PageCoordinateLayout } from "../pdf/PageCoordinateLayout";
 import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { getDebugNodeId } from "../dom/debugNodeId";
@@ -7924,9 +7924,10 @@ export class ViewerInkSession {
     if (!surface || !this.selectionShape) return defaultAnchor;
 
     const bounds = shapeBounds(this.selectionShape);
-    const mapper = this.mapper(surface);
-    const topCenterView = mapper.toViewport({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.maxY });
-    const clientPoint = this.overlayClientFromViewport(surface, topCenterView);
+    const clientPoint = this.coordinates(surface).pageToClient({
+      x: (bounds.minX + bounds.maxX) / 2,
+      y: bounds.maxY
+    });
     const clientCenterX = clientPoint.x;
     const clientTopY = clientPoint.y;
     const visible = clientCenterX >= rootRect.left && clientCenterX <= rootRect.right
@@ -10749,33 +10750,6 @@ export class ViewerInkSession {
         this.mobilePinchIndicator?.classList.add("is-faded");
       }, 1500);
     }
-  }
-
-  private overlayViewportFromClient(
-    surface: PageSurface,
-    clientX: number,
-    clientY: number,
-    rect = surface.overlay.getBoundingClientRect()
-  ): { x: number; y: number } {
-    const scale = this.handwritingViewport?.getState().scale ?? 1;
-    const factor = scale > 0 ? scale : 1;
-    return {
-      x: (clientX - rect.left) / factor,
-      y: (clientY - rect.top) / factor
-    };
-  }
-
-  private overlayClientFromViewport(
-    surface: PageSurface,
-    viewport: { x: number; y: number },
-    rect = surface.overlay.getBoundingClientRect()
-  ): { x: number; y: number } {
-    const scale = this.handwritingViewport?.getState().scale ?? 1;
-    const factor = scale > 0 ? scale : 1;
-    return {
-      x: rect.left + viewport.x * factor,
-      y: rect.top + viewport.y * factor
-    };
   }
 
   private handleTouchDoubleTap(point: TouchDoubleTapPoint): void {
@@ -15030,8 +15004,7 @@ export class ViewerInkSession {
   }
 
   private textPointerToPagePoint(surface: PageSurface, event: PointerEvent): Pick<PagePoint, "x" | "y"> {
-    const viewport = this.overlayViewportFromClient(surface, event.clientX, event.clientY);
-    return this.mapper(surface).toPage(viewport);
+    return this.coordinates(surface).clientToPage({ x: event.clientX, y: event.clientY });
   }
 
   private resizeTextAnnotation(before: TextAnnotation, handle: TextBoxHandle, point: Pick<PagePoint, "x" | "y">): TextAnnotation {
@@ -16810,11 +16783,10 @@ export class ViewerInkSession {
   ): PagePoint[] {
     const geometryStartedAt = surface.strokePerformance ? performance.now() : null;
     const overlayRect = surface.overlay.getBoundingClientRect();
-    const mapper = this.mapper(surface);
+    const coordinates = this.coordinates(surface);
     let previous = pressureConditioner ? surface.pressureLastPagePoint : undefined;
     const points = samples.map((sample) => {
-      const viewport = this.overlayViewportFromClient(surface, sample.clientX, sample.clientY, overlayRect);
-      const point = mapper.toPage(viewport);
+      const point = coordinates.clientToPage({ x: sample.clientX, y: sample.clientY }, overlayRect);
       // Pen zero on pointerdown is meaningful (conditioner floor). Move-path hover
       // (pressure ≤ PEN_HOVER_PRESSURE_EPSILON) is filtered in PointerRouter.
       // Non-pen keeps simulated-pressure fallback before profile choice.
@@ -16841,10 +16813,9 @@ export class ViewerInkSession {
 
   private projectInkScreenPoint(surface: PageSurface, clientX: number, clientY: number): { x: number; y: number } {
     const overlayRect = surface.overlay.getBoundingClientRect();
-    const viewport = this.overlayViewportFromClient(surface, clientX, clientY, overlayRect);
-    const mapper = this.mapper(surface);
-    const projected = mapper.toViewport(mapper.toPage(viewport));
-    return this.overlayClientFromViewport(surface, projected, overlayRect);
+    const coordinates = this.coordinates(surface);
+    const pagePoint = coordinates.clientToPage({ x: clientX, y: clientY }, overlayRect);
+    return coordinates.pageToClient(pagePoint, overlayRect);
   }
 
   private logPositionAlign(
@@ -16857,10 +16828,10 @@ export class ViewerInkSession {
     const overlayRect = surface.overlay.getBoundingClientRect();
     const layout = this.pageLayout(surface);
     const contentRect = pdfRenderCanvas(surface.page.element)?.getBoundingClientRect();
-    const viewport = this.overlayViewportFromClient(surface, sample.clientX, sample.clientY, overlayRect);
-    const mapper = this.mapper(surface);
-    const pdf = mapper.toPage(viewport);
-    const inkScreen = this.projectInkScreenPoint(surface, sample.clientX, sample.clientY);
+    const coordinates = this.coordinates(surface, layout);
+    const viewport = coordinates.clientToViewport({ x: sample.clientX, y: sample.clientY }, overlayRect);
+    const pdf = coordinates.viewportToPage(viewport);
+    const inkScreen = coordinates.pageToClient(pdf, overlayRect);
     this.logger.positionAlign({
       phase,
       page: surface.page.pageNumber,
@@ -17033,6 +17004,14 @@ export class ViewerInkSession {
       case 180: return { x: (metrics.width - point.x) / metrics.width, y: point.y / metrics.height };
       case 270: return { x: (metrics.height - point.y) / metrics.height, y: (metrics.width - point.x) / metrics.width };
     }
+  }
+
+  private coordinates(surface: PageSurface, layoutOverride?: PageCoordinateLayout): PageCoordinateSpace {
+    return new PageCoordinateSpace(
+      this.handwritingViewport,
+      surface.overlay,
+      this.mapper(surface, layoutOverride)
+    );
   }
 
   private mapper(surface: PageSurface, layoutOverride?: PageCoordinateLayout): PageCoordinateMapper {
