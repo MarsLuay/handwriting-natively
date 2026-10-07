@@ -15,7 +15,9 @@ export type {
   PageLayerStatus,
   InkOverlayStatus,
   PageLifecycleChangeEvent,
-  PageLifecycleListener
+  PageLifecycleListener,
+  PageVisibilityChangeEvent,
+  PageVisibilityListener
 } from "../runtime/PageLifecycleCoordinator";
 import type { RenderScheduler } from "../runtime/RenderScheduler";
 
