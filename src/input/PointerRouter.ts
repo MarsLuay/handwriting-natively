@@ -6,10 +6,7 @@ import { PalmRejectionPolicy, type PenStateResetReason } from "./PalmRejectionPo
 import { PointerCapabilities, type PointerSample } from "./PointerCapabilities";
 import { isTipContact, remapMouseTipSamples } from "./PenPresence";
 import { GestureOwnership } from "./GestureOwnership";
-import {
-  GestureNavigationController,
-  type GestureNavigationEndReason
-} from "./GestureNavigationController";
+import { GestureNavigationController } from "./GestureNavigationController";
 import {
   DEFAULT_POINTER_INPUT_CAPABILITIES,
   type PointerInputCapabilities
@@ -597,13 +594,13 @@ export class PointerRouter {
     const capture = deferTouchTextClaim
       ? { attempted: false, succeeded: true }
       : safeSetPointerCapture(this.element, event.pointerId);
-    this.callbacks.onPointerClaim?.(route as "draw" | "edit" | "text", event, {
+    this.callbacks.onPointerClaim?.(route, event, {
       preventDefaultCalled: event.defaultPrevented,
-      propagationStopped: event.cancelBubble,
+      propagationStopped: Reflect.get(event, "cancelBubble") === true,
       captureAttempted: capture.attempted,
       captureSucceeded: capture.succeeded
     });
-    this.callbacks.onStart?.(this.inkSamples(event), route as "draw" | "edit" | "text", event);
+    this.callbacks.onStart?.(this.inkSamples(event), route, event);
     return route;
   };
 
@@ -677,7 +674,7 @@ export class PointerRouter {
     const capture = safeSetPointerCapture(this.element, event.pointerId);
     this.callbacks.onPointerClaim?.(route, event, {
       preventDefaultCalled: event.defaultPrevented,
-      propagationStopped: event.cancelBubble,
+      propagationStopped: Reflect.get(event, "cancelBubble") === true,
       captureAttempted: capture.attempted,
       captureSucceeded: capture.succeeded
     });

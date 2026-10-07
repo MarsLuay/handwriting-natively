@@ -8079,9 +8079,9 @@ export class ViewerInkSession {
     const mountedInSidebar = sidebarExpected
       && toolbar.isConnected
       && this.options.adapter.host.contains(toolbar)
-      && Boolean(mountedRail)
-      && this.options.adapter.host.contains(mountedRail!)
-      && mountedRail!.classList.contains(`is-${placement}`);
+      && mountedRail !== null
+      && this.options.adapter.host.contains(mountedRail)
+      && mountedRail.classList.contains(`is-${placement}`);
     const mountedInMainToolbar = placement === "main"
       && toolbar.isConnected
       && this.options.adapter.host.contains(toolbar)
@@ -8099,7 +8099,11 @@ export class ViewerInkSession {
     }
 
     this.clearFloatingToolbarFallback();
-    if (mountError !== undefined && reason === "session-create") throw mountError;
+    if (mountError !== undefined && reason === "session-create") {
+      if (mountError instanceof Error) throw mountError;
+      const message = typeof mountError === "string" ? mountError : "Toolbar mount failed";
+      throw new Error(message);
+    }
   }
 
   private mountFloatingToolbarFallback(toolbar: HTMLElement, placement: ToolbarPlacement): void {
@@ -8120,7 +8124,7 @@ export class ViewerInkSession {
     this.floatingToolbarPlacement = placement;
 
     if (!this.floatingToolbarHandle) {
-      const handle = toolbar.ownerDocument.createElement("button");
+      const handle = createDetachedEl(toolbar.ownerDocument, "button");
       handle.type = "button";
       handle.className = "native-pdf-handwriting-toolbar-drag-handle";
       handle.textContent = "⠿";
@@ -8137,10 +8141,12 @@ export class ViewerInkSession {
       const view = toolbar.ownerDocument.defaultView;
       const maxLeft = Math.max(0, (view?.innerWidth ?? hostRect.right) - rect.width);
       const maxTop = Math.max(0, (view?.innerHeight ?? hostRect.bottom) - rect.height);
-      toolbar.style.left = `${Math.min(Math.max(hostRect.left + 12, 0), maxLeft)}px`;
-      toolbar.style.top = `${Math.min(Math.max(hostRect.top + 12, 0), maxTop)}px`;
-      toolbar.style.right = "auto";
-      toolbar.style.bottom = "auto";
+      setElementCssProps(toolbar, {
+        left: `${Math.min(Math.max(hostRect.left + 12, 0), maxLeft)}px`,
+        top: `${Math.min(Math.max(hostRect.top + 12, 0), maxTop)}px`,
+        right: "auto",
+        bottom: "auto"
+      });
     }
 
     this.observeToolbarRailRecovery(toolbar, placement);
@@ -8181,8 +8187,7 @@ export class ViewerInkSession {
       const maxTop = Math.max(0, (view?.innerHeight ?? rect.bottom) - rect.height);
       const left = Math.min(Math.max(drag.left + event.clientX - drag.startX, 0), maxLeft);
       const top = Math.min(Math.max(drag.top + event.clientY - drag.startY, 0), maxTop);
-      toolbar.style.left = `${left}px`;
-      toolbar.style.top = `${top}px`;
+      setElementCssProps(toolbar, { left: `${left}px`, top: `${top}px` });
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
     }, { capture: true, passive: false, signal: abort.signal });
