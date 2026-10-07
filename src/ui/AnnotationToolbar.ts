@@ -101,6 +101,7 @@ export class AnnotationToolbar {
     this.controls.append(this.groupedTool("laser", () => this.laserMenuOptions()));
     this.controls.append(this.groupedTool("lasso", () => ({ label: "Lasso options", options: this.lassoMenu() })));
     this.controls.append(this.groupedTool("text", () => this.textMenuOptions()));
+    this.controls.append(this.actionButton("drag", "Drag", () => this.activate("drag")));
     this.controls.append(this.actionButton("undo", "Undo", () => this.callbacks.onUndo?.(), !this.callbacks.onUndo));
     this.controls.append(this.actionButton("redo", "Redo", () => this.callbacks.onRedo?.(), !this.callbacks.onRedo));
     const supportedMore = options.supportedMoreActions ?? [];
@@ -209,6 +210,7 @@ export class AnnotationToolbar {
       case "laser":
       case "text":
       case "mouse":
+      case "drag":
       case "undo":
       case "redo":
       case "more":
@@ -454,6 +456,11 @@ export class AnnotationToolbar {
     this.presentButton(this.buttons.get("laser")!, "Laser pointer", "laser");
     this.presentButton(this.buttons.get("lasso")!, this.preferences.lasso.type === "freeform" ? "Lasso" : "Rectangle", "lasso");
     this.presentButton(this.buttons.get("text")!, "Text", "text");
+    const dragButton = this.buttons.get("drag");
+    if (dragButton) {
+      this.presentButton(dragButton, "Drag", "drag");
+      dragButton.setAttribute("aria-pressed", String(active === "drag"));
+    }
     this.buttons.get("eraser")!.setAttribute("aria-pressed", String(inkModeActive && active === "eraser"));
     this.buttons.get("laser")!.setAttribute("aria-pressed", String(inkModeActive && active === "laser"));
     this.buttons.get("lasso")!.setAttribute("aria-pressed", String(inkModeActive && active === "lasso"));

@@ -1,6 +1,6 @@
 import { createDetachedSpan, createDetachedSvg } from "../vendor/createDetached";
 import { setElementCssProps } from "../dom/typeGuards";
-export type ToolbarIcon = "pen" | "pencil" | "highlighter" | "text" | "eraser" | "palette" | "lasso" | "laser" | "mouse" | "undo" | "redo" | "plus" | "more" | "save" | "chevron";
+export type ToolbarIcon = "pen" | "pencil" | "highlighter" | "text" | "eraser" | "palette" | "lasso" | "laser" | "mouse" | "drag" | "undo" | "redo" | "plus" | "more" | "save" | "chevron";
 
 const PATHS: Record<ToolbarIcon, readonly string[]> = {
   pen: ["M12 19 19 12 22 15 15 22 11 23 12 19Z", "M18 13 16.5 5.5 2 2 5.5 16.5 13 18", "M2 2 9.5 9.5"],
@@ -23,6 +23,12 @@ const PATHS: Record<ToolbarIcon, readonly string[]> = {
     // Focus rings at the hit point
     "M18.6 4.1a2 2 0 1 1 2.8 2.8",
     "M17.2 2.7a4 4 0 0 1 5.6 5.6"
+  ],
+  drag: [
+    "M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0",
+    "M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2",
+    "M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8",
+    "M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.83L7 16"
   ],
   undo: ["M9 14 4 9 9 4", "M4 9H14.5A5.5 5.5 0 0 1 20 14.5 5.5 5.5 0 0 1 14.5 20H12"],
   redo: ["M15 14 20 9 15 4", "M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H12"],

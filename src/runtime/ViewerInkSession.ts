@@ -1255,7 +1255,8 @@ export class ViewerInkSession {
     strokesRedrawn: 0,
     skippedDisconnected: 0,
     skippedCulled: 0,
-    skippedBlitOnly: 0
+    skippedBlitOnly: 0,
+    activeWorkMs: 0
   };
   /**
    * Quiet ms after last scale tick before HQ settle paint (resize + stroke redraw).
@@ -2026,13 +2027,15 @@ export class ViewerInkSession {
         contact: result.contact,
         trace: result.details.trace ?? null
       });
-      this.logger.penRoutingRegression({
-        outcome: result.outcome,
-        correlationId: result.correlationId,
-        page: result.contact?.page ?? null,
-        previousSuccessfulCorrelationId: this.logger.lastSuccessfulStroke().lastCorrelationId,
-        toolChangeId: this.lastToolChange?.id ?? null
-      });
+      if (result.outcome !== "post-ui-pen-success" && result.outcome !== "post-ui-pen-cancelled-before-ink") {
+        this.logger.penRoutingRegression({
+          outcome: result.outcome,
+          correlationId: result.correlationId,
+          page: result.contact?.page ?? null,
+          previousSuccessfulCorrelationId: this.logger.lastSuccessfulStroke().lastCorrelationId,
+          toolChangeId: this.lastToolChange?.id ?? null
+        });
+      }
     }
   }
 
@@ -2130,12 +2133,14 @@ export class ViewerInkSession {
         contact: expired.contact,
         details: expired.details
       });
-      this.logger.penRoutingRegression({
-        outcome: expired.outcome,
-        correlationId: expired.correlationId,
-        page: expired.contact?.page ?? null,
-        toolChangeId: this.lastToolChange?.id ?? null
-      });
+      if (expired.outcome !== "post-ui-pen-success" && expired.outcome !== "post-ui-pen-cancelled-before-ink") {
+        this.logger.penRoutingRegression({
+          outcome: expired.outcome,
+          correlationId: expired.correlationId,
+          page: expired.contact?.page ?? null,
+          toolChangeId: this.lastToolChange?.id ?? null
+        });
+      }
     }
     const page = hitTest.geometricPage?.element ?? null;
     const surface = hitTest.geometricPage ? this.surfaces.get(hitTest.geometricPage.pageNumber) : undefined;
@@ -2380,7 +2385,7 @@ export class ViewerInkSession {
   ): void {
     if (!(this.options.debugEnabled?.() ?? false)) return;
     const path = this.safeComposedPath(event);
-    const contact = this.postUiInputProbe.stage(Date.now(), event.pointerId, stage, {
+    const stageDetails = {
       eventPhase: event.eventPhase,
       targetId: getDebugNodeId(event.target),
       currentTargetId: getDebugNodeId(event.currentTarget),
@@ -2389,17 +2394,19 @@ export class ViewerInkSession {
       cancelable: event.cancelable,
       defaultPrevented: event.defaultPrevented,
       ...details
-    });
-    if (!contact) return;
-    this.logger.postUiProbe(stage, {
-      ...contact,
-      pointerType: event.pointerType || "(empty)",
-      targetId: getDebugNodeId(event.target),
-      currentTargetId: getDebugNodeId(event.currentTarget),
-      ...details
-    });
+    };
+    const contact = this.postUiInputProbe.stage(Date.now(), event.pointerId, stage, stageDetails);
+    if (contact) {
+      this.logger.postUiProbe(stage, {
+        ...contact,
+        pointerType: event.pointerType || "(empty)",
+        targetId: getDebugNodeId(event.target),
+        currentTargetId: getDebugNodeId(event.currentTarget),
+        ...details
+      });
+    }
     const handoff = event.pointerType === "pen"
-      ? this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, stage, details)
+      ? this.postUiInputProbe.handoffStage(Date.now(), event.pointerId, stage, stageDetails)
       : null;
     if (handoff) {
       this.logger.inputHandoff(stage, {
@@ -2580,9 +2587,6 @@ export class ViewerInkSession {
       geometricPageHit: Boolean(geometricPage?.element.isConnected)
     });
     const overPage = decision.recordPageContact;
-    if (record.phase === "start" && overPage && record.contact.pointerEventPenSeen) {
-      this.slowSpans.notePenDown(performance.now());
-    }
     if (record.phase === "start" && decision.rejection) {
       this.postZoomTrace.noteRejectedPageContact({
         ...decision.rejection,
@@ -2725,6 +2729,7 @@ export class ViewerInkSession {
         postZoomPointerType: record.contact.rawPointer.first?.pointerType ?? null,
         postZoomPointerEventPenSeen: record.contact.pointerEventPenSeen,
         postZoomStylusIdentity: stylusIdentity,
+        physicalToolClaimed: this.postZoomDurability.hasClaimedPhysicalTool(record.contact.physicalContactId),
         strokeStarted,
         preZoomPageMountGeneration: typeof settleSnapshot?.pageMountGeneration === "number" ? settleSnapshot.pageMountGeneration : null,
         postZoomPageMountGeneration: typeof surface?.page.mountGeneration === "number" ? surface.page.mountGeneration : null,
@@ -3471,12 +3476,14 @@ export class ViewerInkSession {
     }
     const view = this.options.adapter.host.ownerDocument.defaultView;
     if (!view) {
-      this.refresh("view-scroll-mobile");
+      const pages = this.pagesForInkMount();
+      if (!this.mobileMountSetUnchanged(pages)) {
+        this.refresh("view-scroll-mobile");
+      }
       return;
     }
     if (this.mobileScrollRefreshFrame !== null) {
-      view.cancelAnimationFrame(this.mobileScrollRefreshFrame);
-      this.mobileScrollRefreshFrame = null;
+      return;
     }
     const burst = ++this.mountBurst;
     if (this.zoomProfile) this.zoomProfile.mobileRefreshFramesScheduled += 1;
@@ -3486,6 +3493,10 @@ export class ViewerInkSession {
       if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
         this.markPendingMobileScrollRemount();
         if (this.zoomProfile) this.zoomProfile.mobileRefreshDeferred += 1;
+        return;
+      }
+      const pages = this.pagesForInkMount();
+      if (this.mobileMountSetUnchanged(pages)) {
         return;
       }
       if (this.zoomProfile) this.zoomProfile.mobileRefreshExecutions += 1;
@@ -4622,7 +4633,10 @@ export class ViewerInkSession {
     if (this.pinchCleanup.needsAnimationFrame()) {
       // Finger release already ran on this turn. That is the one post-terminal
       // frame; waiting for another rAF was the 50ms flag.
-      if (report.quiescent && this.pinchTerminalAt !== 0) {
+      if (report.quiescent && (this.pinchTerminalAt !== 0 || report.gestureCleanupTimedOut)) {
+        if (this.pinchTerminalAt === 0) {
+          this.pinchTerminalAt = performance.now();
+        }
         this.pinchCleanup.noteAnimationFrame();
       } else {
         this.lastSettleDeferralReason = "pinch-cleanup-frame";
@@ -5022,7 +5036,8 @@ export class ViewerInkSession {
       strokesRedrawn: 0,
       skippedDisconnected: 0,
       skippedCulled: 0,
-      skippedBlitOnly: 0
+      skippedBlitOnly: 0,
+      activeWorkMs: 0
     };
     this.zoomSettlePaintedPages.clear();
     const order = this.zoomSettlePageOrder();
@@ -5133,10 +5148,18 @@ export class ViewerInkSession {
       return;
     }
 
-    const item = this.zoomSettleQueue.pop()!;
-    const started = performance.now();
-    this.paintOneZoomSettlePage(item.page, item.tier);
-    this.recordZoomPipelineFrame(performance.now(), performance.now() - started);
+    const budgetMs = this.frameTimingProfile().frameBudgetMs;
+    const sliceBudgetMs = Math.max(8, budgetMs * 0.7);
+    const frameStarted = performance.now();
+    while (this.zoomSettleQueue.length > 0) {
+      const item = this.zoomSettleQueue.pop()!;
+      const started = performance.now();
+      this.paintOneZoomSettlePage(item.page, item.tier);
+      this.recordZoomPipelineFrame(performance.now(), performance.now() - started);
+      if (this.zoomSettleQueue.length > 0 && performance.now() - frameStarted >= sliceBudgetMs) {
+        break;
+      }
+    }
 
     if (this.zoomSettleQueue.length === 0) {
       this.finishZoomSettleSlices();
@@ -5229,6 +5252,7 @@ export class ViewerInkSession {
       }
     }
     const durationMs = performance.now() - started;
+    this.zoomSettleStats.activeWorkMs += durationMs;
     if (paintPath === "canonical-vector") {
       this.zoomPipelineTrace.noteStage("canonical-paint", durationMs, 1, "canonical-paint");
     } else if (paintPath === "blit-stretch") {
@@ -5258,6 +5282,7 @@ export class ViewerInkSession {
     const burst = this.zoomSettleBurst;
     const stats = this.zoomSettleStats;
     const durationMs = roundMs(performance.now() - this.zoomSettleSliceStartedAt);
+    const activeWorkMs = roundMs(stats.activeWorkMs);
     const toolbarStartedAt = performance.now();
     this.ensureSelectionToolbar();
     this.zoomPipelineTrace.noteStage("toolbar-refresh", performance.now() - toolbarStartedAt, 1, "selection-toolbar");
@@ -5265,10 +5290,10 @@ export class ViewerInkSession {
     this.refreshZoomWorkingSurfaceCursors();
     this.zoomPipelineTrace.noteStage("cursor-refresh", performance.now() - cursorStartedAt, 1, "settle-cursor-refresh");
     const view = this.options.adapter.getViewState();
-    if (durationMs >= this.frameTimingProfile().lateFrameThresholdMs && this.isZoomHandoffActive()) {
+    if (activeWorkMs >= this.frameTimingProfile().lateFrameThresholdMs && this.isZoomHandoffActive()) {
       this.logger.zoomFlashProxy("paint-duration-spike", {
         reason: burst?.reason ?? this.zoomBurstReason,
-        durationMs,
+        durationMs: activeWorkMs,
         pagesRepainted: stats.pagesRepainted,
         strokesRedrawn: stats.strokesRedrawn,
         canvasesResized: stats.canvasesResized,
@@ -6319,6 +6344,23 @@ export class ViewerInkSession {
     try {
       for (const surface of reconciled) {
         const pageNumber = surface.page.pageNumber;
+        const layout = layouts.get(pageNumber) ?? this.pageLayout(surface);
+        const width = Math.max(1, layout.contentWidth || 1);
+        const height = Math.max(1, layout.contentHeight || 1);
+        const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height, "full");
+        const needsResize = surface.canvas.width !== pixelWidth || surface.canvas.height !== pixelHeight;
+        const alreadyCanonical = !needsResize
+          && !surface.settleUpgradePending
+          && surface.inkLayerValid
+          && !surface.inkLayerBurstCapture
+          && surface.inkLayer !== null
+          && surface.inkLayerBackingScale !== null
+          && Math.abs(surface.inkLayerBackingScale - backingScale) < 1e-6
+          && this.ink.page(pageNumber).length < ViewerInkSession.LARGE_ZOOM_RASTER_FALLBACK_STROKES;
+        if (alreadyCanonical) {
+          this.logZoomInkLayout(surface, "handoff-final", layout, geometry.snapshots.get(pageNumber));
+          continue;
+        }
         // A dense page can keep the already-captured committed raster visible
         // while the final PDF-space vector rebase is queued after handoff.
         // This avoids blocking release on a multi-second HQ repaint.
@@ -6831,28 +6873,12 @@ export class ViewerInkSession {
     if (this.deferRefreshDuringZoom(reason)) return;
 
     const pages = this.pagesForInkMount();
-    // Scroll settle: layout-only when mount set already matches — avoid invalidate/repaint storm.
+    // Scroll settle: skip work when mount set already matches — avoid invalidate/repaint/refresh storm.
     if (
       (reason === "view-scroll-mobile" || reason === "view-pagechanging")
       && this.runtimePlatform().mobile
       && this.mobileMountSetUnchanged(pages)
     ) {
-      for (const page of pages) {
-        const surface = this.surfaces.get(page.pageNumber);
-        if (!surface) continue;
-        if (surface.page.element !== page.element) {
-          this.remountSurfaceOnPageReplacement(surface, page);
-          continue;
-        }
-        surface.page = page;
-        this.syncOverlayLayout(surface);
-        this.ensurePageRouter(surface, { reason: `${reason}-skip-unchanged` });
-      }
-      this.logger.refresh(`${reason}-skip-unchanged`, {
-        selected: this.selected.length,
-        surfaces: this.surfaces.size,
-        mountPages: pages.map((page) => page.pageNumber)
-      });
       return;
     }
 
@@ -9628,6 +9654,7 @@ export class ViewerInkSession {
       && this.mouseInkingEnabled()
       && (isInkDrawTool(tool) || tool === "eraser");
     this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
+    this.options.adapter.root.classList.toggle("native-pdf-handwriting-drag-tool", !forceOff && tool === "drag");
   }
 
   private isEffectiveDrawTool(tool: ToolId): boolean {
@@ -9678,9 +9705,11 @@ export class ViewerInkSession {
 
   /** Apply transient pen hit policy; never permanently disable PDF.js text/annotation layers. */
   private syncTouchDrawPolicy(reason: string): void {
+    const tool = this.activeTool();
     const penHit = this.hasActivePenCapability();
     const fallbackHit = this.touchAnnotationEnabled();
-    const annotationHit = penHit || fallbackHit;
+    const isDrag = tool === "drag";
+    const annotationHit = penHit || fallbackHit || isDrag;
     for (const surface of this.surfaces.values()) {
       this.applyTouchDrawPolicy(surface.page.element, annotationHit);
       this.ensurePageRouter(surface);
@@ -9718,7 +9747,8 @@ export class ViewerInkSession {
       "native-pdf-handwriting-touch-none",
       "native-pdf-handwriting-touch-pan-xy",
       "native-pdf-handwriting-touch-custom-pinch",
-      "native-pdf-handwriting-pen-capturing"
+      "native-pdf-handwriting-pen-capturing",
+      "native-pdf-handwriting-panning"
     );
     const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
     for (const layer of layers) {
@@ -10611,6 +10641,9 @@ export class ViewerInkSession {
           this.pointerDownPerformanceAt.set(event.pointerId, receivedAt);
           this.pointerRouteReceivedAt.set(event.pointerId, receivedAt);
           this.pointerInputAt.set(event.pointerId, normalizedPointerEventTime(event, receivedAt));
+          if (event.pointerType === "pen") {
+            this.slowSpans.notePenDown(receivedAt);
+          }
         }
         this.notePointerTypeOrigin(event, "page-pointer-router", "capture");
         this.recordPostUiProbeStage(event, "router-received", {
@@ -11604,6 +11637,9 @@ export class ViewerInkSession {
       hqUpgrades: 0
     };
     surface.strokePerformance.routing.add(Math.max(0, startedAt - routeReceivedAt));
+    if (event.pointerType === "pen") {
+      this.slowSpans.notePenDown(surface.strokePerformance.pointerDownAt);
+    }
   }
 
   private noteStrokeCanvasCommit(surface: PageSurface, at: number, startedAt?: number): void {
@@ -15428,8 +15464,15 @@ export class ViewerInkSession {
       renderPhaseDurations[phase] = roundMetric(performance.now() - startedAt);
     };
     const previousPaint = this.lastPagePaintAt.get(pageNumber);
+    const isIntentionalFocusUpgrade = Boolean(
+      previousPaint
+      && previousPaint.reason.includes("settle-focus-fast")
+      && reason.includes("settle-focus")
+      && !reason.includes("settle-focus-fast")
+    );
     if (
       previousPaint
+      && !isIntentionalFocusUpgrade
       && paintStarted - previousPaint.at < ViewerInkSession.FLASH_DOUBLE_PAINT_MS
       && this.isZoomHandoffActive()
     ) {

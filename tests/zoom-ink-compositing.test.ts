@@ -356,6 +356,44 @@ describe("zoom ink compositing", () => {
     await session.destroy();
   });
 
+  it("coalesces mobile scroll events and does not trigger refresh when mount set is unchanged", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter, new MemoryFiles(), { mobile: true, phone: true });
+    vi.useFakeTimers();
+
+    const internal = session as unknown as {
+      onViewStateChange(state: PdfViewState, source: string): void;
+      mobileScrollRefreshFrame: number | null;
+      refresh(reason: string): void;
+    };
+
+    const refreshSpy = vi.spyOn(session, "refresh");
+
+    // Simulate 20 rapid scroll events during smooth scrolling
+    for (let i = 0; i < 20; i++) {
+      internal.onViewStateChange(adapter.getViewState(), "scroll");
+    }
+
+    // Only one rAF should be scheduled, coalescing all 20 scroll events
+    expect(internal.mobileScrollRefreshFrame).not.toBeNull();
+
+    // Advance frame
+    await vi.advanceTimersByTimeAsync(16);
+
+    // Because the mount set is unchanged, refresh("view-scroll-mobile") is skipped
+    expect(refreshSpy).not.toHaveBeenCalled();
+
+    // No "session refresh" or "refresh storm" events emitted
+    expect(debugCalls("session refresh").filter((call) => {
+      const details = call[2] as { reason?: string };
+      return details.reason?.startsWith("view-scroll-mobile");
+    })).toHaveLength(0);
+    expect(warnCalls("refresh storm")).toHaveLength(0);
+
+    refreshSpy.mockRestore();
+    await session.destroy();
+  });
+
   it("defers expensive stroke paint during zoom burst and repaints after settle", async () => {
     const adapter = new ZoomAdapter();
     const session = await createSession(adapter);
@@ -1673,6 +1711,43 @@ describe("zoom ink compositing", () => {
     expect(debugCalls("ink zoom composite").filter(
       (call) => (call[2] as { phase?: string }).phase === "release-scheduled"
     ).length).toBeLessThan(20);
+
+    await session.destroy();
+  });
+
+  it("skips redundant final-canonical repaint and avoids double-paint window on already-canonical page", async () => {
+    const adapter = new ZoomAdapter();
+    const session = await createSession(adapter);
+    const internal = session as unknown as {
+      zoomHandoffNeedsFinalRebase: boolean;
+      rebaseZoomAfterNativeRender(): void;
+      releaseZoomCompositeLayers(): void;
+    };
+    for (let index = 0; index < 3; index += 1) {
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", 100 + index * 10, 100));
+      adapter.pageElement.dispatchEvent(pointer("pointermove", 110 + index * 10, 110));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 120 + index * 10, 120));
+    }
+    expect(probeSurface(session).inkLayerValid).toBe(true);
+
+    vi.useFakeTimers();
+    adapter.zoomTo(1.5, { left: 40, top: 20, width: 900, height: 1200 });
+    session.onViewStateChange(adapter.getViewState(), "scalechanging");
+    await vi.advanceTimersByTimeAsync(560);
+    await flushZoomSettleSlices();
+
+    const stampsAfterSettle = paintStampCalls(context);
+
+    // Native content mutation without layout change:
+    internal.zoomHandoffNeedsFinalRebase = true;
+    internal.rebaseZoomAfterNativeRender();
+
+    // Since page 1 was already canonically rendered at 900x1200 with matching scale,
+    // rebaseZoomAfterNativeRender must skip repainting it!
+    expect(paintStampCalls(context)).toBe(stampsAfterSettle);
+    expect(logCalls("ink zoom flash proxy").filter(
+      (call) => (call[2] as { proxy?: string }).proxy === "double-paint-window"
+    )).toHaveLength(0);
 
     await session.destroy();
   });

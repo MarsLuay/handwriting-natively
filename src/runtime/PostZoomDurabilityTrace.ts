@@ -49,7 +49,7 @@ export interface PostZoomRecoveryRegressed {
   previousSuccessfulPenAt: string;
   currentPointerType: string;
   currentStylusIdentity: StylusIdentity;
-  physicalToolClaimed: false;
+  physicalToolClaimed: boolean;
   physicalContactId: string;
 }
 
@@ -149,6 +149,10 @@ export class PostZoomDurabilityTrace {
     if (this.firstLaterPageDragAfterPenRecovery) this.applyClaim(this.firstLaterPageDragAfterPenRecovery);
   }
 
+  hasClaimedPhysicalTool(physicalContactId: string): boolean {
+    return this.claimedTools.has(physicalContactId);
+  }
+
   note(input: PostZoomDurabilityNote): PostZoomDurabilityEvent[] {
     if (this.zoomBurstId === null || this.settledAtMs === null) return [];
     if (input.atMs - this.settledAtMs > POST_ZOOM_DURABILITY_WINDOW_MS) return [];
@@ -161,18 +165,21 @@ export class PostZoomDurabilityTrace {
     }
     if (!this.firstSuccessfulPostZoomPenAt) return [];
     const events: PostZoomDurabilityEvent[] = [];
-    const identityLost = !contact.pointerEventPenSeen
+    const genericTouch = !contact.pointerEventPenSeen
       && contact.stylusIdentity === "absent"
       && contact.pointerType !== "pen";
-    if (identityLost && !this.firstLaterGenericTouchAfterPenRecovery) {
+    if (genericTouch && !this.firstLaterGenericTouchAfterPenRecovery) {
       this.firstLaterGenericTouchAfterPenRecovery = cloneContact(contact);
+    }
+    const identityLost = contact.physicalToolClaimed && genericTouch;
+    if (identityLost) {
       events.push({
         event: "post-zoom-recovery-regressed",
         zoomBurstId: this.zoomBurstId,
         previousSuccessfulPenAt: this.firstSuccessfulPostZoomPenAt,
         currentPointerType: contact.pointerType ?? "touch",
         currentStylusIdentity: contact.stylusIdentity,
-        physicalToolClaimed: false,
+        physicalToolClaimed: contact.physicalToolClaimed,
         physicalContactId: contact.physicalContactId
       });
     }

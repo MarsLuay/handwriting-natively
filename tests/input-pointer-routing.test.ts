@@ -1475,4 +1475,121 @@ describe("Regression Tests", () => {
     router.destroy();
     element.remove();
   });
+
+  it("routes pen to drag when drag tool is selected and scrolls the scrollRoot", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const scrollRoot = document.createElement("div");
+    scrollRoot.id = "viewerContainer";
+    scrollRoot.style.height = "500px";
+    scrollRoot.style.overflow = "auto";
+    document.body.append(scrollRoot);
+    Object.defineProperty(scrollRoot, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(scrollRoot, "clientHeight", { value: 500, configurable: true });
+    scrollRoot.scrollTop = 100;
+    scrollRoot.scrollLeft = 50;
+
+    const setCapture = vi.fn();
+    const releaseCapture = vi.fn();
+    Object.assign(element, {
+      setPointerCapture: setCapture,
+      hasPointerCapture: () => true,
+      releasePointerCapture: releaseCapture
+    });
+
+    const dragStarts: PointerEvent[] = [];
+    const dragMoves: { deltaX: number; deltaY: number }[] = [];
+    const dragEnds: PointerEvent[] = [];
+    const routes: string[] = [];
+
+    const router = new PointerRouter(element, {
+      activeTool: () => "drag",
+      canAnnotatePointer: () => true,
+      scrollRoot: () => scrollRoot,
+      onRoute: (route) => routes.push(route),
+      onDragStart: (event) => dragStarts.push(event),
+      onDragMove: (deltaX, deltaY) => dragMoves.push({ deltaX, deltaY }),
+      onDragEnd: (event) => dragEnds.push(event)
+    });
+
+    const down = new PointerEvent("pointerdown", {
+      pointerId: 7,
+      pointerType: "pen",
+      clientX: 200,
+      clientY: 300,
+      bubbles: true,
+      cancelable: true
+    });
+    element.dispatchEvent(down);
+
+    expect(routes).toContain("drag");
+    expect(dragStarts).toHaveLength(1);
+    expect(setCapture).toHaveBeenCalledWith(7);
+    expect(element.classList.contains("native-pdf-handwriting-panning")).toBe(true);
+
+    const move = new PointerEvent("pointermove", {
+      pointerId: 7,
+      pointerType: "pen",
+      clientX: 205,
+      clientY: 320,
+      buttons: 1,
+      bubbles: true,
+      cancelable: true
+    });
+    element.dispatchEvent(move);
+
+    expect(dragMoves).toHaveLength(1);
+    expect(dragMoves[0]).toEqual({ deltaX: 5, deltaY: 20 });
+    // clientY moved down (+20), so content scrolled up (-20 delta to scrollTop)
+    expect(scrollRoot.scrollTop).toBe(80);
+
+    const up = new PointerEvent("pointerup", {
+      pointerId: 7,
+      pointerType: "pen",
+      clientX: 205,
+      clientY: 320,
+      bubbles: true,
+      cancelable: true
+    });
+    element.dispatchEvent(up);
+
+    expect(dragEnds).toHaveLength(1);
+    expect(releaseCapture).toHaveBeenCalledWith(7);
+    expect(element.classList.contains("native-pdf-handwriting-panning")).toBe(false);
+
+    router.destroy();
+    element.remove();
+    scrollRoot.remove();
+  });
+
+  it("routes physical stylus eraser to edit even when drag tool is selected", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    Object.assign(element, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+
+    const routes: string[] = [];
+    const router = new PointerRouter(element, {
+      activeTool: () => "drag",
+      canAnnotatePointer: () => true,
+      onRoute: (route) => routes.push(route)
+    });
+
+    const eraserDown = new PointerEvent("pointerdown", {
+      pointerId: 8,
+      pointerType: "pen",
+      button: 5,
+      bubbles: true,
+      cancelable: true
+    });
+    element.dispatchEvent(eraserDown);
+
+    expect(routes).toContain("edit");
+
+    router.destroy();
+    element.remove();
+  });
 });
