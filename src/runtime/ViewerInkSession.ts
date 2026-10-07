@@ -9,7 +9,7 @@ import {
   type AnnotationPageInfo,
   type AnnotationZoomChange
 } from "./AnnotationSurface";
-import { imageSurfaceExtensions, pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
+import { imageSurfaceExtensions, pdfSurfaceExtensions, type PageLifecycleCoordinator } from "../integration/ObsidianPdfAdapter";
 import { describeTarget } from "../dom/describeElement";
 import { PointerTypeOriginLog, pointerTypeOrigin, type PointerTypeListenerPhase } from "../input/PointerTypeOrigin";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
@@ -7215,6 +7215,10 @@ export class ViewerInkSession {
     }
   }
 
+  private pdfLifecycleCoordinator(): PageLifecycleCoordinator | undefined {
+    return pdfSurfaceExtensions(this.options.adapter)?.lifecycleCoordinator;
+  }
+
   refresh(reason = "manual"): void {
     if (this.destroyed) return;
     this.reconcileToolbarMount(reason);
@@ -7259,6 +7263,7 @@ export class ViewerInkSession {
           this.releaseInputOwner(surface.page.element);
           this.releaseSurfaceBuffers(surface);
           surface.overlay.remove();
+          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
           this.surfaces.delete(pageNumber);
           continue;
         }
@@ -7269,6 +7274,7 @@ export class ViewerInkSession {
           this.releaseInputOwner(surface.page.element);
           this.releaseSurfaceBuffers(surface);
           surface.overlay.remove();
+          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
           this.surfaces.delete(pageNumber);
           continue;
         }
@@ -7279,6 +7285,7 @@ export class ViewerInkSession {
           this.releaseInputOwner(surface.page.element);
           this.releaseSurfaceBuffers(surface);
           surface.overlay.remove();
+          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
           this.surfaces.delete(pageNumber);
           continue;
         }
@@ -7299,6 +7306,7 @@ export class ViewerInkSession {
             this.releaseSurfaceBuffers(surface);
           }
           surface?.overlay.remove();
+          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
           this.surfaces.delete(pageNumber);
         }
       }
@@ -7316,6 +7324,16 @@ export class ViewerInkSession {
    * which stays zero until a device trace promotes one.
    */
   private pagesForInkMount(): AnnotationPageInfo[] {
+    const coordinator = this.pdfLifecycleCoordinator();
+    if (coordinator) {
+      const workingSet = coordinator.getWorkingSet();
+      const fromCoordinator: AnnotationPageInfo[] = [];
+      for (const pageNumber of workingSet) {
+        const page = this.options.adapter.page(pageNumber);
+        if (page) fromCoordinator.push(page);
+      }
+      if (fromCoordinator.length > 0) return fromCoordinator;
+    }
     const candidates: AnnotationPageInfo[] = [];
     const mobile = this.runtimePlatform().mobile;
     const policy = documentMountPolicy([], mobile ? "constrained" : "desktop");
@@ -10089,6 +10107,7 @@ export class ViewerInkSession {
       this.clearTouchDrawPolicy(surface.page.element);
       this.releaseInputOwner(surface.page.element);
       this.releaseSurfaceBuffers(surface);
+      this.pdfLifecycleCoordinator()?.setInkOverlayStatus(surface.page.pageNumber, "unmounted");
     }
     this.surfaces.clear();
     this.selectionToolbar.destroy();
@@ -10414,6 +10433,7 @@ export class ViewerInkSession {
       overlayId: getDebugNodeId(overlay),
       routerGeneration: surface.router?.generation ?? null
     });
+    this.pdfLifecycleCoordinator()?.setInkOverlayStatus(page.pageNumber, "mounted");
     return surface;
   }
 
