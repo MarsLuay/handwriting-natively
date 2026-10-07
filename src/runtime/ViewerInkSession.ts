@@ -9,7 +9,8 @@ import {
   type AnnotationPageInfo,
   type AnnotationZoomChange
 } from "./AnnotationSurface";
-import { imageSurfaceExtensions, pdfSurfaceExtensions, type PageLifecycleCoordinator } from "../integration/ObsidianPdfAdapter";
+import { imageSurfaceExtensions, pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
+import type { PageLifecycleCoordinator, PageVisibilityChangeEvent } from "./PageLifecycleCoordinator";
 import { describeTarget } from "../dom/describeElement";
 import { PointerTypeOriginLog, pointerTypeOrigin, type PointerTypeListenerPhase } from "../input/PointerTypeOrigin";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
@@ -1137,7 +1138,11 @@ export class ViewerInkSession {
   /** Bumped when an ink layer cache entry is invalidated. Deferred HQ from an older epoch cancels. */
   private renderEpoch = 0;
   private pendingScheduledRefresh: { reason: string; repaintOnly: boolean } | null = null;
-  /** One display-frame refresh for mobile scroll/pagechanging signals. */
+  /** Coordinator-driven ink residency reconciliation, coalesced to one display frame. */
+  private lifecycleInkReconcileFrame: number | null = null;
+  private pendingLifecycleInkReconcile = false;
+  private lifecycleVisibilityUnsubscribe: (() => void) | null = null;
+  /** Compatibility path for annotation surfaces without PageLifecycleCoordinator. */
   private mobileScrollRefreshFrame: number | null = null;
   /** Remount after zoom/handoff if scroll/pagechanging arrived while compositing. */
   private pendingMobileScrollRemount = false;
@@ -1649,6 +1654,9 @@ export class ViewerInkSession {
       }
     });
     this.handwritingViewport.setTarget(adapter.root);
+    this.lifecycleVisibilityUnsubscribe = pdfExtensions?.lifecycleCoordinator?.onVisibilityChange(
+      (event) => this.onLifecycleVisibilityChange(event)
+    ) ?? null;
     this.commandController = new ViewerCommandController(this.createViewerCommandHost());
     this.gestureNavigation = new GestureNavigationController({
       minScale: 0.1,
@@ -6386,6 +6394,7 @@ export class ViewerInkSession {
     // the handoff is still masked. Reconcile only when the mobile mount set
     // actually changed, and do that work under the compositor so it cannot
     // become a second visible refresh after the overlay is removed.
+    this.flushPendingLifecycleInkReconcile();
     this.flushPendingMobileScrollRemount();
     this.recordInkVisibility("after-final-canonical");
     if (!this.replacementInkReady(true) && !forceAfterTimeout && !this.destroyed) {
@@ -7246,6 +7255,59 @@ export class ViewerInkSession {
     return pdfSurfaceExtensions(this.options.adapter)?.lifecycleCoordinator;
   }
 
+  private onLifecycleVisibilityChange(event: PageVisibilityChangeEvent): void {
+    if (this.destroyed) return;
+    this.scheduleLifecycleInkReconcile(
+      `lifecycle-${event.pageNumber}-${event.previousVisibility}-to-${event.currentVisibility}`
+    );
+  }
+
+  private scheduleLifecycleInkReconcile(reason: string): void {
+    const coordinator = this.pdfLifecycleCoordinator();
+    if (!coordinator || this.destroyed) return;
+    if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
+      this.pendingLifecycleInkReconcile = true;
+      this.postZoomTrace.remember("pending-lifecycle-ink-reconcile", {
+        reason,
+        mountPages: coordinator.getInkMountPages()
+      });
+      return;
+    }
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) {
+      this.refresh(reason);
+      return;
+    }
+    if (this.lifecycleInkReconcileFrame !== null) return;
+    this.lifecycleInkReconcileFrame = view.requestAnimationFrame(() => {
+      this.lifecycleInkReconcileFrame = null;
+      if (this.destroyed) return;
+      if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
+        this.pendingLifecycleInkReconcile = true;
+        return;
+      }
+      this.refresh(reason);
+    });
+  }
+
+  private flushPendingLifecycleInkReconcile(): void {
+    if (!this.pendingLifecycleInkReconcile || this.destroyed || !this.pdfLifecycleCoordinator()) return;
+    this.pendingLifecycleInkReconcile = false;
+    this.refresh("post-zoom-lifecycle");
+    this.syncZoomOverlayLayouts("native-content");
+  }
+
+  private unmountInkSurface(pageNumber: number, surface: PageSurface, reason: string): void {
+    this.commitActiveDrawBeforeSurfaceLoss(surface, reason);
+    surface.router?.destroy();
+    this.clearTouchDrawPolicy(surface.page.element);
+    this.releaseInputOwner(surface.page.element);
+    this.releaseSurfaceBuffers(surface);
+    surface.overlay.remove();
+    this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
+    this.surfaces.delete(pageNumber);
+  }
+
   refresh(reason = "manual"): void {
     if (this.destroyed) return;
     this.reconcileToolbarMount(reason);
@@ -7280,62 +7342,35 @@ export class ViewerInkSession {
     });
     try {
       const live = new Set(pages.map((page) => page.pageNumber));
-      for (const [pageNumber, surface] of this.surfaces) {
+      const coordinator = this.pdfLifecycleCoordinator();
+      for (const [pageNumber, surface] of [...this.surfaces]) {
         const current = pages.find((page) => page.pageNumber === pageNumber)
           ?? this.options.adapter.page(pageNumber);
         if (!current || !live.has(pageNumber)) {
-          this.commitActiveDrawBeforeSurfaceLoss(surface, "page-outside-mobile-mount");
-          surface.router?.destroy();
-          this.clearTouchDrawPolicy(surface.page.element);
-          this.releaseInputOwner(surface.page.element);
-          this.releaseSurfaceBuffers(surface);
-          surface.overlay.remove();
-          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
-          this.surfaces.delete(pageNumber);
+          this.unmountInkSurface(
+            pageNumber,
+            surface,
+            coordinator ? "page-lifecycle-cold" : "page-outside-compatibility-mount"
+          );
           continue;
         }
         if (current.element !== surface.page.element) {
-          this.commitActiveDrawBeforeSurfaceLoss(surface, "page-element-replaced");
-          surface.router?.destroy();
-          this.clearTouchDrawPolicy(surface.page.element);
-          this.releaseInputOwner(surface.page.element);
-          this.releaseSurfaceBuffers(surface);
-          surface.overlay.remove();
-          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
-          this.surfaces.delete(pageNumber);
+          this.unmountInkSurface(pageNumber, surface, "page-element-replaced");
           continue;
         }
         if (!this.reattachSurface(surface, current)) {
-          this.commitActiveDrawBeforeSurfaceLoss(surface, "page-overlay-disconnected");
-          surface.router?.destroy();
-          this.clearTouchDrawPolicy(surface.page.element);
-          this.releaseInputOwner(surface.page.element);
-          this.releaseSurfaceBuffers(surface);
-          surface.overlay.remove();
-          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
-          this.surfaces.delete(pageNumber);
+          this.unmountInkSurface(pageNumber, surface, "page-overlay-disconnected");
           continue;
         }
+        coordinator?.setInkOverlayStatus(pageNumber, "mounted");
       }
       for (const page of pages) {
-        if (!this.surfaces.has(page.pageNumber)) this.surfaces.set(page.pageNumber, this.mountPage(page));
+        if (coordinator && !coordinator.shouldMountInkOverlay(page.pageNumber)) continue;
+        if (!this.surfaces.has(page.pageNumber)) {
+          this.surfaces.set(page.pageNumber, this.mountPage(page));
+        }
         this.surfaces.get(page.pageNumber)?.router?.syncToolState();
         this.renderPage(page.pageNumber);
-      }
-      for (const pageNumber of [...this.surfaces.keys()]) {
-        if (!live.has(pageNumber)) {
-          const surface = this.surfaces.get(pageNumber);
-          if (surface) this.commitActiveDrawBeforeSurfaceLoss(surface, "post-refresh-page-unmounted");
-          surface?.router?.destroy();
-          if (surface) {
-            this.clearTouchDrawPolicy(surface.page.element);
-            this.releaseInputOwner(surface.page.element);
-            this.releaseSurfaceBuffers(surface);
-          }
-          surface?.overlay.remove();
-          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
-          this.surfaces.delete(pageNumber);
-        }
       }
       this.syncTouchDrawPolicy(reason);
       this.ensureSelectionToolbar();
@@ -7346,21 +7381,18 @@ export class ViewerInkSession {
   }
 
   /**
-   * Desktop: PDF.js already exposes the mounted page shells. Mobile: the
-   * measured working set is the current page plus the policy preload radius,
-   * which stays zero until a device trace promotes one.
+   * PageLifecycleCoordinator is the sole PDF ink-residency authority.
+   * The compatibility policy below exists only for annotation surfaces that do
+   * not expose the coordinator.
    */
   private pagesForInkMount(): AnnotationPageInfo[] {
     const coordinator = this.pdfLifecycleCoordinator();
     if (coordinator) {
-      const workingSet = coordinator.getWorkingSet();
-      const fromCoordinator: AnnotationPageInfo[] = [];
-      for (const pageNumber of workingSet) {
-        const page = this.options.adapter.page(pageNumber);
-        if (page) fromCoordinator.push(page);
-      }
-      if (fromCoordinator.length > 0) return fromCoordinator;
+      return coordinator.getInkMountPages()
+        .map((pageNumber) => this.options.adapter.page(pageNumber))
+        .filter((page): page is AnnotationPageInfo => Boolean(page));
     }
+
     const candidates: AnnotationPageInfo[] = [];
     const mobile = this.runtimePlatform().mobile;
     const policy = documentMountPolicy([], mobile ? "constrained" : "desktop");
@@ -7377,15 +7409,7 @@ export class ViewerInkSession {
         if (fallback) candidates.push(fallback);
       }
     }
-    const pad = 1;
-    const currentPage = this.options.adapter.getViewState().pageNumber;
-    const resolved: AnnotationPageInfo[] = [];
-    for (let pageNumber = currentPage - pad; pageNumber <= currentPage + pad; pageNumber += 1) {
-      if (pageNumber < 1) continue;
-      const page = this.options.adapter.page(pageNumber);
-      if (page) resolved.push(page);
-    }
-    if (resolved.length > 0) return resolved;
+    if (candidates.length > 0) return candidates;
     const fallback = this.options.adapter.page(1) ?? this.options.adapter.pages()[0];
     return fallback ? [fallback] : [];
   }
@@ -7993,8 +8017,10 @@ export class ViewerInkSession {
         this.handwritingViewport.syncFromScroll(scrollRoot.scrollLeft, scrollRoot.scrollTop);
       } catch {}
       if (this.selected.length) this.selectionToolbar.relayout();
-      // Mobile only mounts current±pad — debounce remount; never full-refresh mid-zoom.
-      if (this.runtimePlatform().mobile) this.scheduleMobileScrollRefresh();
+      // PDF ink residency follows PageLifecycleCoordinator visibility. Scroll
+      // only repaints existing surfaces; the coordinator emits mount changes.
+      if (this.pdfLifecycleCoordinator()) this.scheduleViewportPaint();
+      else if (this.runtimePlatform().mobile) this.scheduleMobileScrollRefresh();
       else this.scheduleViewportPaint();
       this.lastKnownViewScale = state.scale;
       return;
@@ -8004,7 +8030,13 @@ export class ViewerInkSession {
       this.scheduleZoomRepaint(`view-${source}`, state.scale);
       return;
     }
-    // Pinch fires unstable pagechanging — coalesce with scroll remount path on mobile.
+    if (source === "pagechanging" && this.pdfLifecycleCoordinator()) {
+      if (this.selected.length) this.selectionToolbar.relayout();
+      this.scheduleLifecycleInkReconcile("view-pagechanging");
+      this.lastKnownViewScale = state.scale;
+      return;
+    }
+    // Compatibility path for surfaces without lifecycle coordination.
     if (source === "pagechanging" && this.runtimePlatform().mobile) {
       if (this.selected.length) this.selectionToolbar.relayout();
       this.scheduleMobileScrollRefresh();
@@ -10096,6 +10128,13 @@ export class ViewerInkSession {
       this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.viewportPaintFrame);
       this.viewportPaintFrame = null;
     }
+    if (this.lifecycleInkReconcileFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.lifecycleInkReconcileFrame);
+      this.lifecycleInkReconcileFrame = null;
+    }
+    this.pendingLifecycleInkReconcile = false;
+    this.lifecycleVisibilityUnsubscribe?.();
+    this.lifecycleVisibilityUnsubscribe = null;
     if (this.mobileScrollRefreshFrame !== null) {
       this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.mobileScrollRefreshFrame);
       this.mobileScrollRefreshFrame = null;
