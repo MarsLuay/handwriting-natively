@@ -1562,6 +1562,92 @@ describe("Regression Tests", () => {
     scrollRoot.remove();
   });
 
+  it("leaves native PDF scrollbar contacts untouched in drag mode", () => {
+    const scrollRoot = document.createElement("div");
+    scrollRoot.id = "viewerContainer";
+    scrollRoot.style.overflow = "auto";
+    document.body.append(scrollRoot);
+    Object.defineProperties(scrollRoot, {
+      clientWidth: { configurable: true, value: 500 },
+      clientHeight: { configurable: true, value: 480 },
+      offsetWidth: { configurable: true, value: 515 },
+      offsetHeight: { configurable: true, value: 500 },
+      scrollWidth: { configurable: true, value: 1000 },
+      scrollHeight: { configurable: true, value: 1200 }
+    });
+    Object.defineProperty(scrollRoot, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 515, bottom: 500, width: 515, height: 500 })
+    });
+    const setCapture = vi.fn();
+    const dragStarts = vi.fn();
+    const routes: string[] = [];
+    const decisions: string[] = [];
+    Object.assign(scrollRoot, {
+      setPointerCapture: setCapture,
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const router = new PointerRouter(scrollRoot, {
+      activeTool: () => "drag",
+      canAnnotatePointer: () => true,
+      scrollRoot: () => scrollRoot,
+      onRoute: (route) => routes.push(route),
+      onRouteDecision: (_route, reason) => decisions.push(reason),
+      onDragStart: dragStarts
+    });
+
+    const verticalScrollbar = new PointerEvent("pointerdown", {
+      pointerId: 31,
+      pointerType: "pen",
+      clientX: 507,
+      clientY: 200,
+      bubbles: true,
+      cancelable: true
+    });
+    scrollRoot.dispatchEvent(verticalScrollbar);
+    expect(verticalScrollbar.defaultPrevented).toBe(false);
+    expect(dragStarts).not.toHaveBeenCalled();
+    expect(setCapture).not.toHaveBeenCalled();
+    expect(decisions).toContain("native-scrollbar");
+
+    const horizontalScrollbar = new PointerEvent("pointerdown", {
+      pointerId: 32,
+      pointerType: "pen",
+      clientX: 300,
+      clientY: 490,
+      bubbles: true,
+      cancelable: true
+    });
+    scrollRoot.dispatchEvent(horizontalScrollbar);
+    expect(horizontalScrollbar.defaultPrevented).toBe(false);
+    expect(dragStarts).not.toHaveBeenCalled();
+
+    const page = new PointerEvent("pointerdown", {
+      pointerId: 33,
+      pointerType: "pen",
+      clientX: 300,
+      clientY: 300,
+      bubbles: true,
+      cancelable: true
+    });
+    scrollRoot.dispatchEvent(page);
+    expect(page.defaultPrevented).toBe(true);
+    expect(routes).toContain("drag");
+    expect(dragStarts).toHaveBeenCalledTimes(1);
+
+    scrollRoot.dispatchEvent(new PointerEvent("pointerup", {
+      pointerId: 33,
+      pointerType: "pen",
+      clientX: 300,
+      clientY: 300,
+      bubbles: true,
+      cancelable: true
+    }));
+    router.destroy();
+    scrollRoot.remove();
+  });
+
   it("routes physical stylus eraser to edit even when drag tool is selected", () => {
     const element = document.createElement("div");
     document.body.append(element);
