@@ -284,4 +284,54 @@ describe("PhysicalContactCollector", () => {
     expect(replacementId).toContain(newCollectorId);
     replacement.release();
   });
+
+  it("never emits duplicate-observer warnings on the move hot path even with multiple owners", () => {
+    const { document, target } = createDocument();
+    const first = createOwner(document, target, "viewer-session-1", 1);
+    const second = createOwner(document, target, "viewer-session-2", 2);
+
+    // Initial pointerdown does record a duplicate observer anomaly
+    dispatch(target, pointerEvent("pointerdown", 101, 1000, 50, 50));
+    expect(second.duplicates).toHaveLength(1);
+    expect(second.duplicates[0]?.duplicateObserverOwnerIds).toEqual(["viewer-session-1"]);
+
+    // Subsequent pointermove events on the hot path MUST NOT emit duplicate observer warnings
+    for (let index = 1; index <= 20; index += 1) {
+      dispatch(target, pointerEvent("pointermove", 101, 1000 + index, 50 + index, 50 + index));
+    }
+    expect(second.duplicates).toHaveLength(1); // still only 1 from pointerdown, 0 from moves
+
+    // Touch moves on the hot path also MUST NOT emit duplicate observer warnings
+    dispatch(target, touchEvent("touchstart", 201, 2000, 60, 60));
+    const duplicateCountAfterTouchStart = second.duplicates.length;
+    for (let index = 1; index <= 10; index += 1) {
+      dispatch(target, touchEvent("touchmove", 201, 2000 + index, 60 + index, 60 + index));
+    }
+    expect(second.duplicates).toHaveLength(duplicateCountAfterTouchStart);
+
+    second.release();
+    first.release();
+  });
+
+  it("does not count the collector as a duplicate of itself when only a single owner exists", () => {
+    const { document, target } = createDocument();
+    const owner = createOwner(document, target, "viewer-solo", 1);
+
+    // Dispatch down and multiple moves, some with the same timestamp (timer coarsening)
+    dispatch(target, pointerEvent("pointerdown", 301, 5000, 10, 10));
+    dispatch(target, pointerEvent("pointermove", 301, 5001, 11, 11));
+    dispatch(target, pointerEvent("pointermove", 301, 5001, 12, 12));
+    dispatch(target, pointerEvent("pointerup", 301, 5002, 13, 13));
+
+    // Zero duplicate observer warnings should ever be emitted
+    expect(owner.duplicates).toHaveLength(0);
+
+    // Both move events should be tracked as distinct moves, not dropped as alreadySeen
+    const moves = owner.events.filter((e) => e.eventType === "pointermove");
+    expect(moves).toHaveLength(2);
+    expect(moves[0]?.alreadySeen).toBe(false);
+    expect(moves[1]?.alreadySeen).toBe(false);
+
+    owner.release();
+  });
 });
