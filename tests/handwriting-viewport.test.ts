@@ -98,6 +98,22 @@ describe("HandwritingViewport", () => {
     expect(docPoint.y).toBeCloseTo(200);
   });
 
+  it("pins the same document point when the viewer container is offset in client space", () => {
+    const vp = new HandwritingViewport({
+      getContainerRect: () => rect(80, 120, 600, 800),
+      getContentSize: () => ({ width: 1000, height: 1200 }),
+      minScale: 0.5,
+      maxScale: 3.0
+    });
+
+    vp.startPinch({ x: 280, y: 320 });
+    vp.pinch(2.0, { x: 280, y: 320 });
+
+    expect(vp.getState().x).toBe(-200);
+    expect(vp.getState().y).toBe(-200);
+    expect(vp.screenToViewport({ x: 280, y: 320 })).toEqual({ x: 200, y: 200 });
+  });
+
   it("tracks simultaneous two-finger panning during pinch zoom", () => {
     const vp = new HandwritingViewport({
       getContainerRect: () => rect(0, 0, 600, 800),
