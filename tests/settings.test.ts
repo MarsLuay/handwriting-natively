@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, mergeSettings } from "../src/model";
 
+const platformState = vi.hoisted(() => ({ isMobile: false }));
+
 vi.mock("obsidian", () => {
   class MockObsidianBase {}
   return {
     FuzzySuggestModal: MockObsidianBase,
     Notice: MockObsidianBase,
+    Platform: platformState,
     Plugin: MockObsidianBase,
     PluginSettingTab: MockObsidianBase,
     Setting: MockObsidianBase,
@@ -164,22 +167,32 @@ describe("safe defaults", () => {
     } as never).disableSwipeNavigation).toBe(true);
   });
 
-  it("shows one combined swipe-navigation setting with the requested copy", () => {
+  it("shows the combined swipe-navigation setting only in mobile mode", () => {
     const tab = Object.create(NativePdfInkSettingTab.prototype) as InstanceType<typeof NativePdfInkSettingTab>;
     Object.assign(tab, { host: { inkSettings: DEFAULT_SETTINGS } });
-    const navigationGroup = tab.getSettingDefinitions().find((definition) =>
-      "heading" in definition && definition.heading === "PDF navigation"
-    );
-    const swipeSettings = navigationGroup && "items" in navigationGroup
-      ? navigationGroup.items
-        .filter((item) => item.name.toLowerCase().includes("swipe"))
-        .map(({ name, desc }) => ({ name, desc }))
-      : [];
+    const getSwipeSettings = () => {
+      const navigationGroup = tab.getSettingDefinitions().find((definition) =>
+        "heading" in definition && definition.heading === "PDF navigation"
+      );
+      return navigationGroup && "items" in navigationGroup
+        ? navigationGroup.items
+          .filter((item) => item.name.toLowerCase().includes("swipe"))
+          .map(({ name, desc }) => ({ name, desc }))
+        : [];
+    };
 
-    expect(swipeSettings).toEqual([{
-      name: "Disable swipe-activated sidebars",
-      desc: "Prevent one-finger swipe gestures from opening Obsidian’s left sidebar, right sidebar, or command palette on mobile/iPad. Buttons and normal commands still work."
-    }]);
+    try {
+      platformState.isMobile = true;
+      expect(getSwipeSettings()).toEqual([{
+        name: "Disable swipe-activated sidebars",
+        desc: "Prevent one-finger swipe gestures from opening Obsidian’s left sidebar, right sidebar, or command palette on mobile/iPad. Buttons and normal commands still work."
+      }]);
+
+      platformState.isMobile = false;
+      expect(getSwipeSettings()).toEqual([]);
+    } finally {
+      platformState.isMobile = false;
+    }
   });
 
   it("enables custom mobile PDF pinch zoom by default while preserving an explicit opt-out", () => {
