@@ -1660,10 +1660,6 @@ export class ViewerInkSession {
       onEligibility: (target) => this.mobilePinchWheelEligible(target, adapter),
       onIndicator: (scale, reset) => this.updateMobilePinchIndicator(scale, reset, adapter.host.ownerDocument),
       onPan: (deltaX, deltaY) => {
-        if (this.activeTool() === "drag") {
-          this.handwritingViewport.pan(deltaX, deltaY);
-          return true;
-        }
         const scrollRoot = this.options.adapter.scrollElement();
         const beforeLeft = scrollRoot.scrollLeft;
         const beforeTop = scrollRoot.scrollTop;
