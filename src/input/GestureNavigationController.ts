@@ -150,13 +150,17 @@ function midpoint(points: readonly GestureNavigationPoint[]): GestureNavigationF
 function capturePointer(surface: Element, pointerId: number): void {
   try {
     surface.setPointerCapture?.(pointerId);
-  } catch {}
+  } catch {
+    // Capture can fail when the browser has already canceled the contact.
+  }
 }
 
 function releasePointer(surface: Element, pointerId: number): void {
   try {
     if (surface.hasPointerCapture?.(pointerId)) surface.releasePointerCapture?.(pointerId);
-  } catch {}
+  } catch {
+    // The host may release capture during a page or viewer handoff.
+  }
 }
 
 /**
