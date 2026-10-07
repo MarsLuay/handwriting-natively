@@ -1562,6 +1562,41 @@ describe("Regression Tests", () => {
     scrollRoot.remove();
   });
 
+  it("cancels hand-mode navigation without retaining capture or a phantom drag", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const setCapture = vi.fn();
+    const releaseCapture = vi.fn();
+    Object.assign(element, {
+      setPointerCapture: setCapture,
+      hasPointerCapture: () => true,
+      releasePointerCapture: releaseCapture
+    });
+    const dragEnds: PointerEvent[] = [];
+    const settled = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "drag",
+      canAnnotatePointer: () => true,
+      onDragEnd: (event) => dragEnds.push(event),
+      onViewportSettle: settled
+    });
+
+    element.dispatchEvent(pointer("pen", 41, { clientX: 20, clientY: 30 }));
+    expect(setCapture).toHaveBeenCalledWith(41);
+    router.cancelNavigation("lifecycle");
+
+    expect(dragEnds).toHaveLength(1);
+    expect(dragEnds[0]?.type).toBe("pointercancel");
+    expect(releaseCapture).toHaveBeenCalledWith(41);
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(element.classList.contains("native-pdf-handwriting-panning")).toBe(false);
+
+    element.dispatchEvent(pointer("pen", 41, { eventType: "pointermove", clientX: 30, clientY: 40 }));
+    expect(dragEnds).toHaveLength(1);
+    router.destroy();
+    element.remove();
+  });
+
   it("leaves native PDF scrollbar contacts untouched in drag mode", () => {
     const scrollRoot = document.createElement("div");
     scrollRoot.id = "viewerContainer";
