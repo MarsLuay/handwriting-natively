@@ -1311,7 +1311,11 @@
   max-height: 56px;
   max-width: 42px;
 }
-.hn-owned-pdf-thumbnails { display: flex; flex-direction: column; gap: 8px; }
+.hn-owned-pdf-thumbnails:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .hn-owned-pdf-thumbnail-canvas { max-width: 100%; }
 .hn-owned-pdf-thumbnail-canvas > canvas { max-width: 100%; }
 .hn-owned-pdf-thumbnail {

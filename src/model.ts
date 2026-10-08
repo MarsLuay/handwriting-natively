@@ -3,6 +3,10 @@ export type DrawingTool = "pen" | "pencil" | "highlighter";
 export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser" | "drag";
 export type LassoType = "freeform" | "rectangle";
 export type ToolbarOrientation = "horizontal" | "vertical";
+export interface FloatingToolbarPosition {
+  left: number;
+  top: number;
+}
 /** Internal PDF adapter mount sites; user placement is always the floating toolbar. */
 export type ToolbarPlacement = "main" | "left" | "right";
 /** Which input source supplies pressure for new ink strokes. */
@@ -217,6 +221,8 @@ export interface PluginSettings {
   /** Mobile-only opt-in to suppress swipe gestures that open sidebars or the command palette. */
   disableSwipeNavigation: boolean;
   toolbarOrientation: ToolbarOrientation;
+  /** Shared viewport position for the movable toolbar; null places it at the viewer's top-left. */
+  floatingToolbarPosition: FloatingToolbarPosition | null;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
   /** Restore a validated annotation backup after a corrupt store is quarantined. */
@@ -314,6 +320,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   hideStylusAnnotationLabel: false,
   disableSwipeNavigation: false,
   toolbarOrientation: "horizontal",
+  floatingToolbarPosition: null,
   vaultDebugLog: false,
   vaultDebugLogPath,
   automaticAnnotationRecovery: true,
@@ -340,6 +347,16 @@ const LEGACY_SETTING_KEYS = [
   // Direct PDFs now use Obsidian's native viewer and toolbar by default.
   "preferPluginPdfView"
 ] as const;
+
+function normalizeFloatingToolbarPosition(value: unknown): FloatingToolbarPosition | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { left, top } = value as Partial<FloatingToolbarPosition>;
+  if (
+    typeof left !== "number" || !Number.isFinite(left) || left < 0 ||
+    typeof top !== "number" || !Number.isFinite(top) || top < 0
+  ) return null;
+  return { left, top };
+}
 
 export function mergeSettings(
   saved: Partial<PluginSettings> | null | undefined,
@@ -383,6 +400,7 @@ export function mergeSettings(
     type: lassoRaw.type === "freeform" || lassoRaw.type === "rectangle" ? lassoRaw.type : "freeform" as const
   };
   const savedToolbarOrientation = cleaned.toolbarOrientation;
+  const floatingToolbarPosition = normalizeFloatingToolbarPosition(cleaned.floatingToolbarPosition);
   const pdfTemplatePath = typeof cleaned.pdfTemplatePath === "string"
     ? cleaned.pdfTemplatePath.trim()
     : defaults.pdfTemplatePath;
@@ -422,6 +440,7 @@ export function mergeSettings(
       : legacyToolbarPlacement === "left" || legacyToolbarPlacement === "right"
         ? "vertical"
         : defaults.toolbarOrientation,
+    floatingToolbarPosition,
     pdfTemplatePath,
     mouseInkingEnabled,
     // Legacy `fingerDraw` is removed above; only the new explicit setting may

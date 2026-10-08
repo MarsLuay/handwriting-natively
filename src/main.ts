@@ -1523,7 +1523,13 @@ export default class NativePdfInkPlugin extends Plugin {
       }),
       saveSettings: async (preferences) => this.saveToolPreferences(preferences),
       savePluginSettings: async (patch) => {
-        await this.saveSettings({ ...this.inkSettings, ...patch });
+        const save = this.saveSettings({ ...this.inkSettings, ...patch });
+        if (patch.floatingToolbarPosition) {
+          for (const session of this.allSessions()) {
+            session.setFloatingToolbarPosition(patch.floatingToolbarPosition);
+          }
+        }
+        await save;
       },
       readDocument: async () => new Uint8Array(await this.app.vault.readBinary(file)),
       // Flattened exports are shared by PDF and supported image surfaces; only

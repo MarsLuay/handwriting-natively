@@ -1,5 +1,6 @@
-import type { DrawingTool, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarOrientation, ToolPreferences } from "../model";
+import type { DrawingTool, FloatingToolbarPosition, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarOrientation, ToolPreferences } from "../model";
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
+import { resolveFloatingToolbarPosition } from "./FloatingToolbarPosition";
 import {
   annotationPageMountMatches,
   annotationPageSafetyReason,
@@ -1039,6 +1040,7 @@ export class ViewerInkSession {
   private lastToolbarUnmountReason: string | null = null;
   private floatingToolbarHandle: HTMLButtonElement | null = null;
   private floatingToolbarAbort: AbortController | null = null;
+  private floatingToolbarPosition: FloatingToolbarPosition | null = null;
   private lastHandwritingUiMissingKey = "";
   private uiIntegrityTimer: number | null = null;
   private readonly previousViewerElementDebugId: number | null;
@@ -1373,6 +1375,7 @@ export class ViewerInkSession {
   private static readonly PAGE_MUTATION_SHIELD_RENDER_QUIET_MS = 120;
 
   private constructor(private readonly options: ViewerInkSessionOptions) {
+    this.floatingToolbarPosition = options.settings.floatingToolbarPosition;
     this.previousViewerElementDebugId = options.restoredAddPageMutation?.viewerElementDebugIdBefore ?? null;
     this.lastAddPageOperationId = options.restoredAddPageMutation?.operationId ?? null;
     const identityInput: DocumentIdentityInput = {
@@ -8319,11 +8322,11 @@ export class ViewerInkSession {
     } catch {
       // The floating toolbar can attach directly to the host if adapter mounting fails.
     }
-    this.mountFloatingToolbar(toolbar, orientationChanged);
+    this.mountFloatingToolbar(toolbar);
     this.lastToolbarMountReason = `${reason}:floating`;
   }
 
-  private mountFloatingToolbar(toolbar: HTMLElement, orientationChanged: boolean): void {
+  private mountFloatingToolbar(toolbar: HTMLElement): void {
     const alreadyFloating = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback");
     this.applyToolbarOrientation(toolbar);
     toolbar.classList.add("native-pdf-handwriting-toolbar-floating-fallback");
@@ -8342,21 +8345,38 @@ export class ViewerInkSession {
       this.installFloatingToolbarDrag(toolbar, handle);
     }
 
-    if (!alreadyFloating || orientationChanged) {
-      const rect = toolbar.getBoundingClientRect();
-      const hostRect = this.options.adapter.host.getBoundingClientRect();
-      const view = toolbar.ownerDocument.defaultView;
-      const maxLeft = Math.max(0, (view?.innerWidth ?? hostRect.right) - rect.width);
-      const maxTop = Math.max(0, (view?.innerHeight ?? hostRect.bottom) - rect.height);
-      const targetLeft = alreadyFloating ? rect.left : hostRect.left + 12;
-      const targetTop = alreadyFloating ? rect.top : hostRect.top + 12;
-      setElementCssProps(toolbar, {
-        left: `${Math.min(Math.max(targetLeft, 0), maxLeft)}px`,
-        top: `${Math.min(Math.max(targetTop, 0), maxTop)}px`,
-        right: "auto",
-        bottom: "auto"
-      });
-    }
+    const rect = toolbar.getBoundingClientRect();
+    this.applyFloatingToolbarPosition(
+      toolbar,
+      this.floatingToolbarPosition,
+      alreadyFloating ? { left: rect.left, top: rect.top } : null
+    );
+  }
+
+  private applyFloatingToolbarPosition(
+    toolbar: HTMLElement,
+    savedPosition: FloatingToolbarPosition | null,
+    currentPosition: FloatingToolbarPosition | null
+  ): void {
+    const rect = toolbar.getBoundingClientRect();
+    const hostRect = this.options.adapter.host.getBoundingClientRect();
+    const view = toolbar.ownerDocument.defaultView;
+    const position = resolveFloatingToolbarPosition({
+      savedPosition,
+      currentPosition,
+      hostPosition: { left: hostRect.left, top: hostRect.top },
+      viewport: {
+        width: view?.innerWidth ?? hostRect.right,
+        height: view?.innerHeight ?? hostRect.bottom
+      },
+      toolbarSize: { width: rect.width, height: rect.height }
+    });
+    setElementCssProps(toolbar, {
+      left: `${position.left}px`,
+      top: `${position.top}px`,
+      right: "auto",
+      bottom: "auto"
+    });
   }
 
   private applyToolbarOrientation(toolbar: HTMLElement): boolean {
@@ -8370,15 +8390,20 @@ export class ViewerInkSession {
   private installFloatingToolbarDrag(toolbar: HTMLElement, handle: HTMLButtonElement): void {
     const abort = new AbortController();
     this.floatingToolbarAbort = abort;
-    let drag: { pointerId: number; startX: number; startY: number; left: number; top: number } | null = null;
+    let drag: { pointerId: number; startX: number; startY: number; left: number; top: number; moved: boolean } | null = null;
     const finish = (event: PointerEvent): void => {
       if (!drag || event.pointerId !== drag.pointerId) return;
+      const finishedDrag = drag;
       drag = null;
       if (handle.hasPointerCapture(event.pointerId)) {
         try { handle.releasePointerCapture(event.pointerId); } catch { /* already released */ }
       }
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
+      if (finishedDrag.moved) {
+        const rect = toolbar.getBoundingClientRect();
+        this.persistFloatingToolbarPosition({ left: rect.left, top: rect.top });
+      }
     };
     handle.addEventListener("pointerdown", (event: PointerEvent) => {
       if (event.button !== 0 || event.isPrimary === false) return;
@@ -8388,7 +8413,8 @@ export class ViewerInkSession {
         startX: event.clientX,
         startY: event.clientY,
         left: Number.parseFloat(toolbar.style.left) || rect.left,
-        top: Number.parseFloat(toolbar.style.top) || rect.top
+        top: Number.parseFloat(toolbar.style.top) || rect.top,
+        moved: false
       };
       try { handle.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
       if (event.cancelable) event.preventDefault();
@@ -8402,6 +8428,7 @@ export class ViewerInkSession {
       const maxTop = Math.max(0, (view?.innerHeight ?? rect.bottom) - rect.height);
       const left = Math.min(Math.max(drag.left + event.clientX - drag.startX, 0), maxLeft);
       const top = Math.min(Math.max(drag.top + event.clientY - drag.startY, 0), maxTop);
+      drag.moved = true;
       setElementCssProps(toolbar, { left: `${left}px`, top: `${top}px` });
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
@@ -8409,6 +8436,17 @@ export class ViewerInkSession {
     for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
       handle.addEventListener(type, finish, { capture: true, passive: false, signal: abort.signal });
     }
+  }
+
+  private persistFloatingToolbarPosition(position: FloatingToolbarPosition): void {
+    this.setFloatingToolbarPosition(position);
+    const save = this.options.savePluginSettings?.({ floatingToolbarPosition: position });
+    if (!save) return;
+    void save.catch((error) => {
+      this.options.vaultLog?.write("error", "floating-toolbar-position-save-failed", {
+        error: this.errorMessage(error)
+      });
+    });
   }
 
   private clearFloatingToolbarFallback(): void {
@@ -17453,6 +17491,14 @@ export class ViewerInkSession {
     if (this.destroyed) return;
     this.reconcileToolbarMount("settings");
     this.scheduleUiIntegrityCheck("settings");
+  }
+
+  setFloatingToolbarPosition(position: FloatingToolbarPosition): void {
+    this.floatingToolbarPosition = { ...position };
+    if (this.destroyed) return;
+    const toolbar = this.toolbar.element;
+    if (!toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")) return;
+    this.applyFloatingToolbarPosition(toolbar, this.floatingToolbarPosition, null);
   }
 
   /** False after PDF++ (or Obsidian) tears down the PDF DOM under this session. */

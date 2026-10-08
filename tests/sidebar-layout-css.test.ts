@@ -39,4 +39,12 @@ describe("side toolbar viewport layout", () => {
     expect(viewerRightRule).toContain("inset-inline-end: var(--ink-rail-width)");
     expect(viewerRightRule).toContain("width: auto");
   });
+
+  it("only displays the PDF thumbnail sidebar after it is opened", () => {
+    const visibleThumbnailsRule = styles.match(
+      /\.hn-owned-pdf-thumbnails:not\(\[hidden\]\) \{([\s\S]*?)\n\}/
+    )?.[1];
+    expect(visibleThumbnailsRule).toContain("display: flex");
+    expect(styles).not.toMatch(/\.hn-owned-pdf-thumbnails \{[^}]*display:\s*flex/);
+  });
 });
