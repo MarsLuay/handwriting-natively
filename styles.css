@@ -551,6 +551,13 @@
   touch-action: auto;
   z-index: 4;
 }
+/* Native PDF embeds own their rendered pixels; keep them above the note-wide ink layer. */
+.native-pdf-handwriting-markdown-surface .internal-embed[src$=".pdf"],
+.native-pdf-handwriting-markdown-surface .internal-embed[data-type="pdf"],
+.native-pdf-handwriting-markdown-surface .pdf-embed {
+  position: relative;
+  z-index: 5;
+}
 /* A short-lived screenshot covers PDF.js' mandatory empty-page interval while
    a mutable source PDF is being rewritten. It never intercepts the viewer. */
 .native-pdf-handwriting-page-mutation-shield {

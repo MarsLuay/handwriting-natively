@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   findMarkdownEditorRoot,
@@ -6,6 +7,8 @@ import {
   MarkdownViewAdapter
 } from "../src/integration/MarkdownViewAdapter";
 import { resolvePageCoordinateLayout } from "../src/pdf/PageCoordinateLayout";
+
+const styles = readFileSync("styles.css", "utf8");
 
 function markdownHost(): { host: HTMLElement; preview: HTMLElement; setScrollHeight: (height: number) => void } {
   const host = document.createElement("div");
@@ -124,6 +127,30 @@ describe("Markdown annotation surface", () => {
     expect(toolbar.isConnected).toBe(false);
     expect(preview.classList.contains("native-pdf-handwriting-relative")).toBe(false);
     expect(adapter.compatibilityReport().errors).toEqual([]);
+  });
+
+  it("keeps native PDF embeds above the Markdown annotation overlay", () => {
+    const { host, preview } = markdownHost();
+    const pdfEmbed = document.createElement("div");
+    pdfEmbed.className = "internal-embed pdf-embed";
+    pdfEmbed.setAttribute("src", "Slides/lecture.pdf");
+    preview.append(pdfEmbed);
+
+    const adapter = MarkdownViewAdapter.attach(host);
+    const overlay = adapter.mountOverlay(1);
+    const embedRule = styles.match(
+      /\.native-pdf-handwriting-markdown-surface \.internal-embed\[src\$="\.pdf"\],[\s\S]*?\.native-pdf-handwriting-markdown-surface \.pdf-embed \{([\s\S]*?)\n\}/
+    )?.[1];
+
+    expect(overlay.parentElement).toBe(preview);
+    expect(preview.classList.contains("native-pdf-handwriting-markdown-surface")).toBe(true);
+    expect(embedRule).toContain("z-index: 5");
+    expect(embedRule).toContain("position: relative");
+
+    adapter.destroy();
+    expect(pdfEmbed.isConnected).toBe(true);
+    expect(pdfEmbed.parentElement).toBe(preview);
+    expect(preview.classList.contains("native-pdf-handwriting-markdown-surface")).toBe(false);
   });
 
   it("mounts editing ink beside, never inside, CodeMirror's editable content", async () => {

@@ -70,6 +70,7 @@ export class MarkdownViewAdapter implements AnnotationSurface {
   private pendingRefreshTimer: number | null = null;
   private pendingRefreshReason: string | null = null;
   private ownsRelativeClass = false;
+  private ownsMarkdownSurfaceClass = false;
   private destroyed = false;
 
   private constructor(
@@ -83,6 +84,10 @@ export class MarkdownViewAdapter implements AnnotationSurface {
     this.pageElement = surfaceRoot;
     this.mode = mode;
     this.callbacks = callbacks;
+    if (!surfaceRoot.classList.contains("native-pdf-handwriting-markdown-surface")) {
+      surfaceRoot.classList.add("native-pdf-handwriting-markdown-surface");
+      this.ownsMarkdownSurfaceClass = true;
+    }
     this.lastGeometry = this.measureGeometry();
     this.installObservers();
   }
@@ -205,6 +210,7 @@ export class MarkdownViewAdapter implements AnnotationSurface {
     for (const mounted of this.mounted) mounted.remove();
     this.mounted.clear();
     if (this.ownsRelativeClass) this.pageElement.classList.remove("native-pdf-handwriting-relative");
+    if (this.ownsMarkdownSurfaceClass) this.pageElement.classList.remove("native-pdf-handwriting-markdown-surface");
   }
 
   private pageInfo(): AnnotationPageInfo {
