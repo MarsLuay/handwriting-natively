@@ -97,6 +97,16 @@ class FakeAdapter implements AnnotationSurface {
   destroy(): void { this.destroyed = true; this.root.remove(); }
 }
 
+class FakeMarkdownAdapter extends FakeAdapter {
+  readonly surfaceType = "markdown" as const;
+
+  isHostOwnedInputTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    const embed = target.closest(".pdf-embed");
+    return Boolean(embed && this.root.contains(embed));
+  }
+}
+
 class CommandBridgeAdapter extends FakeAdapter {
   readonly supportsPdfExport = true as const;
   commandBridge: PdfViewerCommandBridge | null = null;
@@ -1324,6 +1334,61 @@ describe("viewer runtime tracer", () => {
 
     await session.destroy();
     await inactiveSession.destroy();
+  });
+
+  it("preserves native wheel and pinch input inside an embedded PDF in Markdown", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeMarkdownAdapter();
+    const embed = document.createElement("div");
+    embed.className = "internal-embed pdf-embed";
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer-container";
+    embed.append(viewer);
+    adapter.root.append(embed);
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.md",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+    const viewportBefore = session.getViewerState().viewport;
+
+    for (const ctrlKey of [false, true]) {
+      const wheel = new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+        deltaY: 24,
+        clientX: 100,
+        clientY: 120,
+        ctrlKey
+      });
+      viewer.dispatchEvent(wheel);
+      expect(wheel.defaultPrevented).toBe(false);
+    }
+
+    expect(session.getViewerState().viewport).toEqual(viewportBefore);
+    expect(logs).toContainEqual({
+      event: "pointer seen",
+      payload: expect.objectContaining({
+        source: "native-embedded-pdf-input",
+        phase: "preserved",
+        preventDefault: false,
+        target: "div.pdf-viewer-container"
+      })
+    });
+
+    await session.destroy();
   });
 
   it("leaves a native PDF sidebar wheel event for the sidebar", async () => {

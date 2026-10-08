@@ -176,6 +176,18 @@ export class MarkdownViewAdapter implements AnnotationSurface {
     return this.host;
   }
 
+  isHostOwnedInputTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    const embeddedPdf = target.closest(
+      ".pdf-embed, .internal-embed[data-type='pdf'], .internal-embed[src$='.pdf']"
+    );
+    if (embeddedPdf && this.root.contains(embeddedPdf)) return true;
+
+    const internalEmbed = target.closest(".internal-embed");
+    const source = internalEmbed?.getAttribute("src")?.split(/[?#]/, 1)[0] ?? "";
+    return Boolean(internalEmbed && this.root.contains(internalEmbed) && /\.pdf$/i.test(source));
+  }
+
   mountOverlay(pageNumber: number): HTMLElement {
     if (pageNumber !== 1) throw new Error(`Cannot mount annotation overlay: Markdown page ${pageNumber} is unavailable`);
     const overlay = createDetachedDiv(this.pageElement.ownerDocument);

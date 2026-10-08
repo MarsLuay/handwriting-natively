@@ -180,6 +180,23 @@ describe("Markdown annotation surface", () => {
     expect(scroller.classList.contains("native-pdf-handwriting-markdown-surface")).toBe(false);
   });
 
+  it("marks inline PDF viewer descendants as host-owned input targets", () => {
+    const { host, scroller, content } = markdownEditorHost();
+    const pdfEmbed = document.createElement("div");
+    pdfEmbed.className = "internal-embed pdf-embed";
+    pdfEmbed.setAttribute("src", "Slides/lecture.pdf#page=27");
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer-container";
+    pdfEmbed.append(viewer);
+    content.append(pdfEmbed);
+
+    const adapter = MarkdownViewAdapter.attach(host, {}, { mode: "source" });
+
+    expect(adapter.isHostOwnedInputTarget(viewer)).toBe(true);
+    expect(adapter.isHostOwnedInputTarget(content)).toBe(false);
+    adapter.destroy();
+  });
+
   it("mounts editing ink beside, never inside, CodeMirror's editable content", async () => {
     const { host, scroller, content, setScrollHeight } = markdownEditorHost();
     const pagesChanged = vi.fn();

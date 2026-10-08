@@ -127,6 +127,8 @@ export interface AnnotationSurface {
    * Optional so existing test and third-party surfaces remain compatible.
    */
   readonly surfaceType?: AnnotationSurfaceType;
+  /** True when a target belongs to content whose host viewer owns its input. */
+  isHostOwnedInputTarget?(target: EventTarget | null): boolean;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
 

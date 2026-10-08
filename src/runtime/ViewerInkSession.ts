@@ -3734,6 +3734,8 @@ export class ViewerInkSession {
     let lastWheelLogAt = 0;
     let wheelPanCount = 0;
     let lastWheelPanLogAt = 0;
+    let nativeEmbedWheelCount = 0;
+    let lastNativeEmbedWheelLogAt = 0;
 
     const withinNativePdfSidebar = (target: EventTarget | null): boolean => {
       if (!(target instanceof Element)) return false;
@@ -3765,6 +3767,27 @@ export class ViewerInkSession {
     // Plain wheel and trackpad navigation stay browser-owned. This listener
     // observes them only; the unified controller owns explicit pinch zoom.
     doc.addEventListener("wheel", (e: WheelEvent) => {
+      if (this.options.adapter.isHostOwnedInputTarget?.(e.target)) {
+        if (e.deltaX === 0 && e.deltaY === 0) return;
+        const now = performance.now();
+        nativeEmbedWheelCount += 1;
+        if (nativeEmbedWheelCount > 1 && now - lastNativeEmbedWheelLogAt < 80) return;
+        lastNativeEmbedWheelLogAt = now;
+        this.notePointerTypeOrigin(e, "document-wheel", "capture");
+        this.logger.pointerSeen({
+          source: "native-embedded-pdf-input",
+          phase: "preserved",
+          pointerType: "wheel",
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          target: describeTarget(e.target),
+          preventDefault: false,
+          burstIndex: nativeEmbedWheelCount
+        });
+        return;
+      }
       if (e.ctrlKey || e.metaKey) {
         if (this.gestureNavigation.handleWheel(e)) {
           e.preventDefault();

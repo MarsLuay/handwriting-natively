@@ -205,6 +205,7 @@ export default class NativePdfInkPlugin extends Plugin {
   }>();
   private readonly attachingLeaves = new Set<WorkspaceLeaf>();
   private readonly embedChrome = new Map<HTMLElement, EmbedAnnotateChrome>();
+  private readonly pdfEmbedDiagnosticSignatures = new WeakMap<HTMLElement, string>();
   private readonly persistEpochByDoc = new Map<string, number>();
   /** Short-lived Add Page state survives the source-PDF viewer reload. */
   private readonly pendingAddPageRestore = new Map<string, AddPageMutationRestoreState>();
@@ -1746,6 +1747,7 @@ export default class NativePdfInkPlugin extends Plugin {
       for (const [host, chrome] of [...this.embedChrome]) {
         chrome.destroy();
         this.embedChrome.delete(host);
+        this.pdfEmbedDiagnosticSignatures.delete(host);
       }
       return;
     }
@@ -1757,6 +1759,20 @@ export default class NativePdfInkPlugin extends Plugin {
       const root = view.contentEl ?? view.containerEl;
       for (const host of EmbeddedPdfAdapter.discover(root)) {
         liveHosts.add(host);
+        const mode = view.getMode();
+        const diagnostic: Record<string, unknown> = {
+          mode,
+          ...EmbeddedPdfAdapter.runtimeDiagnostic(host, this.markdownSurfaceRoot(view) ?? root)
+        };
+        const bounds = diagnostic.bounds as { width: number; height: number };
+        const signature = JSON.stringify({
+          ...diagnostic,
+          bounds: { width: bounds.width, height: bounds.height }
+        });
+        if (this.pdfEmbedDiagnosticSignatures.get(host) !== signature) {
+          this.pdfEmbedDiagnosticSignatures.set(host, signature);
+          void this.vaultDebugLog.write("info", "markdown PDF embed state", diagnostic);
+        }
         if (this.embedChrome.has(host) || findExistingEmbedChrome(host)) continue;
         const file = resolvePdfFileFromEmbed(this.app, host, sourcePath);
         if (!file) continue;
@@ -1770,6 +1786,7 @@ export default class NativePdfInkPlugin extends Plugin {
       if (!host.isConnected || !liveHosts.has(host)) {
         chrome.destroy();
         this.embedChrome.delete(host);
+        this.pdfEmbedDiagnosticSignatures.delete(host);
       }
     }
   }

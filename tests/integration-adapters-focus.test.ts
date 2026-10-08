@@ -362,6 +362,36 @@ describe("PDF adapters", () => {
     expect(EmbeddedPdfAdapter.discover(note)).toHaveLength(1);
   });
 
+  it("reports bounded embedded PDF render and layout state without file content", () => {
+    const surfaceRoot = document.createElement("div");
+    surfaceRoot.className = "cm-scroller native-pdf-handwriting-markdown-surface";
+    const overlay = document.createElement("div");
+    overlay.className = "native-pdf-handwriting-page-overlay";
+    overlay.dataset.surfaceType = "markdown";
+    const embed = document.createElement("div");
+    embed.className = "internal-embed pdf-embed is-loaded";
+    embed.setAttribute("src", "private-note.pdf#page=4");
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer-container";
+    const page = document.createElement("div");
+    page.className = "page";
+    page.append(document.createElement("canvas"));
+    viewer.append(page);
+    embed.append(viewer);
+    surfaceRoot.append(embed, overlay);
+
+    const diagnostic = EmbeddedPdfAdapter.runtimeDiagnostic(embed, surfaceRoot);
+
+    expect(diagnostic).toMatchObject({
+      hostClass: ["internal-embed", "pdf-embed", "is-loaded"],
+      loaded: true,
+      viewerPresent: true,
+      pagePresent: true,
+      canvasPresent: true
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("private-note.pdf");
+  });
+
   it("ignores PDF++ DOM mutations when watching page changes", async () => {
     const host = compatibleHost();
     const pageChanges = vi.fn();
