@@ -219,6 +219,45 @@ describe("Obsidian PDF toolbar compatibility bridge", () => {
     expect(scratchLeaf.detach).toHaveBeenCalledOnce();
   });
 
+  it("waits for an early native child to finish creating its toolbar", async () => {
+    const toolbarEl = document.createElement("div");
+    toolbarEl.className = "pdf-toolbar";
+    const toolbarRightEl = document.createElement("div");
+    toolbarRightEl.className = "pdf-toolbar-right";
+    toolbarEl.append(toolbarRightEl);
+    const toolbar = {
+      toolbarEl,
+      toolbarRightEl,
+      setPageNumber: () => undefined,
+      setPagesCount: () => undefined,
+      setPageScale: () => undefined,
+      constructor: testToolbarConstructor
+    };
+    const child = { file: null, toolbar: undefined as typeof toolbar | undefined, pdfViewer: { pdfViewer: { pdfDocument: null } } };
+    let onReady: ((readyChild: typeof child) => void) | undefined;
+    const viewer = {
+      child,
+      then: (callback: (readyChild: typeof child) => void): void => { onReady = callback; }
+    };
+    const scratchLeaf = {
+      view: { file: null, viewer },
+      setViewState: vi.fn(async () => {
+        window.setTimeout(() => {
+          child.toolbar = toolbar;
+          onReady?.(child);
+        }, 0);
+      }),
+      detach: vi.fn()
+    } as unknown as WorkspaceLeaf;
+    const workspace = {
+      getLeavesOfType: vi.fn(() => []),
+      getLeaf: vi.fn(() => scratchLeaf)
+    };
+
+    await expect(captureObsidianPdfToolbarConstructor({ workspace } as unknown as App)).resolves.toBe(testToolbarConstructor);
+    expect(scratchLeaf.detach).toHaveBeenCalledOnce();
+  });
+
   it("reuses an existing native constructor without making a scratch view", async () => {
     const toolbarEl = document.createElement("div");
     toolbarEl.className = "pdf-toolbar";

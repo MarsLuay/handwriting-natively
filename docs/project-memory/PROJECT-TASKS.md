@@ -8,7 +8,7 @@ Validate the plugin-owned PDF viewer and native toolbar bridge against current O
 
 Paths: `src/integration/`, `docs/current-limitations.md`
 
-Checks: `npm test`; `npm run build`; manual PDF checks on current desktop, Android, and iPad builds.
+Checks: `npm test`; `npm run build`; the Obsidian 1.14.4 child-before-toolbar regression test; manual PDF checks on current desktop, Android, and iPad builds.
 
 ## source-pdf-write-contract — complete
 

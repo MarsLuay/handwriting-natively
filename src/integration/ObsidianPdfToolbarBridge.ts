@@ -161,8 +161,12 @@ function getToolbarConstructor(child: NativePdfViewerChildLike | null | undefine
 }
 
 function waitForNativeChild(viewer: NativePdfViewerComponentLike, timeoutMs: number): Promise<NativePdfViewerChildLike> {
-  if (viewer.child) return Promise.resolve(viewer.child);
-  if (typeof viewer.then !== "function") return Promise.reject(new Error("Obsidian PDF viewer child is unavailable"));
+  const child = viewer.child;
+  // Obsidian 1.14.4 assigns `child` before its async load creates `child.toolbar`.
+  if (getToolbarConstructor(child)) return Promise.resolve(child!);
+  if (typeof viewer.then !== "function") {
+    return child ? Promise.resolve(child) : Promise.reject(new Error("Obsidian PDF viewer child is unavailable"));
+  }
   return new Promise((resolve, reject) => {
     const timeout = window.setTimeout(() => reject(new Error("Timed out waiting for Obsidian PDF toolbar initialization")), timeoutMs);
     viewer.then?.((child) => {

@@ -14,6 +14,7 @@
       "checks": [
         "npm test",
         "npm run build",
+        "Obsidian 1.14.4 child-before-toolbar regression test",
         "Manual PDF checks on current desktop, Android, and iPad builds"
       ]
     },
