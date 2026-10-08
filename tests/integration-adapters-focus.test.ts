@@ -366,7 +366,7 @@ describe("PDF adapters", () => {
     adapter.destroy();
   });
 
-  it("mounts annotation toolbar after PDF++ color palette", async () => {
+  it("mounts the annotation toolbar in Obsidian's native PDF toolbar after PDF++ color palette", async () => {
     const host = compatibleHost();
     const toolbarHost = host.querySelector(".pdf-toolbar") as HTMLElement;
     const palette = document.createElement("div");

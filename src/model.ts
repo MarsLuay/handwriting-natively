@@ -221,8 +221,6 @@ export interface PluginSettings {
   automaticAnnotationRecovery: boolean;
   /** Vault-relative folder for validated sidecar/recovery backups. */
   annotationBackupPath: string;
-  /** Prefer the plugin-owned PDF viewer for full control over zoom, rendering, and gestures. */
-  preferPluginPdfView: boolean;
   toolPreferences: ToolPreferences;
 }
 
@@ -318,7 +316,6 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   vaultDebugLogPath,
   automaticAnnotationRecovery: true,
   annotationBackupPath: parentVaultFolder(vaultDebugLogPath),
-  preferPluginPdfView: true,
   toolPreferences: createDefaultToolPreferences()
   };
 }
@@ -337,7 +334,9 @@ const LEGACY_SETTING_KEYS = [
   "retainSidecarAfterDirectModification",
   "showZoomMenu",
   // The removed 25× PDF zoom option must not be written back from old settings.
-  "boostedPdfZoom"
+  "boostedPdfZoom",
+  // Direct PDFs now use Obsidian's native viewer and toolbar by default.
+  "preferPluginPdfView"
 ] as const;
 
 export function mergeSettings(
@@ -424,7 +423,6 @@ export function mergeSettings(
     touchDrawFallback: cleaned.touchDrawFallback === true,
     touchDoubleTapEraser: cleaned.touchDoubleTapEraser !== false,
     textEscapeAction: "save" as const,
-    preferPluginPdfView: cleaned.preferPluginPdfView !== false,
     customMobilePdfPinchZoom: typeof cleaned.customMobilePdfPinchZoom === "boolean"
       ? cleaned.customMobilePdfPinchZoom
       : defaults.customMobilePdfPinchZoom,

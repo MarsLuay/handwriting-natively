@@ -34,10 +34,11 @@ describe("main PDF page actions", () => {
     expect(onload).toContain("this.scheduleDebouncedScan(0);");
   });
 
-  it("keeps native PDF scanning when the host rejects the extension override", () => {
-    expect(mainSource).toContain("tryRegisterPdfExtension");
-    expect(mainSource).toContain("pdfExtensionRegistration.registered");
-    expect(mainSource).toContain("restoreOwnedPdfLeavesToNative");
+  it("keeps Obsidian's native PDF viewer and toolbar as the default", () => {
+    const onload = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("  /** Catch uncaught errors"));
+    expect(onload).not.toContain("registerExtensions");
+    expect(onload).not.toContain("adoptExistingNativePdfLeaves");
+    expect(onload).toContain("restoreOwnedPdfLeavesToNative");
     expect(mainSource).toContain('type: "pdf"');
   });
 

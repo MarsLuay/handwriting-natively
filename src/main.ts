@@ -22,7 +22,6 @@ import { isSupportedImageFile } from "./integration/ImageFileTypes";
 import type { AnnotationSurface, AnnotationSurfaceCallbacks } from "./runtime/AnnotationSurface";
 import { pdfSurfaceExtensions } from "./integration/ObsidianPdfAdapter";
 import { PdfViewerCompatibility } from "./integration/PdfViewerCompatibility";
-import { tryRegisterPdfExtension } from "./integration/PdfExtensionRegistration";
 import { probePlatformCapabilities } from "./integration/PlatformCapabilities";
 import { describePdfPageDom } from "./integration/pdfPageSelectors";
 import { getDebugNodeId } from "./dom/debugNodeId";
@@ -240,6 +239,8 @@ export default class NativePdfInkPlugin extends Plugin {
       await this.loadData() as Partial<PluginSettings> | null,
       this.app.vault.configDir
     );
+    // Keep the legacy view type registered so saved plugin-owned leaves can be
+    // restored and migrated, but never override Obsidian's native PDF viewer.
     this.registerView(PLUGIN_PDF_VIEW_TYPE, (leaf) => new PluginPdfView(leaf, {
       pluginDir,
       createAdapter: (file, host, callbacks) => PdfJsViewAdapter.create({
@@ -268,23 +269,7 @@ export default class NativePdfInkPlugin extends Plugin {
       },
       onDiagnostic: (event, payload) => this.vaultDebugLog.write("info", event, payload)
     }));
-    // Prefer the plugin-owned PDF view when the host allows an extension
-    // override. Newer Obsidian desktop builds reject overriding their built-in
-    // PDF extension; that must not abort the entire plugin before native-view
-    // scanning can attach handwriting sessions.
-    const pdfExtensionRegistration = tryRegisterPdfExtension(
-      (extensions, viewType) => this.registerExtensions(extensions, viewType),
-      PLUGIN_PDF_VIEW_TYPE
-    );
     await this.vaultDebugLog.clear();
-    if (!pdfExtensionRegistration.registered) {
-      await this.vaultDebugLog.writeUrgent("warn", "pdf extension registration skipped", {
-        reason: "host-extension-already-registered",
-        error: pdfExtensionRegistration.error instanceof Error
-          ? pdfExtensionRegistration.error.message
-          : String(pdfExtensionRegistration.error)
-      });
-    }
     this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(activeDocument, (diagnostic) => {
       this.vaultDebugLog.write("info", "mobile-navigation-swipe-blocked", { ...diagnostic });
     });
@@ -363,8 +348,8 @@ export default class NativePdfInkPlugin extends Plugin {
         mobile: Platform.isMobile,
         phone: Platform.isPhone
       });
-      if (file?.extension?.toLowerCase() === "pdf" && this.inkSettings.preferPluginPdfView) {
-        void this.adoptExistingNativePdfLeaves().finally(() => this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100));
+      if (file?.extension?.toLowerCase() === "pdf") {
+        void this.restoreOwnedPdfLeavesToNative().finally(() => this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100));
       } else {
         this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100);
       }
@@ -374,12 +359,9 @@ export default class NativePdfInkPlugin extends Plugin {
         mobile: Platform.isMobile,
         phone: Platform.isPhone
       });
-      if (pdfExtensionRegistration.registered || this.inkSettings.preferPluginPdfView) {
-        void this.adoptExistingNativePdfLeaves().finally(() => this.scheduleDebouncedScan());
-      } else {
-        // Restore leaves to native viewer when preferPluginPdfView is disabled.
-        void this.restoreOwnedPdfLeavesToNative().finally(() => this.scheduleDebouncedScan());
-      }
+      // Keep the native Obsidian viewer and its .pdf-toolbar as the default.
+      // Any previously persisted plugin-owned leaves are migrated back to it.
+      void this.restoreOwnedPdfLeavesToNative().finally(() => this.scheduleDebouncedScan());
     });
     this.registerDomEvent(window, "beforeunload", () => {
       this.emergencyPersistAllSessions();
@@ -1037,31 +1019,23 @@ export default class NativePdfInkPlugin extends Plugin {
     });
   }
 
-  private async adoptExistingNativePdfLeaves(): Promise<void> {
-    if (this.unloaded) return;
-    for (const leaf of this.app.workspace.getLeavesOfType("pdf")) {
-      const file = this.fileForLeaf(leaf);
-      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
-      const current = leaf.getViewState();
-      if (current.type === PLUGIN_PDF_VIEW_TYPE) continue;
-      await leaf.setViewState({
-        ...current,
-        type: PLUGIN_PDF_VIEW_TYPE,
-        state: { ...(current.state ?? {}), file: file.path }
-      });
-    }
-  }
-
+  /** Migrate persisted legacy plugin-owned leaves back to Obsidian's native PDF view. */
   private async restoreOwnedPdfLeavesToNative(): Promise<void> {
     if (this.unloaded) return;
     for (const leaf of this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE)) {
-      const file = this.fileForLeaf(leaf);
-      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
       const current = leaf.getViewState();
+      const state = current.state && typeof current.state === "object"
+        ? current.state
+        : {};
+      const stateFile = typeof state.file === "string"
+        ? this.app.vault.getAbstractFileByPath(state.file)
+        : null;
+      const file = this.fileForLeaf(leaf) ?? (stateFile instanceof TFile ? stateFile : null);
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
       await leaf.setViewState({
         ...current,
         type: "pdf",
-        state: { ...(current.state ?? {}), file: file.path }
+        state: { ...state, file: file.path }
       });
     }
   }

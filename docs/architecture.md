@@ -1,6 +1,6 @@
 # Architecture
 
-Handwriting Natively adds one annotation system to Obsidian's direct and embedded document experiences. PDF pages and one-page image surfaces implement the same `AnnotationSurface` contract, so both routes share input policy, tools, toolbar, history, sidecar storage, autosave, and recovery. PDF export, page mutation, PDF.js find integration, and thumbnail actions are optional PDF surface extensions rather than requirements of the shared runtime. `MarkdownViewAdapter` is a future-only one-page Reading-view scaffold using the same contract; it is not registered by the entrypoint, so Markdown behavior remains unchanged.
+Handwriting Natively adds one annotation system to Obsidian's direct and embedded document experiences. PDF pages and one-page image surfaces implement the same `AnnotationSurface` contract, so both routes share input policy, tools, toolbar, history, sidecar storage, autosave, and recovery. PDF export, page mutation, PDF.js find integration, and thumbnail actions are optional PDF surface extensions rather than requirements of the shared runtime. `MarkdownViewAdapter` is a future-only one-page Reading-view scaffold using the same contract; it is not registered by the entrypoint, so Markdown behavior remains unchanged. Direct PDFs use Obsidian's native PDF view and `.pdf-toolbar` by default; the plugin's annotation tools attach to that viewer without replacing its navigation toolbar. Previously saved plugin-owned PDF tabs are restored to the native view.
 
 ## Boundaries
 

@@ -135,6 +135,12 @@ describe("safe defaults", () => {
     });
   });
 
+  it("migrates the retired plugin-owned PDF viewer preference to the native viewer", () => {
+    expect(DEFAULT_SETTINGS).not.toHaveProperty("preferPluginPdfView");
+    expect(mergeSettings(undefined)).not.toHaveProperty("preferPluginPdfView");
+    expect(mergeSettings({ preferPluginPdfView: true } as never)).not.toHaveProperty("preferPluginPdfView");
+  });
+
   it("enables finger double-tap eraser switching by default and preserves an explicit opt-out", () => {
     expect(DEFAULT_SETTINGS.touchDoubleTapEraser).toBe(true);
     expect(mergeSettings(undefined).touchDoubleTapEraser).toBe(true);

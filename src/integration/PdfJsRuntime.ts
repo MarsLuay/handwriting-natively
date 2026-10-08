@@ -2,8 +2,8 @@ import type { App } from "obsidian";
 import * as bundledPdfJs from "pdfjs-dist";
 import { WorkerMessageHandler } from "pdfjs-dist/build/pdf.worker.mjs";
 
-if (typeof globalThis !== "undefined") {
-  (globalThis as unknown as { pdfjsWorker?: unknown }).pdfjsWorker = { WorkerMessageHandler };
+if (typeof window !== "undefined") {
+  (window as unknown as { pdfjsWorker?: unknown }).pdfjsWorker = { WorkerMessageHandler };
 }
 
 export interface PdfJsViewport {
