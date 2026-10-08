@@ -40,6 +40,8 @@ export interface RenderedPageRecord {
 
 export interface RenderSchedulerOptions {
   coordinator?: PageLifecycleCoordinator | undefined;
+  /** Timers from the owning PDF document, so popout viewers stay in their window. */
+  timerWindow?: Window | undefined;
   maxRenderedPages?: number | undefined;
   maxTotalPixels?: number | undefined;
   settleTimeoutMs?: number | undefined;
@@ -59,6 +61,7 @@ interface ActiveJobController {
 
 export class RenderScheduler {
   private readonly coordinator: PageLifecycleCoordinator | undefined;
+  private readonly timerWindow: Window;
   private readonly maxRenderedPages: number;
   private readonly maxTotalPixels: number;
   private readonly settleTimeoutMs: number;
@@ -85,13 +88,14 @@ export class RenderScheduler {
   private activeController: ActiveJobController | null = null;
   private readonly renderedPages = new Map<number, RenderedPageRecord>();
 
-  private settleTimer: ReturnType<typeof setTimeout> | null = null;
-  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private settleTimer: number | null = null;
+  private idleTimer: number | null = null;
   private isDraining = false;
   private destroyed = false;
 
   constructor(options: RenderSchedulerOptions) {
     this.coordinator = options.coordinator;
+    this.timerWindow = options.timerWindow ?? (typeof window === "undefined" ? activeWindow : window);
     this.maxRenderedPages = Math.max(2, options.maxRenderedPages ?? 8);
     this.maxTotalPixels = Math.max(1_000_000, options.maxTotalPixels ?? 80_000_000);
     this.settleTimeoutMs = Math.max(30, options.settleTimeoutMs ?? 120);
@@ -103,6 +107,14 @@ export class RenderScheduler {
     this.executeRender = options.executeRender;
     this.onEvict = options.onEvict;
     this.onPhaseChange = options.onPhaseChange;
+  }
+
+  private scheduleTimer(callback: () => void, delayMs: number): number {
+    return this.timerWindow.setTimeout(callback, delayMs);
+  }
+
+  private cancelTimer(timer: number): void {
+    this.timerWindow.clearTimeout(timer);
   }
 
   getPhase(): RenderPhase {
@@ -154,14 +166,14 @@ export class RenderScheduler {
       }
     }
     if (this.settleTimer !== null) {
-      clearTimeout(this.settleTimer);
+      this.cancelTimer(this.settleTimer);
       this.settleTimer = null;
     }
     if (this.idleTimer !== null) {
-      clearTimeout(this.idleTimer);
+      this.cancelTimer(this.idleTimer);
       this.idleTimer = null;
     }
-    this.settleTimer = setTimeout(() => {
+    this.settleTimer = this.scheduleTimer(() => {
       this.settleTimer = null;
       this.notifySettled();
     }, this.settleTimeoutMs);
@@ -182,11 +194,11 @@ export class RenderScheduler {
   notifySettled(): void {
     if (this.destroyed) return;
     if (this.settleTimer !== null) {
-      clearTimeout(this.settleTimer);
+      this.cancelTimer(this.settleTimer);
       this.settleTimer = null;
     }
     if (this.idleTimer !== null) {
-      clearTimeout(this.idleTimer);
+      this.cancelTimer(this.idleTimer);
       this.idleTimer = null;
     }
     if (this.phase !== "settled") {
@@ -195,13 +207,13 @@ export class RenderScheduler {
     }
     this.upgradeVisiblePagesToTargetResolution();
     this.updatePredictedNextPage();
-    this.drainQueue();
+    void this.drainQueue();
   }
 
   notifyIdle(): void {
     if (this.destroyed || this.phase === "movement") return;
     if (this.idleTimer !== null) {
-      clearTimeout(this.idleTimer);
+      this.cancelTimer(this.idleTimer);
       this.idleTimer = null;
     }
     if (this.phase !== "idle") {
@@ -209,7 +221,7 @@ export class RenderScheduler {
       this.onPhaseChange?.("idle");
     }
     this.scheduleQualityUpgrades();
-    this.drainQueue();
+    void this.drainQueue();
   }
 
   notifyScale(scale: number, rotation: number): void {
@@ -363,7 +375,7 @@ export class RenderScheduler {
     const rendered = this.renderedPages.get(predicted);
     if (!rendered || rendered.scale !== this.currentScale || rendered.rotation !== this.currentRotation) {
       if (!this.immediateQueue.has(predicted) && !this.highQueue.has(predicted)) {
-        this.requestPage(predicted, "medium");
+        void this.requestPage(predicted, "medium");
       }
     }
   }
@@ -377,7 +389,7 @@ export class RenderScheduler {
         && record.dpr < targetDpr
       ) {
         if (!this.isRenderQueued(pageNumber)) {
-          this.requestPage(pageNumber, "low", targetDpr);
+          void this.requestPage(pageNumber, "low", targetDpr);
         }
       }
     }
@@ -493,7 +505,7 @@ export class RenderScheduler {
     if (this.destroyed || this.phase !== "settled") return;
     if (this.immediateQueue.size > 0 || this.highQueue.size > 0) return;
     if (this.idleTimer !== null) return;
-    this.idleTimer = setTimeout(() => {
+    this.idleTimer = this.scheduleTimer(() => {
       this.idleTimer = null;
       if (!this.destroyed && this.phase === "settled") {
         this.notifyIdle();
@@ -629,11 +641,11 @@ export class RenderScheduler {
     if (this.destroyed) return;
     this.destroyed = true;
     if (this.settleTimer !== null) {
-      clearTimeout(this.settleTimer);
+      this.cancelTimer(this.settleTimer);
       this.settleTimer = null;
     }
     if (this.idleTimer !== null) {
-      clearTimeout(this.idleTimer);
+      this.cancelTimer(this.idleTimer);
       this.idleTimer = null;
     }
     if (this.activeController) {

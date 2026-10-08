@@ -11,18 +11,6 @@ const MAX_RETAINED_BURSTS = 5;
 const MAX_PDF_SIGNALS = 16;
 const EVENT_LOOP_PROBE_INTERVAL_MS = 50;
 
-type PdfSignalName =
-  | "scalechanging"
-  | "pagerenderStart"
-  | "pagerendered"
-  | "updateviewarea"
-  | "textLayerRender"
-  | "annotationLayerRender"
-  | "canvasReplacement"
-  | "pagesMutation"
-  | "resizeObserver"
-  | "mutationObserver";
-
 export type ZoomDiagnosticPhase = "active-pinch" | "post-pinch-live-ink" | "handoff" | "settled";
 export type FrameAttribution =
   | "event-loop-starvation"
@@ -117,15 +105,19 @@ interface CompletedBurst {
 
 const defaultClock: Clock = {
   now: () => (typeof performance === "undefined" ? Date.now() : performance.now()),
-  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
-  clearTimeout: (timer) => clearTimeout(timer)
+  setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs) as unknown as ReturnType<typeof setTimeout>,
+  clearTimeout: (timer) => window.clearTimeout(timer as unknown as number)
 };
 
 export function performanceObserverCapability(): PerformanceObserverCapability {
   const observer = typeof PerformanceObserver === "undefined" ? null : PerformanceObserver;
-  const supportedEntryTypes = observer && Array.isArray(observer.supportedEntryTypes)
-    ? [...observer.supportedEntryTypes]
-    : [];
+  const supportedEntryTypes: string[] = [];
+  const entryTypes: unknown = observer?.supportedEntryTypes;
+  if (Array.isArray(entryTypes)) {
+    for (const entryType of entryTypes) {
+      if (typeof entryType === "string") supportedEntryTypes.push(entryType);
+    }
+  }
   return {
     performanceObserverSupported: observer !== null,
     supportedEntryTypes,
@@ -229,7 +221,7 @@ export class ZoomFrameDiagnostics {
     if (this.active) this.longestObservedLongTaskMs = Math.max(this.longestObservedLongTaskMs, durationMs);
   }
 
-  notePdfSignal(name: PdfSignalName | string, callbackWorkMs = 0, at = this.clock.now()): void {
+  notePdfSignal(name: string, callbackWorkMs = 0, at = this.clock.now()): void {
     if (!this.active) return;
     this.noteSignal(this.pdfSignals, name, callbackWorkMs, at);
     this.pdfCallbackWorkTotalMs += Math.max(0, callbackWorkMs);

@@ -101,7 +101,7 @@ import { detectPointerInputCapabilities } from "../input/PointerInputCapabilitie
 import { GestureOwnership } from "../input/GestureOwnership";
 import { PostUiInputProbe, POST_UI_INPUT_PHASE_THRESHOLD_MS, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type DocumentInputOwnershipHandle } from "../input/DocumentInputOwnership";
-import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
+import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
 import {
   acquirePhysicalContactCollector,
   physicalContactHotPathStats,
@@ -127,10 +127,6 @@ import {
 } from "../input/GestureNavigationController";
 import { HandwritingViewport, type HandwritingViewportState } from "../integration/HandwritingViewport";
 import { ViewerCommandController, type ViewerCommandHost } from "./ViewerCommandController";
-import type {
-  MobilePdfZoomHandoffCancelReason,
-  MobilePdfZoomHandoffSignal
-} from "../integration/MobilePdfZoomHandoff";
 import {
   planMobileCustomPdfZoom,
   type MobileCustomPdfZoomFallbackReason,
@@ -173,7 +169,7 @@ import { createDocumentIdentity, hashDocumentContent, type DocumentIdentityInput
 import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
-import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar, reorderPageInSidecar, reorderPageNumber } from "../storage/SidecarPageRemoval";
+import { insertPagesIntoSidecar, removePageFromSidecar, reorderPageInSidecar, reorderPageNumber } from "../storage/SidecarPageRemoval";
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultFs";
 import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
@@ -192,8 +188,8 @@ import {
   type ZoomNativeHandoffSummary
 } from "./ZoomNativeHandoffTrace";
 import type { VaultLogSink } from "../logging/VaultLogSink";
-import type { AnnotationViewState, ViewerState, ViewerViewportState, ViewerScaleMode } from "./AnnotationSurface";
-import { normalizeScaleMode } from "./ViewerState";
+import type { AnnotationViewState, ViewerState, ViewerViewportState } from "./AnnotationSurface";
+import { cloneViewerState, createViewerState } from "./ViewerState";
 import { describeScrollElement } from "../integration/PdfScrollRoot";
 import { TextAnnotationSession } from "../text/TextAnnotationSession";
 import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../text/TextAnnotationCommands";
@@ -523,7 +519,7 @@ export interface AddPageMutationRestoreState {
   operationId: string;
   startedAt: number;
   capturedAt: number;
-  viewState: AnnotationViewState;
+  viewState: ViewerState;
   pageCountBefore: number;
   currentPageBefore: number;
   mountedPageNumbers: number[];
@@ -1085,8 +1081,10 @@ export class ViewerInkSession {
   private temporaryStylusEraserPointers = 0;
   private debugState: DebugState = {};
   private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
-  /** Authoritative persistent handwriting viewport state (scale, x, y). */
+  /** Live visual transform and native-scroll projection for handwriting interactions. */
   readonly handwritingViewport: HandwritingViewport;
+  /** Canonical viewer state; adapters report rendered state into this session-owned snapshot. */
+  private canonicalViewerState: ViewerState = createViewerState();
   /** Authoritative command controller for zoom, pan, hand mode, search, navigation, and rotation. */
   readonly commandController: ViewerCommandController;
   private destroyed = false;
@@ -1394,7 +1392,12 @@ export class ViewerInkSession {
       : null;
     this.ipadInputTrace?.start(options.debugEnabled?.() === true);
     this.frameBudget = new EffectiveFrameBudget(this.frameTimingEnvironment());
-    this.zoomFrameDiagnostics = new ZoomFrameDiagnostics(undefined, this.frameBudget);
+    const diagnosticWindow = options.adapter.host.ownerDocument.defaultView ?? window;
+    this.zoomFrameDiagnostics = new ZoomFrameDiagnostics({
+      now: () => diagnosticWindow.performance.now(),
+      setTimeout: (callback, delayMs) => diagnosticWindow.setTimeout(callback, delayMs) as unknown as ReturnType<typeof setTimeout>,
+      clearTimeout: (timer) => diagnosticWindow.clearTimeout(timer as unknown as number)
+    }, this.frameBudget);
     this.zoomPipelineTrace = new ZoomPipelineTrace({ enabled: () => this.logger.isEnabled() });
     this.zoomNativeHandoffTrace = new ZoomNativeHandoffTrace();
     this.ink = new InkSession([], (event) => this.recordInkLifecycle(event));
@@ -1439,6 +1442,9 @@ export class ViewerInkSession {
             this.touchDoubleTapPreviousTool = null;
           }
           const previousTool = this.lastObservedTool;
+          if (preferences.activeTool !== previousTool) {
+            pdfExtensions?.setHandToolActive?.(preferences.activeTool === "drag");
+          }
           if (preferences.activeTool !== previousTool) {
             const at = Date.now();
             const pageGenerations = [...this.surfaces.values()].map((surface) => ({
@@ -1620,6 +1626,7 @@ export class ViewerInkSession {
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
     const initialViewState = adapter.getViewState();
+    this.canonicalViewerState = createViewerState(initialViewState);
     const initialScroll = adapter.scrollElement();
     this.handwritingViewport = new HandwritingViewport({
       getContainerRect: () => {
@@ -1647,17 +1654,23 @@ export class ViewerInkSession {
       getScrollElement: () => adapter.scrollElement(),
       minScale: 0.1,
       maxScale: 10,
+      initialRenderedScale: initialViewState.viewport?.scale ?? initialViewState.scale ?? 1,
       initialState: {
         scale: initialViewState.viewport?.scale ?? initialViewState.scale ?? 1,
         x: -(Number.isFinite(initialScroll.scrollLeft) ? initialScroll.scrollLeft : 0),
         y: -(Number.isFinite(initialScroll.scrollTop) ? initialScroll.scrollTop : 0)
-      }
+      },
+      onStateChange: (viewport) => this.updateViewerStateFromViewport(viewport)
     });
-    this.handwritingViewport.setTarget(adapter.root);
+    this.handwritingViewport.setTarget(
+      pdfSurfaceExtensions(adapter)?.viewportContentElement?.() ?? adapter.root
+    );
     this.lifecycleVisibilityUnsubscribe = pdfExtensions?.lifecycleCoordinator?.onVisibilityChange(
       (event) => this.onLifecycleVisibilityChange(event)
     ) ?? null;
     this.commandController = new ViewerCommandController(this.createViewerCommandHost());
+    pdfExtensions?.setViewerCommandBridge?.(this.commandController);
+    pdfExtensions?.setHandToolActive?.(this.commandController.isHandMode());
     this.gestureNavigation = new GestureNavigationController({
       minScale: 0.1,
       maxScale: 10,
@@ -1745,24 +1758,7 @@ export class ViewerInkSession {
   }
 
   getViewerState(): ViewerState {
-    const adapterState = this.options.adapter.getViewState();
-    const vp = this.handwritingViewport.getState();
-    const scrollRoot = this.options.adapter.scrollElement();
-    const scale = vp.scale || adapterState.viewport?.scale || adapterState.scale || 1;
-    return {
-      viewport: {
-        scale,
-        // ViewerState persists the native-scroll projection; HandwritingViewport
-        // keeps the live visual translation internally as the authority.
-        x: adapterState.viewport?.x ?? scrollRoot.scrollLeft ?? 0,
-        y: adapterState.viewport?.y ?? scrollRoot.scrollTop ?? 0
-      },
-      pageNumber: adapterState.pageNumber || 1,
-      rotation: normalizeRotation(adapterState.rotation || 0),
-      scaleMode: normalizeScaleMode(adapterState.scaleMode),
-      ...(adapterState.scrollFraction !== undefined ? { scrollFraction: adapterState.scrollFraction } : {}),
-      scale
-    };
+    return cloneViewerState(this.canonicalViewerState);
   }
 
   viewerState(): ViewerState {
@@ -1770,38 +1766,74 @@ export class ViewerInkSession {
   }
 
   setViewerState(patch: Partial<ViewerState> | ViewerState | AnnotationViewState): void {
-    const currentAdapterState = this.options.adapter.getViewState();
-    const scrollRoot = this.options.adapter.scrollElement();
-    const currentScale = this.handwritingViewport.getState().scale;
-    const nextScale = patch.viewport?.scale ?? patch.scale ?? currentScale;
-    const nextX = patch.viewport?.x ?? currentAdapterState.viewport?.x ?? scrollRoot.scrollLeft;
-    const nextY = patch.viewport?.y ?? currentAdapterState.viewport?.y ?? scrollRoot.scrollTop;
-    const nextAdapterState: ViewerState = {
+    this.applyViewerState(patch, false);
+  }
+
+  private applyViewerState(
+    patch: Partial<ViewerState> | ViewerState | AnnotationViewState,
+    forceRestore: boolean
+  ): void {
+    const current = this.canonicalViewerState;
+    const patchViewport: Partial<ViewerViewportState> = patch.viewport ?? {};
+    const nextScale = patchViewport.scale ?? patch.scale ?? current.viewport.scale;
+    const nextX = patchViewport.x ?? current.viewport.x;
+    const nextY = patchViewport.y ?? current.viewport.y;
+    const nextAdapterState = createViewerState({
+      ...current,
+      ...patch,
       viewport: {
+        ...current.viewport,
+        ...patchViewport,
         scale: nextScale,
         x: Number.isFinite(nextX) ? nextX : 0,
         y: Number.isFinite(nextY) ? nextY : 0
       },
-      pageNumber: patch.pageNumber ?? currentAdapterState.pageNumber ?? 1,
-      rotation: patch.rotation !== undefined ? normalizeRotation(patch.rotation) : currentAdapterState.rotation,
-      scaleMode: patch.scaleMode !== undefined ? normalizeScaleMode(patch.scaleMode) : normalizeScaleMode(currentAdapterState.scaleMode),
-      ...(patch.scrollFraction !== undefined
-        ? { scrollFraction: patch.scrollFraction }
-        : currentAdapterState.scrollFraction !== undefined
-          ? { scrollFraction: currentAdapterState.scrollFraction }
-          : {}),
       scale: nextScale
-    };
+    });
+    const pageOnlyChange = nextAdapterState.pageNumber !== current.pageNumber
+      && patch.pageNumber !== undefined
+      && patchViewport.scale === undefined
+      && patchViewport.x === undefined
+      && patchViewport.y === undefined
+      && patch.scale === undefined
+      && patch.rotation === undefined
+      && patch.scaleMode === undefined
+      && patch.scrollFraction === undefined;
+    const stateChanged = nextAdapterState.pageNumber !== current.pageNumber
+      || nextAdapterState.rotation !== current.rotation
+      || nextAdapterState.scaleMode !== current.scaleMode
+      || nextAdapterState.viewport.scale !== current.viewport.scale
+      || nextAdapterState.viewport.x !== current.viewport.x
+      || nextAdapterState.viewport.y !== current.viewport.y
+      || nextAdapterState.scrollFraction !== current.scrollFraction;
+    if (!stateChanged && !forceRestore) return;
+
+    // Publish the canonical command result first. The adapter is a rendering
+    // projection; its callback reconciles this snapshot with what it applied.
+    this.canonicalViewerState = cloneViewerState(nextAdapterState);
+    if (pageOnlyChange && !forceRestore) {
+      try {
+        this.options.adapter.focusPage(nextAdapterState.pageNumber);
+      } catch {
+        // The adapter may be detaching while the page-only command is applied.
+      }
+      this.updateViewerStateFromAdapter();
+      return;
+    }
 
     try {
       this.options.adapter.restoreViewState(nextAdapterState);
-    } catch {}
-
-    if (patch.pageNumber !== undefined && patch.pageNumber !== currentAdapterState.pageNumber) {
-      try {
-        this.options.adapter.focusPage(patch.pageNumber);
-      } catch {}
+    } catch {
+      // A replaced PDF adapter can reject a best-effort viewer-state restore.
     }
+
+    const renderedState = this.options.adapter.getViewState();
+    const renderedScroll = this.options.adapter.scrollElement();
+    this.handwritingViewport.syncRenderedState(
+      renderedState.viewport?.scale ?? renderedState.scale ?? nextScale,
+      renderedScroll.scrollLeft,
+      renderedScroll.scrollTop
+    );
 
     // ViewerState x/y are native-scroll projection coordinates. Convert them
     // back into HandwritingViewport's canonical visual translation only when
@@ -1810,8 +1842,8 @@ export class ViewerInkSession {
     if (patch.viewport?.x !== undefined || patch.viewport?.y !== undefined) {
       this.handwritingViewport.setState({
         scale: nextScale,
-        x: -(Number.isFinite(nextX) ? nextX : 0),
-        y: -(Number.isFinite(nextY) ? nextY : 0)
+        x: -nextAdapterState.viewport.x,
+        y: -nextAdapterState.viewport.y
       });
     } else {
       this.handwritingViewport.setState({ scale: nextScale }, false);
@@ -1822,10 +1854,61 @@ export class ViewerInkSession {
         true
       );
     }
+    this.updateViewerStateFromAdapter();
+  }
+
+  private updateViewerStateFromAdapter(state: AnnotationViewState = this.options.adapter.getViewState()): void {
+    const scroll = this.options.adapter.scrollElement();
+    const viewport = this.handwritingViewport?.getState();
+    const renderedScale = this.handwritingViewport?.getRenderedScale();
+    const viewportOwnsZoom = viewport !== undefined
+      && typeof renderedScale === "number"
+      && Number.isFinite(viewport.scale)
+      && Number.isFinite(renderedScale)
+      && Math.abs(viewport.scale - renderedScale) > 0.001;
+    this.canonicalViewerState = createViewerState({
+      viewport: {
+        // Keep a live compositor scale in the canonical view snapshot while
+        // taking position and page metadata from the platform adapter.
+        scale: viewport?.scale ?? state.viewport?.scale ?? state.scale ?? this.canonicalViewerState.viewport.scale,
+        x: state.viewport?.x ?? scroll.scrollLeft ?? this.canonicalViewerState.viewport.x,
+        y: state.viewport?.y ?? scroll.scrollTop ?? this.canonicalViewerState.viewport.y
+      },
+      pageNumber: state.pageNumber ?? this.canonicalViewerState.pageNumber,
+      rotation: state.rotation ?? this.canonicalViewerState.rotation,
+      // Native scroll/page notifications can report the renderer's old fit
+      // mode while the CSS-owned pinch scale is still active. Preserve the
+      // user's custom view mode until the renderer itself is reconciled.
+      scaleMode: viewportOwnsZoom ? "custom" : state.scaleMode ?? this.canonicalViewerState.scaleMode,
+      ...(state.scrollFraction !== undefined
+        ? { scrollFraction: state.scrollFraction }
+        : this.canonicalViewerState.scrollFraction !== undefined
+          ? { scrollFraction: this.canonicalViewerState.scrollFraction }
+          : {})
+    });
+  }
+
+  private updateViewerStateFromViewport(viewport: HandwritingViewportState): void {
+    let adapterState: AnnotationViewState | ViewerState;
+    try {
+      adapterState = this.options.adapter.getViewState();
+    } catch {
+      adapterState = this.canonicalViewerState;
+    }
+    const scroll = this.options.adapter.scrollElement();
+    this.canonicalViewerState = createViewerState({
+      ...this.canonicalViewerState,
+      viewport: {
+        scale: viewport.scale,
+        x: adapterState.viewport?.x ?? scroll.scrollLeft ?? this.canonicalViewerState.viewport.x,
+        y: adapterState.viewport?.y ?? scroll.scrollTop ?? this.canonicalViewerState.viewport.y
+      },
+      scale: viewport.scale
+    });
   }
 
   restoreViewerState(state: Partial<ViewerState> | ViewerState | AnnotationViewState): void {
-    this.setViewerState(state);
+    this.applyViewerState(state, true);
   }
 
   private createViewerCommandHost(): ViewerCommandHost {
@@ -1846,19 +1929,22 @@ export class ViewerInkSession {
         try {
           const scrollEl = this.options.adapter.scrollElement?.();
           const containerWidth = scrollEl?.clientWidth || this.options.adapter.root?.clientWidth || 0;
-          const pageNum = this.getViewerState().pageNumber;
+          const viewer = this.getViewerState();
+          const pageNum = viewer.pageNumber;
           const page = this.options.adapter.page(pageNum);
-          const pageWidth = page?.width || 612;
+          const rotated = viewer.rotation % 180 !== 0;
+          const pageWidth = page ? (rotated ? page.height : page.width) : 612;
           if (containerWidth > 0 && pageWidth > 0) {
             const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
-            const viewer = this.getViewerState();
             this.setViewerState({
               viewport: { scale: targetScale, x: 0, y: viewer.viewport.y },
               scale: targetScale,
               scaleMode: "fit-width"
             });
           }
-        } catch {}
+        } catch {
+          // Fit commands are optional while PDF page geometry is being replaced.
+        }
       },
       fitPage: () => {
         try {
@@ -1880,7 +1966,9 @@ export class ViewerInkSession {
               scaleMode: "fit-page"
             });
           }
-        } catch {}
+        } catch {
+          // Fit commands are optional while PDF page geometry is being replaced.
+        }
       },
       getContainerWidth: () => {
         try {
@@ -1907,11 +1995,9 @@ export class ViewerInkSession {
       },
       focusPage: (pageNumber: number) => {
         try {
-          const ok = this.options.adapter.focusPage(pageNumber);
-          if (ok) {
-            this.setViewerState({ pageNumber });
-          }
-          return ok;
+          const focused = this.options.adapter.focusPage(pageNumber);
+          if (focused) this.updateViewerStateFromAdapter();
+          return focused;
         } catch {
           return false;
         }
@@ -3442,8 +3528,9 @@ export class ViewerInkSession {
       let documentPredictedCount = 0;
       try {
         documentCoalescedCount = e.getCoalescedEvents?.().length ?? 0;
-        const predicted = (e as PointerEvent & { getPredictedEvents?: () => PointerEvent[] }).getPredictedEvents;
-        documentPredictedCount = predicted ? predicted.call(e).length : 0;
+        documentPredictedCount = (e as PointerEvent & {
+          getPredictedEvents?: () => PointerEvent[];
+        }).getPredictedEvents?.().length ?? 0;
       } catch {
         // Browser diagnostic APIs can disappear while a viewer page is recycled.
       }
@@ -7999,6 +8086,19 @@ export class ViewerInkSession {
   }
 
   onViewStateChange(state: AnnotationViewState, source: ViewStateSource): void {
+    this.updateViewerStateFromAdapter(state);
+    if (source === "scalechanging" || source === "data-scale") {
+      try {
+        const scrollRoot = this.options.adapter.scrollElement();
+        this.handwritingViewport.syncRenderedState(
+          state.viewport?.scale ?? state.scale,
+          scrollRoot.scrollLeft,
+          scrollRoot.scrollTop
+        );
+      } catch {
+        // The active PDF view can disappear between its event and scroll read.
+      }
+    }
     this.zoomPipelineTrace.noteEvent(`view-state-${source}`);
     this.zoomPipelineTrace.noteStage("view-state", 0, 1, `view-state-${source}`);
     if (source === "scalechanging") {
@@ -8015,7 +8115,9 @@ export class ViewerInkSession {
       try {
         const scrollRoot = this.options.adapter.scrollElement();
         this.handwritingViewport.syncFromScroll(scrollRoot.scrollLeft, scrollRoot.scrollTop);
-      } catch {}
+      } catch {
+        // The active PDF view can disappear between its event and scroll read.
+      }
       if (this.selected.length) this.selectionToolbar.relayout();
       // PDF ink residency follows PageLifecycleCoordinator visibility. Scroll
       // only repaints existing surfaces; the coordinator emits mount changes.
@@ -8056,7 +8158,7 @@ export class ViewerInkSession {
     const state = this.pendingAddPageMutation;
     if (!state || this.destroyed || pages.length < state.pageCountBefore + 1) return false;
     if (!this.addPageMutationViewRestored) {
-      this.options.adapter.restoreViewState(state.viewState);
+      this.restoreViewerState(state.viewState);
       this.addPageMutationViewRestored = true;
     }
     const details = this.addPageLifecycleDetails(state);
@@ -8357,7 +8459,7 @@ export class ViewerInkSession {
     const selector = `.native-pdf-handwriting-rail.is-${placement}, .hn-owned-pdf-ink-rail.is-${placement}`;
     this.toolbarRailRecoveryObserver = new MutationObserverConstructor((records) => {
       const railAppeared = records.some((record) => {
-        if (record.type === "attributes" && record.target instanceof Element) {
+        if (record.type === "attributes" && isElementInDocument(record.target, toolbar.ownerDocument)) {
           return record.target.matches(selector);
         }
         return Array.from(record.addedNodes).some((node) => {
@@ -8973,7 +9075,8 @@ export class ViewerInkSession {
   }
 
   private captureAddPageMutationState(operationId: string, startedAt: number): AddPageMutationRestoreState {
-    const viewState = this.options.adapter.getViewState();
+    this.updateViewerStateFromAdapter();
+    const viewState = this.getViewerState();
     const pages = this.options.adapter.pages().slice(0, 64);
     const mounted = [...this.surfaces.entries()].slice(0, 64);
     const scroll = this.options.adapter.scrollElement();
@@ -9029,11 +9132,11 @@ export class ViewerInkSession {
       expectedPageCountDelta: 1,
       currentPageBefore: state.currentPageBefore,
       currentPageAfter: viewState.pageNumber,
-      beforeScale: Number(state.viewState.scale.toFixed(4)),
+      beforeScale: Number(state.viewState.viewport.scale.toFixed(4)),
       afterScale: Number(viewState.scale.toFixed(4)),
       beforeScaleMode: state.viewState.scaleMode ?? null,
       afterScaleMode: viewState.scaleMode ?? null,
-      beforeScrollFraction: Number(state.viewState.scrollFraction.toFixed(4)),
+      beforeScrollFraction: Number((state.viewState.scrollFraction ?? 0).toFixed(4)),
       afterScrollFraction: Number(viewState.scrollFraction.toFixed(4)),
       mountedPageNumbersBefore: state.mountedPageNumbers,
       mountedPageNumbersAfter: mounted.map(([pageNumber]) => pageNumber),
@@ -9645,6 +9748,7 @@ export class ViewerInkSession {
   private beginInputTeardown(): void {
     if (this.inputTeardownStarted) return;
     this.inputTeardownStarted = true;
+    pdfSurfaceExtensions(this.options.adapter)?.setViewerCommandBridge?.(null);
     this.physicalContactCollectorLease?.release();
     this.physicalContactCollectorLease = null;
     this.pointerProbeAbort.abort();
@@ -10591,10 +10695,9 @@ export class ViewerInkSession {
     if (pointer) {
       try {
         coalescedCount = pointer.getCoalescedEvents?.().length ?? 0;
-        const predicted = (pointer as PointerEvent & {
+        predictedCount = (pointer as PointerEvent & {
           getPredictedEvents?: () => PointerEvent[];
-        }).getPredictedEvents;
-        predictedCount = predicted ? predicted.call(pointer).length : 0;
+        }).getPredictedEvents?.().length ?? 0;
       } catch {
         // Browser diagnostic APIs can disappear during page recycling.
       }
@@ -10729,9 +10832,27 @@ export class ViewerInkSession {
     this.logger.inputLifecycleEvent("mobile-pinch-cancel", { reason });
   }
 
-  private persistMobilePinchScale(_scale: number): void {
-    // CSS/container zoom is already retained by the compositor. Do not mirror
-    // it into PDF.js currentScale or the handwriting sidecar.
+  private persistMobilePinchScale(scale: number): void {
+    // The viewport transform already owns the visible zoom. Persist the
+    // settled scale as a custom view mode so saved-view restoration does not
+    // reapply a prior fit mode and discard the user's pinch. Keep PDF.js at its render
+    // scale during the gesture; a release-time scale commit would add a second
+    // visual owner and reintroduce the transform-to-render seam.
+    const viewport = this.handwritingViewport.getState();
+    const settledScale = Number.isFinite(viewport.scale) && viewport.scale > 0
+      ? viewport.scale
+      : scale;
+    if (!Number.isFinite(settledScale) || settledScale <= 0) return;
+
+    this.canonicalViewerState = createViewerState({
+      ...this.canonicalViewerState,
+      viewport: {
+        ...this.canonicalViewerState.viewport,
+        scale: settledScale
+      },
+      scale: settledScale,
+      scaleMode: "custom"
+    });
   }
 
   private mobilePinchSurfaceAt(clientX: number | null, clientY: number | null): PageSurface | null {
@@ -17117,19 +17238,22 @@ export class ViewerInkSession {
   }
 
   private unscalePageLayoutForViewportScale(layout: PageCoordinateLayout): PageCoordinateLayout {
-    const zoom = Math.max(0.1, this.handwritingViewport.getState().scale);
-    if (zoom === 1) return layout;
+    // The DOM geometry already includes the scale applied by the PDF renderer.
+    // Only remove the temporary CSS projection layered over that geometry.
+    const renderedScale = Math.max(0.1, this.handwritingViewport.getRenderedScale());
+    const projectionScale = Math.max(0.1, this.handwritingViewport.getState().scale) / renderedScale;
+    if (Math.abs(projectionScale - 1) < 0.0001) return layout;
     return {
       ...layout,
-      offsetX: layout.offsetX / zoom,
-      offsetY: layout.offsetY / zoom,
-      contentWidth: layout.contentWidth / zoom,
-      contentHeight: layout.contentHeight / zoom,
-      scale: layout.scale / zoom,
-      scaleX: layout.scaleX / zoom,
-      scaleY: layout.scaleY / zoom,
-      hostWidth: layout.hostWidth / zoom,
-      hostHeight: layout.hostHeight / zoom
+      offsetX: layout.offsetX / projectionScale,
+      offsetY: layout.offsetY / projectionScale,
+      contentWidth: layout.contentWidth / projectionScale,
+      contentHeight: layout.contentHeight / projectionScale,
+      scale: layout.scale / projectionScale,
+      scaleX: layout.scaleX / projectionScale,
+      scaleY: layout.scaleY / projectionScale,
+      hostWidth: layout.hostWidth / projectionScale,
+      hostHeight: layout.hostHeight / projectionScale
     };
   }
 

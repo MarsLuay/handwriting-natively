@@ -189,7 +189,7 @@ export class MobilePdfZoomDiagnosticsTrace {
     this.lastSummary = clone(this.summaryState);
   }
 
-  cancel(reason: MobilePdfZoomTraceCancelReason | string, fallbackReason?: string): void {
+  cancel(reason: string, fallbackReason?: string): void {
     if (this.summaryState.phase === "idle") return;
     this.summaryState.phase = "cancelled";
     this.summaryState.gesture.cancelCount = Math.min(999, this.summaryState.gesture.cancelCount + 1);

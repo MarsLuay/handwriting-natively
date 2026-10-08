@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PdfJsViewAdapter } from "../src/integration/PdfJsViewAdapter";
+import type { PdfViewerCommandBridge } from "../src/integration/ObsidianPdfAdapter";
 import type { InkStroke } from "../src/model";
 import { createPdfJsAssetResolver, loadPdfJsRuntime, pdfJsDocumentOptions, type PdfJsRuntime } from "../src/integration/PdfJsRuntime";
 
@@ -143,6 +144,11 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     zoom.dispatchEvent(new Event("change"));
     expect(adapter.getViewState().scale).toBe(2);
 
+    host.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]')?.click();
+    expect(adapter.getViewState().scale).toBe(2.5);
+    host.querySelector<HTMLButtonElement>('button[aria-label="Zoom out"]')?.click();
+    expect(adapter.getViewState().scale).toBe(2);
+
     host.querySelector('button[aria-label="Rotate clockwise"]')?.dispatchEvent(new Event("click"));
     expect(adapter.getViewState().rotation).toBe(90);
 
@@ -153,6 +159,54 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(host.querySelector(".hn-owned-pdf-find-status")?.textContent).toContain("match");
     expect(host.querySelectorAll(".is-find-match")).toHaveLength(4);
+
+    const commands: PdfViewerCommandBridge = {
+      zoomIn: vi.fn(() => true),
+      zoomOut: vi.fn(() => true),
+      setZoom: vi.fn(() => true),
+      fitWidth: vi.fn(() => true),
+      nextPage: vi.fn(() => true),
+      previousPage: vi.fn(() => true),
+      goToPage: vi.fn(() => true),
+      rotateClockwise: vi.fn(() => true),
+      rotateCounterclockwise: vi.fn(() => true),
+      toggleHandMode: vi.fn(() => true),
+      isHandMode: vi.fn(() => false),
+      toggleSearch: vi.fn(() => true),
+      closeSearch: vi.fn(() => true),
+      handleKeyDown: vi.fn(() => false)
+    };
+    adapter.setViewerCommandBridge(commands);
+    host.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]')?.click();
+    host.querySelector<HTMLButtonElement>('button[aria-label="Zoom out"]')?.click();
+    host.querySelector<HTMLButtonElement>('button[aria-label="Fit page width"]')?.click();
+    host.querySelector<HTMLButtonElement>('button[aria-label="Next page"]')?.click();
+    host.querySelector<HTMLButtonElement>('button[aria-label="Previous page"]')?.click();
+    host.querySelector<HTMLButtonElement>('button[aria-label="Rotate clockwise"]')?.click();
+    host.querySelector<HTMLButtonElement>('button[aria-label="Rotate counterclockwise"]')?.click();
+    host.querySelector<HTMLButtonElement>('button[aria-label="Find in document"]')?.click();
+    host.querySelector<HTMLButtonElement>('button[aria-label="Hand tool"]')?.click();
+    pageInput.value = "1";
+    pageInput.dispatchEvent(new Event("change"));
+    zoom.value = "1.5";
+    zoom.dispatchEvent(new Event("change"));
+    adapter.root.dispatchEvent(new KeyboardEvent("keydown", { key: "=", bubbles: true, cancelable: true }));
+    adapter.root.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true, cancelable: true }));
+
+    expect(commands.zoomIn).toHaveBeenCalledTimes(2);
+    expect(commands.zoomOut).toHaveBeenCalledTimes(1);
+    expect(commands.fitWidth).toHaveBeenCalledOnce();
+    expect(commands.nextPage).toHaveBeenCalledTimes(2);
+    expect(commands.previousPage).toHaveBeenCalledOnce();
+    expect(commands.goToPage).toHaveBeenCalledWith(1);
+    expect(commands.setZoom).toHaveBeenCalledWith(1.5);
+    expect(commands.rotateClockwise).toHaveBeenCalledOnce();
+    expect(commands.rotateCounterclockwise).toHaveBeenCalledOnce();
+    expect(commands.toggleSearch).toHaveBeenCalledOnce();
+    expect(commands.toggleHandMode).toHaveBeenCalledOnce();
+    expect(commands.handleKeyDown).toHaveBeenCalledTimes(2);
+    adapter.setHandToolActive(true);
+    expect(host.querySelector('button[aria-label="Hand tool"]')?.getAttribute("aria-pressed")).toBe("true");
 
     adapter.destroy();
     host.remove();

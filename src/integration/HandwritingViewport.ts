@@ -1,3 +1,5 @@
+import { setElementCssProps } from "../dom/typeGuards";
+
 /**
  * Persistent Handwriting Viewport State and Controller.
  *
@@ -33,6 +35,8 @@ export interface HandwritingViewportOptions {
   minScale?: number;
   maxScale?: number;
   initialState?: Partial<HandwritingViewportState>;
+  /** Scale already applied to page geometry by PDF.js or the host viewer. */
+  initialRenderedScale?: number;
   onStateChange?: (state: HandwritingViewportState) => void;
   requestFrame?: (callback: (timestamp: number) => void) => number;
   cancelFrame?: (id: number) => void;
@@ -41,6 +45,7 @@ export interface HandwritingViewportOptions {
 
 export class HandwritingViewport {
   private readonly state: HandwritingViewportState;
+  private renderedScale: number;
   private rawX: number;
   private rawY: number;
   private pinchAnchor: { x: number; y: number } | null = null;
@@ -63,18 +68,22 @@ export class HandwritingViewport {
       x: initial?.x ?? 0,
       y: initial?.y ?? 0
     };
+    this.renderedScale = Number.isFinite(options.initialRenderedScale) && (options.initialRenderedScale ?? 0) > 0
+      ? options.initialRenderedScale!
+      : 1;
     this.rawX = this.state.x;
     this.rawY = this.state.y;
 
+    const view = options.getScrollElement?.()?.ownerDocument.defaultView ?? activeWindow;
     this.requestFrame = options.requestFrame ?? (
-      typeof window !== "undefined" && window.requestAnimationFrame
-        ? window.requestAnimationFrame.bind(window)
-        : (cb) => setTimeout(() => cb(Date.now()), 16) as unknown as number
+      view.requestAnimationFrame
+        ? view.requestAnimationFrame.bind(view)
+        : (cb) => view.setTimeout(() => cb(Date.now()), 16)
     );
     this.cancelFrame = options.cancelFrame ?? (
-      typeof window !== "undefined" && window.cancelAnimationFrame
-        ? window.cancelAnimationFrame.bind(window)
-        : (id) => clearTimeout(id)
+      view.cancelAnimationFrame
+        ? view.cancelAnimationFrame.bind(view)
+        : (id) => view.clearTimeout(id)
     );
     this.now = options.now ?? (
       typeof performance !== "undefined" ? performance.now.bind(performance) : Date.now
@@ -83,6 +92,24 @@ export class HandwritingViewport {
 
   getState(): HandwritingViewportState {
     return { ...this.state };
+  }
+
+  getRenderedScale(): number {
+    return this.renderedScale;
+  }
+
+  /** Rebase the temporary CSS projection after the renderer changes scale. */
+  syncRenderedState(scale: number, scrollLeft: number, scrollTop: number): void {
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    this.cancelAnimation();
+    this.pinchAnchor = null;
+    this.renderedScale = scale;
+    this.state.scale = scale;
+    this.rawX = -Math.max(0, Number.isFinite(scrollLeft) ? scrollLeft : 0);
+    this.rawY = -Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0);
+    this.state.x = this.rawX;
+    this.state.y = this.rawY;
+    this.apply();
   }
 
   /**
@@ -163,8 +190,9 @@ export class HandwritingViewport {
       return { minX: -Infinity, maxX: Infinity, minY: -Infinity, maxY: Infinity };
     }
 
-    const scaledW = content.width * scale;
-    const scaledH = content.height * scale;
+    const projectionScale = scale / this.renderedScale;
+    const scaledW = content.width * projectionScale;
+    const scaledH = content.height * projectionScale;
 
     let minX: number;
     let maxX: number;
@@ -485,18 +513,18 @@ export class HandwritingViewport {
     }
 
     if (this.targetElement && this.targetElement.isConnected) {
-      if (Math.abs(this.state.scale - 1) < 0.0001
+      const projectionScale = this.state.scale / this.renderedScale;
+      if (Math.abs(projectionScale - 1) < 0.0001
         && Math.abs(translateX) < 0.01
         && Math.abs(translateY) < 0.01) {
         this.targetElement.style.removeProperty("transform");
         this.targetElement.style.removeProperty("transform-origin");
         this.targetElement.classList.remove("native-pdf-handwriting-pinch-active");
       } else {
-        this.targetElement.style.setProperty("transform-origin", "0 0");
-        this.targetElement.style.setProperty(
-          "transform",
-          `translate3d(${translateX}px, ${translateY}px, 0) scale(${this.state.scale})`
-        );
+        setElementCssProps(this.targetElement, {
+          transformOrigin: "0 0",
+          transform: `translate3d(${translateX}px, ${translateY}px, 0) scale(${projectionScale})`
+        });
         this.targetElement.classList.add("native-pdf-handwriting-pinch-active");
       }
     }
