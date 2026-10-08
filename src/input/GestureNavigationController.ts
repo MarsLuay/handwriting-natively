@@ -53,6 +53,7 @@ export interface GestureNavigationPointerContext {
   surface: HTMLElement;
   route: string;
   customNavigationEnabled: boolean;
+  customHandPanEnabled?: boolean;
 }
 
 interface TrackedNavigationPointer extends GestureNavigationPoint {
@@ -307,7 +308,7 @@ export class GestureNavigationController {
     }
 
     const handMode = context.route === "drag" || this.options.isHandMode?.() === true;
-    if (handMode && event.pointerType !== "touch"
+    if (handMode && context.customHandPanEnabled !== false && event.pointerType !== "touch"
       && event.button === 0 && event.isPrimary !== false) {
       this.clearPanEndTimer();
       this.navigationPointers.set(event.pointerId, {

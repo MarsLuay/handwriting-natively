@@ -3814,7 +3814,8 @@ export class ViewerInkSession {
     const logWheelPan = (
       event: WheelEvent,
       phase: "in-view" | "sidebar" | "outside-viewer",
-      details: Record<string, unknown>
+      details: Record<string, unknown>,
+      source = "wheel-pan"
     ): void => {
       const now = performance.now();
       wheelPanCount += 1;
@@ -3822,7 +3823,7 @@ export class ViewerInkSession {
       lastWheelPanLogAt = now;
       this.notePointerTypeOrigin(event, "document-wheel", "capture");
       this.logger.pointerSeen({
-        source: "wheel-pan",
+        source,
         pointerType: "wheel",
         phase,
         ...details,
@@ -3853,6 +3854,22 @@ export class ViewerInkSession {
           preventDefault: false,
           burstIndex: nativeEmbedWheelCount
         });
+        return;
+      }
+      if (this.options.adapter.surfaceType === "markdown") {
+        if (e.deltaX === 0 && e.deltaY === 0 && e.deltaZ === 0) return;
+        const inMarkdown = within(e.target);
+        logWheelPan(e, inMarkdown ? "in-view" : "outside-viewer", {
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          deltaZ: e.deltaZ,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          within: inMarkdown,
+          target: describeTarget(e.target),
+          navigation: "native-markdown-scroll",
+          preventDefault: false
+        }, "markdown-native-scroll");
         return;
       }
       if (e.ctrlKey || e.metaKey) {
@@ -11323,6 +11340,7 @@ export class ViewerInkSession {
         if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-cancel");
       },
       customNavigationEnabled: () => this.customMobilePdfPinchZoomEnabled(surface),
+      customHandPanEnabled: () => this.options.adapter.surfaceType !== "markdown",
       onTouchStart: (event) => {
         this.notePointerTypeOrigin(event, "page-touch-router", "capture");
         this.logger.inputLifecycleEvent("touchstart", this.inputLifecycleDetails(surface, event, {

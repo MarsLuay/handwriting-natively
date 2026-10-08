@@ -98,6 +98,39 @@ afterEach(() => {
 });
 
 describe("Markdown annotation session", () => {
+  it("leaves horizontal wheel and trackpad navigation to Markdown's native scroller", async () => {
+    mockCanvasContext();
+    const files = new MemoryFiles();
+    const { host, root } = markdownHost("preview");
+    const adapter = MarkdownViewAdapter.attach(host, {}, { mode: "preview" });
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/native-scroll.md",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "annotations/recovery"),
+      saveSettings: async () => undefined,
+      notice: () => undefined
+    });
+
+    try {
+      const before = session.viewportState();
+      const horizontalWheel = new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaX: 84,
+        deltaY: 0,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL
+      });
+      root.dispatchEvent(horizontalWheel);
+
+      expect(horizontalWheel.defaultPrevented).toBe(false);
+      expect(session.viewportState()).toEqual(before);
+    } finally {
+      await session.destroy({ silent: true });
+    }
+  });
+
   it("routes Ctrl+Z to ink after an annotation while CodeMirror remains focused", async () => {
     mockCanvasContext();
     const files = new MemoryFiles();

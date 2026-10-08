@@ -47,7 +47,7 @@ callbacks from a replaced or destroyed viewer.
 | `pen-ink` | finger/palm contact | observe/track only; never transfer ink ownership |
 | controller-owned touch | second finger | controller owns two-finger pan and pinch when qualified; otherwise preserve native pinch/pan |
 | active pen | companion finger | block the companion navigation candidate until a real terminal or stale-pen recovery |
-| hand tool | primary mouse/pen or touch movement | controller owns pan and capture cleanup |
+| hand tool | primary mouse/pen or touch movement | controller owns pan where enabled; Markdown leaves movement native |
 | any | UI target before a gesture is claimed | leave the UI event alone |
 | any | blur, background, destroy, or generation replacement | clear every contact and capture |
 
@@ -118,12 +118,14 @@ viewer/UI/Scribble ordering without participating in routing.
 ## Module boundaries
 
 - `PointerRouter.ts` is the page Pointer Events entry point. It emits ink
-  actions and delegates touch/hand movement to `GestureNavigationController`.
+  actions and delegates surface-enabled touch/hand movement to
+  `GestureNavigationController`; Markdown scrolling stays native.
 - `GestureNavigationController.ts` is the single movement owner for eligible
   one-finger pan, two-finger pan/pinch, hand-tool movement, modifier-wheel zoom,
-  stylus exclusion, and navigation cleanup. It updates the session viewport or
-  PDF scroll root through one callback path. Viewport rubber-band pan settles
-  after the final contact ends or the wheel-pan stream becomes idle.
+  stylus exclusion, and navigation cleanup where the surface enables them. It
+  updates the session viewport or PDF scroll root through one callback path.
+  Markdown wheel, touch, and hand-tool scrolling remain native; plugin viewport
+  rubber-band pan is reserved for surfaces that enable custom panning.
 - `PointerCapabilities.ts` owns feature detection and sample extraction only:
   Pointer Events, capture, coalesced events, predicted events, and observed
   stylus capability. It does not decide ownership.

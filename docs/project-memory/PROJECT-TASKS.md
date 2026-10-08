@@ -32,7 +32,7 @@ Centralize touch, pinch, hand-tool, and modifier-wheel navigation and validate t
 
 Paths: `src/input/GestureNavigationController.ts`, `src/input/PointerRouter.ts`, `src/runtime/ViewerInkSession.ts`, `docs/input-gesture-architecture.md`
 
-Checks: focused gesture and orientation tests, including persisted toolbar rotation; `npm test`; `npm run lint`; `npm run build` when the shared generated `main.js` is no longer being edited.
+Checks: focused gesture and orientation tests, including persisted toolbar rotation; Markdown wheel, touch, and hand-tool scrolling remain native; `npm test`; `npm run lint`; `npm run build` when the shared generated `main.js` is no longer being edited.
 
 ## unified-developer-logs — done
 

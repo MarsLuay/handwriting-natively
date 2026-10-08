@@ -157,6 +157,8 @@ export interface PointerRouterCallbacks {
   touchAnnotationEnabled?(): boolean;
   /** Qualified mobile navigation gate; false preserves native touch behavior. */
   customNavigationEnabled?(): boolean;
+  /** Surface policy for the plugin's hand-tool pan gesture. */
+  customHandPanEnabled?(): boolean;
   navigationController?: GestureNavigationController;
   /** True when left-button mouse input is enabled for annotation gestures. */
   mouseInkingEnabled?(): boolean;
@@ -383,6 +385,9 @@ export class PointerRouter {
       if (event.pointerType === "mouse" && event.button !== 0 && event.button !== -1) {
         return { route: "native", reason: "mouse-primary-button-only" };
       }
+      if (this.callbacks.customHandPanEnabled?.() === false) {
+        return { route: "native", reason: "markdown-native-scroll" };
+      }
       return { route: "drag", reason: "hand-tool" };
     }
     if (event.pointerType === "mouse" && !isStylusEraserInput(event) && event.button !== 0 && event.button !== -1) {
@@ -463,6 +468,10 @@ export class PointerRouter {
     return this.callbacks.customNavigationEnabled?.() === true
       && this.inputCapabilities.pointerEvents
       && this.inputCapabilities.touchEvents;
+  }
+
+  private customHandPanAllowed(): boolean {
+    return this.callbacks.customHandPanEnabled?.() !== false;
   }
 
   
@@ -555,7 +564,8 @@ export class PointerRouter {
     const navigationDecision = this.navigationController.handlePointerDown(event, {
       surface: this.element,
       route,
-      customNavigationEnabled: this.customNavigationAllowed()
+      customNavigationEnabled: this.customNavigationAllowed(),
+      customHandPanEnabled: this.customHandPanAllowed()
     }, this.generation);
     if (navigationDecision.handled) {
       route = (navigationDecision.route as PointerRoute | undefined) ?? route;

@@ -58,6 +58,7 @@
       ],
       "checks": [
         "Focused gesture and orientation tests, including persisted toolbar rotation",
+        "Markdown wheel, touch, and hand-tool scrolling remain native",
         "npm test",
         "npm run lint",
         "npm run build when the shared generated main.js is no longer being edited"

@@ -52,6 +52,7 @@ function createNavigationController(scrollRoot: HTMLElement, options: {
 function createRouter(element: HTMLElement, options: {
   activeTool?: () => "pen" | "drag";
   customNavigationEnabled?: () => boolean;
+  customHandPanEnabled?: () => boolean;
   navigationController?: GestureNavigationController;
   scrollRoot?: HTMLElement;
   onRoute?: (route: string) => void;
@@ -61,6 +62,7 @@ function createRouter(element: HTMLElement, options: {
     activeTool: options.activeTool ?? (() => "pen"),
     canAnnotatePointer: (event) => event.pointerType === "pen",
     customNavigationEnabled: options.customNavigationEnabled ?? (() => true),
+    ...(options.customHandPanEnabled ? { customHandPanEnabled: options.customHandPanEnabled } : {}),
     pointerInputCapabilities: () => ({ pointerEvents: true, pointerCapture: false, touchEvents: true }),
     ...(options.navigationController ? { navigationController: options.navigationController } : {}),
     ...(options.scrollRoot ? { scrollRoot: () => options.scrollRoot! } : {}),
@@ -343,6 +345,39 @@ describe("unified gesture navigation ownership", () => {
     element.dispatchEvent(afterDestroy);
     expect(routes).toEqual(["drag"]);
     expect(scrollRoot.scrollLeft).toBe(80);
+    element.remove();
+    scrollRoot.remove();
+  });
+
+  it("leaves Markdown hand-tool input native when custom hand panning is disabled", () => {
+    const { element, scrollRoot } = createSurface();
+    const capture = vi.fn();
+    Object.assign(element, {
+      setPointerCapture: capture,
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn()
+    });
+    const routes: string[] = [];
+    const router = createRouter(element, {
+      activeTool: () => "drag",
+      customHandPanEnabled: () => false,
+      scrollRoot,
+      onRoute: (route) => routes.push(route)
+    });
+
+    const down = pointer("pointerdown", "mouse", 42, { isPrimary: true, clientX: 50, clientY: 60 });
+    element.dispatchEvent(down);
+    const move = pointer("pointermove", "mouse", 42, { isPrimary: true, clientX: 70, clientY: 90 });
+    element.dispatchEvent(move);
+
+    expect(routes).toEqual(["native"]);
+    expect(capture).not.toHaveBeenCalled();
+    expect(scrollRoot.scrollLeft).toBe(100);
+    expect(scrollRoot.scrollTop).toBe(200);
+    expect(down.defaultPrevented).toBe(false);
+    expect(move.defaultPrevented).toBe(false);
+
+    router.destroy();
     element.remove();
     scrollRoot.remove();
   });
