@@ -1040,6 +1040,8 @@ export class ViewerInkSession {
   private lastToolbarUnmountReason: string | null = null;
   private floatingToolbarHandle: HTMLButtonElement | null = null;
   private floatingToolbarAbort: AbortController | null = null;
+  private floatingToolbarResizeObserver: ResizeObserver | null = null;
+  private floatingToolbarDragActive = false;
   private floatingToolbarPosition: FloatingToolbarPosition | null = null;
   private lastHandwritingUiMissingKey = "";
   private uiIntegrityTimer: number | null = null;
@@ -8391,10 +8393,26 @@ export class ViewerInkSession {
     const abort = new AbortController();
     this.floatingToolbarAbort = abort;
     let drag: { pointerId: number; startX: number; startY: number; left: number; top: number; moved: boolean } | null = null;
+    const reapplyPosition = (): void => {
+      if (drag || this.floatingToolbarDragActive) return;
+      const rect = toolbar.getBoundingClientRect();
+      this.applyFloatingToolbarPosition(
+        toolbar,
+        this.floatingToolbarPosition,
+        { left: rect.left, top: rect.top }
+      );
+    };
+    this.floatingToolbarResizeObserver?.disconnect();
+    this.floatingToolbarResizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(reapplyPosition);
+    this.floatingToolbarResizeObserver?.observe(toolbar);
+    toolbar.ownerDocument.defaultView?.addEventListener("resize", reapplyPosition, { signal: abort.signal });
     const finish = (event: PointerEvent): void => {
       if (!drag || event.pointerId !== drag.pointerId) return;
       const finishedDrag = drag;
       drag = null;
+      this.floatingToolbarDragActive = false;
       if (handle.hasPointerCapture(event.pointerId)) {
         try { handle.releasePointerCapture(event.pointerId); } catch { /* already released */ }
       }
@@ -8403,19 +8421,29 @@ export class ViewerInkSession {
       if (finishedDrag.moved) {
         const rect = toolbar.getBoundingClientRect();
         this.persistFloatingToolbarPosition({ left: rect.left, top: rect.top });
+      } else {
+        const rect = toolbar.getBoundingClientRect();
+        this.applyFloatingToolbarPosition(
+          toolbar,
+          this.floatingToolbarPosition,
+          { left: rect.left, top: rect.top }
+        );
       }
     };
     handle.addEventListener("pointerdown", (event: PointerEvent) => {
       if (event.button !== 0 || event.isPrimary === false) return;
       const rect = toolbar.getBoundingClientRect();
+      const styleLeft = Number.parseFloat(toolbar.style.left);
+      const styleTop = Number.parseFloat(toolbar.style.top);
       drag = {
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
-        left: Number.parseFloat(toolbar.style.left) || rect.left,
-        top: Number.parseFloat(toolbar.style.top) || rect.top,
+        left: Number.isFinite(styleLeft) ? styleLeft : rect.left,
+        top: Number.isFinite(styleTop) ? styleTop : rect.top,
         moved: false
       };
+      this.floatingToolbarDragActive = true;
       try { handle.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
@@ -8452,6 +8480,9 @@ export class ViewerInkSession {
   private clearFloatingToolbarFallback(): void {
     this.floatingToolbarAbort?.abort();
     this.floatingToolbarAbort = null;
+    this.floatingToolbarResizeObserver?.disconnect();
+    this.floatingToolbarResizeObserver = null;
+    this.floatingToolbarDragActive = false;
     this.floatingToolbarHandle?.remove();
     this.floatingToolbarHandle = null;
     const toolbar = this.toolbar.element;
@@ -17495,7 +17526,7 @@ export class ViewerInkSession {
 
   setFloatingToolbarPosition(position: FloatingToolbarPosition): void {
     this.floatingToolbarPosition = { ...position };
-    if (this.destroyed) return;
+    if (this.destroyed || this.floatingToolbarDragActive) return;
     const toolbar = this.toolbar.element;
     if (!toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")) return;
     this.applyFloatingToolbarPosition(toolbar, this.floatingToolbarPosition, null);

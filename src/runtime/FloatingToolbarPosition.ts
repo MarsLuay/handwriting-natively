@@ -16,9 +16,12 @@ export function resolveFloatingToolbarPosition({
   viewport,
   toolbarSize
 }: FloatingToolbarPositionInput): FloatingToolbarPosition {
-  const requested = savedPosition ?? currentPosition ?? hostPosition;
+  const hasMeasuredSize = toolbarSize.width > 0 && toolbarSize.height > 0;
+  const requested = hasMeasuredSize
+    ? savedPosition ?? currentPosition ?? hostPosition
+    : hostPosition;
   return {
-    left: Math.min(Math.max(requested.left, 0), Math.max(0, viewport.width - toolbarSize.width)),
-    top: Math.min(Math.max(requested.top, 0), Math.max(0, viewport.height - toolbarSize.height))
+    left: Math.min(Math.max(requested.left, 0), Math.max(0, viewport.width - (hasMeasuredSize ? toolbarSize.width : 0))),
+    top: Math.min(Math.max(requested.top, 0), Math.max(0, viewport.height - (hasMeasuredSize ? toolbarSize.height : 0)))
   };
 }

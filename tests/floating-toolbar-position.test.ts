@@ -34,6 +34,26 @@ describe("floating toolbar position", () => {
     })).toEqual({ left: 880, top: 720 });
   });
 
+  it("does not trust an offscreen saved position until the toolbar has measurable bounds", () => {
+    expect(resolveFloatingToolbarPosition({
+      savedPosition: { left: 1449, top: 354 },
+      currentPosition: null,
+      hostPosition: { left: 24, top: 36 },
+      viewport: { width: 1440, height: 900 },
+      toolbarSize: { width: 0, height: 0 }
+    })).toEqual({ left: 24, top: 36 });
+  });
+
+  it("reclamps a previously valid position when the viewport shrinks", () => {
+    expect(resolveFloatingToolbarPosition({
+      savedPosition: { left: 1449, top: 354 },
+      currentPosition: null,
+      hostPosition: { left: 0, top: 0 },
+      viewport: { width: 1440, height: 900 },
+      toolbarSize: { width: 48, height: 48 }
+    })).toEqual({ left: 1392, top: 354 });
+  });
+
   it("keeps a mounted toolbar's position when no shared position has been saved", () => {
     expect(resolveFloatingToolbarPosition({
       savedPosition: null,
