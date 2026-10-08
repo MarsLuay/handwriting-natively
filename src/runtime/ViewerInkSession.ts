@@ -10982,7 +10982,10 @@ export class ViewerInkSession {
       },
       scrollRoot: () => this.options.adapter.scrollElement(),
       navigationController: this.gestureNavigation,
-      cursorParent: () => surface.overlay,
+      // These cursors are positioned in viewport client coordinates. Keep them
+      // outside the page tree so PDF pinch transforms cannot change their fixed
+      // positioning containing block.
+      cursorParent: () => surface.overlay.ownerDocument.body ?? surface.overlay,
       eraserCursorDiameter: () => this.options.settings.toolPreferences.eraser.size * this.displayScale(surface),
       drawCursorColor: () => {
         const prefs = this.options.settings.toolPreferences;
