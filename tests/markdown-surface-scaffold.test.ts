@@ -133,7 +133,8 @@ describe("Markdown annotation surface", () => {
     const { host, preview } = markdownHost();
     const pdfEmbed = document.createElement("div");
     pdfEmbed.className = "internal-embed pdf-embed";
-    pdfEmbed.setAttribute("src", "Slides/lecture.pdf");
+    pdfEmbed.setAttribute("src", "Slides/lecture.pdf#page=27");
+    pdfEmbed.style.contain = "paint";
     preview.append(pdfEmbed);
 
     const adapter = MarkdownViewAdapter.attach(host);
@@ -151,6 +152,32 @@ describe("Markdown annotation surface", () => {
     expect(pdfEmbed.isConnected).toBe(true);
     expect(pdfEmbed.parentElement).toBe(preview);
     expect(preview.classList.contains("native-pdf-handwriting-markdown-surface")).toBe(false);
+  });
+
+  it("keeps CodeMirror Live Preview PDF pages above its note-wide ink layer", () => {
+    const { host, scroller, content } = markdownEditorHost();
+    const pdfEmbed = document.createElement("div");
+    pdfEmbed.className = "internal-embed pdf-embed";
+    pdfEmbed.setAttribute("src", "Slides/lecture.pdf#page=27");
+    pdfEmbed.style.contain = "paint";
+    content.append(pdfEmbed);
+
+    const adapter = MarkdownViewAdapter.attach(host, {}, { mode: "source" });
+    const overlay = adapter.mountOverlay(1);
+    const embedRule = styles.match(
+      /\.native-pdf-handwriting-markdown-surface \.internal-embed\[src\$="\.pdf"\],[\s\S]*?\.native-pdf-handwriting-markdown-surface \.pdf-embed \{([\s\S]*?)\n\}/
+    )?.[1];
+
+    expect(overlay.parentElement).toBe(scroller);
+    expect(pdfEmbed.closest(".cm-scroller")).toBe(scroller);
+    expect(scroller.classList.contains("native-pdf-handwriting-markdown-surface")).toBe(true);
+    expect(embedRule).toContain("z-index: 5");
+    expect(embedRule).toContain("position: relative");
+
+    adapter.destroy();
+    expect(pdfEmbed.isConnected).toBe(true);
+    expect(pdfEmbed.parentElement).toBe(content);
+    expect(scroller.classList.contains("native-pdf-handwriting-markdown-surface")).toBe(false);
   });
 
   it("mounts editing ink beside, never inside, CodeMirror's editable content", async () => {

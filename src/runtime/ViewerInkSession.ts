@@ -1131,6 +1131,8 @@ export class ViewerInkSession {
   private moveTextPreview: TextAnnotation[] | null = null;
   private moveShapePreview: SelectionShape | null = null;
   private activeTextEditor: ActiveTextEditor | null = null;
+  /** Markdown's native editor owns Ctrl+Z after a text edit; annotation edits reclaim it. */
+  private markdownInkHistoryPreferred = false;
   private textMoveDrag: TextMoveDrag | null = null;
   private textBoxTransformDrag: TextBoxTransformDrag | null = null;
   private textToolActive = false;
@@ -2231,6 +2233,11 @@ export class ViewerInkSession {
 
   private installPointerProbe(adapter: ViewerInkSessionOptions["adapter"]): void {
     const doc = adapter.host.ownerDocument;
+    if (adapter.surfaceType === "markdown") {
+      adapter.root.addEventListener("input", () => {
+        this.markdownInkHistoryPreferred = false;
+      }, { capture: true, signal: this.pointerProbeAbort.signal });
+    }
     this.documentInputOwnership = acquireDocumentInputOwnership(doc, {
       ownerId: this.documentInputOwnerId,
       sessionGeneration: this.viewerGeneration,
@@ -7591,6 +7598,7 @@ export class ViewerInkSession {
     }
     const affectedPages = [...this.historyDirtyPages];
     if (affectedPages.length > 0) this.historyPagesByCommand.set(command, affectedPages);
+    if (this.options.adapter.surfaceType === "markdown") this.markdownInkHistoryPreferred = true;
     this.history.execute(command);
   }
 
@@ -9862,16 +9870,26 @@ export class ViewerInkSession {
       return true;
     }
     const textFocused = Boolean(this.activeTextEditor) || shouldIgnoreSelectionShortcut(event.target);
+    const markdownEditorFocused = this.isMarkdownEditorTarget(event);
     const plainModifierForInk = this.mouseInkingEnabled();
     const historyAction = parseHistoryShortcut(event);
+    const preferMarkdownInkHistory = historyAction !== null
+      && markdownEditorFocused
+      && !this.activeTextEditor
+      && this.markdownInkHistoryPreferred;
+    if (historyAction && markdownEditorFocused && !preferMarkdownInkHistory) {
+      this.logKeyboardShortcut(event, "native-text", null, false);
+      return false;
+    }
     const action = parseSelectionShortcut(event, plainModifierForInk);
-    if (textFocused && !event.altKey) {
+    if (textFocused && !event.altKey && !preferMarkdownInkHistory) {
       this.logKeyboardShortcut(event, "native-text", null, false);
       return false;
     }
     if (historyAction) {
       const ok = historyAction === "undo" ? this.history.undo() : this.history.redo();
       if (!ok) {
+        if (markdownEditorFocused) this.markdownInkHistoryPreferred = false;
         this.logKeyboardShortcut(event, "ignored", historyAction === "undo" ? "undo-ink" : "redo-ink", false);
         return false;
       }
@@ -9910,6 +9928,17 @@ export class ViewerInkSession {
     event.stopPropagation();
     this.logKeyboardShortcut(event, "ink-command", inkHotkeyCommand(event, plainModifierForInk), true);
     return true;
+  }
+
+  private isMarkdownEditorTarget(event: KeyboardEvent): boolean {
+    if (this.options.adapter.surfaceType !== "markdown") return false;
+    const root = this.options.adapter.root;
+    const target = event.target;
+    if (target instanceof Node && root.contains(target) && shouldIgnoreSelectionShortcut(target)) return true;
+    const activeElement = root.ownerDocument.activeElement;
+    return activeElement instanceof Node
+      && root.contains(activeElement)
+      && shouldIgnoreSelectionShortcut(activeElement);
   }
 
   private logKeyboardShortcut(

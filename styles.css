@@ -551,7 +551,7 @@
   touch-action: auto;
   z-index: 4;
 }
-/* Native PDF embeds own their rendered pixels; keep them above the note-wide ink layer. */
+/* Obsidian PDF embeds use paint containment, so raise the whole host stacking context above note-wide ink. */
 .native-pdf-handwriting-markdown-surface .internal-embed[src$=".pdf"],
 .native-pdf-handwriting-markdown-surface .internal-embed[data-type="pdf"],
 .native-pdf-handwriting-markdown-surface .pdf-embed {
