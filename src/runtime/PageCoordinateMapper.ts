@@ -19,6 +19,12 @@ export interface PageCoordinateMapperOptions {
   origin?: PageCoordinateOrigin;
   offsetX?: number;
   offsetY?: number;
+  /** CropBox / viewBox origin X coordinate in PDF user units. Default is 0. */
+  minX?: number;
+  /** CropBox / viewBox origin Y coordinate in PDF user units. Default is 0. */
+  minY?: number;
+  /** PDF 1.6+ UserUnit scaling factor. Default is 1. */
+  userUnit?: number;
 }
 
 /** Maps stable page-local annotation geometry to a live viewport. */
@@ -33,6 +39,7 @@ export class PageCoordinateMapper {
       || options.scale <= 0
       || (options.scaleX !== undefined && options.scaleX <= 0)
       || (options.scaleY !== undefined && options.scaleY <= 0)
+      || (options.userUnit !== undefined && options.userUnit <= 0)
     ) throw new RangeError("Page dimensions and scale must be positive");
     this.rotation = options.rotation ?? 0;
     this.origin = options.origin ?? "bottom-left";
@@ -40,23 +47,28 @@ export class PageCoordinateMapper {
 
   toViewport(page: ViewportPoint): ViewportPoint {
     const { width: w, height: h, scale } = this.options;
-    const scaleX = this.options.scaleX ?? scale;
-    const scaleY = this.options.scaleY ?? scale;
+    const minX = this.options.minX ?? 0;
+    const minY = this.options.minY ?? 0;
+    const userUnit = this.options.userUnit && this.options.userUnit > 0 ? this.options.userUnit : 1;
+    const scaleX = (this.options.scaleX ?? scale) * userUnit;
+    const scaleY = (this.options.scaleY ?? scale) * userUnit;
+    const dx = page.x - minX;
+    const dy = page.y - minY;
     let x: number;
     let y: number;
     if (this.origin === "top-left") {
       switch (this.rotation) {
-        case 0: x = page.x * scaleX; y = page.y * scaleY; break;
-        case 90: x = (h - page.y) * scaleX; y = page.x * scaleY; break;
-        case 180: x = (w - page.x) * scaleX; y = (h - page.y) * scaleY; break;
-        case 270: x = page.y * scaleX; y = (w - page.x) * scaleY; break;
+        case 0: x = dx * scaleX; y = dy * scaleY; break;
+        case 90: x = (h - dy) * scaleX; y = dx * scaleY; break;
+        case 180: x = (w - dx) * scaleX; y = (h - dy) * scaleY; break;
+        case 270: x = dy * scaleX; y = (w - dx) * scaleY; break;
       }
     } else {
       switch (this.rotation) {
-        case 0: x = page.x * scaleX; y = (h - page.y) * scaleY; break;
-        case 90: x = page.y * scaleX; y = page.x * scaleY; break;
-        case 180: x = (w - page.x) * scaleX; y = page.y * scaleY; break;
-        case 270: x = (h - page.y) * scaleX; y = (w - page.x) * scaleY; break;
+        case 0: x = dx * scaleX; y = (h - dy) * scaleY; break;
+        case 90: x = dy * scaleX; y = dx * scaleY; break;
+        case 180: x = (w - dx) * scaleX; y = dy * scaleY; break;
+        case 270: x = (h - dy) * scaleX; y = (w - dx) * scaleY; break;
       }
     }
     return { x: x! + (this.options.offsetX ?? 0), y: y! + (this.options.offsetY ?? 0) };
@@ -64,23 +76,26 @@ export class PageCoordinateMapper {
 
   toPage(viewport: ViewportPoint): ViewportPoint {
     const { width: w, height: h, scale } = this.options;
-    const scaleX = this.options.scaleX ?? scale;
-    const scaleY = this.options.scaleY ?? scale;
+    const minX = this.options.minX ?? 0;
+    const minY = this.options.minY ?? 0;
+    const userUnit = this.options.userUnit && this.options.userUnit > 0 ? this.options.userUnit : 1;
+    const scaleX = (this.options.scaleX ?? scale) * userUnit;
+    const scaleY = (this.options.scaleY ?? scale) * userUnit;
     const vx = (viewport.x - (this.options.offsetX ?? 0)) / scaleX;
     const vy = (viewport.y - (this.options.offsetY ?? 0)) / scaleY;
     if (this.origin === "top-left") {
       switch (this.rotation) {
-        case 0: return { x: vx, y: vy };
-        case 90: return { x: vy, y: h - vx };
-        case 180: return { x: w - vx, y: h - vy };
-        case 270: return { x: w - vy, y: vx };
+        case 0: return { x: minX + vx, y: minY + vy };
+        case 90: return { x: minX + vy, y: minY + h - vx };
+        case 180: return { x: minX + w - vx, y: minY + h - vy };
+        case 270: return { x: minX + w - vy, y: minY + vx };
       }
     }
     switch (this.rotation) {
-      case 0: return { x: vx, y: h - vy };
-      case 90: return { x: vy, y: vx };
-      case 180: return { x: w - vx, y: vy };
-      case 270: return { x: w - vy, y: h - vx };
+      case 0: return { x: minX + vx, y: minY + h - vy };
+      case 90: return { x: minX + vy, y: minY + vx };
+      case 180: return { x: minX + w - vx, y: minY + vy };
+      case 270: return { x: minX + w - vy, y: minY + h - vx };
     }
   }
 

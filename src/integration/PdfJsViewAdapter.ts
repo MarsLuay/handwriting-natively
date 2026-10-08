@@ -339,6 +339,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.installControls(ownerDocument);
     this.installScrollTracking();
     this.installKeyboardNavigation();
+    this.installZoomGestures();
     this.installIntersectionObserver();
     this.installResizeObserver();
   }
@@ -536,6 +537,68 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     };
     this.root.addEventListener("keydown", onKeyDown);
     this.cleanups.push(() => this.root.removeEventListener("keydown", onKeyDown));
+  }
+
+  private installZoomGestures(): void {
+    const onWheel = (event: WheelEvent): void => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const factor = Math.exp(-event.deltaY * 0.01);
+      const nextScale = clampScale(this.scale * factor);
+      this.setScaleAtFocalPoint(nextScale, event.clientX, event.clientY);
+    };
+    this.scroll.addEventListener("wheel", onWheel, { passive: false });
+    this.cleanups.push(() => this.scroll.removeEventListener("wheel", onWheel));
+
+    let activePinch: { startDist: number; startScale: number; focalX: number; focalY: number } | null = null;
+    const touchDistance = (t1: Touch, t2: Touch): number => Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+
+    const onTouchStart = (event: TouchEvent): void => {
+      if (event.touches.length === 2) {
+        const t1 = event.touches[0]!;
+        const t2 = event.touches[1]!;
+        activePinch = {
+          startDist: touchDistance(t1, t2),
+          startScale: this.scale,
+          focalX: (t1.clientX + t2.clientX) / 2,
+          focalY: (t1.clientY + t2.clientY) / 2
+        };
+      } else {
+        activePinch = null;
+      }
+    };
+
+    const onTouchMove = (event: TouchEvent): void => {
+      if (!activePinch || event.touches.length !== 2) return;
+      event.preventDefault();
+      const t1 = event.touches[0]!;
+      const t2 = event.touches[1]!;
+      const currentDist = touchDistance(t1, t2);
+      if (activePinch.startDist > 0) {
+        const ratio = currentDist / activePinch.startDist;
+        const nextScale = clampScale(activePinch.startScale * ratio);
+        const focalX = (t1.clientX + t2.clientX) / 2;
+        const focalY = (t1.clientY + t2.clientY) / 2;
+        this.setScaleAtFocalPoint(nextScale, focalX, focalY);
+      }
+    };
+
+    const onTouchEnd = (event: TouchEvent): void => {
+      if (activePinch && event.touches.length < 2) {
+        activePinch = null;
+      }
+    };
+
+    this.scroll.addEventListener("touchstart", onTouchStart, { passive: true });
+    this.scroll.addEventListener("touchmove", onTouchMove, { passive: false });
+    this.scroll.addEventListener("touchend", onTouchEnd, { passive: true });
+    this.scroll.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    this.cleanups.push(
+      () => this.scroll.removeEventListener("touchstart", onTouchStart),
+      () => this.scroll.removeEventListener("touchmove", onTouchMove),
+      () => this.scroll.removeEventListener("touchend", onTouchEnd),
+      () => this.scroll.removeEventListener("touchcancel", onTouchEnd)
+    );
   }
 
   private installIntersectionObserver(): void {
@@ -1015,6 +1078,15 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   }
 
   private setScale(next: number, mode: ViewerScaleMode | string | number = "custom"): void {
+    this.setScaleAtFocalPoint(next, undefined, undefined, mode);
+  }
+
+  private setScaleAtFocalPoint(
+    next: number,
+    focalClientX?: number,
+    focalClientY?: number,
+    mode: ViewerScaleMode | string | number = "custom"
+  ): void {
     const previous = this.scale;
     this.scale = clampScale(next);
     this.currentScaleMode = normalizeScaleMode(mode);
@@ -1022,11 +1094,19 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       this.updateZoomControl();
       return;
     }
-    const centerX = this.scroll.scrollLeft + this.scroll.clientWidth / 2;
-    const centerY = this.scroll.scrollTop + this.scroll.clientHeight / 2;
     const ratio = this.scale / previous;
-    this.scroll.scrollLeft = centerX * ratio - this.scroll.clientWidth / 2;
-    this.scroll.scrollTop = centerY * ratio - this.scroll.clientHeight / 2;
+    if (focalClientX !== undefined && focalClientY !== undefined) {
+      const rect = this.scroll.getBoundingClientRect();
+      const offsetX = focalClientX - rect.left;
+      const offsetY = focalClientY - rect.top;
+      this.scroll.scrollLeft = (this.scroll.scrollLeft + offsetX) * ratio - offsetX;
+      this.scroll.scrollTop = (this.scroll.scrollTop + offsetY) * ratio - offsetY;
+    } else {
+      const centerX = this.scroll.scrollLeft + this.scroll.clientWidth / 2;
+      const centerY = this.scroll.scrollTop + this.scroll.clientHeight / 2;
+      this.scroll.scrollLeft = centerX * ratio - this.scroll.clientWidth / 2;
+      this.scroll.scrollTop = centerY * ratio - this.scroll.clientHeight / 2;
+    }
     this.renderScheduler.notifyScale(this.scale, this.rotation);
     for (const page of this.pagesByNumber.values()) {
       this.invalidatePage(page);

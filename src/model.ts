@@ -60,6 +60,8 @@ export type PdfPoint = PagePoint;
 export interface InkStroke {
   id: string;
   page: number;
+  /** Stable page identifier (UUID) surviving page reordering. */
+  pageId?: string;
   tool: DrawingTool;
   color: string;
   width: number;
@@ -85,6 +87,8 @@ export interface InkEraseMask {
 export interface TextAnnotation {
   id: string;
   page: number;
+  /** Stable page identifier (UUID) surviving page reordering. */
+  pageId?: string;
   text: string;
   x: number;
   y: number;
@@ -217,6 +221,8 @@ export interface PluginSettings {
   automaticAnnotationRecovery: boolean;
   /** Vault-relative folder for validated sidecar/recovery backups. */
   annotationBackupPath: string;
+  /** Prefer the plugin-owned PDF viewer for full control over zoom, rendering, and gestures. */
+  preferPluginPdfView: boolean;
   toolPreferences: ToolPreferences;
 }
 
@@ -312,6 +318,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   vaultDebugLogPath,
   automaticAnnotationRecovery: true,
   annotationBackupPath: parentVaultFolder(vaultDebugLogPath),
+  preferPluginPdfView: true,
   toolPreferences: createDefaultToolPreferences()
   };
 }
@@ -417,6 +424,7 @@ export function mergeSettings(
     touchDrawFallback: cleaned.touchDrawFallback === true,
     touchDoubleTapEraser: cleaned.touchDoubleTapEraser !== false,
     textEscapeAction: "save" as const,
+    preferPluginPdfView: cleaned.preferPluginPdfView !== false,
     customMobilePdfPinchZoom: typeof cleaned.customMobilePdfPinchZoom === "boolean"
       ? cleaned.customMobilePdfPinchZoom
       : defaults.customMobilePdfPinchZoom,

@@ -24,6 +24,9 @@ export interface PdfExportPageMetrics {
   page: number;
   width: number;
   height: number;
+  minX?: number;
+  minY?: number;
+  userUnit?: number;
 }
 
 export interface PdfExportInput {
@@ -64,36 +67,68 @@ export function editableAnnotatedFilename(sourceName: string): string {
   return `${base || "document"}_editable.pdf`;
 }
 
-/** Map ink page-space → actual PDF MediaBox points when those spaces differ. */
+/** Map ink page-space → actual PDF MediaBox/CropBox points when those spaces differ. */
 export function mapInkPointToPdfPage(
   point: Pick<PdfPoint, "x" | "y">,
-  inkPage: { width: number; height: number },
-  pdfPage: { width: number; height: number }
+  inkPage: { width: number; height: number; minX?: number | undefined; minY?: number | undefined },
+  pdfPage: { width: number; height: number; x?: number | undefined; y?: number | undefined; minX?: number | undefined; minY?: number | undefined }
 ): { x: number; y: number } {
+  const inkMinX = inkPage.minX ?? 0;
+  const inkMinY = inkPage.minY ?? 0;
+  const pdfMinX = pdfPage.x ?? pdfPage.minX ?? 0;
+  const pdfMinY = pdfPage.y ?? pdfPage.minY ?? 0;
   const sx = inkPage.width > 0 ? pdfPage.width / inkPage.width : 1;
   const sy = inkPage.height > 0 ? pdfPage.height / inkPage.height : 1;
-  return { x: point.x * sx, y: point.y * sy };
+  const relX = point.x - inkMinX;
+  const relY = point.y - inkMinY;
+  return { x: pdfMinX + relX * sx, y: pdfMinY + relY * sy };
 }
 
 export function mapInkWidthToPdfPage(
   width: number,
-  inkPage: { width: number; height: number },
-  pdfPage: { width: number; height: number }
+  inkPage: { width: number; height: number; minX?: number | undefined; minY?: number | undefined },
+  pdfPage: { width: number; height: number; x?: number | undefined; y?: number | undefined; minX?: number | undefined; minY?: number | undefined }
 ): number {
   const sx = inkPage.width > 0 ? pdfPage.width / inkPage.width : 1;
   const sy = inkPage.height > 0 ? pdfPage.height / inkPage.height : 1;
-  return width * ((sx + sy) / 2);
+  return width * Math.sqrt(sx * sy);
+}
+
+function getPageEffectiveBox(page: PdfPage, lib: PdfLibModule): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  userUnit: number;
+} {
+  const cropBox = typeof page.getCropBox === "function" ? page.getCropBox() : undefined;
+  const mediaBox = typeof page.getMediaBox === "function" ? page.getMediaBox() : undefined;
+  const size = page.getSize();
+  const effectiveBox = cropBox && cropBox.width > 0 && cropBox.height > 0
+    ? cropBox
+    : (mediaBox && mediaBox.width > 0 && mediaBox.height > 0 ? mediaBox : { x: 0, y: 0, width: size.width, height: size.height });
+  const rawUserUnit = page.node?.lookup ? page.node.lookup(lib.PDFName.of("UserUnit")) : undefined;
+  const userUnit = rawUserUnit && typeof (rawUserUnit as unknown as { asNumber?: () => number }).asNumber === "function"
+    ? (rawUserUnit as unknown as { asNumber: () => number }).asNumber()
+    : 1;
+  return {
+    x: effectiveBox.x,
+    y: effectiveBox.y,
+    width: effectiveBox.width,
+    height: effectiveBox.height,
+    userUnit: userUnit > 0 ? userUnit : 1
+  };
 }
 
 export class PdfExportService {
   async export(input: PdfExportInput): Promise<Uint8Array> {
-    await ensurePdfLib();
+    const lib = await ensurePdfLib();
     await input.flush?.();
     const strokes = input.getStrokes?.() ?? input.strokes ?? [];
     const texts = input.getTexts?.() ?? input.texts ?? [];
     const mode = input.mode ?? "flattened";
     const sourceSnapshot = input.sourceBytes.slice();
-    const pdfDoc = await requirePdfLib().PDFDocument.load(sourceSnapshot);
+    const pdfDoc = await lib.PDFDocument.load(sourceSnapshot);
     const metricsByPage = new Map(
       (input.pageMetrics ?? []).map((page) => [page.page, page] as const)
     );
@@ -101,14 +136,14 @@ export class PdfExportService {
       const page = pdfDoc.getPages()[stroke.page - 1];
       if (!page) throw new RangeError(`Stroke ${stroke.id} references missing page ${stroke.page}`);
       const color = parseColor(stroke.color);
-      const pdfSize = page.getSize();
+      const pdfBox = getPageEffectiveBox(page, lib);
       const inkPage = metricsByPage.get(stroke.page);
       const sourceSize = inkPage && inkPage.width > 0 && inkPage.height > 0
-        ? { width: inkPage.width, height: inkPage.height }
-        : pdfSize;
-      // Match on-screen canvas width model; scale into MediaBox points.
-      const mapPoint = (point: Pick<PdfPoint, "x" | "y">) => mapInkPointToPdfPage(point, sourceSize, pdfSize);
-      const strokeWidth = mapInkWidthToPdfPage(stroke.width, sourceSize, pdfSize);
+        ? { width: inkPage.width, height: inkPage.height, minX: inkPage.minX, minY: inkPage.minY }
+        : pdfBox;
+      // Match on-screen canvas width model; scale into MediaBox/CropBox points.
+      const mapPoint = (point: Pick<PdfPoint, "x" | "y">) => mapInkPointToPdfPage(point, sourceSize, pdfBox);
+      const strokeWidth = mapInkWidthToPdfPage(stroke.width, sourceSize, pdfBox);
 
       if (mode === "editable") {
         this.addInkAnnotation(pdfDoc, page, stroke, stroke.points.map(mapPoint), strokeWidth);
@@ -238,13 +273,13 @@ export class PdfExportService {
     for (const text of texts) {
       const page = pdfDoc.getPages()[text.page - 1];
       if (!page) throw new RangeError(`Text annotation ${text.id} references missing page ${text.page}`);
-      const pdfSize = page.getSize();
+      const pdfBox = getPageEffectiveBox(page, lib);
       const inkPage = metricsByPage.get(text.page);
       const sourceSize = inkPage && inkPage.width > 0 && inkPage.height > 0
-        ? { width: inkPage.width, height: inkPage.height }
-        : pdfSize;
-      const origin = mapInkPointToPdfPage(text, sourceSize, pdfSize);
-      const fontSize = mapInkWidthToPdfPage(text.fontSize, sourceSize, pdfSize);
+        ? { width: inkPage.width, height: inkPage.height, minX: inkPage.minX, minY: inkPage.minY }
+        : pdfBox;
+      const origin = mapInkPointToPdfPage(text, sourceSize, pdfBox);
+      const fontSize = mapInkWidthToPdfPage(text.fontSize, sourceSize, pdfBox);
       const mapped: MappedTextAnnotation = {
         annotation: text,
         x: origin.x,

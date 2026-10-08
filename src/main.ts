@@ -364,19 +364,21 @@ export default class NativePdfInkPlugin extends Plugin {
         mobile: Platform.isMobile,
         phone: Platform.isPhone
       });
-      this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100);
+      if (file?.extension?.toLowerCase() === "pdf" && this.inkSettings.preferPluginPdfView) {
+        void this.adoptExistingNativePdfLeaves().finally(() => this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100));
+      } else {
+        this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100);
+      }
     }));
     this.app.workspace.onLayoutReady(() => {
       void this.vaultDebugLog.writeUrgent("info", "layout-ready", {
         mobile: Platform.isMobile,
         phone: Platform.isPhone
       });
-      if (pdfExtensionRegistration.registered) {
+      if (pdfExtensionRegistration.registered || this.inkSettings.preferPluginPdfView) {
         void this.adoptExistingNativePdfLeaves().finally(() => this.scheduleDebouncedScan());
       } else {
-        // A previously restored workspace can still contain the plugin-owned
-        // view even though this host rejected the extension override. Restore
-        // those leaves before scanning so the native adapter can attach.
+        // Restore leaves to native viewer when preferPluginPdfView is disabled.
         void this.restoreOwnedPdfLeavesToNative().finally(() => this.scheduleDebouncedScan());
       }
     });

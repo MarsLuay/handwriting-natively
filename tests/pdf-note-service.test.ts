@@ -6,6 +6,7 @@ import {
   createPdfFromTemplate,
   deletePdfPage,
   deletePdfPages,
+  duplicatePdfPage,
   getPdfPageCount,
   GOODNOTES_STANDARD_PAGE_SIZE,
   importPdfPages,
@@ -367,5 +368,33 @@ describe("PDF note service", () => {
     const copied = await importPdfPages(plain, signedBytes, 1, [1]);
     expect((await PDFDocument.load(copied.bytes)).getPageCount()).toBe(2);
     expect(await getPdfPageCount(signedBytes)).toBe(1);
+  });
+
+  it("reorders a page to a new position in the document", async () => {
+    const source = await createPdf([[100, 100], [200, 200], [300, 300]]);
+    const reordered = await reorderPdfPage(source, 1, 3);
+    expect(reordered.fromPage).toBe(1);
+    expect(reordered.toPage).toBe(3);
+    expect(reordered.pageCount).toBe(3);
+    const resultDoc = await PDFDocument.load(reordered.bytes);
+    expect(resultDoc.getPages().map((p) => p.getSize())).toEqual([
+      { width: 200, height: 200 },
+      { width: 300, height: 300 },
+      { width: 100, height: 100 }
+    ]);
+  });
+
+  it("duplicates an existing page immediately after it", async () => {
+    const source = await createPdf([[400, 600], [500, 700]]);
+    const duplicated = await duplicatePdfPage(source, 1);
+    expect(duplicated.pageNumber).toBe(1);
+    expect(duplicated.newPageNumber).toBe(2);
+    expect(duplicated.pageCount).toBe(3);
+    const resultDoc = await PDFDocument.load(duplicated.bytes);
+    expect(resultDoc.getPages().map((p) => p.getSize())).toEqual([
+      { width: 400, height: 600 },
+      { width: 400, height: 600 },
+      { width: 500, height: 700 }
+    ]);
   });
 });

@@ -15,9 +15,14 @@ export interface SidecarDocumentIdentity {
 
 export interface SidecarPage {
   page: number;
+  /** Stable page identifier (UUID) that survives page reordering/insertion. */
+  pageId?: string;
   width: number;
   height: number;
   rotation: 0 | 90 | 180 | 270;
+  minX?: number;
+  minY?: number;
+  userUnit?: number;
   strokes: InkStroke[];
   texts?: TextAnnotation[];
 }
@@ -47,6 +52,7 @@ const isEraseMask = (value: unknown): boolean =>
 const isStroke = (value: unknown): value is InkStroke => {
   if (!isRecord(value) || !Array.isArray(value.points)) return false;
   return typeof value.id === "string" && Number.isInteger(value.page) &&
+    (value.pageId === undefined || typeof value.pageId === "string") &&
     (value.tool === "pen" || value.tool === "pencil" || value.tool === "highlighter") &&
     typeof value.color === "string" && isFiniteNumber(value.width) && value.width > 0 &&
     isFiniteNumber(value.opacity) && value.opacity >= 0 && value.opacity <= 1 &&
@@ -66,6 +72,7 @@ const isTextRun = (value: unknown): value is TextRun => isRecord(value) &&
 
 const isText = (value: unknown): value is TextAnnotation => isRecord(value) &&
   typeof value.id === "string" && Number.isInteger(value.page) && typeof value.text === "string" &&
+  (value.pageId === undefined || typeof value.pageId === "string") &&
   isFiniteNumber(value.x) && isFiniteNumber(value.y) && isFiniteNumber(value.width) && value.width > 0 &&
   isFiniteNumber(value.height) && value.height > 0 && typeof value.color === "string" &&
   isFiniteNumber(value.fontSize) && value.fontSize > 0 && typeof value.fontFamily === "string" &&
@@ -146,8 +153,12 @@ export function validateSidecar(value: unknown): value is SidecarSchemaV1 {
         (!Array.isArray(value.document.legacyIds) || value.document.legacyIds.some((id) => typeof id !== "string"))) ||
       typeof value.createdAt !== "string" || typeof value.updatedAt !== "string") return false;
   return value.pages.every((page) => isRecord(page) && Number.isInteger(page.page) &&
+    (page.pageId === undefined || typeof page.pageId === "string") &&
     isFiniteNumber(page.width) && page.width > 0 && isFiniteNumber(page.height) && page.height > 0 &&
     (page.rotation === 0 || page.rotation === 90 || page.rotation === 180 || page.rotation === 270) &&
+    (page.minX === undefined || isFiniteNumber(page.minX)) &&
+    (page.minY === undefined || isFiniteNumber(page.minY)) &&
+    (page.userUnit === undefined || (isFiniteNumber(page.userUnit) && page.userUnit > 0)) &&
     Array.isArray(page.strokes) && page.strokes.every(isStroke) &&
     (page.texts === undefined || (Array.isArray(page.texts) && page.texts.every(isText))));
 }

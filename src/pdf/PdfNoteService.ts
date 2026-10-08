@@ -187,6 +187,35 @@ export async function reorderPdfPage(
   return { bytes: await source.save(), fromPage, toPage, pageCount };
 }
 
+export interface DuplicatedPdfPage {
+  bytes: Uint8Array;
+  pageNumber: number;
+  newPageNumber: number;
+  pageCount: number;
+}
+
+/** Duplicates an existing page, copying its visual content and inserting it immediately after. */
+export async function duplicatePdfPage(
+  sourceBytes: Uint8Array,
+  pageNumber: number
+): Promise<DuplicatedPdfPage> {
+  const lib = await ensurePdfLib();
+  const source = await loadRewrittenPdf(sourceBytes, lib);
+  const pageCount = source.getPageCount();
+  if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pageCount) {
+    throw new Error(`PDF page ${pageNumber} does not exist.`);
+  }
+  const [copied] = await source.copyPages(source, [pageNumber - 1]);
+  const newPageNumber = pageNumber + 1;
+  source.insertPage(newPageNumber - 1, copied);
+  return {
+    bytes: await source.save(),
+    pageNumber,
+    newPageNumber,
+    pageCount: pageCount + 1
+  };
+}
+
 /** Keeps a scanned page's aspect ratio while using a practical PDF point size. */
 export function scanPageSize(width: number, height: number): readonly [number, number] {
   if (!(width > 0) || !(height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) {

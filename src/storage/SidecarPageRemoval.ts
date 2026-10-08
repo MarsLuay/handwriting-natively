@@ -1,5 +1,5 @@
 import type { InkStroke, TextAnnotation } from "../model";
-import type { SidecarSchemaV1 } from "./SidecarSchema";
+import type { SidecarPage, SidecarSchemaV1 } from "./SidecarSchema";
 
 function remapPageNumber(page: number, deletedPage: number): number {
   return page > deletedPage ? page - 1 : page;
@@ -102,6 +102,53 @@ export function insertPagesIntoSidecar(
         ? { ...text, page: shiftPageNumberByCount(text.page, insertedPage, insertedPageCount) }
         : text) } : {})
     })),
+    updatedAt
+  };
+}
+
+/** Duplicates an annotated page, copying its strokes and texts onto the newly inserted page. */
+export function duplicatePageInSidecar(
+  sidecar: SidecarSchemaV1,
+  pageNumber: number,
+  updatedAt = new Date().toISOString()
+): SidecarSchemaV1 {
+  if (!Number.isInteger(pageNumber) || pageNumber < 1) {
+    throw new Error("Duplicated page must be a positive integer.");
+  }
+  const sourcePage = sidecar.pages.find((p) => p.page === pageNumber);
+  const shifted = insertPageIntoSidecar(sidecar, pageNumber + 1, updatedAt);
+  if (!sourcePage) return shifted;
+
+  const newPageNumber = pageNumber + 1;
+  const cloneSeed = Date.now();
+  const clonedStrokes = sourcePage.strokes.map((stroke, index) => ({
+    ...stroke,
+    id: `${stroke.id}-copy-${cloneSeed}-${index}`,
+    page: newPageNumber,
+    createdAt: updatedAt,
+    updatedAt
+  }));
+  const clonedTexts = sourcePage.texts
+    ? sourcePage.texts.map((text, index) => ({
+      ...text,
+      id: `${text.id}-copy-${cloneSeed}-${index}`,
+      page: newPageNumber,
+      createdAt: updatedAt,
+      updatedAt
+    }))
+    : undefined;
+
+  const { pageId: _prevPageId, ...restSource } = sourcePage;
+  const duplicatedPage: SidecarPage = {
+    ...restSource,
+    page: newPageNumber,
+    strokes: clonedStrokes,
+    ...(clonedTexts ? { texts: clonedTexts } : {})
+  };
+
+  return {
+    ...shifted,
+    pages: [...shifted.pages, duplicatedPage].sort((left, right) => left.page - right.page),
     updatedAt
   };
 }
