@@ -30,8 +30,18 @@
   max-width: calc(100vw - 24px);
   overflow: hidden;
   position: fixed;
-  width: 48px;
   z-index: var(--layer-popover, 1000);
+}
+
+.native-pdf-handwriting-toolbar-floating-fallback.is-horizontal {
+  flex-direction: row;
+  width: max-content;
+}
+
+.native-pdf-handwriting-toolbar-floating-fallback.is-vertical {
+  align-items: stretch;
+  flex-direction: column;
+  width: 48px;
 }
 
 .native-pdf-handwriting-toolbar-drag-handle {
@@ -49,6 +59,16 @@
   min-height: 24px;
   padding: 2px;
   touch-action: none;
+  width: 100%;
+}
+
+.native-pdf-handwriting-toolbar-floating-fallback.is-horizontal .native-pdf-handwriting-toolbar-drag-handle {
+  align-self: stretch;
+  min-width: 24px;
+  width: auto;
+}
+
+.native-pdf-handwriting-toolbar-floating-fallback.is-vertical .native-pdf-handwriting-toolbar-drag-handle {
   width: 100%;
 }
 
@@ -185,6 +205,31 @@
   margin-top: 4px;
   padding-top: 6px;
   width: 100%;
+}
+
+.native-pdf-handwriting-toolbar-floating-fallback.is-vertical .native-pdf-handwriting-toolbar-controls {
+  align-items: stretch;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+}
+
+.native-pdf-handwriting-toolbar-floating-fallback.is-vertical .native-pdf-handwriting-save-status {
+  border-left: 0;
+  border-top: 1px solid var(--background-modifier-border, #d1d5db);
+  margin-top: 4px;
+  padding-top: 6px;
+  width: 100%;
+}
+
+.native-pdf-handwriting-toolbar-floating-fallback.is-horizontal .native-pdf-handwriting-toolbar-controls {
+  flex-direction: row;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  touch-action: pan-x;
 }
 
 .native-pdf-handwriting-toolbar-controls {
@@ -1148,24 +1193,6 @@
   padding: 2px 8px;
 }
 .hn-owned-pdf-outline button:hover { background: var(--background-modifier-hover); }
-.hn-owned-pdf-toolbar-host > .pdf-toolbar { flex: 0 0 auto; min-width: 0; }
-.hn-owned-pdf-toolbar-actions {
-  align-items: center;
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 2px;
-}
-.hn-owned-pdf-toolbar-zoom-select {
-  background: var(--background-modifier-form-field);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  color: var(--text-normal);
-  flex: 0 0 auto;
-  min-height: 28px;
-  padding: 2px 4px;
-}
-.hn-owned-pdf-toolbar-action { flex: 0 0 auto; }
-.hn-owned-pdf-toolbar-action.is-active { color: var(--text-accent); }
 .hn-owned-pdf-find-bar {
   align-items: center;
   box-sizing: border-box;
@@ -1302,16 +1329,6 @@
 .hn-owned-pdf-thumbnail:focus-visible { background: var(--background-modifier-hover); color: var(--text-normal); }
 .hn-owned-pdf-thumbnail canvas { background: white; display: block; max-width: 100%; }
 .hn-owned-pdf-thumbnail span { font-size: var(--font-ui-small); }
-.hn-owned-pdf-ink-rail {
-  bottom: 0;
-  pointer-events: none;
-  position: absolute;
-  top: 39px;
-  z-index: 30;
-}
-.hn-owned-pdf-ink-rail.is-left { left: 8px; }
-.hn-owned-pdf-ink-rail.is-right { right: 8px; }
-.hn-owned-pdf-ink-rail > * { pointer-events: auto; }
 .hn-owned-pdf-error {
   align-items: flex-start;
   display: flex;

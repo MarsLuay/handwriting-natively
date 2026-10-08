@@ -1,6 +1,6 @@
+import type { ToolbarPlacement } from "../model";
 import type { VaultLogLevel } from "../logging/VaultLogSink";
 import type { ViewStateSource } from "../logging/SessionLogger";
-import type { ToolbarPlacement } from "../model";
 import type { ViewerState, ViewerViewportState, ViewerScaleMode } from "./ViewerState";
 
 export type { ViewerState, ViewerViewportState, ViewerScaleMode };

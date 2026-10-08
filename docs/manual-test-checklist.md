@@ -11,7 +11,7 @@
 
 ## Tools and toolbar
 
-- Select an ink tool in the native PDF toolbar, then verify Sidecar Apple Pencil-as-mouse can draw, erase, and lasso. Switch back to a navigation/tool state and confirm mouse PDF interaction returns immediately.
+- Open a direct PDF and PNG and verify each shows the same draggable floating toolbar. Rotate it from horizontal to vertical and back, then confirm the orientation persists after reopening. Drag the toolbar by its handle and confirm it stays within the window. Select an ink tool, then verify Sidecar Apple Pencil-as-mouse can draw, erase, and lasso. Switch to Drag and confirm mouse PDF navigation returns immediately. Use the More menu for page navigation, zoom, thumbnails, outline, search, print, and download.
 - Open every dropdown with mouse, touch, stylus, keyboard.
 - Click outside and Escape close dropdown; focus returns to button.
 - Dropdown fits above/below toolbar at phone, tablet, desktop widths.

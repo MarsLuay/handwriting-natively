@@ -1,5 +1,4 @@
 import { createDetachedDiv } from "../vendor/createDetached";
-import type { ToolbarPlacement } from "../model";
 import type { AnnotationPageInfo, AnnotationSurface, AnnotationSurfaceCallbacks, AnnotationViewState, ViewerState } from "../runtime/AnnotationSurface";
 
 /**
@@ -110,7 +109,7 @@ export class ImageViewAdapter implements AnnotationSurface {
     return overlay;
   }
 
-  mountToolbar(toolbar: HTMLElement, _placement: ToolbarPlacement = "main"): void {
+  mountToolbar(toolbar: HTMLElement): void {
     this.clearToolbarMounts(toolbar);
     toolbar.classList.remove("is-sidebar-left", "is-sidebar-right");
     toolbar.classList.add("is-main");

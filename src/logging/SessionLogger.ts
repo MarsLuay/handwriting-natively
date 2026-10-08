@@ -996,9 +996,9 @@ export class SessionLogger {
     });
   }
 
-  /** Placement transitions make stale More-menu state and failed remounts diagnosable. */
-  toolbarPlacement(phase: "request" | "applied" | "error", details: Record<string, unknown> = {}): void {
-    this.emit(phase === "error" ? "warn" : "info", "toolbar placement", {
+  /** Orientation transitions make failed toolbar updates diagnosable. */
+  toolbarOrientation(phase: "request" | "applied" | "error", details: Record<string, unknown> = {}): void {
+    this.emit(phase === "error" ? "warn" : "info", "toolbar orientation", {
       document: this.documentPath,
       phase,
       ...details
@@ -1072,7 +1072,7 @@ export class SessionLogger {
     mousePolicy?: string;
     activeTool?: string;
     runtimePlatform?: string;
-    toolbarPlacement?: string;
+    toolbarOrientation?: string;
     loadedStrokes?: number;
     loadedTexts?: number;
     sidecarStrokes?: number;

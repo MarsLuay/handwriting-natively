@@ -4,11 +4,11 @@ Project: `native-pdf-handwriting` — Handwriting Natively
 
 ## runtime-compatibility — pending
 
-Validate the plugin-owned PDF viewer and native toolbar bridge against current Obsidian desktop, Android, and iPad builds.
+Validate the plugin-owned PDF viewer and shared movable toolbar against current Obsidian desktop, Android, and iPad builds.
 
 Paths: `src/integration/`, `docs/current-limitations.md`
 
-Checks: `npm test`; `npm run build`; the Obsidian 1.14.4 child-before-toolbar regression test; manual PDF checks on current desktop, Android, and iPad builds.
+Checks: `npm test`; `npm run lint`; `npm run build`; verify direct PDF startup without a native `PDFToolbar` dependency; manual PDF checks on current desktop, Android, and iPad builds.
 
 ## source-pdf-write-contract — complete
 
@@ -28,8 +28,8 @@ Checks: profile dense pages; profile lasso resize and clipboard behavior.
 
 ## unified-gesture-navigation — pending
 
-Centralize touch, pinch, hand-tool, and modifier-wheel navigation and provide a movable toolbar fallback when a sidebar rail is unavailable.
+Centralize touch, pinch, hand-tool, and modifier-wheel navigation and validate the canonical floating toolbar.
 
 Paths: `src/input/GestureNavigationController.ts`, `src/input/PointerRouter.ts`, `src/runtime/ViewerInkSession.ts`, `docs/input-gesture-architecture.md`
 
-Checks: focused gesture, sidebar, settings, and toolbar fallback tests; `npm test`; `npm run lint`; `npm run build` when the shared generated `main.js` is no longer being edited.
+Checks: focused gesture and orientation tests, including persisted toolbar rotation; `npm test`; `npm run lint`; `npm run build` when the shared generated `main.js` is no longer being edited.

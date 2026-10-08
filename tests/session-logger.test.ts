@@ -185,18 +185,18 @@ describe("SessionLogger", () => {
     warn.mockRestore();
   });
 
-  it("logs toolbar placement transitions", () => {
+  it("logs toolbar orientation transitions", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const logger = new SessionLogger("Notes/example.pdf", {
       write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} })
     });
 
-    logger.toolbarPlacement("request", { previousPlacement: "main", requestedPlacement: "left" });
-    logger.toolbarPlacement("applied", { previousPlacement: "main", requestedPlacement: "left", resolvedPlacement: "left" });
+    logger.toolbarOrientation("request", { previousOrientation: "horizontal", requestedOrientation: "vertical" });
+    logger.toolbarOrientation("applied", { previousOrientation: "horizontal", requestedOrientation: "vertical", resolvedOrientation: "vertical" });
 
     expect(writes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ event: "toolbar placement", payload: expect.objectContaining({ phase: "request", requestedPlacement: "left" }) }),
-      expect.objectContaining({ event: "toolbar placement", payload: expect.objectContaining({ phase: "applied", resolvedPlacement: "left" }) })
+      expect.objectContaining({ event: "toolbar orientation", payload: expect.objectContaining({ phase: "request", requestedOrientation: "vertical" }) }),
+      expect.objectContaining({ event: "toolbar orientation", payload: expect.objectContaining({ phase: "applied", resolvedOrientation: "vertical" }) })
     ]));
   });
 
@@ -215,8 +215,8 @@ describe("SessionLogger", () => {
       viewerConnected: true,
       toolbarExpected: true,
       toolbarConnected: false,
-      sidebarExpected: true,
-      sidebarConnected: false,
+      floatingToolbar: false,
+      toolbarOrientation: "vertical",
       pageCount: 3,
       currentPage: 2,
       addPageOperationId: "add-page-1"
@@ -230,7 +230,8 @@ describe("SessionLogger", () => {
           viewerGeneration: 2,
           toolbarGeneration: 3,
           toolbarConnected: false,
-          sidebarConnected: false,
+          floatingToolbar: false,
+          toolbarOrientation: "vertical",
           pageCount: 3,
           addPageOperationId: "add-page-1"
         })

@@ -1,4 +1,4 @@
-import type { DrawingTool, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarPlacement, ToolPreferences } from "../model";
+import type { DrawingTool, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarOrientation, ToolPreferences } from "../model";
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
 import {
   annotationPageMountMatches,
@@ -17,7 +17,6 @@ import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integrat
 import { loadPdfThumbnailRuntime } from "../integration/PdfThumbnailRuntime";
 import type { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
-import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
 type PdfThumbnailRuntimeModule = Awaited<ReturnType<typeof loadPdfThumbnailRuntime>>;
 let pdfThumbnailRuntime: PdfThumbnailRuntimeModule | undefined;
@@ -52,10 +51,6 @@ async function ensurePostZoomInputRuntime(): Promise<PostZoomInputRuntimeModule>
 function requirePostZoomInputRuntime(): PostZoomInputRuntimeModule {
   if (!postZoomInputRuntime) throw new Error("post-zoom input runtime has not been loaded");
   return postZoomInputRuntime;
-}
-
-function mountedToolbarRail(toolbar: HTMLElement): HTMLElement | null {
-  return toolbar.closest<HTMLElement>(".native-pdf-handwriting-rail, .hn-owned-pdf-ink-rail");
 }
 
 function elementPresentationSnapshot(element: HTMLElement | null): Record<string, unknown> | null {
@@ -593,7 +588,7 @@ export interface ViewerInkSessionOptions {
   /** Reads the current calibration; it is captured when a new stroke starts. */
   pressureCalibration?(): PressureCalibration;
   simplifyStrokesEnabled?(): boolean;
-  toolbarPlacement?: () => ToolbarPlacement;
+  toolbarOrientation?: () => ToolbarOrientation;
   vaultLog?: VaultLogSink;
   /** Enables diagnostics that would otherwise add avoidable input-path work. */
   debugEnabled?: () => boolean;
@@ -1042,10 +1037,8 @@ export class ViewerInkSession {
   private toolbarUiGeneration = 0;
   private lastToolbarMountReason = "not-mounted";
   private lastToolbarUnmountReason: string | null = null;
-  private floatingToolbarPlacement: ToolbarPlacement | null = null;
   private floatingToolbarHandle: HTMLButtonElement | null = null;
   private floatingToolbarAbort: AbortController | null = null;
-  private toolbarRailRecoveryObserver: MutationObserver | null = null;
   private lastHandwritingUiMissingKey = "";
   private uiIntegrityTimer: number | null = null;
   private readonly previousViewerElementDebugId: number | null;
@@ -1057,6 +1050,8 @@ export class ViewerInkSession {
   private readonly history: CommandHistory;
   /** Pages dirtied by the next history.execute — avoids full multi-page refresh. */
   private readonly historyDirtyPages = new Set<number>();
+  /** Retain each command's affected pages so undo/redo can repaint the same surfaces. */
+  private readonly historyPagesByCommand = new WeakMap<Command, readonly number[]>();
   /** Pages already painted by the history callback in this turn. */
   private readonly historyPaintedPages = new Set<number>();
   private readonly wetRenderer = new WetInkRenderer();
@@ -1430,11 +1425,11 @@ export class ViewerInkSession {
         ...(options.openScanDocument && options.onInsertScannedPages && (options.runtimePlatform?.().mobile ?? false)
           ? ["scan-document" as const]
           : []),
-        ...(["zoom-in", "zoom-out", "fit-width", "rotate-cw", "rotate-ccw", "search"] as const),
-        // Keep the PDF-bar action available on mobile too. `main` is an
-        // explicit placement now; hiding it here made the setting impossible
-        // to select from the live PDF toolbar on mobile.
-        ...(["toolbar-main", "toolbar-left", "toolbar-right"] as const)
+        ...(pdfExtensions ? ["previous-page", "next-page", "go-to-page", "set-zoom"] as const : []),
+        ...(pdfExtensions?.performToolbarAction
+          ? ["fit-height", "fit-page", "show-thumbnails", "show-outline", "presentation", "print", "download"] as const
+          : []),
+        ...(["zoom-in", "zoom-out", "fit-width", "rotate-cw", "rotate-ccw", "search", "rotate-toolbar"] as const)
       ],
       callbacks: {
         onPreferencesChange: (preferences, reason = "general") => {
@@ -1546,7 +1541,7 @@ export class ViewerInkSession {
         onHandMode: () => this.commandController.toggleHandMode(),
         onSave: () => this.manualSave(),
         onMore: (action) => void this.handleMore(action),
-        toolbarPlacement: () => this.currentToolbarPlacement()
+        toolbarOrientation: () => this.currentToolbarOrientation()
       }
     });
     this.selectionToolbar = new SelectionToolbar({
@@ -7119,9 +7114,7 @@ export class ViewerInkSession {
       mobile: platform.mobile,
       phone: platform.phone,
       domPageCount,
-      toolbarPlacement: resolveToolbarPlacement(
-        options.toolbarPlacement?.() ?? options.settings.toolbarPlacement
-      )
+      toolbarOrientation: options.toolbarOrientation?.() ?? options.settings.toolbarOrientation
     });
     let contentHash: string | undefined;
     try {
@@ -7282,7 +7275,7 @@ export class ViewerInkSession {
     session.reconcileToolbarMount("session-create");
     await urgent("session create toolbar ok", {
       document: options.documentPath,
-      toolbarPlacement: session.currentToolbarPlacement(),
+      toolbarOrientation: session.currentToolbarOrientation(),
       ...session.toolbarPresentationSnapshot()
     });
     session.logger.sessionAttach({
@@ -7290,7 +7283,7 @@ export class ViewerInkSession {
       ...describeInputPolicies(options.settings),
       activeTool: options.settings.toolPreferences.activeTool,
       runtimePlatform: session.runtimePlatform().mobile ? "mobile" : "desktop",
-      toolbarPlacement: session.currentToolbarPlacement(),
+      toolbarOrientation: session.currentToolbarOrientation(),
       loadedStrokes,
       loadedTexts,
       sidecarStrokes,
@@ -7309,14 +7302,14 @@ export class ViewerInkSession {
       currentPage: options.adapter.getViewState().pageNumber,
       mountPageCount: mountPages.length,
       mountPages: mountPages.map((page) => page.pageNumber),
-      toolbarPlacement: session.currentToolbarPlacement()
+      toolbarOrientation: session.currentToolbarOrientation()
     });
     session.refresh("create");
     await urgent("session create refresh ok", {
       document: options.documentPath,
       surfaces: session.surfaces.size,
       mountPages: [...session.surfaces.keys()].sort((a, b) => a - b),
-      toolbarPlacement: session.currentToolbarPlacement(),
+      toolbarOrientation: session.currentToolbarOrientation(),
       mobile: platform.mobile
     });
     session.lastKnownViewScale = options.adapter.getViewState().scale;
@@ -7532,6 +7525,8 @@ export class ViewerInkSession {
         if (Number.isFinite(page)) this.historyDirtyPages.add(page);
       }
     }
+    const affectedPages = [...this.historyDirtyPages];
+    if (affectedPages.length > 0) this.historyPagesByCommand.set(command, affectedPages);
     this.history.execute(command);
   }
 
@@ -7968,7 +7963,14 @@ export class ViewerInkSession {
   }
 
   private paintAfterHistory(command?: Command, action?: HistoryChangeAction): void {
+    if (this.historyDirtyPages.size === 0 && command) {
+      for (const page of this.historyPagesByCommand.get(command) ?? []) {
+        this.historyDirtyPages.add(page);
+      }
+    }
     if (this.historyDirtyPages.size === 0) {
+      this.historyPaintedPages.clear();
+      this.invalidateInkLayers();
       this.refresh("history");
       return;
     }
@@ -8303,80 +8305,30 @@ export class ViewerInkSession {
 
   private reconcileToolbarMount(reason: string): void {
     if (this.destroyed || !this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) return;
-    const placement = this.currentToolbarPlacement();
     const toolbar = this.toolbar.element;
-    const rail = mountedToolbarRail(toolbar);
-    const floatingFallbackActive = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback");
     const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
-    const sidebarExpected = placement !== "main";
-    const sidebarConnected = sidebarExpected
-      && toolbarConnected
-      && Boolean(rail)
-      && this.options.adapter.host.contains(rail)
-      && rail!.classList.contains(`is-${placement}`);
-    const placementMatches = sidebarExpected
-      ? sidebarConnected
-      : toolbarConnected && !rail;
-    if (placementMatches && !floatingFallbackActive) return;
-    if (floatingFallbackActive && this.floatingToolbarPlacement === placement && reason !== "rail-reappeared") return;
+    const floating = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback");
+    const orientationChanged = this.applyToolbarOrientation(toolbar);
+    if (toolbarConnected && floating && !orientationChanged) return;
 
     this.lastToolbarUnmountReason = toolbar.isConnected ? `reconcile:${reason}` : reason;
     this.toolbarUiGeneration = Math.min(999, this.toolbarUiGeneration + 1);
-    let mountError: unknown;
     try {
-      this.options.adapter.mountToolbar(toolbar, placement);
+      this.options.adapter.mountToolbar(toolbar);
       this.lastToolbarMountReason = reason;
-    } catch (error) {
-      mountError = error;
+    } catch {
+      // The floating toolbar can attach directly to the host if adapter mounting fails.
     }
-
-    const mountedRail = mountedToolbarRail(toolbar);
-    const mountedInSidebar = sidebarExpected
-      && toolbar.isConnected
-      && this.options.adapter.host.contains(toolbar)
-      && mountedRail !== null
-      && this.options.adapter.host.contains(mountedRail)
-      && mountedRail.classList.contains(`is-${placement}`);
-    const mountedInMainToolbar = placement === "main"
-      && toolbar.isConnected
-      && this.options.adapter.host.contains(toolbar)
-      && !mountedRail;
-
-    if (mountedInSidebar || mountedInMainToolbar) {
-      this.clearFloatingToolbarFallback();
-      return;
-    }
-
-    if (sidebarExpected) {
-      this.mountFloatingToolbarFallback(toolbar, placement);
-      this.lastToolbarMountReason = `${reason}:floating-fallback`;
-      return;
-    }
-
-    this.clearFloatingToolbarFallback();
-    if (mountError !== undefined && reason === "session-create") {
-      if (mountError instanceof Error) throw mountError;
-      const message = typeof mountError === "string" ? mountError : "Toolbar mount failed";
-      throw new Error(message);
-    }
+    this.mountFloatingToolbar(toolbar, orientationChanged);
+    this.lastToolbarMountReason = `${reason}:floating`;
   }
 
-  private mountFloatingToolbarFallback(toolbar: HTMLElement, placement: ToolbarPlacement): void {
-    const alreadyFloating = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")
-      && this.floatingToolbarPlacement === placement;
-    if (!alreadyFloating) {
-      try {
-        this.options.adapter.mountToolbar(toolbar, "main");
-      } catch {
-        // The fallback attaches directly to the view host if the adapter mount also fails.
-      }
-    }
-
+  private mountFloatingToolbar(toolbar: HTMLElement, orientationChanged: boolean): void {
+    const alreadyFloating = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback");
+    this.applyToolbarOrientation(toolbar);
     toolbar.classList.add("native-pdf-handwriting-toolbar-floating-fallback");
-    toolbar.classList.toggle("is-sidebar-left", placement === "left");
-    toolbar.classList.toggle("is-sidebar-right", placement === "right");
+    toolbar.classList.remove("is-main", "is-sidebar-left", "is-sidebar-right");
     this.options.adapter.host.append(toolbar);
-    this.floatingToolbarPlacement = placement;
 
     if (!this.floatingToolbarHandle) {
       const handle = createDetachedEl(toolbar.ownerDocument, "button");
@@ -8390,21 +8342,29 @@ export class ViewerInkSession {
       this.installFloatingToolbarDrag(toolbar, handle);
     }
 
-    if (!alreadyFloating) {
+    if (!alreadyFloating || orientationChanged) {
       const rect = toolbar.getBoundingClientRect();
       const hostRect = this.options.adapter.host.getBoundingClientRect();
       const view = toolbar.ownerDocument.defaultView;
       const maxLeft = Math.max(0, (view?.innerWidth ?? hostRect.right) - rect.width);
       const maxTop = Math.max(0, (view?.innerHeight ?? hostRect.bottom) - rect.height);
+      const targetLeft = alreadyFloating ? rect.left : hostRect.left + 12;
+      const targetTop = alreadyFloating ? rect.top : hostRect.top + 12;
       setElementCssProps(toolbar, {
-        left: `${Math.min(Math.max(hostRect.left + 12, 0), maxLeft)}px`,
-        top: `${Math.min(Math.max(hostRect.top + 12, 0), maxTop)}px`,
+        left: `${Math.min(Math.max(targetLeft, 0), maxLeft)}px`,
+        top: `${Math.min(Math.max(targetTop, 0), maxTop)}px`,
         right: "auto",
         bottom: "auto"
       });
     }
+  }
 
-    this.observeToolbarRailRecovery(toolbar, placement);
+  private applyToolbarOrientation(toolbar: HTMLElement): boolean {
+    const orientation = this.currentToolbarOrientation();
+    const changed = toolbar.classList.contains("is-vertical") !== (orientation === "vertical");
+    toolbar.classList.toggle("is-vertical", orientation === "vertical");
+    toolbar.classList.toggle("is-horizontal", orientation === "horizontal");
+    return changed;
   }
 
   private installFloatingToolbarDrag(toolbar: HTMLElement, handle: HTMLButtonElement): void {
@@ -8451,31 +8411,7 @@ export class ViewerInkSession {
     }
   }
 
-  private observeToolbarRailRecovery(toolbar: HTMLElement, placement: ToolbarPlacement): void {
-    if (this.toolbarRailRecoveryObserver) return;
-    const MutationObserverConstructor = toolbar.ownerDocument.defaultView?.MutationObserver;
-    if (!MutationObserverConstructor) return;
-    const host = this.options.adapter.host;
-    const selector = `.native-pdf-handwriting-rail.is-${placement}, .hn-owned-pdf-ink-rail.is-${placement}`;
-    this.toolbarRailRecoveryObserver = new MutationObserverConstructor((records) => {
-      const railAppeared = records.some((record) => {
-        if (record.type === "attributes" && isElementInDocument(record.target, toolbar.ownerDocument)) {
-          return record.target.matches(selector);
-        }
-        return Array.from(record.addedNodes).some((node) => {
-          if (node.nodeType !== Node.ELEMENT_NODE) return false;
-          const element = node as Element;
-          return element.matches(selector) || Boolean(element.querySelector(selector));
-        });
-      });
-      if (railAppeared && !this.destroyed) this.reconcileToolbarMount("rail-reappeared");
-    });
-    this.toolbarRailRecoveryObserver.observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
-  }
-
   private clearFloatingToolbarFallback(): void {
-    this.toolbarRailRecoveryObserver?.disconnect();
-    this.toolbarRailRecoveryObserver = null;
     this.floatingToolbarAbort?.abort();
     this.floatingToolbarAbort = null;
     this.floatingToolbarHandle?.remove();
@@ -8486,7 +8422,7 @@ export class ViewerInkSession {
     toolbar.style.removeProperty("top");
     toolbar.style.removeProperty("right");
     toolbar.style.removeProperty("bottom");
-    this.floatingToolbarPlacement = null;
+    toolbar.classList.remove("is-horizontal", "is-vertical");
   }
 
   private scheduleUiIntegrityCheck(reason: string): void {
@@ -8501,9 +8437,7 @@ export class ViewerInkSession {
   private verifyHandwritingUi(reason: string): void {
     if (this.destroyed || !this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) return;
     const state = this.handwritingUiState(reason);
-    const sidebarAvailable = state.sidebarConnected === true || state.floatingToolbarFallback === true;
-    const missing = state.toolbarExpected === true
-      && (!state.toolbarConnected || (state.sidebarExpected === true && !sidebarAvailable));
+    const missing = state.toolbarExpected === true && (!state.toolbarConnected || state.floatingToolbar !== true);
     if (!missing) return;
     const key = JSON.stringify([
       state.viewerGeneration,
@@ -8511,7 +8445,7 @@ export class ViewerInkSession {
       state.pageCount,
       state.currentPage,
       state.toolbarConnected,
-      state.sidebarConnected
+      state.toolbarOrientation
     ]);
     if (key === this.lastHandwritingUiMissingKey) return;
     this.lastHandwritingUiMissingKey = key;
@@ -8519,16 +8453,8 @@ export class ViewerInkSession {
   }
 
   private handwritingUiState(reason: string, details: Record<string, unknown> = {}): Record<string, unknown> {
-    const placement = this.currentToolbarPlacement();
     const toolbar = this.toolbar.element;
-    const rail = mountedToolbarRail(toolbar);
     const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
-    const sidebarExpected = placement !== "main";
-    const sidebarConnected = sidebarExpected
-      && toolbarConnected
-      && Boolean(rail)
-      && this.options.adapter.host.contains(rail)
-      && rail!.classList.contains(`is-${placement}`);
     let currentPage: number | null = null;
     try {
       currentPage = this.options.adapter.getViewState().pageNumber;
@@ -8549,16 +8475,13 @@ export class ViewerInkSession {
         host: this.options.adapter.host.isConnected,
         viewer: this.options.adapter.root.isConnected,
         toolbar: toolbar.isConnected,
-        toolbarInHost: toolbarConnected,
-        sidebar: Boolean(rail?.isConnected)
+        toolbarInHost: toolbarConnected
       },
       viewerConnected: this.options.adapter.root.isConnected,
       toolbarExpected: true,
       toolbarConnected,
-      sidebarExpected,
-      sidebarConnected,
-      floatingToolbarFallback: toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback"),
-      toolbarPlacement: placement,
+      floatingToolbar: toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback"),
+      toolbarOrientation: this.currentToolbarOrientation(),
       pageCount: Math.min(999, this.options.adapter.pages().length),
       currentPage,
       documentInputOwnership: documentInputOwnershipSnapshot(this.options.adapter.host.ownerDocument),
@@ -8575,8 +8498,7 @@ export class ViewerInkSession {
         left: isObsidianSidebarOpen(document, "left"),
         right: isObsidianSidebarOpen(document, "right")
       },
-      toolbarPresentation: elementPresentationSnapshot(toolbar),
-      sidebarRailPresentation: elementPresentationSnapshot(mountedToolbarRail(toolbar))
+      toolbarPresentation: elementPresentationSnapshot(toolbar)
     };
   }
 
@@ -9782,7 +9704,7 @@ export class ViewerInkSession {
     }
     const textFocused = Boolean(this.activeTextEditor) || shouldIgnoreSelectionShortcut(event.target);
     const plainModifierForInk = this.mouseInkingEnabled();
-    const historyAction = parseHistoryShortcut(event, plainModifierForInk);
+    const historyAction = parseHistoryShortcut(event);
     const action = parseSelectionShortcut(event, plainModifierForInk);
     if (textFocused && !event.altKey) {
       this.logKeyboardShortcut(event, "native-text", null, false);
@@ -17544,9 +17466,9 @@ export class ViewerInkSession {
     return [...this.surfaces.values()].some((surface) => surface.overlay.isConnected);
   }
 
-  private currentToolbarPlacement(): ToolbarPlacement {
-    const configured = this.options.toolbarPlacement?.() ?? this.options.settings.toolbarPlacement;
-    return resolveToolbarPlacement(configured);
+  private currentToolbarOrientation(): ToolbarOrientation {
+    const configured = this.options.toolbarOrientation?.() ?? this.options.settings.toolbarOrientation;
+    return configured === "vertical" ? "vertical" : "horizontal";
   }
 
   private async handleMore(action: MoreAction): Promise<void> {
@@ -17582,6 +17504,47 @@ export class ViewerInkSession {
       this.commandController.fitWidth();
       return;
     }
+    if (action === "previous-page") {
+      this.commandController.previousPage();
+      return;
+    }
+    if (action === "next-page") {
+      this.commandController.nextPage();
+      return;
+    }
+    if (action === "go-to-page") {
+      const view = this.options.adapter.host.ownerDocument.defaultView;
+      const page = view?.prompt(
+        `Go to page (1–${this.commandController.getPageCount()})`,
+        String(this.commandController.getCurrentPage())
+      );
+      if (page !== null && page !== undefined) {
+        const pageNumber = Number(page.trim());
+        if (Number.isInteger(pageNumber) && pageNumber > 0) this.commandController.goToPage(pageNumber);
+      }
+      return;
+    }
+    if (action === "set-zoom") {
+      const view = this.options.adapter.host.ownerDocument.defaultView;
+      const zoom = view?.prompt("Set zoom percentage (10–1000)", String(Math.round(this.commandController.getZoom() * 100)));
+      if (zoom !== null && zoom !== undefined) {
+        const percent = Number(zoom.trim());
+        if (Number.isFinite(percent) && percent > 0) this.commandController.setZoom(percent / 100);
+      }
+      return;
+    }
+    if (
+      action === "fit-height"
+      || action === "fit-page"
+      || action === "show-thumbnails"
+      || action === "show-outline"
+      || action === "presentation"
+      || action === "print"
+      || action === "download"
+    ) {
+      pdfSurfaceExtensions(this.options.adapter)?.performToolbarAction?.(action);
+      return;
+    }
     if (action === "rotate-cw") {
       this.commandController.rotateClockwise();
       return;
@@ -17594,25 +17557,24 @@ export class ViewerInkSession {
       this.commandController.toggleSearch();
       return;
     }
-    if (action === "toolbar-main" || action === "toolbar-left" || action === "toolbar-right") {
-      const placement = action.replace("toolbar-", "") as ToolbarPlacement;
-      const previousPlacement = this.currentToolbarPlacement();
-      this.logger.toolbarPlacement("request", { previousPlacement, requestedPlacement: placement });
-      // Prefer savePluginSettings (assigns via saveSettings + remounts open leaves). Local mutate is fallback only.
+    if (action === "rotate-toolbar") {
+      const previousOrientation = this.currentToolbarOrientation();
+      const toolbarOrientation = previousOrientation === "horizontal" ? "vertical" : "horizontal";
+      this.logger.toolbarOrientation("request", { previousOrientation, requestedOrientation: toolbarOrientation });
       try {
-        if (this.options.savePluginSettings) await this.options.savePluginSettings({ toolbarPlacement: placement });
-        else this.options.settings.toolbarPlacement = placement;
+        if (this.options.savePluginSettings) await this.options.savePluginSettings({ toolbarOrientation });
+        else this.options.settings.toolbarOrientation = toolbarOrientation;
         this.remountToolbar();
-        this.logger.toolbarPlacement("applied", {
-          previousPlacement,
-          requestedPlacement: placement,
-          resolvedPlacement: this.currentToolbarPlacement(),
+        this.logger.toolbarOrientation("applied", {
+          previousOrientation,
+          requestedOrientation: toolbarOrientation,
+          resolvedOrientation: this.currentToolbarOrientation(),
           ...this.toolbarPresentationSnapshot()
         });
       } catch (error) {
-        this.logger.toolbarPlacement("error", {
-          previousPlacement,
-          requestedPlacement: placement,
+        this.logger.toolbarOrientation("error", {
+          previousOrientation,
+          requestedOrientation: toolbarOrientation,
           error: this.errorMessage(error)
         });
         throw error;

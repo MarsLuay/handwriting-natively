@@ -433,12 +433,10 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     rail.className = `native-pdf-handwriting-rail is-${placement}`;
     toolbar.classList.add(placement === "left" ? "is-sidebar-left" : "is-sidebar-right");
     rail.append(toolbar);
-    // DOM order is a fallback; CSS grid columns on chrome pin left vs right.
     if (placement === "left") chrome.insertBefore(rail, chrome.firstChild);
     else chrome.append(rail);
     this.mounted.add(rail);
     this.mounted.add(toolbar);
-    // Catch full-pane rail stretch (missing is-toolbar-* / max-content blowup).
     const railLayout = this.viewportLayout(rail);
     const chromeLayout = this.viewportLayout(chrome);
     const wrapNode = chrome.querySelector(".pdf-viewer-container, .pdf-viewer-scroll-container, #viewerContainer");
@@ -464,8 +462,6 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       this.watchPdfSidebarLayout();
       this.queueSyncLeftRailWithPdfSidebar(false, "mount-toolbar");
     } else {
-      // A right rail never needs left-sidebar offset tracking. Clear any
-      // previous left offset once, then stop a pending left-follow loop.
       this.stopSidebarFollowLoop();
       this.syncLeftRailWithPdfSidebar("toolbar-right");
     }

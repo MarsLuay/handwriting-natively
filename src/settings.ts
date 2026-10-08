@@ -348,24 +348,6 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
               );
             }
           }] : []),
-          {
-            name: "Ink toolbar placement",
-            desc: "Put the ink controls on the PDF toolbar, or as a left/right sidebar beside the pages.",
-            render: (setting: Setting) => {
-              setting.addDropdown((dropdown) =>
-                dropdown
-                  .addOption("main", "PDF toolbar (default)")
-                  .addOption("left", "Left sidebar")
-                  .addOption("right", "Right sidebar")
-                  .setValue(this.host.inkSettings.toolbarPlacement)
-                  .onChange(async (value) => {
-                    if (value === "main" || value === "left" || value === "right") {
-                      await this.persistPatch({ toolbarPlacement: value });
-                    }
-                  })
-              );
-            }
-          }
         ]
       },
       {

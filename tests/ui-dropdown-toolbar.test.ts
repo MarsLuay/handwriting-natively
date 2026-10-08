@@ -188,31 +188,29 @@ describe("AnnotationToolbar", () => {
     toolbar.destroy();
   });
 
-  it("reads the active toolbar placement each time More opens", () => {
-    let placement: "main" | "left" | "right" = "main";
+  it("offers a toolbar rotation action that reflects the next orientation", () => {
+    let orientation: "horizontal" | "vertical" = "horizontal";
     const toolbar = new AnnotationToolbar({
       preferences: structuredClone(DEFAULT_SETTINGS.toolPreferences),
       autosave: true,
       callbacks: {
         onPreferencesChange: vi.fn(),
-        toolbarPlacement: () => placement,
+        toolbarOrientation: () => orientation,
         onMore: (action) => {
-          if (action === "toolbar-main" || action === "toolbar-left" || action === "toolbar-right") {
-            placement = action.replace("toolbar-", "") as typeof placement;
-          }
+          if (action === "rotate-toolbar") orientation = orientation === "horizontal" ? "vertical" : "horizontal";
         }
       },
-      supportedMoreActions: ["toolbar-main", "toolbar-left", "toolbar-right"],
+      supportedMoreActions: ["rotate-toolbar"],
       ownerDocument: document
     });
     document.body.append(toolbar.element);
     const more = toolbar.element.querySelector<HTMLButtonElement>("[data-control='more']");
     more?.click();
-    expect(document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']")?.getAttribute("aria-checked")).toBe("true");
-    document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-left']")?.click();
+    const rotate = document.querySelector<HTMLButtonElement>("[data-option-id='rotate-toolbar']");
+    expect(rotate?.textContent).toBe("Rotate toolbar to vertical");
+    rotate?.click();
     more?.click();
-    expect(document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-left']")?.getAttribute("aria-checked")).toBe("true");
-    expect(document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']")?.getAttribute("aria-checked")).toBe("false");
+    expect(document.querySelector<HTMLButtonElement>("[data-option-id='rotate-toolbar']")?.textContent).toBe("Rotate toolbar to horizontal");
     toolbar.destroy();
   });
 

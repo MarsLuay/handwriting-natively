@@ -36,7 +36,8 @@ describe("main PDF page actions", () => {
 
   it("registers the plugin-owned viewer by default and adopts open native PDF leaves", () => {
     const onload = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("  /** Catch uncaught errors"));
-    expect(onload).toContain("captureObsidianPdfToolbarConstructor");
+    expect(onload).not.toContain("captureObsidianPdfToolbarConstructor");
+    expect(onload).toContain("PdfJsViewAdapter.create");
     expect(onload).toContain("replaceDefaultPdfViewRegistration");
     expect(onload).toContain("adoptExistingNativePdfLeaves");
     expect(mainSource).not.toContain("restoreOwnedPdfLeavesToNative");

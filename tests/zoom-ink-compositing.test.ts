@@ -851,7 +851,7 @@ describe("zoom ink compositing", () => {
     await session.destroy();
   });
 
-  it("keeps mobile zoom smooth with left-rail watcher: no sidebar follow from content mutations", async () => {
+  it("keeps mobile zoom smooth with the floating toolbar and PDF.js style churn", async () => {
     const host = document.createElement("div");
     host.className = "pdf-container workspace-leaf";
     const toolbarHost = document.createElement("div");
@@ -912,7 +912,7 @@ describe("zoom ink compositing", () => {
       settings: (() => {
         const settings = structuredClone(DEFAULT_SETTINGS);
         settings.autosave = false;
-        settings.toolbarPlacement = "left";
+        settings.toolbarOrientation = "vertical";
         settings.toolPreferences.activeTool = "pen";
         return settings;
       })(),
@@ -929,11 +929,11 @@ describe("zoom ink compositing", () => {
     const overlay = surface.overlay;
     expect(overlay).toBeTruthy();
     expect(page.contains(overlay) || overlay.isConnected).toBe(true);
+    expect(adapter.host.querySelector(".native-pdf-handwriting-toolbar-floating-fallback")).not.toBeNull();
     const routerBefore = surface.router;
     const scrollBefore = { left: scroll.scrollLeft, top: scroll.scrollTop };
 
-    // Drain mount/resize rail follow before the pinch burst so zoom telemetry
-    // is not polluted by a pre-existing 480 ms follow loop.
+    // Let mount/resize settle before the pinch burst.
     await new Promise<void>((resolve) => setTimeout(resolve, 520));
 
     vi.useFakeTimers();
@@ -949,7 +949,7 @@ describe("zoom ink compositing", () => {
         configurable: true,
         value: () => rect(0, 0, Math.max(600, width + i), Math.max(800, height + i / 2))
       });
-      // PDF.js-style content style churn must not restart the rail follow loop.
+      // PDF.js-style content style churn must not create toolbar layout work.
       content.style.setProperty("--pdf-zoom-noise", String(scale));
       session.onViewStateChange(
         { pageNumber: 1, scrollFraction: 0.2, scale, rotation: 0 },
@@ -971,7 +971,7 @@ describe("zoom ink compositing", () => {
         (call) => (call[2] as { trigger?: string }).trigger === "mutation"
       )
     ).toHaveLength(0);
-    expect(debugCalls("pdf sidebar rail follow suppressed during zoom").length).toBeGreaterThanOrEqual(1);
+    expect(debugCalls("pdf sidebar rail follow suppressed during zoom")).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(560);
     await flushZoomSettleSlices();
@@ -993,7 +993,7 @@ describe("zoom ink compositing", () => {
       routerDestroys: 0
     });
     expect(profile?.scaleChangingEvents).toBeGreaterThanOrEqual(35);
-    expect(profile?.sidebarFollowSuppressedTriggers).toBeGreaterThanOrEqual(1);
+    expect(profile?.sidebarFollowSuppressedTriggers).toBe(0);
     expect(profile?.maxSidebarOffsetJump ?? 0).toBeLessThan(24);
     expect(profile?.maxScrollDeltaPx ?? 0).toBeLessThan(24);
     expect(profile?.vectorRepaints).toBeGreaterThan(0);

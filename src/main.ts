@@ -18,7 +18,6 @@ import { ImageViewAdapter } from "./integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
 import { PLUGIN_PDF_VIEW_TYPE, PluginPdfView } from "./integration/PluginPdfView";
 import { PdfJsViewAdapter } from "./integration/PdfJsViewAdapter";
-import { captureObsidianPdfToolbarConstructorResult } from "./integration/ObsidianPdfToolbarBridge";
 import { replaceDefaultPdfViewRegistration } from "./integration/PdfExtensionRegistration";
 import { nativePdfViewStateFromLegacyState } from "./integration/PdfViewStateMigration";
 import { isSupportedImageFile } from "./integration/ImageFileTypes";
@@ -238,33 +237,21 @@ export default class NativePdfInkPlugin extends Plugin {
     configurePdfLibRuntime(this.app, pluginDir);
     configurePdfThumbnailRuntime(this.app, pluginDir, Menu);
     configurePostZoomInputRuntime(this.app, pluginDir);
-    this.inkSettings = mergeSettings(
-      await this.loadData() as Partial<PluginSettings> | null,
-      this.app.vault.configDir
-    );
-    await this.vaultDebugLog.clear();
-    const toolbarCapture = await captureObsidianPdfToolbarConstructorResult(this.app);
-    const toolbarConstructor = toolbarCapture.constructor;
-    if (toolbarCapture.error) {
-      await this.vaultDebugLog.writeUrgent("error", "native-pdf-toolbar-capture-failed", {
-        error: toolbarCapture.error,
-        obsidianVersion: apiVersion,
-        mobile: Platform.isMobile
-      });
+    const savedSettings = await this.loadData() as (Partial<PluginSettings> & { toolbarPlacement?: unknown }) | null;
+    this.inkSettings = mergeSettings(savedSettings, this.app.vault.configDir);
+    if (savedSettings && Object.prototype.hasOwnProperty.call(savedSettings, "toolbarPlacement")) {
+      await this.saveData(this.inkSettings);
     }
+    await this.vaultDebugLog.clear();
     this.registerView(PLUGIN_PDF_VIEW_TYPE, (leaf) => new PluginPdfView(leaf, {
       pluginDir,
       createAdapter: async (file, host, callbacks) => {
-        if (!toolbarConstructor) {
-          throw new Error(`Obsidian native PDF toolbar is unavailable: ${toolbarCapture.error ?? "constructor capture failed"}`);
-        }
         return PdfJsViewAdapter.create({
           app: this.app,
           file,
           host,
           callbacks,
-          pluginDir,
-          toolbarConstructor
+          pluginDir
         });
       },
       createSession: (file, adapter) => this.createInkSession(file, adapter),
@@ -377,7 +364,7 @@ export default class NativePdfInkPlugin extends Plugin {
       mobile: Platform.isMobile,
       phone: Platform.isPhone,
       vaultDebugLog: this.inkSettings.vaultDebugLog,
-      toolbarPlacement: this.inkSettings.toolbarPlacement,
+      toolbarOrientation: this.inkSettings.toolbarOrientation,
       disableSwipeNavigation: this.inkSettings.disableSwipeNavigation,
       sidebarSwipeBlockerEnabled: Platform.isMobile && this.inkSettings.disableSwipeNavigation
     });
@@ -840,7 +827,7 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   async saveSettings(settings: PluginSettings): Promise<void> {
-    const previousPlacement = this.inkSettings.toolbarPlacement;
+    const previousToolbarOrientation = this.inkSettings.toolbarOrientation;
     const previousCustomMobilePdfPinchZoom = this.inkSettings.customMobilePdfPinchZoom;
     const previousPdfEnabled = this.inkSettings.enabledSurfaces.pdf;
     const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
@@ -876,7 +863,7 @@ export default class NativePdfInkPlugin extends Plugin {
     }
     this.vaultDebugLog.write("info", "plugin settings saved", {
       changedKeys: [
-        ...(previousPlacement !== settings.toolbarPlacement ? ["toolbarPlacement"] : []),
+        ...(previousToolbarOrientation !== settings.toolbarOrientation ? ["toolbarOrientation"] : []),
         ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
         ...(previousMouseInkingEnabled !== settings.mouseInkingEnabled ? ["mouseInkingEnabled"] : []),
         ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : []),
@@ -887,7 +874,7 @@ export default class NativePdfInkPlugin extends Plugin {
       disableSwipeNavigation: settings.disableSwipeNavigation,
       sidebarSwipeBlockerEnabled: Platform.isMobile && settings.disableSwipeNavigation
     });
-    if (previousPlacement !== settings.toolbarPlacement) {
+    if (previousToolbarOrientation !== settings.toolbarOrientation) {
       for (const session of this.allSessions()) session.remountToolbar();
     }
     if (previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom) {
@@ -1564,7 +1551,7 @@ export default class NativePdfInkPlugin extends Plugin {
       pressureProfile: () => this.inkSettings.pressureProfile,
       pressureCalibration: () => this.inkSettings.pressureCalibration,
       simplifyStrokesEnabled: () => this.inkSettings.simplifyStrokes,
-      toolbarPlacement: () => this.inkSettings.toolbarPlacement,
+      toolbarOrientation: () => this.inkSettings.toolbarOrientation,
       vaultLog: this.vaultDebugLog,
       debugEnabled: () => this.inkSettings.vaultDebugLog,
       writeSync: createVaultSyncWriter(this.app.vault),

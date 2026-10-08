@@ -6,15 +6,16 @@
     {
       "id": "runtime-compatibility",
       "status": "pending",
-      "title": "Validate the plugin-owned PDF viewer and native toolbar bridge against current Obsidian desktop, Android, and iPad builds.",
+      "title": "Validate the plugin-owned PDF viewer and shared movable toolbar against current Obsidian desktop, Android, and iPad builds.",
       "paths": [
         "src/integration/",
         "docs/current-limitations.md"
       ],
       "checks": [
         "npm test",
+        "npm run lint",
         "npm run build",
-        "Obsidian 1.14.4 child-before-toolbar regression test",
+        "Verify direct PDF startup without a native PDFToolbar dependency",
         "Manual PDF checks on current desktop, Android, and iPad builds"
       ]
     },
@@ -48,7 +49,7 @@
     {
       "id": "unified-gesture-navigation",
       "status": "pending",
-      "title": "Centralize touch, pinch, hand-tool, and modifier-wheel navigation and provide a movable toolbar fallback when a sidebar rail is unavailable.",
+      "title": "Centralize touch, pinch, hand-tool, and modifier-wheel navigation and validate the canonical floating toolbar.",
       "paths": [
         "src/input/GestureNavigationController.ts",
         "src/input/PointerRouter.ts",
@@ -56,7 +57,7 @@
         "docs/input-gesture-architecture.md"
       ],
       "checks": [
-        "Focused gesture, sidebar, settings, and toolbar fallback tests",
+        "Focused gesture and orientation tests, including persisted toolbar rotation",
         "npm test",
         "npm run lint",
         "npm run build when the shared generated main.js is no longer being edited"

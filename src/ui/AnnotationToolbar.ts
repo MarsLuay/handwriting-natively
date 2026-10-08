@@ -1,4 +1,4 @@
-import type { DrawingTool, SaveStatus, TextStyle, ToolId, ToolPreferences } from "../model";
+import type { DrawingTool, SaveStatus, TextStyle, ToolId, ToolPreferences, ToolbarOrientation } from "../model";
 import { resolveDrawingTool } from "../model";
 import { colorOptions } from "./ColorPicker";
 import { DropdownController, type DropdownOpenOptions, type DropdownOption } from "./DropdownController";
@@ -23,12 +23,21 @@ export type MoreAction =
   | "export-image"
   | "import-page"
   | "scan-document"
-  | "toolbar-main"
-  | "toolbar-left"
-  | "toolbar-right"
+  | "rotate-toolbar"
   | "zoom-in"
   | "zoom-out"
   | "fit-width"
+  | "previous-page"
+  | "next-page"
+  | "go-to-page"
+  | "set-zoom"
+  | "fit-height"
+  | "fit-page"
+  | "show-thumbnails"
+  | "show-outline"
+  | "presentation"
+  | "print"
+  | "download"
   | "rotate-cw"
   | "rotate-ccw"
   | "search";
@@ -51,7 +60,7 @@ export interface AnnotationToolbarCallbacks {
   onMore?(action: MoreAction): void;
   /** True selects native PDF mouse interaction; false returns mouse to the active ink tool. */
   onMouseModeChange?(nativeSelection: boolean): void;
-  toolbarPlacement?(): "main" | "left" | "right";
+  toolbarOrientation?(): ToolbarOrientation;
 }
 
 export interface AnnotationToolbarOptions {
@@ -394,20 +403,31 @@ export class AnnotationToolbar {
       "export-image": "Export annotated image",
       "import-page": "Import page",
       "scan-document": "Scan document",
-      "toolbar-main": "Toolbar: PDF bar",
-      "toolbar-left": "Toolbar: Left sidebar",
-      "toolbar-right": "Toolbar: Right sidebar",
+      "rotate-toolbar": "Rotate toolbar",
       "zoom-in": "Zoom in",
       "zoom-out": "Zoom out",
       "fit-width": "Fit to width",
+      "previous-page": "Previous page",
+      "next-page": "Next page",
+      "go-to-page": "Go to page…",
+      "set-zoom": "Set zoom…",
+      "fit-height": "Fit to height",
+      "fit-page": "Fit page",
+      "show-thumbnails": "Show page thumbnails",
+      "show-outline": "Show document outline",
+      presentation: "Presentation mode",
+      print: "Print PDF",
+      download: "Download PDF",
       "rotate-cw": "Rotate clockwise",
       "rotate-ccw": "Rotate counterclockwise",
       search: "Find in document"
     };
+    const orientation = this.callbacks.toolbarOrientation?.() ?? "horizontal";
     return supported.map((id) => ({
       id,
-      label: labels[id],
-      active: id === `toolbar-${this.callbacks.toolbarPlacement?.() ?? "main"}`,
+      label: id === "rotate-toolbar"
+        ? `Rotate toolbar to ${orientation === "horizontal" ? "vertical" : "horizontal"}`
+        : labels[id],
       onSelect: () => this.callbacks.onMore?.(id)
     }));
   }

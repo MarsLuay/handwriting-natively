@@ -43,10 +43,8 @@ export function parseSelectionShortcut(
 
 /** Ctrl/Cmd+Alt always targets ink history; plain Ctrl/Cmd does so only in ink mode. */
 export function parseHistoryShortcut(
-  event: KeyboardEvent,
-  plainModifierForInk = false
+  event: KeyboardEvent
 ): HistoryShortcutAction | null {
-  if (!event.altKey && !plainModifierForInk) return null;
   const mod = event.ctrlKey || event.metaKey;
   if (!mod) return null;
   const key = event.key.toLowerCase();
@@ -64,7 +62,7 @@ export type InkHotkeyCommand =
   | "redo-ink";
 
 export function inkHotkeyCommand(event: KeyboardEvent, plainModifierForInk = false): InkHotkeyCommand | null {
-  const history = parseHistoryShortcut(event, plainModifierForInk);
+  const history = parseHistoryShortcut(event);
   if (history === "undo") return "undo-ink";
   if (history === "redo") return "redo-ink";
   const action = parseSelectionShortcut(event, plainModifierForInk);

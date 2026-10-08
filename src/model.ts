@@ -2,6 +2,8 @@ export type DrawingTool = "pen" | "pencil" | "highlighter";
 /** Annotation tools. Mouse inking is a separate input setting, not a tool. */
 export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser" | "drag";
 export type LassoType = "freeform" | "rectangle";
+export type ToolbarOrientation = "horizontal" | "vertical";
+/** Internal PDF adapter mount sites; user placement is always the floating toolbar. */
 export type ToolbarPlacement = "main" | "left" | "right";
 /** Which input source supplies pressure for new ink strokes. */
 export type PressureProfile = "auto" | "pen" | "mouse";
@@ -214,7 +216,7 @@ export interface PluginSettings {
   hideStylusAnnotationLabel: boolean;
   /** Mobile-only opt-in to suppress swipe gestures that open sidebars or the command palette. */
   disableSwipeNavigation: boolean;
-  toolbarPlacement: ToolbarPlacement;
+  toolbarOrientation: ToolbarOrientation;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
   /** Restore a validated annotation backup after a corrupt store is quarantined. */
@@ -311,7 +313,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   customMobilePdfPinchZoom: true,
   hideStylusAnnotationLabel: false,
   disableSwipeNavigation: false,
-  toolbarPlacement: "main",
+  toolbarOrientation: "horizontal",
   vaultDebugLog: false,
   vaultDebugLogPath,
   automaticAnnotationRecovery: true,
@@ -345,6 +347,8 @@ export function mergeSettings(
 ): PluginSettings {
   const defaults = createDefaultSettings(configDir);
   const raw = { ...(saved ?? {}) } as Record<string, unknown>;
+  const legacyToolbarPlacement = raw.toolbarPlacement;
+  delete raw.toolbarPlacement;
   const legacyDisableSearchBarSwipe = raw.disableSearchBarSwipe === true;
   const savedDisableSwipeNavigation = raw.disableSwipeNavigation;
   const legacyDisableSidebarSwipe = raw.disableSidebarSwipe === true;
@@ -378,7 +382,7 @@ export function mergeSettings(
   const lasso = {
     type: lassoRaw.type === "freeform" || lassoRaw.type === "rectangle" ? lassoRaw.type : "freeform" as const
   };
-  const toolbarPlacement = cleaned.toolbarPlacement;
+  const savedToolbarOrientation = cleaned.toolbarOrientation;
   const pdfTemplatePath = typeof cleaned.pdfTemplatePath === "string"
     ? cleaned.pdfTemplatePath.trim()
     : defaults.pdfTemplatePath;
@@ -413,9 +417,11 @@ export function mergeSettings(
       image: savedEnabledSurfaces?.image !== false,
       markdown: savedEnabledSurfaces?.markdown !== false
     },
-    toolbarPlacement: toolbarPlacement === "left" || toolbarPlacement === "right" || toolbarPlacement === "main"
-      ? toolbarPlacement
-      : defaults.toolbarPlacement,
+    toolbarOrientation: savedToolbarOrientation === "horizontal" || savedToolbarOrientation === "vertical"
+      ? savedToolbarOrientation
+      : legacyToolbarPlacement === "left" || legacyToolbarPlacement === "right"
+        ? "vertical"
+        : defaults.toolbarOrientation,
     pdfTemplatePath,
     mouseInkingEnabled,
     // Legacy `fingerDraw` is removed above; only the new explicit setting may

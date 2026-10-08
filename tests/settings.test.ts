@@ -377,10 +377,16 @@ describe("safe defaults", () => {
     expect(merged.vaultDebugLogPath).toBe(".obsidian/plugins/native-pdf-handwriting/debug.md");
   });
 
-  it("defaults toolbar placement to the PDF bar", () => {
-    expect(DEFAULT_SETTINGS.toolbarPlacement).toBe("main");
-    expect(mergeSettings({ toolbarPlacement: "right" }).toolbarPlacement).toBe("right");
-    expect(mergeSettings({ toolbarPlacement: "nope" as "main" }).toolbarPlacement).toBe("main");
+  it("migrates old toolbar placement to persistent floating orientation", () => {
+    expect(DEFAULT_SETTINGS.toolbarOrientation).toBe("horizontal");
+    expect(mergeSettings({ toolbarOrientation: "vertical" }).toolbarOrientation).toBe("vertical");
+    const migratedRight = mergeSettings(JSON.parse('{"toolbarPlacement":"right"}'));
+    const migratedLeft = mergeSettings(JSON.parse('{"toolbarPlacement":"left"}'));
+    expect(migratedRight.toolbarOrientation).toBe("vertical");
+    expect(migratedLeft.toolbarOrientation).toBe("vertical");
+    expect(mergeSettings(JSON.parse('{"toolbarPlacement":"main"}')).toolbarOrientation).toBe("horizontal");
+    expect(mergeSettings({ toolbarOrientation: "invalid" as "horizontal" }).toolbarOrientation).toBe("horizontal");
+    expect("toolbarPlacement" in migratedRight).toBe(false);
   });
 
   it("uses blank Letter paper unless a PDF template path is configured", () => {
