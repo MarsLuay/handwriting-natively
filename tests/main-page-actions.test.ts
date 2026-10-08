@@ -34,12 +34,14 @@ describe("main PDF page actions", () => {
     expect(onload).toContain("this.scheduleDebouncedScan(0);");
   });
 
-  it("keeps Obsidian's native PDF viewer and toolbar as the default", () => {
+  it("registers the plugin-owned viewer by default and adopts open native PDF leaves", () => {
     const onload = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("  /** Catch uncaught errors"));
-    expect(onload).not.toContain("registerExtensions");
-    expect(onload).not.toContain("adoptExistingNativePdfLeaves");
-    expect(onload).toContain("restoreOwnedPdfLeavesToNative");
-    expect(mainSource).toContain('type: "pdf"');
+    expect(onload).toContain("captureObsidianPdfToolbarConstructor");
+    expect(onload).toContain("replaceDefaultPdfViewRegistration");
+    expect(onload).toContain("adoptExistingNativePdfLeaves");
+    expect(mainSource).not.toContain("restoreOwnedPdfLeavesToNative");
+    expect(mainSource).not.toContain("onFallbackToNative");
+    expect(mainSource).toContain("nativePdfViewStateFromLegacyState");
   });
 
   it("cleans a partially attached adapter when session creation fails", () => {

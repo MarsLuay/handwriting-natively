@@ -4,7 +4,7 @@ Project: `native-pdf-handwriting` — Handwriting Natively
 
 ## runtime-compatibility — pending
 
-Validate the PDF adapter against current Obsidian desktop, Android, and iPad builds.
+Validate the plugin-owned PDF viewer and native toolbar bridge against current Obsidian desktop, Android, and iPad builds.
 
 Paths: `src/integration/`, `docs/current-limitations.md`
 

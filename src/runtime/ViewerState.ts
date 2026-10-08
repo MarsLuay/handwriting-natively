@@ -8,7 +8,7 @@
  * - ViewerCommandController for viewer interaction commands
  */
 
-export type ViewerScaleMode = "custom" | "fit-width" | "fit-page";
+export type ViewerScaleMode = "custom" | "fit-width" | "fit-height" | "fit-page";
 
 /** Shared multiplicative step for zoom-in/out controls and keyboard commands. */
 export const VIEWER_ZOOM_STEP = 1.25;
@@ -32,6 +32,7 @@ export interface ViewerState {
 
 export function normalizeScaleMode(mode: unknown): ViewerScaleMode {
   if (mode === "fit-width" || mode === "page-width" || mode === "auto") return "fit-width";
+  if (mode === "fit-height" || mode === "page-height") return "fit-height";
   if (mode === "fit-page" || mode === "page-fit") return "fit-page";
   return "custom";
 }

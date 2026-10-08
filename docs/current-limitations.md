@@ -11,7 +11,8 @@ Automated compatibility evidence covers the adapter boundary and explicit host-s
 - Highlighter is a wide translucent flat marker (alpha overlay). Not multiply-blend or text-region fill.
 - Lasso resize and clipboard behavior are initial implementations and need large-document profiling.
 - OCR and handwriting recognition are intentionally absent.
-- Typed text annotations are searchable in Obsidian’s native PDF find bar (Cmd/Ctrl+F) via a viewer-only bridge; freehand ink is not searchable.
+- Typed text annotations are searchable in the plugin-owned PDF find bar (Cmd/Ctrl+F); freehand ink is not searchable. Obsidian's native toolbar search command is bridged to this same adapter.
+- Obsidian's native display menu exposes odd/even two-page spread modes. The plugin-owned renderer currently uses continuous vertical pages, so the toolbar bridge reports spread-mode commands as unsupported and keeps the renderer in its current layout.
 - Shape recognition is on by default in each drawing tool's Advanced settings. Holding a stroke still for 0.5 seconds recognises confident lines, arrows, ellipses, rectangles, triangles, diamonds, stars, and hearts; ambiguous writing remains ink. This is intentionally not claimed as an exact clone of another app's shape set.
 - MacBook Force Touch trackpad pressure is not available in Obsidian (Electron); stylus pressure works when the OS exposes it.
 - Annotation edits do not modify source PDFs. Add/Delete/Import/Scan page actions intentionally rewrite the open PDF and remap sidecar/recovery data; export remains a separate-copy workflow. Reorder/duplicate and persistent page UUIDs are not yet supported.

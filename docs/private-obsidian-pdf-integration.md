@@ -2,7 +2,19 @@
 
 ## Boundary
 
-Every undocumented PDF object lookup and selector is confined to `src/integration/`. Annotation, tools, input, storage, and UI consume only `ObsidianPdfAdapter`. No private Obsidian type escapes that boundary.
+Every undocumented PDF object lookup, extension-registry operation, toolbar constructor, and selector is confined to `src/integration/`. Annotation, tools, input, storage, and UI consume the page surface and viewer commands; they do not own Obsidian's private PDF objects.
+
+## Direct viewer and native toolbar
+
+Direct `.pdf` leaves use the plugin-owned `PluginPdfView`. `PdfJsViewAdapter` loads the vault bytes with the pinned PDF.js 4.10.38 `getDocument` API and renders `PDFPageProxy` pages into the plugin's page shells. It is the only document renderer and the only navigation/page-state owner for that direct leaf. `ObsidianPdfToolbarBridge` constructs Obsidian's actual `PDFToolbar` against a small state/command facade and supplies the plugin adapter's state and callbacks to its `.pdf-toolbar`; it does not load a PDF document or create a second document renderer.
+
+The installed Obsidian 1.12.7 bundle contains a private `PDFToolbar` class but does not export it. The installed `obsidian.d.ts` and PDF.js 4.10.38 web declarations do not declare that toolbar. The PDF++ 0.40.31 reference typings describe `PDFViewerChild.toolbar` and its DOM/method surface; its implementation decorates `child.toolbar` rather than constructing it. Obsidian's toolbar constructor takes `(app, host, child)`, creates `.pdf-toolbar` with a `.pdf-toolbar-right` action container, updates itself through `setPagesCount`, `setPageNumber`, and `setPageScale`, and dispatches page, zoom, sidebar, outline, and spread-mode events.
+
+The private toolbar's concrete dependencies in the installed bundle are `child.pdfViewer.eventBus`, `child.pdfViewer.pdfSidebar.{isOpen,active,switchView}`, `child.pdfViewer.pdfOutlineViewer.outline`, `child.pdfViewer.pdfViewer.{currentScaleValue,spreadMode}`, `child.onCSSChange()`, and `app.loadLocalStorage` / `app.saveLocalStorage`. It creates controls and dispatches commands; it does not load PDF bytes. `ObsidianPdfToolbarBridge` supplies those state/action facades from the plugin adapter. The native display menu handles fit width, fit height, and theme changes; the added selector keeps page-fit and fixed/custom scales. Plugin actions fill native-toolbar gaps such as previous/next, find, hand mode, rotation, presentation, print, and download. The native menu also offers spread modes, which the current continuous-page renderer does not support; the bridge reports those commands as unsupported instead of changing a second viewer's state.
+
+Because the constructor is private and not reachable independently through a public API, startup reuses a constructor from an existing native child when one exists. On a cold start with no native PDF child, the bridge briefly opens a fileless native PDF leaf to obtain the constructor, verifies both `view.file`/`child.file` and `pdfDocument` are empty, then detaches that leaf before registering the plugin view for `.pdf`. Obsidian initializes an empty viewer shell during this bootstrap, but no PDF document is loaded or rendered there. If the host contract changes, constructor discovery fails visibly; the plugin does not substitute a toolbar imitation or route an opened plugin view to Obsidian's renderer.
+
+Obsidian's public `registerExtensions` refuses to replace the core `pdf` mapping. `PdfExtensionRegistration` therefore capability-checks the private registry, requires the existing owner to be `pdf`, transfers only the `.pdf` mapping to `PluginPdfView`, and restores the prior owner on unload. `PdfViewStateMigration` maps existing native `{page,left,top,zoom}` state into the plugin's canonical `ViewerState`; new direct leaves use plugin state thereafter.
 
 ## Versioned per-viewer contract
 

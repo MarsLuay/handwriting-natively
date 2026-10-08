@@ -6,7 +6,7 @@
     {
       "id": "runtime-compatibility",
       "status": "pending",
-      "title": "Validate the PDF adapter against current Obsidian desktop, Android, and iPad builds.",
+      "title": "Validate the plugin-owned PDF viewer and native toolbar bridge against current Obsidian desktop, Android, and iPad builds.",
       "paths": [
         "src/integration/",
         "docs/current-limitations.md"

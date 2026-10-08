@@ -212,6 +212,15 @@ describe("PDF adapters", () => {
     });
 
     expect(privateViewer.currentScaleValue).toBe("page-fit");
+    adapter.restoreViewState({
+      pageNumber: 1,
+      scrollFraction: 0.4,
+      scale: 1.25,
+      scaleMode: "fit-height",
+      rotation: 0
+    });
+
+    expect(privateViewer.currentScaleValue).toBe("page-height");
     expect(privateViewer.currentScale).toBe(2.1789);
     adapter.destroy();
   });

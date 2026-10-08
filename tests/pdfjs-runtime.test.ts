@@ -1,14 +1,69 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PdfJsViewAdapter } from "../src/integration/PdfJsViewAdapter";
+import type { NativePdfToolbarConstructor } from "../src/integration/ObsidianPdfToolbarBridge";
 import type { PdfViewerCommandBridge } from "../src/integration/ObsidianPdfAdapter";
 import type { InkStroke } from "../src/model";
 import { createPdfJsAssetResolver, loadPdfJsRuntime, pdfJsDocumentOptions, type PdfJsRuntime } from "../src/integration/PdfJsRuntime";
+
+interface TestToolbarChild {
+  pdfViewer: {
+    eventBus: { dispatch(name: string, data?: Record<string, unknown>): void };
+    pdfSidebar: { switchView(view: number, force?: boolean): void };
+  };
+}
+
+class TestPdfToolbar {
+  static readonly instances: TestPdfToolbar[] = [];
+  readonly toolbarEl: HTMLElement;
+  readonly toolbarRightEl: HTMLElement;
+  readonly setPageNumber = vi.fn();
+  readonly setPagesCount = vi.fn();
+  readonly setPageScale = vi.fn();
+
+  constructor(_app: unknown, host: HTMLElement, child: TestToolbarChild) {
+    const doc = host.ownerDocument;
+    const bus = child.pdfViewer.eventBus;
+    this.toolbarEl = doc.createElement("div");
+    this.toolbarEl.className = "pdf-toolbar";
+    const button = (label: string, event?: string, data: Record<string, unknown> = {}): HTMLButtonElement => {
+      const element = doc.createElement("button");
+      element.setAttribute("aria-label", label);
+      if (event) element.addEventListener("click", () => bus.dispatch(event, data));
+      this.toolbarEl.append(element);
+      return element;
+    };
+    button("Toggle sidebar", "togglesidebar");
+    button("Show thumbnails").addEventListener("click", () => child.pdfViewer.pdfSidebar.switchView(1, true));
+    button("Show outline").addEventListener("click", () => child.pdfViewer.pdfSidebar.switchView(2, true));
+    button("Zoom out", "zoomout");
+    button("Zoom in", "zoomin");
+    button("Fit width", "scalechanged", { value: "page-width" });
+    button("Fit height", "scalechanged", { value: "page-height" });
+    button("Go to page 2", "pagenumberchanged", { value: "2" });
+    const pageInput = doc.createElement("input");
+    pageInput.setAttribute("aria-label", "Page number");
+    pageInput.addEventListener("change", () => bus.dispatch("pagenumberchanged", { value: pageInput.value }));
+    this.toolbarEl.append(pageInput);
+    this.toolbarRightEl = doc.createElement("div");
+    this.toolbarRightEl.className = "pdf-toolbar-right";
+    this.toolbarEl.append(this.toolbarRightEl);
+    host.prepend(this.toolbarEl);
+    TestPdfToolbar.instances.push(this);
+  }
+}
+
+const testToolbarConstructor = TestPdfToolbar as unknown as NativePdfToolbarConstructor;
+
+function testApp(readBinary: () => Promise<ArrayBuffer> = async () => new ArrayBuffer(4)) {
+  return { vault: { readBinary }, loadLocalStorage: () => null } as never;
+}
 
 describe("plugin-owned PDF.js runtime boundary", () => {
   const originalDevicePixelRatio = window.devicePixelRatio;
 
   afterEach(() => {
     document.body.replaceChildren();
+    TestPdfToolbar.instances.length = 0;
     Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: originalDevicePixelRatio });
     vi.restoreAllMocks();
   });
@@ -81,7 +136,7 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(options.isEvalSupported).toBe(false);
   });
 
-  it("exposes stock navigation, zoom, rotation, and document search controls", async () => {
+  it("hosts native navigation in Obsidian's PDF toolbar and keeps plugin zoom and PDF actions", async () => {
     const context = {
       beginPath: vi.fn(),
       clearRect: vi.fn(),
@@ -123,20 +178,21 @@ describe("plugin-owned PDF.js runtime boundary", () => {
       module: { getDocument: () => ({ promise: Promise.resolve(pdfDocument) }) },
       assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
     };
-    const app = { vault: { readBinary: async () => new ArrayBuffer(4) } } as never;
+    const app = testApp();
     const file = { name: "toolbar.pdf" } as never;
     const host = document.createElement("div");
     document.body.append(host);
 
-    const adapter = await PdfJsViewAdapter.create({ app, file, pluginDir: "pdfjs", host, runtime });
+    const adapter = await PdfJsViewAdapter.create({ app, file, pluginDir: "pdfjs", host, runtime, toolbarConstructor: testToolbarConstructor });
     expect(getPage.mock.calls.filter(([pageNumber]) => pageNumber === 1)).toHaveLength(1);
-    expect(host.querySelector('button[aria-label="Print PDF"]')).not.toBeNull();
-    expect(host.querySelector('button[aria-label="Download PDF"]')).not.toBeNull();
-    expect(host.querySelector('button[aria-label="Presentation mode"]')).not.toBeNull();
-    expect(host.querySelector('button[aria-label="Toggle thumbnails"]')).not.toBeNull();
+    expect(host.querySelector(".pdf-toolbar")).not.toBeNull();
+    expect(host.querySelector(".hn-owned-pdf-navigation")).toBeNull();
+    expect(host.querySelector('[role="button"][aria-label="Print PDF"]')).not.toBeNull();
+    expect(host.querySelector('[role="button"][aria-label="Download PDF"]')).not.toBeNull();
+    expect(host.querySelector('[role="button"][aria-label="Presentation mode"]')).not.toBeNull();
     expect(host.querySelector('select[aria-label="Zoom"]')).not.toBeNull();
 
-    host.querySelector('button[aria-label="Toggle thumbnails"]')?.dispatchEvent(new Event("click"));
+    host.querySelector('button[aria-label="Show thumbnails"]')?.dispatchEvent(new Event("click"));
     expect(host.querySelectorAll(".hn-owned-pdf-thumbnail")).toHaveLength(2);
     const previewStroke: InkStroke = {
       id: "preview-stroke",
@@ -156,7 +212,7 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     }));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect((host.querySelector(".hn-owned-pdf-thumbnail-ink") as HTMLCanvasElement | null)?.hidden).toBe(false);
-    host.querySelector('button[aria-label="Toggle outline"]')?.dispatchEvent(new Event("click"));
+    host.querySelector('button[aria-label="Show outline"]')?.dispatchEvent(new Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 20));
     const outlinePreviews = [...host.querySelectorAll<HTMLCanvasElement>(".hn-owned-pdf-outline-ink")];
     expect(outlinePreviews).toHaveLength(2);
@@ -179,10 +235,10 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     host.querySelector<HTMLButtonElement>('button[aria-label="Zoom out"]')?.click();
     expect(adapter.getViewState().scale).toBe(2);
 
-    host.querySelector('button[aria-label="Rotate clockwise"]')?.dispatchEvent(new Event("click"));
+    host.querySelector('[role="button"][aria-label="Rotate clockwise"]')?.dispatchEvent(new Event("click"));
     expect(adapter.getViewState().rotation).toBe(90);
 
-    host.querySelector('button[aria-label="Find in document"]')?.dispatchEvent(new Event("click"));
+    host.querySelector('[role="button"][aria-label="Find in document"]')?.dispatchEvent(new Event("click"));
     const find = host.querySelector('input[aria-label="Find in document"]') as HTMLInputElement;
     find.value = "hello toolbar";
     find.dispatchEvent(new Event("input"));
@@ -209,13 +265,13 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     adapter.setViewerCommandBridge(commands);
     host.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]')?.click();
     host.querySelector<HTMLButtonElement>('button[aria-label="Zoom out"]')?.click();
-    host.querySelector<HTMLButtonElement>('button[aria-label="Fit page width"]')?.click();
-    host.querySelector<HTMLButtonElement>('button[aria-label="Next page"]')?.click();
-    host.querySelector<HTMLButtonElement>('button[aria-label="Previous page"]')?.click();
-    host.querySelector<HTMLButtonElement>('button[aria-label="Rotate clockwise"]')?.click();
-    host.querySelector<HTMLButtonElement>('button[aria-label="Rotate counterclockwise"]')?.click();
-    host.querySelector<HTMLButtonElement>('button[aria-label="Find in document"]')?.click();
-    host.querySelector<HTMLButtonElement>('button[aria-label="Hand tool"]')?.click();
+    host.querySelector<HTMLButtonElement>('button[aria-label="Fit width"]')?.click();
+    host.querySelector('[role="button"][aria-label="Next page"]')?.dispatchEvent(new Event("click"));
+    host.querySelector('[role="button"][aria-label="Previous page"]')?.dispatchEvent(new Event("click"));
+    host.querySelector('[role="button"][aria-label="Rotate clockwise"]')?.dispatchEvent(new Event("click"));
+    host.querySelector('[role="button"][aria-label="Rotate counterclockwise"]')?.dispatchEvent(new Event("click"));
+    host.querySelector('[role="button"][aria-label="Find in document"]')?.dispatchEvent(new Event("click"));
+    host.querySelector('[role="button"][aria-label="Hand tool"]')?.dispatchEvent(new Event("click"));
     pageInput.value = "1";
     pageInput.dispatchEvent(new Event("change"));
     zoom.value = "1.5";
@@ -236,7 +292,7 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(commands.toggleHandMode).toHaveBeenCalledOnce();
     expect(commands.handleKeyDown).toHaveBeenCalledTimes(2);
     adapter.setHandToolActive(true);
-    expect(host.querySelector('button[aria-label="Hand tool"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(host.querySelector('[role="button"][aria-label="Hand tool"]')?.getAttribute("aria-pressed")).toBe("true");
 
     adapter.destroy();
     host.remove();
@@ -249,12 +305,12 @@ describe("plugin-owned PDF.js runtime boundary", () => {
       module: { getDocument: () => ({ promise: Promise.reject(new Error("invalid PDF")), destroy }) },
       assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
     };
-    const app = { vault: { readBinary: async () => new ArrayBuffer(4) } } as never;
+    const app = testApp();
     const host = document.createElement("div");
     document.body.append(host);
 
     await expect(PdfJsViewAdapter.create({
-      app, file: { name: "broken.pdf" } as never, pluginDir: "pdfjs", host, runtime
+      app, file: { name: "broken.pdf" } as never, pluginDir: "pdfjs", host, runtime, toolbarConstructor: testToolbarConstructor
     })).rejects.toThrow("invalid PDF");
     expect(destroy).toHaveBeenCalledOnce();
   });
@@ -294,8 +350,8 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const creating = PdfJsViewAdapter.create({
-      app: { vault: { readBinary: async () => new ArrayBuffer(4) } } as never,
-      file: { name: "zoom.pdf" } as never, pluginDir: "pdfjs", host, runtime
+      app: testApp(),
+      file: { name: "zoom.pdf" } as never, pluginDir: "pdfjs", host, runtime, toolbarConstructor: testToolbarConstructor
     });
 
     await new Promise((resolve) => setTimeout(resolve, 0));

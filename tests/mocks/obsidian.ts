@@ -54,3 +54,11 @@ export class Menu {
   addItem(): this { return this; }
   showAtMouseEvent(): this { return this; }
 }
+
+export function setIcon(element: HTMLElement, icon: string): void {
+  element.dataset.icon = icon;
+}
+
+export function setTooltip(element: HTMLElement, tooltip: string): void {
+  element.title = tooltip;
+}

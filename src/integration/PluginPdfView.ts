@@ -11,7 +11,6 @@ export interface PluginPdfViewOptions {
   createSession(file: TFile, adapter: PdfJsViewAdapter, view: PluginPdfView): Promise<ViewerInkSession>;
   onSessionAttached?(view: PluginPdfView, session: ViewerInkSession): void;
   onSessionDetached?(view: PluginPdfView, session: ViewerInkSession, reason: string): void;
-  onFallbackToNative?(view: PluginPdfView, file: TFile, error: unknown): void;
   onDiagnostic?(event: string, payload: Record<string, unknown>): void;
 }
 
@@ -108,7 +107,6 @@ export class PluginPdfView extends ItemView {
       const message = error instanceof Error ? error.message : String(error);
       this.options.onDiagnostic?.("owned-pdf-view-failed", { document: abstract.path, reason, error: message });
       this.renderError(message);
-      this.options.onFallbackToNative?.(this, abstract, error);
     }
   }
 
@@ -146,7 +144,5 @@ export class PluginPdfView extends ItemView {
     const error = this.contentEl.createDiv({ cls: "hn-owned-pdf-error" });
     error.createEl("h2", { text: "Plugin-owned PDF viewer unavailable" });
     error.createEl("p", { text: message });
-    const button = error.createEl("button", { text: "Use Obsidian PDF viewer" });
-    button.addEventListener("click", () => { if (this.file) this.options.onFallbackToNative?.(this, this.file, new Error(message)); });
   }
 }

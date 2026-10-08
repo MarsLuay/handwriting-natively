@@ -18,6 +18,9 @@ describe("Canonical ViewerState", () => {
       expect(normalizeScaleMode("page-width")).toBe("fit-width");
       expect(normalizeScaleMode("auto")).toBe("fit-width");
 
+      expect(normalizeScaleMode("fit-height")).toBe("fit-height");
+      expect(normalizeScaleMode("page-height")).toBe("fit-height");
+
       expect(normalizeScaleMode("fit-page")).toBe("fit-page");
       expect(normalizeScaleMode("page-fit")).toBe("fit-page");
 
