@@ -56,16 +56,73 @@ function requirePostZoomInputRuntime(): PostZoomInputRuntimeModule {
 
 function elementPresentationSnapshot(element: HTMLElement | null): Record<string, unknown> | null {
   if (!element) return null;
-  const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+  const document = element.ownerDocument;
+  const view = document.defaultView;
+  const style = view?.getComputedStyle(element);
   const rect = element.getBoundingClientRect();
   const rounded = (value: number): number => Math.round(value * 10) / 10;
+  const hasLayoutBox = element.getClientRects().length > 0 && rect.width > 0 && rect.height > 0;
+  let effectiveOpacity = 1;
+  for (let ancestor: HTMLElement | null = element; ancestor; ancestor = ancestor.parentElement) {
+    const ancestorOpacity = Number.parseFloat(view?.getComputedStyle(ancestor).opacity ?? "");
+    if (Number.isFinite(ancestorOpacity)) effectiveOpacity *= ancestorOpacity;
+  }
+  const viewport = {
+    width: typeof view?.innerWidth === "number" && Number.isFinite(view.innerWidth) ? view.innerWidth : null,
+    height: typeof view?.innerHeight === "number" && Number.isFinite(view.innerHeight) ? view.innerHeight : null
+  };
+  const hasViewport = typeof viewport.width === "number" && typeof viewport.height === "number";
+  const outsideViewport = hasLayoutBox && hasViewport
+    ? rect.left < 0 || rect.top < 0 || rect.right > viewport.width! || rect.bottom > viewport.height!
+    : null;
+  const fullyOutsideViewport = hasLayoutBox && hasViewport
+    ? rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewport.width! || rect.top >= viewport.height!
+    : null;
+  let centerHitInsideToolbar: boolean | null = null;
+  if (hasLayoutBox && hasViewport && typeof document.elementFromPoint === "function") {
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    if (centerX >= 0 && centerY >= 0 && centerX < viewport.width! && centerY < viewport.height!) {
+      const centerHit = document.elementFromPoint(centerX, centerY);
+      centerHitInsideToolbar = centerHit !== null && (centerHit === element || element.contains(centerHit));
+    }
+  }
+  const hiddenAttribute = element.closest("[hidden]") !== null;
+  const ariaHidden = element.closest("[aria-hidden='true']") !== null;
+  const visibleByStyle = hasLayoutBox
+    && style?.display !== "none"
+    && style?.visibility !== "hidden"
+    && style?.visibility !== "collapse"
+    && !hiddenAttribute
+    && !ariaHidden
+    && effectiveOpacity > 0;
+  const visualState = !visibleByStyle
+    ? "hidden"
+    : fullyOutsideViewport === true
+      ? "offscreen"
+      : outsideViewport === true
+        ? "partially-offscreen"
+        : outsideViewport === false
+          ? "visible"
+          : "unknown";
   return {
     connected: element.isConnected,
-    hasLayoutBox: element.getClientRects().length > 0 && rect.width > 0 && rect.height > 0,
+    hasLayoutBox,
+    visibleByStyle,
+    visualState,
+    hiddenAttribute,
+    ariaHidden,
     display: style?.display ?? null,
     visibility: style?.visibility ?? null,
     opacity: style?.opacity ?? null,
+    effectiveOpacity: rounded(effectiveOpacity),
+    position: style?.position ?? null,
+    zIndex: style?.zIndex ?? null,
     pointerEvents: style?.pointerEvents ?? null,
+    centerHitInsideToolbar,
+    outsideViewport,
+    fullyOutsideViewport,
+    viewport,
     bounds: {
       x: rounded(rect.x),
       y: rounded(rect.y),

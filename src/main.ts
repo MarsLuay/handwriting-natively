@@ -940,10 +940,37 @@ export default class NativePdfInkPlugin extends Plugin {
 
   async readAllLogs(): Promise<string | null> {
     await this.vaultDebugLog.flush();
-    const path = normalizePath(this.inkSettings.vaultDebugLogPath);
-    if (!path || !await this.app.vault.adapter.exists(path)) return null;
-    const logs = await this.app.vault.adapter.read(path);
-    return logs.trim() ? logs : null;
+    let persistedLog: string | null = null;
+    try {
+      const path = normalizePath(this.inkSettings.vaultDebugLogPath);
+      if (path && await this.app.vault.adapter.exists(path)) {
+        const contents = await this.app.vault.adapter.read(path);
+        persistedLog = contents.trim() ? contents.trimEnd() : null;
+      }
+    } catch (error) {
+      this.vaultDebugLog.write("error", "vault debug log read failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    const persistedEntries = persistedLog?.split(/\r?\n/).filter(Boolean) ?? [];
+    const persistedCounts = new Map<string, number>();
+    for (const entry of persistedEntries) {
+      persistedCounts.set(entry, (persistedCounts.get(entry) ?? 0) + 1);
+    }
+    const recentConsoleEntries = this.vaultDebugLog.recentConsoleLog().split(/\r?\n/).filter(Boolean);
+    const additionalConsoleEntries: string[] = [];
+    for (const entry of recentConsoleEntries) {
+      const persistedCount = persistedCounts.get(entry) ?? 0;
+      if (persistedCount > 0) {
+        persistedCounts.set(entry, persistedCount - 1);
+      } else {
+        additionalConsoleEntries.push(entry);
+      }
+    }
+
+    const combined = [...persistedEntries, ...additionalConsoleEntries].join("\n");
+    return combined || null;
   }
 
   /** Snapshot runtime metadata only when the user explicitly copies logs. */
@@ -951,15 +978,18 @@ export default class NativePdfInkPlugin extends Plugin {
     // The plugin-level snapshot is independent of the session map. A detached
     // session can leave stale listeners behind while making the map empty.
     this.writePluginCopiedLogUiSnapshot();
-    for (const session of this.sessions.values()) {
-      try {
-        session.writeCopiedLogUiSnapshot();
-      } catch (error) {
-        this.vaultDebugLog.write("warn", "handwriting-ui-snapshot-failed", {
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
+    const toolbarSnapshots = [...this.sessions.values()]
+      .slice(0, 8)
+      .flatMap((session) => {
+        try {
+          return [session.writeCopiedLogUiSnapshot()];
+        } catch (error) {
+          this.vaultDebugLog.write("warn", "handwriting-ui-snapshot-failed", {
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return [];
+        }
+      });
     const platform = Platform.isIosApp
       ? "iOS"
       : Platform.isAndroidApp
@@ -1013,6 +1043,8 @@ export default class NativePdfInkPlugin extends Plugin {
       runtime,
       profileSchemaVersion: PROFILE_SCHEMA_VERSION,
       mobilePdfZoom,
+      toolbarSessionCount: this.sessions.size,
+      toolbarSnapshots,
       ...(typeof devicePixelRatio === "number" && Number.isFinite(devicePixelRatio) ? { devicePixelRatio } : {})
     };
   }

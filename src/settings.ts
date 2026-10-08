@@ -46,6 +46,9 @@ export interface CopiedLogDiagnostics {
   profileSchemaVersion?: number;
   /** Copy-time status is appended outside the potentially truncated log tail. */
   mobilePdfZoom?: readonly CopiedMobilePdfZoomDiagnostics[];
+  /** Fresh toolbar presentation snapshots, including computed visibility and viewport bounds. */
+  toolbarSessionCount?: number;
+  toolbarSnapshots?: readonly Record<string, unknown>[];
 }
 
 const MAX_DIAGNOSTIC_VALUE_CHARACTERS = 512;
@@ -86,6 +89,45 @@ function mobilePdfZoomDiagnosticsText(
   ].join("\n");
 }
 
+function copiedRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function copiedDiagnosticValue(value: unknown): string {
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (typeof value === "string" || typeof value === "number") return diagnosticValue(value);
+  return "unavailable";
+}
+
+function toolbarSnapshotsDiagnosticsText(
+  snapshots: readonly Record<string, unknown>[] | undefined,
+  sessionCount: number | undefined
+): string {
+  const lines = [
+    "Toolbar visibility and placement:",
+    `Registered annotation sessions: ${sessionCount ?? snapshots?.length ?? 0}`
+  ];
+  if (!snapshots?.length) {
+    lines.push("Toolbar snapshots: none");
+    return lines.join("\n");
+  }
+
+  for (const [index, snapshot] of snapshots.slice(0, 8).entries()) {
+    const presentation = copiedRecord(snapshot.toolbarPresentation) ?? {};
+    const bounds = copiedRecord(presentation.bounds) ?? {};
+    const viewport = copiedRecord(presentation.viewport) ?? {};
+    lines.push([
+      `Session ${index + 1}: connected=${copiedDiagnosticValue(snapshot.toolbarConnected)} visualState=${copiedDiagnosticValue(presentation.visualState)} layoutBox=${copiedDiagnosticValue(presentation.hasLayoutBox)} outsideViewport=${copiedDiagnosticValue(presentation.outsideViewport)} fullyOutsideViewport=${copiedDiagnosticValue(presentation.fullyOutsideViewport)}`,
+      `  css display=${copiedDiagnosticValue(presentation.display)} visibility=${copiedDiagnosticValue(presentation.visibility)} opacity=${copiedDiagnosticValue(presentation.opacity)} effectiveOpacity=${copiedDiagnosticValue(presentation.effectiveOpacity)} position=${copiedDiagnosticValue(presentation.position)} zIndex=${copiedDiagnosticValue(presentation.zIndex)} centerHitInsideToolbar=${copiedDiagnosticValue(presentation.centerHitInsideToolbar)}`,
+      `  bounds x=${copiedDiagnosticValue(bounds.x)} y=${copiedDiagnosticValue(bounds.y)} width=${copiedDiagnosticValue(bounds.width)} height=${copiedDiagnosticValue(bounds.height)}; viewport width=${copiedDiagnosticValue(viewport.width)} height=${copiedDiagnosticValue(viewport.height)}`,
+      `  orientation=${copiedDiagnosticValue(snapshot.toolbarOrientation)} mount=${copiedDiagnosticValue(snapshot.mountReason)} unmount=${copiedDiagnosticValue(snapshot.unmountReason)} viewerConnected=${copiedDiagnosticValue(snapshot.viewerConnected)} hostConnected=${copiedDiagnosticValue(snapshot.hostConnected)}`
+    ].join("\n"));
+  }
+  return lines.join("\n");
+}
+
 /** Build a deterministic, bounded snapshot of the runtime available at copy time. */
 export function buildCopiedLogDiagnostics(
   diagnostics: CopiedLogDiagnostics,
@@ -95,8 +137,10 @@ export function buildCopiedLogDiagnostics(
     `Plugin version: ${diagnosticValue(diagnostics.pluginVersion)}`,
     `Obsidian version/API: ${diagnosticValue(diagnostics.obsidianVersion)}`,
     `Platform: ${diagnosticValue(diagnostics.platform)}`,
-    `App mode: ${diagnosticValue(diagnostics.appMode)}`
+    `App mode: ${diagnosticValue(diagnostics.appMode)}`,
+    "DevTools records: Handwriting Natively logger only (current session); Obsidian/core and other-plugin console history unavailable."
   ].join("\n");
+  const toolbar = toolbarSnapshotsDiagnosticsText(diagnostics.toolbarSnapshots, diagnostics.toolbarSessionCount);
   const mobilePdfZoom = mobilePdfZoomDiagnosticsText(diagnostics.mobilePdfZoom);
   const optional = [
     `Runtime: ${diagnosticValue(diagnostics.runtime)}`,
@@ -107,7 +151,7 @@ export function buildCopiedLogDiagnostics(
   const budget = Math.max(0, maxCharacters);
   if (core.length >= budget) return core.slice(0, budget);
   let result = core;
-  for (const section of [mobilePdfZoom, optional]) {
+  for (const section of [toolbar, mobilePdfZoom, optional]) {
     const remaining = budget - result.length - 1;
     if (remaining <= 0) return result;
     if (section.length <= remaining) {
@@ -535,7 +579,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
 
     new Setting(contents)
       .setName("Vault debug log")
-      .setDesc("With this enabled, show session and informational diagnostics in Obsidian's developer console at the verbose level and append them to a line-delimited vault log for copy logs. Plugin operation warnings and errors stay visible when this is off. Includes left-toolbar PDF sidebar offset diagnostics (reason, rects, jumps).")
+      .setDesc("With this enabled, show session and informational diagnostics in Obsidian's developer console at the verbose level and append them to a line-delimited vault log. Copy logs also includes recent plugin warnings/errors emitted to DevTools and a live toolbar visibility/placement snapshot.")
       .addToggle((toggle) =>
         toggle.setValue(this.host.inkSettings.vaultDebugLog).onChange(async (value) => {
           await this.persistPatch({ vaultDebugLog: value });
@@ -553,7 +597,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
 
     new Setting(contents)
       .setName("Copy all logs")
-      .setDesc(`Copy the latest vault debug log plus current version and device diagnostics, up to ${MAX_COPIED_LOG_CHARACTERS.toLocaleString()} characters.`)
+      .setDesc(`Copy the persisted log, recent plugin DevTools records, and current toolbar visibility/placement and device diagnostics, up to ${MAX_COPIED_LOG_CHARACTERS.toLocaleString()} characters.`)
       .addButton((button) =>
         button.setButtonText("Copy logs").onClick(async () => {
           try {
@@ -561,11 +605,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
             // the exact toolbar/remount state that triggered the report.
             const diagnostics = this.host.getCopiedLogDiagnostics();
             const logs = await this.host.readAllLogs();
-            if (!logs) {
-              suppressUserNotification("No vault debug logs are available. Enable vault debug log and reproduce the issue first.");
-              return;
-            }
-            await navigator.clipboard.writeText(getCopiedLogText(logs, diagnostics));
+            await navigator.clipboard.writeText(getCopiedLogText(logs ?? "", diagnostics));
             suppressUserNotification("Debug logs and current diagnostics copied.");
           } catch (error) {
             console.error("Handwriting Natively could not copy logs", error);
