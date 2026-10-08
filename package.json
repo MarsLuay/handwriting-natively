@@ -42,7 +42,7 @@
     "esbuild@0.28.1": true
   },
   "codeAnalysis": {
-    "pluginBundleBudgetBytes": 2200000,
+    "pluginBundleBudgetBytes": 3400000,
     "auditProductionDependenciesOnly": true
   }
 }

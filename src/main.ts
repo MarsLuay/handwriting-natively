@@ -411,6 +411,13 @@ export default class NativePdfInkPlugin extends Plugin {
   /** Catch uncaught errors before the WebView dies so mobile crash logs still land on disk. */
   private registerCrashBreadcrumbs(): void {
     this.registerDomEvent(window, "error", (event) => {
+      const message = typeof event.message === "string" ? event.message : "";
+      if (
+        message.includes("ResizeObserver loop completed with undelivered notifications") ||
+        message.includes("ResizeObserver loop limit exceeded")
+      ) {
+        return;
+      }
       void this.vaultDebugLog.writeUrgent("error", "window-error", {
         message: event.message,
         filename: event.filename,
