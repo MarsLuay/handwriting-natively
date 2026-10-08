@@ -245,6 +245,82 @@ describe("plugin settings persistence", () => {
   });
 });
 
+describe("toolbar Mouse mode persistence", () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      setTransform: vi.fn(), clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(),
+      beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), moveTo: vi.fn(), closePath: vi.fn(),
+      lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(), rect: vi.fn(), clip: vi.fn(), ellipse: vi.fn(), drawImage: vi.fn()
+    } as unknown as CanvasRenderingContext2D);
+  });
+
+  afterEach(() => {
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  it("saves Mouse selection and restores it in a new viewer session", async () => {
+    const firstAdapter = new FakeAdapter();
+    const firstFiles = new MemoryFiles();
+    const firstSettings = structuredClone(DEFAULT_SETTINGS);
+    firstSettings.mouseInkingEnabled = true;
+    let savedPreferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    const saveSettings = vi.fn(async (preferences: ToolPreferences) => {
+      savedPreferences = structuredClone(preferences);
+    });
+    const firstSession = await ViewerInkSession.create({
+      adapter: firstAdapter,
+      documentPath: "Notes/mouse-mode.pdf",
+      settings: firstSettings,
+      sidecars: new SidecarRepository(firstFiles, "annotations"),
+      recovery: new RecoveryRepository(firstFiles, "recovery"),
+      saveSettings,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    try {
+      const mouseButton = document.body.querySelector<HTMLButtonElement>("[data-control='mouse']");
+      expect(mouseButton?.getAttribute("aria-pressed")).toBe("false");
+      mouseButton?.click();
+      expect(saveSettings).toHaveBeenCalledTimes(1);
+      expect(savedPreferences.mouseNavigationActive).toBe(true);
+    } finally {
+      await firstSession.destroy();
+      firstAdapter.host.remove();
+    }
+
+    const restoredSettings = mergeSettings({
+      mouseInkingEnabled: true,
+      toolPreferences: savedPreferences
+    });
+    const secondAdapter = new FakeAdapter();
+    const secondFiles = new MemoryFiles();
+    const secondSession = await ViewerInkSession.create({
+      adapter: secondAdapter,
+      documentPath: "Notes/mouse-mode.pdf",
+      settings: restoredSettings,
+      sidecars: new SidecarRepository(secondFiles, "annotations"),
+      recovery: new RecoveryRepository(secondFiles, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    try {
+      const restoredMouseButton = document.body.querySelector<HTMLButtonElement>("[data-control='mouse']");
+      expect(restoredMouseButton?.getAttribute("aria-pressed")).toBe("true");
+      expect(restoredMouseButton?.getAttribute("aria-label")).toBe("Switch mouse to inking");
+      expect(restoredSettings.toolPreferences.activeTool).toBe("pen");
+    } finally {
+      await secondSession.destroy();
+      secondAdapter.host.remove();
+    }
+  });
+});
+
 function pointer(
   type: string,
   x: number,

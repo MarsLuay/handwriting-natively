@@ -350,6 +350,14 @@ describe("safe defaults", () => {
     expect(mergeSettings({ mouseLeftDragDraw: true } as never).mouseInkingEnabled).toBe(true);
   });
 
+  it("preserves a saved Mouse toolbar mode and rejects malformed values", () => {
+    expect(DEFAULT_SETTINGS.toolPreferences.mouseNavigationActive).toBe(false);
+    expect(mergeSettings({ toolPreferences: { mouseNavigationActive: true } } as never)
+      .toolPreferences.mouseNavigationActive).toBe(true);
+    expect(mergeSettings({ toolPreferences: { mouseNavigationActive: "true" } } as never)
+      .toolPreferences.mouseNavigationActive).toBe(false);
+  });
+
   it("drops retired mouse pan and right-button eraser settings", () => {
     const merged = mergeSettings({
       mouseInputMode: "pan",

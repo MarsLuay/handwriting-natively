@@ -172,6 +172,8 @@ export interface ShapePreferences {
 
 export interface ToolPreferences {
   activeTool: ToolId;
+  /** Restore native mouse interaction when mouse inking is configured. */
+  mouseNavigationActive: boolean;
   pen: DrawingToolPreferences;
   pencil: DrawingToolPreferences;
   highlighter: DrawingToolPreferences;
@@ -271,6 +273,7 @@ export function createDefaultToolPreferences(): ToolPreferences {
   };
   return {
     activeTool: "pen",
+    mouseNavigationActive: false,
     pen,
     pencil,
     highlighter,
@@ -461,6 +464,7 @@ export function mergeSettings(
       ...defaults.toolPreferences,
       ...savedToolPreferences,
       activeTool,
+      mouseNavigationActive: savedToolPreferences.mouseNavigationActive === true,
       pen: {
         ...migratedDrawingPreferences.pen,
         penType: isPenType(migratedDrawingPreferences.pen.penType)

@@ -1442,6 +1442,8 @@ export class ViewerInkSession {
   private static readonly PAGE_MUTATION_SHIELD_RENDER_QUIET_MS = 120;
 
   private constructor(private readonly options: ViewerInkSessionOptions) {
+    this.mouseNavigationActive = this.mouseInkingConfigured()
+      && options.settings.toolPreferences.mouseNavigationActive;
     this.floatingToolbarPosition = options.settings.floatingToolbarPosition;
     this.previousViewerElementDebugId = options.restoredAddPageMutation?.viewerElementDebugIdBefore ?? null;
     this.lastAddPageOperationId = options.restoredAddPageMutation?.operationId ?? null;
@@ -1596,6 +1598,12 @@ export class ViewerInkSession {
         },
         onMouseModeChange: (nativeSelection) => {
           this.mouseNavigationActive = nativeSelection;
+          options.settings.toolPreferences.mouseNavigationActive = nativeSelection;
+          void options.saveSettings(options.settings.toolPreferences).catch((error) => {
+            options.vaultLog?.write("error", "mouse-navigation-preference-save-failed", {
+              error: this.errorMessage(error)
+            });
+          });
           if (nativeSelection) {
             this.commitActiveTextEditor("mouse-navigation-mode");
             this.clearSelection({ refresh: false });
@@ -10565,7 +10573,7 @@ export class ViewerInkSession {
   /** Apply live mouse-button setting or toolbar mode changes without recreating the viewer. */
   updateMouseInputBindings(): void {
     const configured = this.mouseInkingConfigured();
-    if (!configured) this.mouseNavigationActive = false;
+    this.mouseNavigationActive = configured && this.options.settings.toolPreferences.mouseNavigationActive;
     this.toolbar.setMouseModeState(configured, this.mouseNavigationActive);
     this.syncAnnotationCursorMode();
     this.syncTouchDrawPolicy("input-settings");
