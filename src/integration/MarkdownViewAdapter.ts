@@ -8,7 +8,7 @@ import type {
   ViewerState
 } from "../runtime/AnnotationSurface";
 
-/** Options kept deliberately DOM-only until Markdown view attachment is enabled. */
+/** DOM options for the rendered Markdown Reading-view surface. */
 export interface MarkdownViewAdapterOptions {
   /** Explicit Reading-view root for callers that already resolved Obsidian's shell. */
   previewRoot?: HTMLElement;
@@ -17,10 +17,8 @@ export interface MarkdownViewAdapterOptions {
 /**
  * Resolve a rendered Markdown Reading-view root without touching source mode.
  *
- * This is intentionally not called by the plugin entrypoint yet. It gives the
- * future Markdown integration one safe discovery boundary and makes Live
- * Preview/source editors ineligible until their editing and input semantics are
- * designed separately.
+ * Live Preview and source editors remain ineligible so their native editing,
+ * text selection, and keyboard input stay under Obsidian's ownership.
  */
 export function findMarkdownPreviewRoot(host: HTMLElement): HTMLElement | null {
   const candidates: HTMLElement[] = [];
@@ -30,12 +28,11 @@ export function findMarkdownPreviewRoot(host: HTMLElement): HTMLElement | null {
 }
 
 /**
- * One-page Reading-view scaffold for future Markdown handwriting.
+ * One-page rendered Reading-view surface for Markdown handwriting.
  *
  * Markdown content is treated as a top-left-coordinate page whose height is
- * the rendered content height. The adapter is not registered by main.ts, so
- * constructing it is the only way it can currently affect a view; no toolbar,
- * overlay, listener, or setting is user-visible in the shipped runtime.
+ * the rendered content height. The plugin attaches it only while the Markdown
+ * view is in Reading mode and the Markdown surface setting is enabled.
  */
 export class MarkdownViewAdapter implements AnnotationSurface {
   readonly kind = "direct" as const;
@@ -59,9 +56,8 @@ export class MarkdownViewAdapter implements AnnotationSurface {
   }
 
   /**
-   * Create a future-only adapter. The explicit root escape hatch lets a later
-   * Obsidian compatibility layer own selector knowledge without changing this
-   * generic surface contract.
+   * Create an adapter. The explicit root escape hatch lets the caller resolve
+   * Obsidian-specific selectors without changing the generic surface contract.
    */
   static attach(
     host: HTMLElement,

@@ -49,3 +49,11 @@ Expose and persist the Markdown enabled-surface preference while Markdown view a
 Paths: `src/settings.ts`, `tests/settings.test.ts`
 
 Checks: `tests/settings.test.ts`; `npm run lint`.
+
+## markdown-reading-annotations — complete
+
+Activate Markdown Reading-view annotations through the shared floating toolbar and session lifecycle.
+
+Paths: `src/main.ts`, `src/integration/MarkdownViewAdapter.ts`, `src/runtime/ViewerInkSession.ts`, `src/settings.ts`, `tests/`, `README.md`
+
+Checks: focused Markdown adapter/session/lifecycle tests; `npm test`; `npm run lint`; `npx tsc --noEmit`.

@@ -21,7 +21,7 @@ function markdownHost(): { host: HTMLElement; preview: HTMLElement } {
 
 afterEach(() => document.body.replaceChildren());
 
-describe("Markdown surface scaffold", () => {
+describe("Markdown Reading surface", () => {
   it("discovers Reading view but never treats a source editor as a preview", () => {
     const { host, preview } = markdownHost();
     expect(findMarkdownPreviewRoot(host)).toBe(preview);

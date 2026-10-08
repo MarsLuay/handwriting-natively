@@ -10540,7 +10540,7 @@ export class ViewerInkSession {
     const canvas = createDetachedEl(overlay.ownerDocument, 'canvas');
     canvas.className = "native-pdf-handwriting-canvas";
     if (this.options.settings.hideStylusAnnotationLabel) canvas.setAttribute("aria-hidden", "true");
-    else canvas.setAttribute("aria-label", `Annotations for PDF page ${page.pageNumber}`);
+    else canvas.setAttribute("aria-label", `Annotations for page ${page.pageNumber}`);
     overlay.append(canvas);
     const draftCanvas = createDetachedEl(overlay.ownerDocument, 'canvas');
     draftCanvas.className = "native-pdf-handwriting-draft-canvas";

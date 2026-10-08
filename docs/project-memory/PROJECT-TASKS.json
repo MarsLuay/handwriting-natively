@@ -91,6 +91,25 @@
         "tests/settings.test.ts",
         "npm run lint"
       ]
+    },
+    {
+      "id": "markdown-reading-annotations",
+      "status": "complete",
+      "title": "Activate Markdown Reading-view annotations through the shared floating toolbar and session lifecycle.",
+      "paths": [
+        "src/main.ts",
+        "src/integration/MarkdownViewAdapter.ts",
+        "src/runtime/ViewerInkSession.ts",
+        "src/settings.ts",
+        "tests/",
+        "README.md"
+      ],
+      "checks": [
+        "Focused Markdown adapter, session, and lifecycle tests",
+        "npm test",
+        "npm run lint",
+        "npx tsc --noEmit"
+      ]
     }
   ]
 }

@@ -27,6 +27,14 @@ describe("main PDF page actions", () => {
     expect(mainSource).toContain("ImageViewAdapter.attach");
   });
 
+  it("attaches only enabled Markdown Reading views through the shared session factory", () => {
+    expect(mainSource).toContain("MarkdownViewAdapter.attach");
+    expect(mainSource).toContain('view.getMode() === "preview"');
+    expect(mainSource).toContain("this.scanMarkdownLeaves()");
+    expect(mainSource).toContain("detachDisabledMarkdownSessions");
+    expect(mainSource).toContain('surface: "markdown"');
+  });
+
   it("starts an attach scan even when layout-ready was published before plugin load", () => {
     const onload = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("  /** Catch uncaught errors"));
     expect(onload).toContain('"session attach scan requested"');

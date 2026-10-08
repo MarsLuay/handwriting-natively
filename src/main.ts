@@ -15,6 +15,7 @@ import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
 import { isObsidianSidebarOpen, MobileSidebarSwipeBlocker } from "./input/MobileSidebarSwipeBlocker";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
+import { findMarkdownPreviewRoot, MarkdownViewAdapter } from "./integration/MarkdownViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
 import { PLUGIN_PDF_VIEW_TYPE, PluginPdfView } from "./integration/PluginPdfView";
 import { PdfJsViewAdapter } from "./integration/PdfJsViewAdapter";
@@ -197,6 +198,11 @@ export function scheduleSessionRecoveryAfterDestroy(
 export default class NativePdfInkPlugin extends Plugin {
   inkSettings: PluginSettings = mergeSettings(undefined, "config");
   private readonly sessions = new Map<WorkspaceLeaf, ViewerInkSession>();
+  private readonly markdownModeObservers = new Map<WorkspaceLeaf, {
+    view: MarkdownView;
+    host: HTMLElement;
+    observer: MutationObserver;
+  }>();
   private readonly attachingLeaves = new Set<WorkspaceLeaf>();
   private readonly embedChrome = new Map<HTMLElement, EmbedAnnotateChrome>();
   private readonly persistEpochByDoc = new Map<string, number>();
@@ -439,6 +445,8 @@ export default class NativePdfInkPlugin extends Plugin {
     this.sidebarSwipeBlocker = null;
     this.scanDebounce.clear();
     this.attachRetry.clearAll();
+    for (const { observer } of this.markdownModeObservers?.values() ?? []) observer.disconnect();
+    this.markdownModeObservers?.clear();
     this.attachingLeaves.clear();
     this.replacementAttachLeaves.clear();
     this.missingSessionRecoveryLeaves.clear();
@@ -826,11 +834,31 @@ export default class NativePdfInkPlugin extends Plugin {
     }
   }
 
+  private async detachDisabledMarkdownSessions(): Promise<void> {
+    for (const [leaf, session] of [...this.sessions]) {
+      const file = this.fileForLeaf(leaf);
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") continue;
+      if (!this.removeSessionFromRegistry(leaf, session, "markdown-disabled")) continue;
+      this.attachRetry.clear(file.path);
+      this.syncPersistSession(session, "markdown-disabled");
+      try {
+        await this.destroySessionWithTelemetry(leaf, session, "markdown-disabled", { silent: true, alreadyPersisted: true });
+      } catch (error) {
+        await this.vaultDebugLog.writeUrgent("warn", "markdown session disable failed", {
+          document: file.path,
+          markdownHandwritingEnabled: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
   async saveSettings(settings: PluginSettings): Promise<void> {
     const previousToolbarOrientation = this.inkSettings.toolbarOrientation;
     const previousCustomMobilePdfPinchZoom = this.inkSettings.customMobilePdfPinchZoom;
     const previousPdfEnabled = this.inkSettings.enabledSurfaces.pdf;
     const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
+    const previousMarkdownEnabled = this.inkSettings.enabledSurfaces.markdown;
     const previousAutomaticAnnotationRecovery = this.inkSettings.automaticAnnotationRecovery;
     const previousAnnotationBackupPath = this.inkSettings.annotationBackupPath;
     const previousMouseInkingEnabled = this.inkSettings.mouseInkingEnabled;
@@ -859,6 +887,16 @@ export default class NativePdfInkPlugin extends Plugin {
         imageHandwritingEnabled: settings.enabledSurfaces.image
       });
       if (!settings.enabledSurfaces.image) await this.detachDisabledImageSessions();
+      this.scheduleDebouncedScan(0);
+    }
+    if (previousMarkdownEnabled !== settings.enabledSurfaces.markdown) {
+      this.vaultDebugLog.write("info", "content-surface-setting-changed", {
+        surface: "markdown",
+        previous: previousMarkdownEnabled,
+        current: settings.enabledSurfaces.markdown,
+        markdownHandwritingEnabled: settings.enabledSurfaces.markdown
+      });
+      if (!settings.enabledSurfaces.markdown) await this.detachDisabledMarkdownSessions();
       this.scheduleDebouncedScan(0);
     }
     this.vaultDebugLog.write("info", "plugin settings saved", {
@@ -1054,6 +1092,7 @@ export default class NativePdfInkPlugin extends Plugin {
     this.scanAgain = false;
     try {
       await this.scanPdfLeaves();
+      await this.scanMarkdownLeaves();
       this.scanPdfEmbeds();
     } finally {
       this.scanInProgress = false;
@@ -1082,8 +1121,13 @@ export default class NativePdfInkPlugin extends Plugin {
     });
     const live = new Set(leaves);
     const livePaths = new Set<string>();
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const file = this.fileForLeaf(leaf);
+      if (file instanceof TFile && file.extension.toLowerCase() === "md") livePaths.add(file.path);
+    }
     for (const [leaf, session] of [...this.sessions]) {
       const file = this.fileForLeaf(leaf);
+      if (file instanceof TFile && file.extension.toLowerCase() === "md") continue;
       const pdfDisabled = file instanceof TFile
         && file.extension.toLowerCase() === "pdf"
         && !this.inkSettings.enabledSurfaces.pdf;
@@ -1436,6 +1480,215 @@ export default class NativePdfInkPlugin extends Plugin {
     const wait = this.attachRetry.msUntilNextRetry(livePaths);
     if (wait != null) this.scheduleAttachRetryScan(wait);
     this.reportMissingPdfSessionAfterSettle();
+  }
+
+  private isMarkdownReadingLeaf(leaf: WorkspaceLeaf): boolean {
+    const view = leaf.view;
+    const file = this.fileForLeaf(leaf);
+    return this.inkSettings.enabledSurfaces.markdown
+      && view instanceof MarkdownView
+      && file instanceof TFile
+      && file.extension.toLowerCase() === "md"
+      && view.getMode() === "preview";
+  }
+
+  private syncMarkdownModeObservers(leaves: readonly WorkspaceLeaf[]): void {
+    const hosts = new Map<WorkspaceLeaf, { view: MarkdownView; host: HTMLElement }>();
+    for (const leaf of leaves) {
+      if (leaf.view instanceof MarkdownView) hosts.set(leaf, { view: leaf.view, host: leaf.view.containerEl });
+    }
+
+    for (const [leaf, current] of this.markdownModeObservers) {
+      const next = hosts.get(leaf);
+      if (next?.view === current.view && next.host === current.host) continue;
+      current.observer.disconnect();
+      this.markdownModeObservers.delete(leaf);
+    }
+    if (typeof MutationObserver === "undefined") return;
+
+    for (const [leaf, { view, host }] of hosts) {
+      if (this.markdownModeObservers.has(leaf)) continue;
+      let lastMode = view.getMode();
+      let lastPreview = findMarkdownPreviewRoot(host);
+      const observer = new MutationObserver(() => {
+        const mode = view.getMode();
+        const preview = findMarkdownPreviewRoot(host);
+        if (mode === lastMode && preview === lastPreview) return;
+        lastMode = mode;
+        lastPreview = preview;
+        this.scheduleDebouncedScan(0);
+      });
+      observer.observe(host, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "style"]
+      });
+      this.markdownModeObservers.set(leaf, { view, host, observer });
+    }
+  }
+
+  private async scanMarkdownLeaves(): Promise<void> {
+    if (this.unloaded) return;
+    const leaves = [...new Set(this.app.workspace.getLeavesOfType("markdown"))];
+    this.syncMarkdownModeObservers(leaves);
+    const readingLeaves = new Set(leaves.filter((leaf) => this.isMarkdownReadingLeaf(leaf)));
+    for (const leaf of leaves) {
+      const file = this.fileForLeaf(leaf);
+      if (file instanceof TFile && file.extension.toLowerCase() === "md" && !readingLeaves.has(leaf)) {
+        this.attachRetry.clear(file.path);
+      }
+    }
+    await this.vaultDebugLog.writeUrgent("info", "scan-markdown-leaves", {
+      markdownLeafCount: leaves.length,
+      readingLeafCount: readingLeaves.size,
+      sessions: this.sessions.size,
+      attachingLeaves: this.attachingLeaves.size,
+      markdownHandwritingEnabled: this.inkSettings.enabledSurfaces.markdown,
+      mobile: Platform.isMobile,
+      phone: Platform.isPhone
+    });
+
+    for (const [leaf, session] of [...this.sessions]) {
+      const file = this.fileForLeaf(leaf);
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") continue;
+      if (!readingLeaves.has(leaf)) {
+        const view = leaf.view;
+        const reason = !this.inkSettings.enabledSurfaces.markdown
+          ? "markdown-disabled"
+          : !leaves.includes(leaf)
+            ? "markdown-leaf-closed"
+            : view instanceof MarkdownView && view.getMode() !== "preview"
+              ? "markdown-editing-mode"
+              : "markdown-preview-unavailable";
+        if (!this.removeSessionFromRegistry(leaf, session, reason)) continue;
+        this.syncPersistSession(session, reason);
+        await this.destroySessionWithTelemetry(leaf, session, reason, { silent: true, alreadyPersisted: true })
+          .catch((error) => this.vaultDebugLog.writeUrgent("warn", "markdown session teardown failed", {
+            document: file.path,
+            reason,
+            error: error instanceof Error ? error.message : String(error)
+          }));
+        this.vaultDebugLog.write("info", "markdown session disabled", {
+          document: file.path,
+          markdownHandwritingEnabled: false,
+          reason
+        });
+        continue;
+      }
+      if (!session.isAttached()) {
+        if (!this.removeSessionFromRegistry(leaf, session, "markdown-detach-rescan")) continue;
+        this.replacementAttachLeaves.add(leaf);
+        this.syncPersistSession(session, "markdown-detach-rescan");
+        await this.trackSessionDestroy(leaf, session, "markdown-detach-rescan", { silent: true, alreadyPersisted: true })
+          .catch(() => undefined);
+      }
+    }
+
+    for (const leaf of readingLeaves) {
+      if (this.sessions.has(leaf) || this.attachingLeaves.has(leaf)) continue;
+      const view = leaf.view;
+      const file = this.fileForLeaf(leaf);
+      if (!(view instanceof MarkdownView) || !(file instanceof TFile)) continue;
+      if (!await this.waitForSessionDestroy(leaf)) {
+        this.attachRetry.recordFailure(file.path);
+        continue;
+      }
+      if (!this.attachRetry.canAttempt(file.path)) {
+        await this.vaultDebugLog.writeUrgent("info", "markdown session attach cooling", {
+          document: file.path,
+          mobile: Platform.isMobile
+        });
+        continue;
+      }
+
+      this.attachingLeaves.add(leaf);
+      const replacementAttach = this.replacementAttachLeaves.has(leaf);
+      let adapter: MarkdownViewAdapter | undefined;
+      let session: ViewerInkSession | undefined;
+      let detached = false;
+      let attachStage = "started";
+      await this.vaultDebugLog.writeUrgent("info", "markdown handwriting session attach", {
+        phase: "started",
+        document: file.path,
+        replacement: replacementAttach,
+        leafContainerDebugId: getDebugNodeId(this.containerForLeaf(leaf))
+      });
+      try {
+        attachStage = "adapter-attach";
+        adapter = MarkdownViewAdapter.attach(view.containerEl, this.sessionAdapterCallbacks(() => session));
+        attachStage = "session-create";
+        session = await this.createInkSession(file, adapter, {
+          onDetached: () => {
+            detached = true;
+            const current = this.sessions.get(leaf);
+            if (!current || current !== session) return;
+            this.replacementAttachLeaves.add(leaf);
+            if (!this.removeSessionFromRegistry(leaf, current, "markdown-detached")) return;
+            this.syncPersistSession(current, "markdown-detached");
+            scheduleSessionRecoveryAfterDestroy(
+              this.trackSessionDestroy(leaf, current, "markdown-detached", { silent: true, alreadyPersisted: true }),
+              () => this.scheduleDebouncedScan(0),
+              (reason, error) => {
+                void this.vaultDebugLog.writeUrgent("warn", "markdown session recovery", {
+                  phase: "blocked",
+                  reason,
+                  document: file.path,
+                  ...(error === undefined ? {} : {
+                    error: error instanceof Error ? error.message : JSON.stringify(error) ?? "Unknown error"
+                  })
+                }).catch(() => undefined);
+              }
+            );
+          }
+        });
+        attachStage = "session-created";
+        if (this.unloaded || detached || !this.isMarkdownReadingLeaf(leaf) || !adapter.root.isConnected || !session.isAttached()) {
+          const reason = detached
+            ? "markdown-detached-during-attach"
+            : this.inkSettings.enabledSurfaces.markdown
+              ? "markdown-mode-changed-during-attach"
+              : "markdown-disabled-during-attach";
+          this.syncPersistSession(session, reason);
+          await this.trackSessionDestroy(leaf, session, reason, { silent: true, alreadyPersisted: true })
+            .catch(() => undefined);
+          continue;
+        }
+        this.registerSession(leaf, session, replacementAttach ? "markdown-replacement-attach" : "markdown-attach");
+        this.replacementAttachLeaves.delete(leaf);
+        this.attachRetry.clear(file.path);
+        await this.vaultDebugLog.writeUrgent("info", "markdown handwriting session attach", {
+          phase: "completed",
+          document: file.path,
+          replacement: replacementAttach,
+          ...session.getUiLifecycleSnapshot("markdown-attach-completed")
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!session && adapter) {
+          try {
+            adapter.destroy();
+          } catch {
+            // Keep the attach failure as the primary diagnostic.
+          }
+        } else if (session && this.sessions.get(leaf) !== session) {
+          this.syncPersistSession(session, "markdown-attach-failed");
+          await this.trackSessionDestroy(leaf, session, "markdown-attach-failed", { silent: true, alreadyPersisted: true })
+            .catch(() => undefined);
+        }
+        await this.vaultDebugLog.writeUrgent("warn", "markdown handwriting session attach", {
+          phase: "failed",
+          document: file.path,
+          stage: attachStage,
+          replacement: replacementAttach,
+          error: message
+        });
+        const delayMs = this.attachRetry.recordFailure(file.path);
+        this.scheduleAttachRetryScan(delayMs);
+      } finally {
+        this.attachingLeaves.delete(leaf);
+      }
+    }
   }
 
   private scanPdfEmbeds(): void {

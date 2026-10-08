@@ -147,7 +147,7 @@ describe("PDF adapters", () => {
     expect(toolbar.element.isConnected).toBe(true);
     expect(toolbar.element.hidden).toBe(false);
     expect(toolbar.element.style.display).not.toBe("none");
-    expect(toolbar.element.getAttribute("aria-label")).toBe("PDF annotation tools");
+    expect(toolbar.element.getAttribute("aria-label")).toBe("Annotation tools");
     expect(toolbar.element.querySelector("[data-control='eraser']")).not.toBeNull();
     expect(currentToolbarHost.contains(toolbar.element)).toBe(true);
     expect(staleToolbarHost.contains(toolbar.element)).toBe(false);

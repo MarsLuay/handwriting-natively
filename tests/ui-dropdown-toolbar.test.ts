@@ -98,7 +98,7 @@ describe("AnnotationToolbar", () => {
     });
     document.body.append(toolbar.element);
     expect(toolbar.element.querySelector(".native-pdf-handwriting-draw-toggle")).toBeNull();
-    expect(toolbar.element.getAttribute("aria-label")).toBe("PDF annotation tools");
+    expect(toolbar.element.getAttribute("aria-label")).toBe("Annotation tools");
     toolbar.destroy();
   });
 

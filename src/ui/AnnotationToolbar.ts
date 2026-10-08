@@ -58,7 +58,7 @@ export interface AnnotationToolbarCallbacks {
   onHandMode?(): void;
   onSave?(): void | Promise<void>;
   onMore?(action: MoreAction): void;
-  /** True selects native PDF mouse interaction; false returns mouse to the active ink tool. */
+  /** True returns mouse input to native interaction; false routes it to the active ink tool. */
   onMouseModeChange?(nativeSelection: boolean): void;
   toolbarOrientation?(): ToolbarOrientation;
 }
@@ -101,11 +101,11 @@ export class AnnotationToolbar {
     this.element.className = "native-pdf-handwriting-toolbar";
     this.element.dataset.focusOverlayInternal = "true";
     this.element.setAttribute("role", "toolbar");
-    this.element.setAttribute("aria-label", "PDF annotation tools");
+    this.element.setAttribute("aria-label", "Annotation tools");
     this.controls = createDetachedDiv(this.ownerDocument);
     this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
-    const mouse = this.actionButton("mouse", "Use mouse for PDF selection", () => {
+    const mouse = this.actionButton("mouse", "Use mouse for native interaction", () => {
       this.setMouseNavigationActive(!this.mouseNavigationActive);
     });
     if (this.mouseModeAvailable) this.controls.append(mouse);
@@ -481,7 +481,7 @@ export class AnnotationToolbar {
     if (mouse) {
       this.presentButton(
         mouse,
-        this.mouseNavigationActive ? "Switch mouse to inking" : "Use mouse for PDF selection",
+        this.mouseNavigationActive ? "Switch mouse to inking" : "Use mouse for native interaction",
         "mouse"
       );
       mouse.setAttribute("aria-pressed", String(this.mouseNavigationActive));
