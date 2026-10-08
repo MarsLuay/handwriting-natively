@@ -720,7 +720,11 @@ export class PointerRouter {
     const hadActivePen = this.palmPolicy.hasActivePen();
     const stalePenCleared = this.palmPolicy.reconcileStalePenOnTouch();
     this.navigationController.reconcilePenContacts(this.palmPolicy.activePenIds());
-    this.navigationController.reconcileTouchTerminal(this.element, Array.from(event.touches ?? []));
+    this.navigationController.reconcileTouchTerminal(
+      this.element,
+      Array.from(event.touches ?? []),
+      event.type === "touchcancel" ? "pointercancel" : "pointerup"
+    );
     const trackedAfter = this.touchCount();
     if (trackedBefore === 0 && trackedAfter === 0 && !hadActivePen && !stalePenCleared) return;
     this.callbacks.onTouchLifecycle?.(

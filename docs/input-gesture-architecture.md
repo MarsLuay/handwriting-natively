@@ -122,7 +122,8 @@ viewer/UI/Scribble ordering without participating in routing.
 - `GestureNavigationController.ts` is the single movement owner for eligible
   one-finger pan, two-finger pan/pinch, hand-tool movement, modifier-wheel zoom,
   stylus exclusion, and navigation cleanup. It updates the session viewport or
-  PDF scroll root through one callback path.
+  PDF scroll root through one callback path. Viewport rubber-band pan settles
+  after the final contact ends or the wheel-pan stream becomes idle.
 - `PointerCapabilities.ts` owns feature detection and sample extraction only:
   Pointer Events, capture, coalesced events, predicted events, and observed
   stylus capability. It does not decide ownership.

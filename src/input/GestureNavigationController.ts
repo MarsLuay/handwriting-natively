@@ -40,6 +40,7 @@ export interface GestureNavigationControllerOptions {
   onEnd: (scale: number, reason: GestureNavigationEndReason) => void;
   onCancel: (reason: string) => void;
   onSettled?: (scale: number) => void;
+  onPanEnd?: (reason: GestureNavigationEndReason) => void;
   onEligibility?: (target: EventTarget | null) => boolean;
   onIndicator?: (scale: number, reset: () => void) => void;
   getScrollRoot?: () => HTMLElement | null;
@@ -182,6 +183,7 @@ export class GestureNavigationController {
   private previewFrame: number | null = null;
   private animationFrame: number | null = null;
   private wheelTimer: number | null = null;
+  private panEndTimer: number | null = null;
   private wheelLastAt = 0;
   private wheelTarget: number | null = null;
   private destroyed = false;
@@ -196,6 +198,7 @@ export class GestureNavigationController {
   private touchFallbackActive = false;
   private panningSurface: HTMLElement | null = null;
   private previousPanCenter: GestureNavigationFocalPoint | null = null;
+  private panReleasePending = false;
 
   constructor(private readonly options: GestureNavigationControllerOptions) {
     this.snapScale = options.snapScale ?? 1;
@@ -306,6 +309,7 @@ export class GestureNavigationController {
     const handMode = context.route === "drag" || this.options.isHandMode?.() === true;
     if (handMode && event.pointerType !== "touch"
       && event.button === 0 && event.isPrimary !== false) {
+      this.clearPanEndTimer();
       this.navigationPointers.set(event.pointerId, {
         pointerId: event.pointerId,
         clientX: event.clientX,
@@ -359,6 +363,7 @@ export class GestureNavigationController {
       this.syncSurfacePolicy(context.surface);
       return { handled: false };
     }
+    this.clearPanEndTimer();
     this.navigationPointers.set(event.pointerId, {
       pointerId: event.pointerId,
       clientX: event.clientX,
@@ -428,7 +433,10 @@ export class GestureNavigationController {
     if (!compositorOwnsPinchMovement && oldCenter && nextCenter) {
       const deltaX = nextCenter.x - oldCenter.x;
       const deltaY = nextCenter.y - oldCenter.y;
-      if (deltaX !== 0 || deltaY !== 0) this.applyPan(deltaX, deltaY, nextCenter.x, nextCenter.y);
+      if (deltaX !== 0 || deltaY !== 0) {
+        this.panReleasePending = this.applyPan(deltaX, deltaY, nextCenter.x, nextCenter.y)
+          || this.panReleasePending;
+      }
     }
     if (contact.mode === "touch" && frame.points.length >= 2) this.frame(frame);
     this.previousPanCenter = nextCenter;
@@ -457,6 +465,7 @@ export class GestureNavigationController {
     if (this.navigationPointers.size === 0) {
       this.previousPanCenter = null;
       this.setPanningSurface(contact.surface, false);
+      this.finishPan(reason);
     } else {
       const remaining = [...this.navigationPointers.values()][0];
       this.previousPanCenter = remaining ? { x: remaining.clientX, y: remaining.clientY } : null;
@@ -467,7 +476,8 @@ export class GestureNavigationController {
 
   reconcileTouchTerminal(
     surface: HTMLElement,
-    activeTouches: readonly Pick<Touch, "identifier">[]
+    activeTouches: readonly Pick<Touch, "identifier">[],
+    reason: GestureNavigationEndReason = "pointerup"
   ): void {
     const activeTouchIds = new Set(activeTouches.map((touch) => touch.identifier));
     if (this.touchFallbackActive) {
@@ -493,12 +503,14 @@ export class GestureNavigationController {
       this.setPanningSurface(surface, false);
     }
     this.syncSurfacePolicy(surface);
+    if (this.navigationPointers.size === 0) this.finishPan(reason);
   }
 
   handleTouchFallback(event: TouchEvent, surface: HTMLElement, enabled: boolean, generation = 0): boolean {
     if (this.destroyed || !enabled || this.hasActivePen()) return false;
     if (event.type === "touchstart") {
       if (event.touches.length < 2 || this.isActive()) return false;
+      this.clearPanEndTimer();
       for (const [pointerId, contact] of this.navigationPointers) releasePointer(contact.surface, pointerId);
       this.navigationPointers.clear();
       for (const touch of Array.from(event.touches).slice(0, 2)) {
@@ -521,6 +533,7 @@ export class GestureNavigationController {
         this.navigationPointers.clear();
         this.touchFallbackActive = false;
         this.previousPanCenter = null;
+        this.finishPan("pointerup");
         return false;
       }
       this.syncSurfacePolicy(surface);
@@ -538,12 +551,12 @@ export class GestureNavigationController {
       const frame = this.currentNavigationFrame(generation);
       const center = midpoint(frame.points);
       if (!this.isActive() && center && this.previousPanCenter) {
-        this.applyPan(
+        this.panReleasePending = this.applyPan(
           center.x - this.previousPanCenter.x,
           center.y - this.previousPanCenter.y,
           center.x,
           center.y
-        );
+        ) || this.panReleasePending;
       }
       if (frame.points.length >= 2) this.frame(frame);
       this.previousPanCenter = center;
@@ -559,6 +572,7 @@ export class GestureNavigationController {
         this.previousPanCenter = null;
         this.setPanningSurface(surface, false);
         this.syncSurfacePolicy(surface);
+        this.finishPan(event.type === "touchend" ? "pointerup" : "pointercancel");
       }
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
@@ -585,6 +599,7 @@ export class GestureNavigationController {
     if (this.navigationPointers.size === 0) {
       this.previousPanCenter = null;
       this.setPanningSurface(surface, false);
+      this.finishPan(reason);
     }
   }
 
@@ -597,6 +612,7 @@ export class GestureNavigationController {
     if (this.isActive()) this.end(reason);
     this.setPanningSurface(this.panningSurface, false);
     this.syncAttachedSurfacePolicies();
+    this.finishPan(reason);
   }
 
   start(frame: GestureNavigationFrame): boolean {
@@ -634,14 +650,17 @@ export class GestureNavigationController {
 
   end(reason: GestureNavigationEndReason): void {
     if (this.destroyed || !this.active) return;
+    this.clearPanEndTimer();
     this.flushPreview();
     if (reason !== "pointerup") {
       this.active = null;
       this.wheelTarget = null;
       this.options.onCancel(reason);
+      this.panReleasePending = false;
       return;
     }
     const active = this.active;
+    this.panReleasePending = false;
     // A physical pinch ends at the scale the user chose. Snapping or easing
     // here creates a second zoom gesture after the fingers leave the page;
     // command and ctrl/meta-wheel sessions retain their existing settle policy.
@@ -696,7 +715,16 @@ export class GestureNavigationController {
 
   handleWheelPan(event: GestureNavigationWheelPanEvent): boolean {
     if (this.destroyed || event.ctrlKey || event.metaKey || (event.deltaX === 0 && event.deltaY === 0)) return false;
-    return this.applyPan(-event.deltaX, -event.deltaY, event.clientX, event.clientY);
+    const changed = this.applyPan(-event.deltaX, -event.deltaY, event.clientX, event.clientY);
+    if (changed) this.panReleasePending = true;
+    if (this.panReleasePending) {
+      this.clearPanEndTimer();
+      this.panEndTimer = this.setTimer(() => {
+        this.panEndTimer = null;
+        this.finishPan("pointerup");
+      }, this.wheelSessionGapMs);
+    }
+    return changed;
   }
 
   reset(): void {
@@ -760,6 +788,19 @@ export class GestureNavigationController {
     if (deltaX !== 0) root.scrollLeft -= deltaX;
     if (deltaY !== 0) root.scrollTop -= deltaY;
     return root.scrollLeft !== beforeLeft || root.scrollTop !== beforeTop;
+  }
+
+  private finishPan(reason: GestureNavigationEndReason): void {
+    this.clearPanEndTimer();
+    if (!this.panReleasePending) return;
+    this.panReleasePending = false;
+    this.options.onPanEnd?.(reason);
+  }
+
+  private clearPanEndTimer(): void {
+    if (this.panEndTimer === null) return;
+    this.clearTimer(this.panEndTimer);
+    this.panEndTimer = null;
   }
 
   private setPanningSurface(surface: HTMLElement | null, active: boolean): void {

@@ -1756,7 +1756,8 @@ export class ViewerInkSession {
         this.handwritingViewport.pan(deltaX, deltaY);
         const after = this.handwritingViewport.getState();
         return Math.abs(after.x - before.x) > 0.01 || Math.abs(after.y - before.y) > 0.01;
-      }
+      },
+      onPanEnd: () => this.handwritingViewport.settle()
     });
     this.addPageControl = options.onInsertPage
       ? new AddPageControl({

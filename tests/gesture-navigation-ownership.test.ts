@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { GestureNavigationController } from "../src/input/GestureNavigationController";
 import { PointerRouter } from "../src/input/PointerRouter";
+import { HandwritingViewport } from "../src/integration/HandwritingViewport";
 
 function pointer(
   type: string,
@@ -78,6 +79,66 @@ function createSurface(): { element: HTMLElement; scrollRoot: HTMLElement } {
   return { element, scrollRoot };
 }
 
+function createRubberBandPanHarness(scrollRoot: HTMLElement) {
+  let currentTime = 1000;
+  let nextFrameId = 0;
+  let nextTimerId = 0;
+  const frames = new Map<number, (timestamp: number) => void>();
+  const timers = new Map<number, () => void>();
+  const viewport = new HandwritingViewport({
+    getContainerRect: () => ({ left: 0, top: 0, width: 600, height: 800 }),
+    getContentSize: () => ({ width: 600, height: 800 }),
+    now: () => currentTime,
+    requestFrame: (callback) => {
+      const id = ++nextFrameId;
+      frames.set(id, callback);
+      return id;
+    },
+    cancelFrame: (id) => frames.delete(id)
+  });
+  const controller = new GestureNavigationController({
+    minScale: 0.1,
+    maxScale: 10,
+    getScale: () => viewport.getState().scale,
+    getScrollRoot: () => scrollRoot,
+    setTimer: (callback) => {
+      const id = ++nextTimerId;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+    onStart: () => ({ accepted: true, scale: 1 }),
+    onPreview: () => undefined,
+    onEnd: () => undefined,
+    onCancel: () => undefined,
+    onPan: (deltaX, deltaY) => {
+      const before = viewport.getState();
+      viewport.pan(deltaX, deltaY);
+      const after = viewport.getState();
+      return Math.abs(after.x - before.x) > 0.01 || Math.abs(after.y - before.y) > 0.01;
+    },
+    onPanEnd: () => viewport.settle()
+  });
+
+  return {
+    viewport,
+    controller,
+    frames,
+    timers,
+    finishWheelPan: () => {
+      const finish = timers.values().next().value;
+      timers.clear();
+      finish?.();
+    },
+    advanceSpring: (elapsed: number) => {
+      const frame = frames.values().next().value;
+      frames.clear();
+      currentTime += elapsed;
+      frame?.(currentTime);
+    }
+  };
+}
+
 describe("unified gesture navigation ownership", () => {
   it("handles one-finger PDF scrolling and leaves small movements unclaimed", () => {
     const { element, scrollRoot } = createSurface();
@@ -99,6 +160,62 @@ describe("unified gesture navigation ownership", () => {
     element.dispatchEvent(pointer("pointerup", "touch", 1, { clientX: 14, clientY: 35 }));
 
     router.destroy();
+    element.remove();
+    scrollRoot.remove();
+  });
+
+  it("springs touch-pan overscroll back when the last finger is released", () => {
+    const { element, scrollRoot } = createSurface();
+    const { viewport, controller, frames, advanceSpring } = createRubberBandPanHarness(scrollRoot);
+    const router = createRouter(element, { navigationController: controller, scrollRoot });
+
+    element.dispatchEvent(pointer("pointerdown", "touch", 1, { clientX: 100, clientY: 100 }));
+    element.dispatchEvent(pointer("pointermove", "touch", 1, { clientX: 150, clientY: 140 }));
+    expect(viewport.getState().x).toBeGreaterThan(0);
+    expect(viewport.getState().y).toBeGreaterThan(0);
+
+    element.dispatchEvent(pointer("pointerup", "touch", 1, { clientX: 150, clientY: 140 }));
+    expect(frames.size).toBe(1);
+
+    advanceSpring(100);
+    advanceSpring(120);
+
+    expect(viewport.getState().x).toBeCloseTo(0);
+    expect(viewport.getState().y).toBeCloseTo(0);
+
+    router.destroy();
+    viewport.destroy();
+    element.remove();
+    scrollRoot.remove();
+  });
+
+  it("springs trackpad wheel-pan overscroll back after input stops", () => {
+    const { element, scrollRoot } = createSurface();
+    const { viewport, controller, frames, timers, finishWheelPan, advanceSpring } =
+      createRubberBandPanHarness(scrollRoot);
+
+    expect(controller.handleWheelPan({
+      ctrlKey: false,
+      metaKey: false,
+      deltaX: -50,
+      deltaY: -40,
+      clientX: 100,
+      clientY: 120
+    })).toBe(true);
+    expect(viewport.getState().x).toBeGreaterThan(0);
+    expect(viewport.getState().y).toBeGreaterThan(0);
+
+    expect(timers.size).toBe(1);
+    finishWheelPan();
+    expect(frames.size).toBe(1);
+
+    advanceSpring(100);
+    advanceSpring(120);
+    expect(viewport.getState().x).toBeCloseTo(0);
+    expect(viewport.getState().y).toBeCloseTo(0);
+
+    controller.destroy();
+    viewport.destroy();
     element.remove();
     scrollRoot.remove();
   });
