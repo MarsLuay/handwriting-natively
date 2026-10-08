@@ -1,14 +1,17 @@
 /**
  * Canonical ViewerState
  *
- * Single authoritative state representation across:
- * - HandwritingViewport (viewport: { scale, x, y })
- * - PdfJsViewAdapter / BasePdfAdapter (pageNumber, rotation, scaleMode, scrollFraction)
+ * Canonical snapshot owned by ViewerInkSession and shared with:
+ * - HandwritingViewport as its live visual projection
+ * - PdfJsViewAdapter / BasePdfAdapter as platform rendering projections
  * - PluginPdfView persistence (this.state.viewer)
- * - ViewerCommandController (viewer interaction commands)
+ * - ViewerCommandController for viewer interaction commands
  */
 
 export type ViewerScaleMode = "custom" | "fit-width" | "fit-page";
+
+/** Shared multiplicative step for zoom-in/out controls and keyboard commands. */
+export const VIEWER_ZOOM_STEP = 1.25;
 
 export interface ViewerViewportState {
   scale: number;

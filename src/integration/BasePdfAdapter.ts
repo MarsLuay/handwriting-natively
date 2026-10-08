@@ -31,7 +31,7 @@ export interface SidebarFollowZoomMetrics {
 import type { CompatibilityResult } from "./PdfViewerCompatibility";
 
 function hasWritableCurrentScale(viewer: NonNullable<CompatibilityResult["privateViewer"]>): boolean {
-  let current: object | null = viewer as object;
+  let current: object | null = viewer;
   while (current) {
     const descriptor = Object.getOwnPropertyDescriptor(current, "currentScale");
     if (descriptor?.set || descriptor?.writable) return true;
@@ -125,7 +125,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.host = host;
     this.root = compatibility.viewerRoot!;
     this.callbacks = callbacks;
-    this.layoutTrace = new LayoutWorkTrace({ enabled: () => Boolean(this.callbacks.onDebugLog) });
+    this.layoutTrace = new LayoutWorkTrace({ enabled: () => Boolean(Reflect.get(this.callbacks, "onDebugLog")) });
     this.locator = new PdfPageLocator(this.root, compatibility.privateViewer);
     this.registerCleanup(() => {
       if (this.zoomSettleTimer !== null) window.clearTimeout(this.zoomSettleTimer);

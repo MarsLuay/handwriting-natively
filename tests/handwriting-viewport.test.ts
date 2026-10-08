@@ -50,6 +50,33 @@ describe("HandwritingViewport", () => {
     expect(boundsSmall.maxY).toBe(160);
   });
 
+  it("projects only the temporary zoom ratio above the renderer scale", () => {
+    const target = document.createElement("div");
+    document.body.append(target);
+    const vp = new HandwritingViewport({
+      getContainerRect: () => rect(0, 0, 600, 800),
+      getContentSize: () => ({ width: 1200, height: 1600 }),
+      initialRenderedScale: 2,
+      initialState: { scale: 2 }
+    });
+
+    vp.setTarget(target);
+    expect(vp.getBounds()).toEqual({ minX: -600, maxX: 0, minY: -800, maxY: 0 });
+    expect(target.style.transform).toBe("");
+
+    vp.setState({ scale: 4 });
+    expect(target.style.transform).toBe("translate3d(0px, 0px, 0) scale(2)");
+    expect(vp.getBounds()).toEqual({ minX: -1800, maxX: 0, minY: -2400, maxY: 0 });
+
+    vp.syncRenderedState(4, 0, 0);
+    expect(vp.getState().scale).toBe(4);
+    expect(vp.getRenderedScale()).toBe(4);
+    expect(target.style.transform).toBe("");
+
+    vp.destroy();
+    target.remove();
+  });
+
   it("applies Apple-style rubber banding when panned outside bounds", () => {
     const vp = new HandwritingViewport({
       getContainerRect: () => rect(0, 0, 600, 800),
@@ -96,6 +123,28 @@ describe("HandwritingViewport", () => {
     const docPoint = vp.screenToViewport({ x: 200, y: 200 });
     expect(docPoint.x).toBeCloseTo(200);
     expect(docPoint.y).toBeCloseTo(200);
+  });
+
+  it("keeps the selected zoom transform after the pinch ends", () => {
+    const target = document.createElement("div");
+    document.body.append(target);
+    const viewport = new HandwritingViewport({
+      getContainerRect: () => rect(0, 0, 600, 800),
+      getContentSize: () => ({ width: 1000, height: 1200 }),
+      initialRenderedScale: 1
+    });
+    viewport.setTarget(target);
+    viewport.startPinch({ x: 200, y: 200 });
+    viewport.pinch(2, { x: 200, y: 200 });
+    const transformDuringPinch = target.style.transform;
+
+    viewport.endPinch();
+
+    expect(viewport.getState()).toMatchObject({ scale: 2, x: -200, y: -200 });
+    expect(viewport.getRenderedScale()).toBe(1);
+    expect(target.style.transform).toBe(transformDuringPinch);
+    viewport.destroy();
+    target.remove();
   });
 
   it("pins the same document point when the viewer container is offset in client space", () => {

@@ -1,4 +1,5 @@
 import type { MobileCustomPdfZoomMode } from "./MobileCustomPdfZoom";
+import { setElementCssProps } from "../dom/typeGuards";
 
 export interface MobilePdfCompositorPage {
   pageNumber: number;
@@ -107,8 +108,7 @@ export class MobilePdfCompositor {
     // These properties are invariant for the burst. Set them once rather than
     // rewriting style declarations on every compositor frame.
     for (const { page } of this.pages.values()) {
-      page.element.style.transformOrigin = "0 0";
-      page.element.style.willChange = "transform";
+      setElementCssProps(page.element, { transformOrigin: "0 0", willChange: "transform" });
     }
 
     this.initialScale = options.initialScale;

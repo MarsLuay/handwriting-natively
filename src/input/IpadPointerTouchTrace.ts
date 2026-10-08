@@ -1,3 +1,5 @@
+import { isHTMLElement } from "../dom/typeGuards";
+
 /**
  * Passive, bounded evidence for real iPadOS/WKWebView input ordering.
  *
@@ -13,10 +15,17 @@ export interface IpadInputTraceEvent {
   eventPhase: number;
   pointerType: string | null;
   pointerId: number | null;
+  /** DOMHighResTimeStamp supplied by the browser for this input event. */
+  eventTimeStamp: number | null;
   isPrimary: boolean | null;
   button: number | null;
   buttons: number | null;
   pressure: number | null;
+  width: number | null;
+  height: number | null;
+  tiltX: number | null;
+  tiltY: number | null;
+  twist: number | null;
   pointerCapture: boolean | null;
   targetClass: {
     tag: string;
@@ -36,8 +45,22 @@ export interface IpadInputTraceEvent {
   composing: boolean | null;
 }
 
+export interface IpadPenHoverSample {
+  sequence: number;
+  at: number;
+  eventTimeStamp: number | null;
+  pointerId: number;
+  buttons: number | null;
+  pressure: number | null;
+  width: number | null;
+  height: number | null;
+  tiltX: number | null;
+  tiltY: number | null;
+  twist: number | null;
+}
+
 export interface IpadInputTraceSnapshot {
-  schemaVersion: 4;
+  schemaVersion: 5;
   platform: "ipad";
   active: boolean;
   startedAt: number | null;
@@ -57,6 +80,7 @@ export interface IpadInputTraceSnapshot {
     touchActionValues: string[];
     touchActionStyleReads: number;
     passivePenHoverMoves: number;
+    passivePenHoverSamples: { first: IpadPenHoverSample | null; last: IpadPenHoverSample | null };
     gestureChangeEvents: number;
     lifecycleEvents: number;
     scribbleEvents: number;
@@ -111,6 +135,8 @@ export class IpadPointerTouchTrace {
   private pointerTouchOverlapEvents = 0;
   private touchActionStyleReads = 0;
   private passivePenHoverMoves = 0;
+  private passivePenHoverFirst: IpadPenHoverSample | null = null;
+  private passivePenHoverLast: IpadPenHoverSample | null = null;
   private gestureChangeEvents = 0;
   private lifecycleEvents = 0;
   private scribbleEvents = 0;
@@ -132,8 +158,8 @@ export class IpadPointerTouchTrace {
     const lifecycleEvents = ["visibilitychange", "pagehide", "pageshow", "orientationchange", "resize"];
     const gestureEvents = ["gesturestart", "gesturechange", "gestureend"];
     for (const type of pointerEvents) this.bind(this.document, type, (event) => this.record(event, "pointer"));
-    // Boundary/hover events are frequent and do not affect contact routing.
-    // Keep their counts for diagnosis without allocating a full event snapshot.
+    // Boundary order matters for hover/contact and capture diagnosis. Hover
+    // pointermove remains summarized to first/last sensor samples below.
     for (const type of pointerBoundaryEvents) {
       this.bind(this.document, type, (event) => this.recordPointerBoundary(event));
     }
@@ -175,7 +201,7 @@ export class IpadPointerTouchTrace {
 
   snapshot(): IpadInputTraceSnapshot {
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       platform: "ipad",
       active: this.attached,
       startedAt: this.startedAt,
@@ -195,6 +221,10 @@ export class IpadPointerTouchTrace {
         touchActionValues: [...this.touchActionValues].slice(0, MAX_IDS),
         touchActionStyleReads: this.touchActionStyleReads,
         passivePenHoverMoves: this.passivePenHoverMoves,
+        passivePenHoverSamples: {
+          first: this.passivePenHoverFirst ? { ...this.passivePenHoverFirst } : null,
+          last: this.passivePenHoverLast ? { ...this.passivePenHoverLast } : null
+        },
         gestureChangeEvents: this.gestureChangeEvents,
         lifecycleEvents: this.lifecycleEvents,
         scribbleEvents: this.scribbleEvents,
@@ -204,7 +234,7 @@ export class IpadPointerTouchTrace {
   }
 
   private bind(target: EventTarget, type: string, handler: (event: Event) => void): void {
-    const listener = handler as EventListener;
+    const listener: EventListener = (event) => handler(event);
     const options: AddEventListenerOptions = { capture: true, passive: true };
     target.addEventListener(type, listener, options);
     this.listeners.push({ target, type, listener, options });
@@ -212,11 +242,43 @@ export class IpadPointerTouchTrace {
 
   private recordPointerBoundary(event: Event): void {
     const pointer = event as PointerEvent;
-    this.sequence += 1;
+    const at = performance.now();
+    const sequence = ++this.sequence;
     increment(this.eventTypes, event.type);
     const pointerType = pointer.pointerType || "(empty)";
     increment(this.pointerTypes, pointerType);
     if (typeof pointer.pointerId === "number") rememberBoundedId(this.pointerIds, pointer.pointerId);
+    const target = event.target instanceof Element ? event.target : null;
+    const pointerCapture = target ? safeHasPointerCapture(target, pointer.pointerId) : null;
+    if (pointerCapture === true) this.pointerCaptureObserved += 1;
+    if (event.type === "lostpointercapture") this.lostPointerCaptureEvents += 1;
+    if (event.defaultPrevented) this.defaultPreventedObserved += 1;
+    if (propagationWasStopped(event)) this.propagationStoppedObserved += 1;
+    this.pushEvent({
+      sequence,
+      at,
+      eventTimeStamp: finiteOrNull(event.timeStamp),
+      type: event.type,
+      source: "pointer",
+      eventPhase: event.eventPhase,
+      pointerType,
+      pointerId: typeof pointer.pointerId === "number" ? pointer.pointerId : null,
+      isPrimary: typeof pointer.isPrimary === "boolean" ? pointer.isPrimary : null,
+      button: typeof pointer.button === "number" ? pointer.button : null,
+      buttons: typeof pointer.buttons === "number" ? pointer.buttons : null,
+      ...this.pointerSensorFields(pointer),
+      pointerCapture,
+      targetClass: target ? this.targetSnapshotFor(target, event.type) : null,
+      touchIdentifiers: [],
+      changedTouchIdentifiers: [],
+      activePointerIds: [...this.activePointerIds].slice(0, MAX_IDS),
+      activeTouchIdentifiers: [...this.activeTouchIdentifiers].slice(0, MAX_IDS),
+      touchAction: null,
+      defaultPrevented: event.defaultPrevented,
+      propagationStopped: propagationWasStopped(event),
+      inputType: null,
+      composing: null
+    });
   }
 
   private recordPassivePenHover(pointer: PointerEvent, event: Event): void {
@@ -226,7 +288,22 @@ export class IpadPointerTouchTrace {
     rememberBoundedId(this.pointerIds, pointer.pointerId);
     this.passivePenHoverMoves += 1;
     if (event.defaultPrevented) this.defaultPreventedObserved += 1;
-    if (event.cancelBubble) this.propagationStoppedObserved += 1;
+    if (propagationWasStopped(event)) this.propagationStoppedObserved += 1;
+    const sample: IpadPenHoverSample = {
+      sequence: ++this.sequence,
+      at: performance.now(),
+      eventTimeStamp: finiteOrNull(event.timeStamp),
+      pointerId: pointer.pointerId,
+      buttons: typeof pointer.buttons === "number" ? pointer.buttons : null,
+      pressure: finiteOrNull(pointer.pressure),
+      width: finiteOrNull(pointer.width),
+      height: finiteOrNull(pointer.height),
+      tiltX: finiteOrNull(pointer.tiltX),
+      tiltY: finiteOrNull(pointer.tiltY),
+      twist: finiteOrNull(pointer.twist)
+    };
+    this.passivePenHoverFirst ??= sample;
+    this.passivePenHoverLast = sample;
   }
 
   private recordGestureChange(event: Event): void {
@@ -234,7 +311,7 @@ export class IpadPointerTouchTrace {
     increment(this.eventTypes, event.type);
     this.gestureChangeEvents += 1;
     if (event.defaultPrevented) this.defaultPreventedObserved += 1;
-    if (event.cancelBubble) this.propagationStoppedObserved += 1;
+    if (propagationWasStopped(event)) this.propagationStoppedObserved += 1;
   }
 
   private record(event: Event, source: IpadInputTraceEvent["source"]): void {
@@ -246,12 +323,13 @@ export class IpadPointerTouchTrace {
     const touchEvent = source === "touch" && "touches" in event;
     const pointerId = pointerEvent ? pointer.pointerId : null;
     const pointerType = pointerEvent ? pointer.pointerType || "(empty)" : null;
+    const pointerPressure = pointerEvent ? finiteOrNull(pointer.pressure) : null;
     if (
       pointerEvent
       && event.type === "pointermove"
       && pointerType === "pen"
       && pointer.buttons === 0
-      && finite(pointer.pressure) === 0
+      && (pointerPressure === null || pointerPressure === 0)
       && !this.activePointerIds.has(pointer.pointerId)
     ) {
       this.recordPassivePenHover(pointer, event);
@@ -286,7 +364,7 @@ export class IpadPointerTouchTrace {
     if (pointerCapture === true) this.pointerCaptureObserved += 1;
     if (event.type === "lostpointercapture") this.lostPointerCaptureEvents += 1;
     if (event.defaultPrevented) this.defaultPreventedObserved += 1;
-    if (event.cancelBubble) this.propagationStoppedObserved += 1;
+    if (propagationWasStopped(event)) this.propagationStoppedObserved += 1;
     if (this.activePointerIds.size > 0 && this.activeTouchIdentifiers.size > 0) this.pointerTouchOverlapEvents += 1;
     if (source === "lifecycle") this.lifecycleEvents += 1;
     if (source === "scribble") this.scribbleEvents += 1;
@@ -295,6 +373,7 @@ export class IpadPointerTouchTrace {
     const record: IpadInputTraceEvent = {
       sequence: ++this.sequence,
       at: performance.now(),
+      eventTimeStamp: finiteOrNull(event.timeStamp),
       type: event.type,
       source,
       eventPhase: event.eventPhase,
@@ -303,7 +382,14 @@ export class IpadPointerTouchTrace {
       isPrimary: pointerEvent ? pointer.isPrimary : null,
       button: pointerEvent ? pointer.button : null,
       buttons: pointerEvent ? pointer.buttons : null,
-      pressure: pointerEvent ? finite(pointer.pressure) : null,
+      ...(pointerEvent ? this.pointerSensorFields(pointer) : {
+        pressure: null,
+        width: null,
+        height: null,
+        tiltX: null,
+        tiltY: null,
+        twist: null
+      }),
       pointerCapture,
       targetClass,
       touchIdentifiers,
@@ -312,11 +398,26 @@ export class IpadPointerTouchTrace {
       activeTouchIdentifiers: [...this.activeTouchIdentifiers].slice(0, MAX_IDS),
       touchAction,
       defaultPrevented: event.defaultPrevented,
-      propagationStopped: event.cancelBubble,
+      propagationStopped: propagationWasStopped(event),
       inputType: source === "scribble" ? input.inputType || null : null,
       composing: source === "scribble" ? Boolean(input.isComposing) : null
     };
-    this.events.push(record);
+    this.pushEvent(record);
+  }
+
+  private pointerSensorFields(pointer: PointerEvent): Pick<IpadInputTraceEvent, "pressure" | "width" | "height" | "tiltX" | "tiltY" | "twist"> {
+    return {
+      pressure: finiteOrNull(pointer.pressure),
+      width: finiteOrNull(pointer.width),
+      height: finiteOrNull(pointer.height),
+      tiltX: finiteOrNull(pointer.tiltX),
+      tiltY: finiteOrNull(pointer.tiltY),
+      twist: finiteOrNull(pointer.twist)
+    };
+  }
+
+  private pushEvent(event: IpadInputTraceEvent): void {
+    this.events.push(event);
     if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
   }
 
@@ -342,11 +443,16 @@ export class IpadPointerTouchTrace {
       id: target.id || null,
       classes: [...target.classList].slice(0, MAX_CLASSES),
       role: target.getAttribute("role"),
-      contentEditable: target instanceof HTMLElement && target.isContentEditable
+      contentEditable: isHTMLElement(target) && target.isContentEditable
     };
     this.targetSnapshots.set(target, snapshot);
     return snapshot;
   }
+}
+
+function propagationWasStopped(event: Event): boolean {
+  // Event exposes no replacement for reading stopPropagation state mid-dispatch.
+  return Reflect.get(event, "cancelBubble") === true;
 }
 
 function boundedTouchIds(list: TouchList): number[] {
@@ -366,8 +472,10 @@ function safeHasPointerCapture(element: Element, pointerId: number): boolean {
   }
 }
 
-function finite(value: number): number {
-  return Number.isFinite(value) ? Math.round(value * 1000) / 1000 : 0;
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.round(value * 1000) / 1000
+    : null;
 }
 
 function increment(counts: Map<string, number>, key: string): void {

@@ -319,7 +319,7 @@ export class AnnotationToolbar {
       this.preferences.activeTool = "lasso";
       this.preferences.lasso.type = type;
       this.changed("tool");
-    }, this.callbacks.onLassoCopyAll);
+    }, () => this.callbacks.onLassoCopyAll?.());
   }
 
   private colorButton(): HTMLButtonElement {

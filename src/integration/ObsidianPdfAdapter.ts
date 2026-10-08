@@ -44,11 +44,35 @@ export interface PdfInkPreview {
 
 export type PdfInkPreviewProvider = (pageNumber: number) => PdfInkPreview;
 
+/** Command bridge for PDF-owned controls; implementations remain session-owned. */
+export interface PdfViewerCommandBridge {
+  zoomIn(): boolean;
+  zoomOut(): boolean;
+  setZoom(scale: number): boolean;
+  fitWidth(): boolean;
+  nextPage(): boolean;
+  previousPage(): boolean;
+  goToPage(pageNumber: number): boolean;
+  rotateClockwise(): boolean;
+  rotateCounterclockwise(): boolean;
+  toggleHandMode(): boolean;
+  isHandMode(): boolean;
+  toggleSearch(force?: boolean): boolean;
+  closeSearch(): boolean;
+  handleKeyDown(event: KeyboardEvent, isTextEditing?: boolean): boolean;
+}
+
 /** Optional PDF-only capabilities; generic annotation surfaces do not implement this contract. */
 export interface PdfSurfaceExtensions {
   readonly supportsPdfExport?: true;
   readonly lifecycleCoordinator?: PageLifecycleCoordinator;
   readonly renderScheduler?: RenderScheduler;
+  /** DOM layer containing pages only, for temporary viewport transforms. */
+  viewportContentElement?(): HTMLElement | null;
+  /** Bind the shared session command controller to adapter-owned controls. */
+  setViewerCommandBridge?(commands: PdfViewerCommandBridge | null): void;
+  /** Keep adapter-owned Hand control chrome in sync with the session tool. */
+  setHandToolActive?(active: boolean): void;
   nativeTextLayer?(pageNumber: number): HTMLElement | null;
   findController?(): PdfFindControllerLike | null;
   eventBus?(): PdfJsEventBus | null;
