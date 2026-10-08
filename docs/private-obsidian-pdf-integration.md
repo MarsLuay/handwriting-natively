@@ -10,6 +10,8 @@ Direct `.pdf` leaves use the plugin-owned `PluginPdfView`. `PdfJsViewAdapter` lo
 
 Keep Obsidian's global `pdf` extension mapping unchanged. Markdown PDF embeds use that host mapping to create their native viewer; replacing it leaves a loaded embed shell without rendered pages. Direct PDF leaves remain plugin-owned: plugin-created tabs select `PluginPdfView` explicitly, and scans migrate any native direct PDF leaves with their page, position, zoom, and rotation state preserved by `PdfViewStateMigration`.
 
+The plugin's pinned PDF.js runtime routes its own `PDFWorker` initializer directly to the bundled in-process `WorkerMessageHandler`. The one-file BRAT bundle has no addressable `workerSrc`, and PDF.js's browser runtime reads that setting while initializing before it can use the in-process handler; this route keeps direct PDFs self-contained. Never assign the handler to `globalThis.pdfjsWorker`: Obsidian's native Markdown embed renderer reads the same global for its separate PDF.js build, and replacing that handler prevents embeds from creating PDF pages on startup.
+
 ## Versioned per-viewer contract
 
 The adapter reports a schema-versioned compatibility profile for each viewer instance. The profile is evidence about the current DOM/object graph, not a compatibility claim derived from the Obsidian version. Its status is one of `supported`, `supported-with-fallback`, `degraded`, or `unsafe`, and it records the selected viewer-root, page, scroll-root, scale/zoom, page-lifecycle, and sidebar strategies. Capability flags cover viewer root, trustworthy page identity, geometry, scroll ownership, private viewer, EventBus, readable scale/rotation, page-render and replacement observation, sidebar observation, and embedded mode. Failed probes, bounded warnings, and replacement/fallback counters are sanitized and capped; private objects and DOM trees are never copied into diagnostics.
@@ -65,7 +67,7 @@ Page discovery prefers a validated private/page-render signal, then EventBus plu
 
 ## Lifecycle and cleanup
 
-Adapters register scroll handlers, mutation observers, and PDF.js event-bus callbacks at construction. `destroy()` removes them in reverse order, removes every mounted overlay/toolbar, and is idempotent. No prototype or method is patched. If a future release requires a monkey patch, the adapter must register restoration in the same cleanup stack before enabling it.
+Adapters register scroll handlers, mutation observers, and PDF.js event-bus callbacks at construction. `destroy()` removes them in reverse order, removes every mounted overlay/toolbar, and is idempotent. No Obsidian host prototype or method is patched. The pinned PDF.js worker initializer is patched only inside the plugin-owned runtime; if an upgrade changes that hook, update the runtime boundary tests and compatibility notes.
 
 Page overlays mount transparent with `pointer-events: none`. Annotation mode explicitly adds `.is-editing`; leaving annotation mode removes it. This prevents the adapter from stealing text selection, links, search, mouse, touch, or trackpad behavior by default.
 

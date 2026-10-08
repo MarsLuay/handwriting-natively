@@ -27,6 +27,48 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(getResourcePath).toHaveBeenCalledWith(".obsidian/plugins/handwriting-natively/pdfjs/pdf.worker.mjs");
   });
 
+  it("does not replace Obsidian's PDF.js worker global during module loading", async () => {
+    const globals = window as unknown as { pdfjsWorker?: unknown };
+    const previousWorker = globals.pdfjsWorker;
+    const hostWorker = { WorkerMessageHandler: { host: true } };
+    globals.pdfjsWorker = hostWorker;
+    try {
+      vi.resetModules();
+      await import("../src/integration/PdfJsRuntime");
+      expect(globals.pdfjsWorker).toBe(hostWorker);
+    } finally {
+      if (previousWorker === undefined) delete globals.pdfjsWorker;
+      else globals.pdfjsWorker = previousWorker;
+    }
+  });
+
+  it("uses its own fake worker while preserving Obsidian's worker global", async () => {
+    const globals = window as unknown as { pdfjsWorker?: unknown };
+    const previousWorker = globals.pdfjsWorker;
+    const hostWorkerHandler = { host: true };
+    globals.pdfjsWorker = { WorkerMessageHandler: hostWorkerHandler };
+    try {
+      const runtime = await loadPdfJsRuntime({} as never, ".obsidian/plugins/handwriting-natively");
+      const pluginWorkerHandler = await runtime.module.PDFWorker?._setupFakeWorkerGlobal;
+      expect(pluginWorkerHandler).not.toBe(hostWorkerHandler);
+      expect(typeof (pluginWorkerHandler as { setup?: unknown } | undefined)?.setup).toBe("function");
+      expect(globals.pdfjsWorker).toEqual({ WorkerMessageHandler: hostWorkerHandler });
+    } finally {
+      if (previousWorker === undefined) delete globals.pdfjsWorker;
+      else globals.pdfjsWorker = previousWorker;
+    }
+  });
+
+  it("uses the bundled fake worker directly without requiring a workerSrc", async () => {
+    const runtime = await loadPdfJsRuntime({} as never, ".obsidian/plugins/handwriting-natively");
+    const initialize = runtime.module.PDFWorker?.prototype._initialize;
+    const setupFakeWorker = vi.fn();
+
+    initialize?.call({ _setupFakeWorker: setupFakeWorker });
+
+    expect(setupFakeWorker).toHaveBeenCalledOnce();
+  });
+
   it("loads a self-contained runtime for BRAT installs", async () => {
     const runtime = await loadPdfJsRuntime({} as never, ".obsidian/plugins/handwriting-natively");
     expect(runtime.assets.embedded).toBe(true);

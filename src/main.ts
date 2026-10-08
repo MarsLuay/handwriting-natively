@@ -196,6 +196,7 @@ export function scheduleSessionRecoveryAfterDestroy(
 
 export default class NativePdfInkPlugin extends Plugin {
   inkSettings: PluginSettings = mergeSettings(undefined, "config");
+  private settingsSaveQueue: Promise<void> | null = null;
   private readonly sessions = new Map<WorkspaceLeaf, ViewerInkSession>();
   private readonly markdownModeObservers = new Map<WorkspaceLeaf, {
     view: MarkdownView;
@@ -246,7 +247,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const savedSettings = await this.loadData() as (Partial<PluginSettings> & { toolbarPlacement?: unknown }) | null;
     this.inkSettings = mergeSettings(savedSettings, this.app.vault.configDir);
     if (savedSettings && Object.prototype.hasOwnProperty.call(savedSettings, "toolbarPlacement")) {
-      await this.saveData(this.inkSettings);
+      await this.persistSettings(this.inkSettings);
     }
     await this.vaultDebugLog.clear();
     this.registerView(PLUGIN_PDF_VIEW_TYPE, (leaf) => new PluginPdfView(leaf, {
@@ -865,7 +866,7 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousDisableSwipeNavigation = this.inkSettings.disableSwipeNavigation;
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
-    await this.saveData(settings);
+    await this.persistSettings(settings);
     this.updateSidebarSwipeBlocker();
     if (previousPdfEnabled !== settings.enabledSurfaces.pdf) {
       this.vaultDebugLog.write("info", "content-surface-setting-changed", {
@@ -2144,7 +2145,17 @@ export default class NativePdfInkPlugin extends Plugin {
       ...this.inkSettings,
       toolPreferences: structuredClone(preferences)
     };
-    await this.saveData(this.inkSettings);
+    await this.persistSettings(this.inkSettings);
+  }
+
+  /** Serialize settings snapshots so a slower earlier save cannot overwrite newer toolbar state. */
+  private persistSettings(settings: PluginSettings): Promise<void> {
+    const snapshot = structuredClone(settings);
+    const save = (this.settingsSaveQueue ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.saveData(snapshot));
+    this.settingsSaveQueue = save;
+    return save;
   }
 
   /** Read the configured vault PDF. Empty setting deliberately means blank Letter paper. */

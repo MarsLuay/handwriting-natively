@@ -10,7 +10,7 @@ import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from 
 import { ImageViewAdapter } from "../src/integration/ImageViewAdapter";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
 import type { PdfViewerCommandBridge } from "../src/integration/ObsidianPdfAdapter";
-import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation } from "../src/model";
+import { DEFAULT_SETTINGS, mergeSettings, type InkStroke, type PdfPoint, type PdfTextAnnotation, type PluginSettings, type ToolPreferences } from "../src/model";
 import { AttachRetryPolicy } from "../src/runtime/AttachRetryPolicy";
 import { ScanDebounce } from "../src/runtime/ScanDebounce";
 import { needsMissingHandwritingSessionRecovery, type HandwritingSessionRegistrySnapshot } from "../src/runtime/HandwritingSessionRegistry";
@@ -203,6 +203,45 @@ describe("mobile swipe blocker lifecycle", () => {
     expect(dispatchTouch("touchmove", 60, 108).defaultPrevented).toBe(false);
     dispatchPointer("pointerdown", 10);
     expect(dispatchPointer("pointermove", 60).defaultPrevented).toBe(false);
+  });
+});
+
+describe("plugin settings persistence", () => {
+  it("keeps the most recently selected toolbar tool after overlapping saves and reload", async () => {
+    let finishFirstSave!: () => void;
+    let firstSaveStarted!: () => void;
+    const firstSaveStartedPromise = new Promise<void>((resolve) => { firstSaveStarted = resolve; });
+    const firstSaveGate = new Promise<void>((resolve) => { finishFirstSave = resolve; });
+    const persisted: { settings: PluginSettings | null } = { settings: null };
+    const plugin = Object.create(NativePdfInkPlugin.prototype) as unknown as {
+      inkSettings: PluginSettings;
+      settingsSaveQueue: Promise<void>;
+      saveData(settings: PluginSettings): Promise<void>;
+      saveToolPreferences(preferences: ToolPreferences): Promise<void>;
+    };
+    plugin.inkSettings = structuredClone(DEFAULT_SETTINGS);
+    plugin.settingsSaveQueue = Promise.resolve();
+    plugin.saveData = async (settings) => {
+      if (settings.toolPreferences.activeTool === "pencil") {
+        firstSaveStarted();
+        await firstSaveGate;
+      }
+      persisted.settings = structuredClone(settings);
+    };
+
+    const firstPreferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    firstPreferences.activeTool = "pencil";
+    const latestPreferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    latestPreferences.activeTool = "eraser";
+    const firstSave = plugin.saveToolPreferences(firstPreferences);
+    await firstSaveStartedPromise;
+    const latestSave = plugin.saveToolPreferences(latestPreferences);
+
+    finishFirstSave();
+    await Promise.all([firstSave, latestSave]);
+
+    expect(persisted.settings?.toolPreferences.activeTool).toBe("eraser");
+    expect(mergeSettings(persisted.settings).toolPreferences.activeTool).toBe("eraser");
   });
 });
 

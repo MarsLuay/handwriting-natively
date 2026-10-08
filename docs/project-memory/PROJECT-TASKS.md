@@ -10,6 +10,8 @@ Paths: `src/integration/`, `docs/current-limitations.md`
 
 Checks: `npm test`; `npm run lint`; `npm run build`; verify direct PDF startup without a native `PDFToolbar` dependency; confirm Markdown `![[PDF#page=27]]` embeds render with Obsidian's core PDF mapping; manual PDF checks on current desktop, Android, and iPad builds.
 
+Progress: Obsidian desktop 1.14.4 verified after rebuild: direct PDF pages and a 36-page Markdown embed rendered, and the selected toolbar tool survived reload. Android and iPad checks remain pending.
+
 ## source-pdf-write-contract — complete
 
 Resolve the source-PDF write contract for explicit page actions.
