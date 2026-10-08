@@ -11050,6 +11050,10 @@ export class ViewerInkSession {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
       canAnnotatePointer: (event) => this.canAnnotateSurface(surface, event),
+      allowEditableAnnotationTarget: (event) => this.options.adapter.surfaceType === "markdown"
+        && event.target instanceof Element
+        && surface.page.element.contains(event.target)
+        && Boolean(event.target.closest(".cm-content[contenteditable='true']")),
       touchAnnotationEnabled: () => this.touchAnnotationEnabled(),
       pointerInputCapabilities: () => detectPointerInputCapabilities(surface.page.element),
       mouseInkingEnabled: () => this.mouseInkingEnabled(),

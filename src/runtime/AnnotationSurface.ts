@@ -22,6 +22,8 @@ export interface AnnotationPageInfo {
   rotation: number;
   /** Coordinate origin for page-local geometry. PDF defaults to bottom-left. */
   coordinateOrigin?: "top-left" | "bottom-left";
+  /** Use the element's complete scrollable content box as page geometry. */
+  scrollContentGeometry?: boolean;
   /** Live host element for this page; the DOM node is an ephemeral mount. */
   element: HTMLElement;
   /** Changes when the logical page is backed by a different DOM shell. */

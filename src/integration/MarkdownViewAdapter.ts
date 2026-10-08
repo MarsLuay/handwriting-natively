@@ -8,18 +8,24 @@ import type {
   ViewerState
 } from "../runtime/AnnotationSurface";
 
-/** DOM options for the rendered Markdown Reading-view surface. */
+export type MarkdownViewMode = "preview" | "source";
+
+/** DOM options for a rendered Markdown surface. */
 export interface MarkdownViewAdapterOptions {
-  /** Explicit Reading-view root for callers that already resolved Obsidian's shell. */
-  previewRoot?: HTMLElement;
+  /** Current MarkdownView mode reported by Obsidian. */
+  mode?: MarkdownViewMode;
+  /** Explicit root for callers that already resolved Obsidian's shell. */
+  surfaceRoot?: HTMLElement;
 }
 
-/**
- * Resolve a rendered Markdown Reading-view root without touching source mode.
- *
- * Live Preview and source editors remain ineligible so their native editing,
- * text selection, and keyboard input stay under Obsidian's ownership.
- */
+interface MarkdownGeometry {
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+/** Resolve Obsidian's rendered Reading-view root. */
 export function findMarkdownPreviewRoot(host: HTMLElement): HTMLElement | null {
   const candidates: HTMLElement[] = [];
   if (host.matches(".markdown-preview-view")) candidates.push(host);
@@ -27,16 +33,31 @@ export function findMarkdownPreviewRoot(host: HTMLElement): HTMLElement | null {
   return candidates.find((candidate) => !candidate.closest(".cm-editor")) ?? null;
 }
 
+/** Resolve the scroll container that owns CodeMirror's editing content. */
+export function findMarkdownEditorRoot(host: HTMLElement): HTMLElement | null {
+  const candidates: HTMLElement[] = [];
+  if (host.matches(".cm-scroller")) candidates.push(host);
+  candidates.push(...host.querySelectorAll<HTMLElement>(".markdown-source-view .cm-scroller, .cm-editor .cm-scroller"));
+  return candidates.find((candidate) => !candidate.closest(".markdown-preview-view")
+    && candidate.querySelector(".cm-content[contenteditable='true']")) ?? null;
+}
+
+/** Resolve the active Reading or editing surface from MarkdownView.getMode(). */
+export function findMarkdownSurfaceRoot(host: HTMLElement, mode: MarkdownViewMode): HTMLElement | null {
+  return mode === "preview" ? findMarkdownPreviewRoot(host) : findMarkdownEditorRoot(host);
+}
+
 /**
- * One-page rendered Reading-view surface for Markdown handwriting.
+ * One-page Reading or CodeMirror editing surface for Markdown handwriting.
  *
- * Markdown content is treated as a top-left-coordinate page whose height is
- * the rendered content height. The plugin attaches it only while the Markdown
- * view is in Reading mode and the Markdown surface setting is enabled.
+ * Markdown content is treated as a top-left-coordinate page covering the full
+ * scrollable note. Editing overlays are siblings of CodeMirror's contenteditable
+ * element so the plugin never changes the editor's document tree.
  */
 export class MarkdownViewAdapter implements AnnotationSurface {
   readonly kind = "direct" as const;
   readonly surfaceType = "markdown" as const;
+  readonly mode: MarkdownViewMode;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
 
@@ -44,14 +65,25 @@ export class MarkdownViewAdapter implements AnnotationSurface {
   private readonly callbacks: AnnotationSurfaceCallbacks;
   private readonly cleanup: Array<() => void> = [];
   private readonly mounted = new Set<HTMLElement>();
+  private lastGeometry: MarkdownGeometry;
+  private pendingRefreshFrame: number | null = null;
+  private pendingRefreshTimer: number | null = null;
+  private pendingRefreshReason: string | null = null;
   private ownsRelativeClass = false;
   private destroyed = false;
 
-  private constructor(host: HTMLElement, previewRoot: HTMLElement, callbacks: AnnotationSurfaceCallbacks) {
+  private constructor(
+    host: HTMLElement,
+    surfaceRoot: HTMLElement,
+    mode: MarkdownViewMode,
+    callbacks: AnnotationSurfaceCallbacks
+  ) {
     this.host = host;
-    this.root = previewRoot;
-    this.pageElement = previewRoot;
+    this.root = surfaceRoot;
+    this.pageElement = surfaceRoot;
+    this.mode = mode;
     this.callbacks = callbacks;
+    this.lastGeometry = this.measureGeometry();
     this.installObservers();
   }
 
@@ -64,12 +96,20 @@ export class MarkdownViewAdapter implements AnnotationSurface {
     callbacks: AnnotationSurfaceCallbacks = {},
     options: MarkdownViewAdapterOptions = {}
   ): MarkdownViewAdapter {
-    const previewRoot = options.previewRoot ?? findMarkdownPreviewRoot(host);
-    if (!previewRoot) throw new Error("Markdown preview root missing");
-    if (previewRoot !== host && !host.contains(previewRoot)) {
-      throw new Error("Markdown preview root is outside its host");
+    const mode = options.mode ?? "preview";
+    const surfaceRoot = options.surfaceRoot ?? findMarkdownSurfaceRoot(host, mode);
+    if (!surfaceRoot) throw new Error(`Markdown ${mode} surface root missing`);
+    if (surfaceRoot !== host && !host.contains(surfaceRoot)) {
+      throw new Error("Markdown surface root is outside its host");
     }
-    return new MarkdownViewAdapter(host, previewRoot, callbacks);
+    if (mode === "preview" && !surfaceRoot.matches(".markdown-preview-view")) {
+      throw new Error("Markdown Reading surface root is invalid");
+    }
+    if (mode === "source" && (!surfaceRoot.matches(".cm-scroller")
+      || !surfaceRoot.querySelector(".cm-content[contenteditable='true']"))) {
+      throw new Error("Markdown editor surface root must be .cm-scroller");
+    }
+    return new MarkdownViewAdapter(host, surfaceRoot, mode, callbacks);
   }
 
   pages(): AnnotationPageInfo[] {
@@ -99,6 +139,9 @@ export class MarkdownViewAdapter implements AnnotationSurface {
 
   restoreViewState(state: AnnotationViewState | ViewerState): void {
     if (state.pageNumber !== 1) return;
+    // Obsidian owns the editing cursor and scroll restoration in Source and
+    // Live Preview. Do not replace its current scroll with sidecar view state.
+    if (this.mode === "source") return;
     this.pageElement.scrollIntoView?.({ block: "start" });
     const scrollRoot = this.scrollElement();
     if (state.viewport && (Number.isFinite(state.viewport.y) && state.viewport.y > 0 || Number.isFinite(state.viewport.x) && state.viewport.x > 0)) {
@@ -112,7 +155,7 @@ export class MarkdownViewAdapter implements AnnotationSurface {
 
   focusPage(pageNumber: number): boolean {
     if (pageNumber !== 1) return false;
-    this.pageElement.scrollIntoView?.({ block: "start" });
+    if (this.mode === "preview") this.pageElement.scrollIntoView?.({ block: "start" });
     return true;
   }
 
@@ -150,13 +193,14 @@ export class MarkdownViewAdapter implements AnnotationSurface {
   }
 
   compatibilityReport(): { errors: string[]; warnings: string[] } {
-    const errors = this.pageElement.isConnected ? [] : ["Markdown preview root detached"];
+    const errors = this.pageElement.isConnected ? [] : ["Markdown surface root detached"];
     return { errors, warnings: [] };
   }
 
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.cancelScheduledRefresh();
     for (const cleanup of this.cleanup.splice(0)) cleanup();
     for (const mounted of this.mounted) mounted.remove();
     this.mounted.clear();
@@ -174,6 +218,7 @@ export class MarkdownViewAdapter implements AnnotationSurface {
       scale: 1,
       rotation: 0,
       coordinateOrigin: "top-left",
+      scrollContentGeometry: true,
       element: this.pageElement,
       geometryConfidence: "derived",
       geometrySafe: width > 1 && height > 1,
@@ -200,25 +245,83 @@ export class MarkdownViewAdapter implements AnnotationSurface {
 
   private installObservers(): void {
     if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(() => this.callbacks.onPagesChanged?.("markdown-resize"));
+      const observer = new ResizeObserver(() => this.scheduleGeometryRefresh("markdown-resize"));
       observer.observe(this.pageElement);
       this.cleanup.push(() => observer.disconnect());
     }
     if (typeof MutationObserver !== "undefined") {
       const observer = new MutationObserver((records) => {
-        const contentChanged = records.some((record) => [
-          ...Array.from(record.addedNodes),
-          ...Array.from(record.removedNodes)
-        ].some((node) => !this.isManagedNode(node)));
-        if (contentChanged) this.callbacks.onPagesChanged?.("markdown-render");
+        const contentChanged = records.some((record) => {
+          if (record.type === "characterData") return !this.isManagedNode(record.target);
+          if (record.type !== "childList") return false;
+          return [
+            ...Array.from(record.addedNodes),
+            ...Array.from(record.removedNodes)
+          ].some((node) => !this.isManagedNode(node));
+        });
+        if (contentChanged) this.scheduleGeometryRefresh("markdown-render");
       });
-      observer.observe(this.pageElement, { childList: true, subtree: true });
+      observer.observe(this.pageElement, { childList: true, subtree: true, characterData: true });
       this.cleanup.push(() => observer.disconnect());
     }
   }
 
+  private measureGeometry(): MarkdownGeometry {
+    const rect = this.pageElement.getBoundingClientRect();
+    return {
+      width: Math.max(1, this.pageElement.scrollWidth, this.pageElement.clientWidth, rect.width),
+      height: Math.max(1, this.pageElement.scrollHeight, this.pageElement.clientHeight, rect.height),
+      viewportWidth: Math.max(0, rect.width),
+      viewportHeight: Math.max(0, rect.height)
+    };
+  }
+
+  private scheduleGeometryRefresh(reason: string): void {
+    if (this.destroyed || this.pendingRefreshFrame !== null || this.pendingRefreshTimer !== null) return;
+    this.pendingRefreshReason = reason;
+    const view = this.pageElement.ownerDocument.defaultView;
+    const refresh = (): void => {
+      this.pendingRefreshFrame = null;
+      this.pendingRefreshTimer = null;
+      const previous = this.lastGeometry;
+      const next = this.measureGeometry();
+      this.lastGeometry = next;
+      const pendingReason = this.pendingRefreshReason;
+      this.pendingRefreshReason = null;
+      if (this.destroyed || !this.geometryChanged(previous, next)) return;
+      this.callbacks.onPagesChanged?.(pendingReason ?? "markdown-layout");
+    };
+    if (view?.requestAnimationFrame) {
+      this.pendingRefreshFrame = view.requestAnimationFrame(refresh);
+    } else if (view) {
+      this.pendingRefreshTimer = view.setTimeout(refresh, 16);
+    } else {
+      queueMicrotask(refresh);
+    }
+  }
+
+  private geometryChanged(previous: MarkdownGeometry, next: MarkdownGeometry): boolean {
+    return Math.abs(previous.width - next.width) > 0.5
+      || Math.abs(previous.height - next.height) > 0.5
+      || Math.abs(previous.viewportWidth - next.viewportWidth) > 0.5
+      || Math.abs(previous.viewportHeight - next.viewportHeight) > 0.5;
+  }
+
+  private cancelScheduledRefresh(): void {
+    const view = this.pageElement.ownerDocument.defaultView;
+    if (this.pendingRefreshFrame !== null) view?.cancelAnimationFrame(this.pendingRefreshFrame);
+    if (this.pendingRefreshTimer !== null) view?.clearTimeout(this.pendingRefreshTimer);
+    this.pendingRefreshFrame = null;
+    this.pendingRefreshTimer = null;
+    this.pendingRefreshReason = null;
+  }
+
   private isManagedNode(node: Node): boolean {
-    return isHTMLElement(node)
-      && [...this.mounted].some((mounted) => mounted === node || mounted.contains(node));
+    let current: HTMLElement | null = isHTMLElement(node) ? node : node.parentElement;
+    while (current) {
+      if ([...this.mounted].some((mounted) => mounted === current || mounted.contains(current))) return true;
+      current = current.parentElement;
+    }
+    return false;
   }
 }

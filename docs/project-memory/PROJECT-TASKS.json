@@ -82,7 +82,7 @@
     {
       "id": "markdown-surface-preference",
       "status": "done",
-      "title": "Expose and persist the Markdown enabled-surface preference while Markdown view attachment remains scaffold-only.",
+      "title": "Expose and persist the Markdown enabled-surface preference used by runtime attachment.",
       "paths": [
         "src/settings.ts",
         "tests/settings.test.ts"
@@ -95,19 +95,24 @@
     {
       "id": "markdown-reading-annotations",
       "status": "complete",
-      "title": "Activate Markdown Reading-view annotations through the shared floating toolbar and session lifecycle.",
+      "title": "Extend shared Markdown annotation from Reading view to Source and Live Preview editing.",
       "paths": [
         "src/main.ts",
         "src/integration/MarkdownViewAdapter.ts",
+        "src/runtime/AnnotationSurface.ts",
         "src/runtime/ViewerInkSession.ts",
+        "src/input/PointerRouter.ts",
+        "src/pdf/PageCoordinateLayout.ts",
         "src/settings.ts",
         "tests/",
-        "README.md"
+        "README.md",
+        "docs/architecture.md",
+        "docs/current-limitations.md"
       ],
       "checks": [
-        "Focused Markdown adapter, session, and lifecycle tests",
+        "Focused Markdown mode, adapter, session, pointer-routing, and geometry tests",
         "npm test",
-        "npm run lint",
+        "npm run lint (one pre-existing sentence-case warning at src/settings.ts:582)",
         "npx tsc --noEmit"
       ]
     }

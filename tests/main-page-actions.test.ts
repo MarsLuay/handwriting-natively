@@ -27,9 +27,11 @@ describe("main PDF page actions", () => {
     expect(mainSource).toContain("ImageViewAdapter.attach");
   });
 
-  it("attaches only enabled Markdown Reading views through the shared session factory", () => {
+  it("attaches enabled Markdown Reading and editing views through the shared session factory", () => {
     expect(mainSource).toContain("MarkdownViewAdapter.attach");
-    expect(mainSource).toContain('view.getMode() === "preview"');
+    expect(mainSource).toContain("findMarkdownSurfaceRoot");
+    expect(mainSource).toContain('mode !== "preview" && mode !== "source"');
+    expect(mainSource).toContain("{ mode }");
     expect(mainSource).toContain("this.scanMarkdownLeaves()");
     expect(mainSource).toContain("detachDisabledMarkdownSessions");
     expect(mainSource).toContain('surface: "markdown"');

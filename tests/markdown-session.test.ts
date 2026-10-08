@@ -17,22 +17,38 @@ class MemoryFiles implements TextFileAdapter {
   async remove(path: string): Promise<void> { this.values.delete(path); }
 }
 
-function markdownHost(): { host: HTMLElement; preview: HTMLElement } {
+function markdownHost(mode: "preview" | "source"): { host: HTMLElement; root: HTMLElement } {
   const host = document.createElement("div");
   host.className = "workspace-leaf";
-  const preview = document.createElement("div");
-  preview.className = "markdown-preview-view";
-  Object.defineProperty(preview, "clientWidth", { configurable: true, value: 640 });
-  Object.defineProperty(preview, "clientHeight", { configurable: true, value: 480 });
-  Object.defineProperty(preview, "scrollWidth", { configurable: true, value: 640 });
-  Object.defineProperty(preview, "scrollHeight", { configurable: true, value: 1_280 });
-  preview.getBoundingClientRect = () => ({
+  const root = document.createElement("div");
+  if (mode === "preview") {
+    root.className = "markdown-preview-view";
+  } else {
+    const sourceView = document.createElement("div");
+    sourceView.className = "markdown-source-view";
+    const editor = document.createElement("div");
+    editor.className = "cm-editor";
+    root.className = "cm-scroller";
+    root.style.overflow = "auto";
+    const content = document.createElement("div");
+    content.className = "cm-content";
+    content.setAttribute("contenteditable", "true");
+    root.append(content);
+    editor.append(root);
+    sourceView.append(editor);
+    host.append(sourceView);
+  }
+  Object.defineProperty(root, "clientWidth", { configurable: true, value: 640 });
+  Object.defineProperty(root, "clientHeight", { configurable: true, value: 480 });
+  Object.defineProperty(root, "scrollWidth", { configurable: true, value: 640 });
+  Object.defineProperty(root, "scrollHeight", { configurable: true, value: 1_280 });
+  root.getBoundingClientRect = () => ({
     x: 0, y: 0, left: 0, top: 0, right: 640, bottom: 480,
     width: 640, height: 480, toJSON: () => ({})
   });
-  host.append(preview);
+  if (mode === "preview") host.append(root);
   document.body.append(host);
-  return { host, preview };
+  return { host, root };
 }
 
 afterEach(() => {
@@ -41,7 +57,7 @@ afterEach(() => {
 });
 
 describe("Markdown annotation session", () => {
-  it("uses the canonical floating toolbar and persists annotations to the Markdown sidecar", async () => {
+  it.each(["preview", "source"] as const)("uses the shared toolbar and sidecar in %s mode", async (mode) => {
     const context = {
       setTransform: vi.fn(), clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(),
       beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), moveTo: vi.fn(), closePath: vi.fn(),
@@ -52,8 +68,8 @@ describe("Markdown annotation session", () => {
       .mockReturnValue(context as unknown as CanvasRenderingContext2D);
 
     const files = new MemoryFiles();
-    const { host } = markdownHost();
-    const adapter = MarkdownViewAdapter.attach(host);
+    const { host, root } = markdownHost(mode);
+    const adapter = MarkdownViewAdapter.attach(host, {}, { mode });
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/meeting.md",
@@ -93,6 +109,7 @@ describe("Markdown annotation session", () => {
       expect(sidecar?.[1]).toContain("markdown-stroke");
       expect(adapter.pages()).toHaveLength(1);
       expect(adapter.pages()[0]?.element).toBe(adapter.root);
+      expect(adapter.root).toBe(root);
     } finally {
       await session.destroy({ silent: true });
     }

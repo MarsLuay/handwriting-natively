@@ -70,7 +70,7 @@ export function resolvePageCoordinateLayout(page: AnnotationPageInfo): PageCoord
   const rotation = normalizeRotation(page.rotation);
   const pdfWidth = rotation === 90 || rotation === 270 ? page.height : page.width;
   const pdfHeight = rotation === 90 || rotation === 270 ? page.width : page.height;
-  const pdfCanvas = pdfRenderCanvas(page.element);
+  const pdfCanvas = page.scrollContentGeometry ? null : pdfRenderCanvas(page.element);
   const contentRect = pdfCanvas?.getBoundingClientRect();
 
   if (!contentRect || contentRect.width <= 0 || contentRect.height <= 0) {
@@ -78,14 +78,20 @@ export function resolvePageCoordinateLayout(page: AnnotationPageInfo): PageCoord
     // layers. Keep the last reported PDF scale for live text editors: zero
     // would collapse the contenteditable before the real canvas returns.
     const fallbackScale = Number.isFinite(page.scale) && page.scale > 0 ? page.scale : 1;
-    const scaleX = hostRect.width > 0 ? hostRect.width / Math.max(1, pdfWidth) : fallbackScale;
-    const scaleY = hostRect.height > 0 ? hostRect.height / Math.max(1, pdfHeight) : fallbackScale;
+    const contentWidth = page.scrollContentGeometry
+      ? Math.max(page.element.scrollWidth, page.element.clientWidth, hostRect.width)
+      : hostRect.width;
+    const contentHeight = page.scrollContentGeometry
+      ? Math.max(page.element.scrollHeight, page.element.clientHeight, hostRect.height)
+      : hostRect.height;
+    const scaleX = contentWidth > 0 ? contentWidth / Math.max(1, pdfWidth) : fallbackScale;
+    const scaleY = contentHeight > 0 ? contentHeight / Math.max(1, pdfHeight) : fallbackScale;
     const scale = Math.min(scaleX, scaleY);
     return {
       offsetX: 0,
       offsetY: 0,
-      contentWidth: hostRect.width,
-      contentHeight: hostRect.height,
+      contentWidth,
+      contentHeight,
       scale,
       scaleX,
       scaleY,

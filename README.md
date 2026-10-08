@@ -2,7 +2,7 @@
 
 ## What Handwriting Natively Does
 
-Handwrite on PDFs, supported static PNG/JPEG images, and rendered Markdown Reading views with a stylus or mouse in Obsidian. Markdown ink and text annotations use the same floating toolbar, tools, undo/redo, and vault sidecars as PDF and image annotations. Source mode and Live Preview remain native editing surfaces. Explicit page insert/delete/import/scan actions update the open PDF and remap its sidecar atomically. Export PDFs as flattened or editable copies, or export an annotated image as a bounded flattened copy in its source PNG/JPEG format. Text boxes are sidecar-backed and editable in Text mode; physical eraser tips and optional whole-stroke/right-click erasing are supported.
+Handwrite on PDFs, supported static PNG/JPEG images, and Markdown Reading or editing views with a stylus or mouse in Obsidian. Markdown ink and text annotations use the same floating toolbar, tools, undo/redo, and vault sidecars as PDF and image annotations. Source and Live Preview keep native typing, selection, and scrolling when the active pointer policy does not claim an annotation gesture. Explicit page insert/delete/import/scan actions update the open PDF and remap its sidecar atomically. Export PDFs as flattened or editable copies, or export an annotated image as a bounded flattened copy in its source PNG/JPEG format. Text boxes are sidecar-backed and editable in Text mode; physical eraser tips and optional whole-stroke/right-click erasing are supported.
 
 I made this plugin after realizing I use Obsidian a lot more than another nameless note taking app.. I hope you find it as useful as I do!
 
@@ -26,7 +26,7 @@ I made this plugin after realizing I use Obsidian a lot more than another namele
 1. Download the BRAT plugin
 2. Press on its icon to enter a plugin, and paste in https://github.com/MarsLuay/handwriting-natively
 3. Select any release you desire! (the latest pre-release is my pick..)
-4. Press install, then open a PDF, supported image, or Markdown file in Reading view.
+4. Press install, then open a PDF, supported image, or Markdown file in Reading or editing view.
 
 ## If you want..
 

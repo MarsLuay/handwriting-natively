@@ -289,7 +289,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
       },
       {
         name: "Enable on Markdown",
-        desc: "Enable annotation on rendered Markdown Reading views. Source mode and Live Preview remain native and are not annotated.",
+        desc: "Enable annotation on Markdown Reading, Source, and Live Preview views. Native editing input stays available unless an annotation gesture is claimed.",
         render: (setting: Setting) => {
           setting.addToggle((toggle) =>
             toggle.setValue(this.host.inkSettings.enabledSurfaces.markdown).onChange(async (value) => {

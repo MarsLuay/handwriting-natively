@@ -44,7 +44,7 @@ Checks: focused logger tests; `npm test`.
 
 ## markdown-surface-preference — done
 
-Expose and persist the Markdown enabled-surface preference while Markdown view attachment remains scaffold-only.
+Expose and persist the Markdown enabled-surface preference used by runtime attachment.
 
 Paths: `src/settings.ts`, `tests/settings.test.ts`
 
@@ -52,8 +52,8 @@ Checks: `tests/settings.test.ts`; `npm run lint`.
 
 ## markdown-reading-annotations — complete
 
-Activate Markdown Reading-view annotations through the shared floating toolbar and session lifecycle.
+Extend shared Markdown annotation from Reading view to Source and Live Preview editing.
 
-Paths: `src/main.ts`, `src/integration/MarkdownViewAdapter.ts`, `src/runtime/ViewerInkSession.ts`, `src/settings.ts`, `tests/`, `README.md`
+Paths: `src/main.ts`, `src/integration/MarkdownViewAdapter.ts`, `src/runtime/AnnotationSurface.ts`, `src/runtime/ViewerInkSession.ts`, `src/input/PointerRouter.ts`, `src/pdf/PageCoordinateLayout.ts`, `src/settings.ts`, `tests/`, `README.md`, `docs/architecture.md`, `docs/current-limitations.md`
 
-Checks: focused Markdown adapter/session/lifecycle tests; `npm test`; `npm run lint`; `npx tsc --noEmit`.
+Checks: focused Markdown mode/adapter/session/pointer-routing/geometry tests; `npm test` (132 files, 1,148 tests); `npx tsc --noEmit`; `npm run lint` reported one pre-existing sentence-case warning at `src/settings.ts:582`.

@@ -15,7 +15,7 @@ import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
 import { isObsidianSidebarOpen, MobileSidebarSwipeBlocker } from "./input/MobileSidebarSwipeBlocker";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
-import { findMarkdownPreviewRoot, MarkdownViewAdapter } from "./integration/MarkdownViewAdapter";
+import { findMarkdownSurfaceRoot, MarkdownViewAdapter } from "./integration/MarkdownViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
 import { PLUGIN_PDF_VIEW_TYPE, PluginPdfView } from "./integration/PluginPdfView";
 import { PdfJsViewAdapter } from "./integration/PdfJsViewAdapter";
@@ -1514,14 +1514,20 @@ export default class NativePdfInkPlugin extends Plugin {
     this.reportMissingPdfSessionAfterSettle();
   }
 
-  private isMarkdownReadingLeaf(leaf: WorkspaceLeaf): boolean {
+  private markdownSurfaceRoot(view: MarkdownView): HTMLElement | null {
+    const mode = view.getMode();
+    if (mode !== "preview" && mode !== "source") return null;
+    return findMarkdownSurfaceRoot(view.containerEl, mode);
+  }
+
+  private isMarkdownAnnotationLeaf(leaf: WorkspaceLeaf): boolean {
     const view = leaf.view;
     const file = this.fileForLeaf(leaf);
     return this.inkSettings.enabledSurfaces.markdown
       && view instanceof MarkdownView
       && file instanceof TFile
       && file.extension.toLowerCase() === "md"
-      && view.getMode() === "preview";
+      && this.markdownSurfaceRoot(view) !== null;
   }
 
   private syncMarkdownModeObservers(leaves: readonly WorkspaceLeaf[]): void {
@@ -1535,19 +1541,21 @@ export default class NativePdfInkPlugin extends Plugin {
       if (next?.view === current.view && next.host === current.host) continue;
       current.observer.disconnect();
       this.markdownModeObservers.delete(leaf);
+      this.replacementAttachLeaves.delete(leaf);
     }
     if (typeof MutationObserver === "undefined") return;
 
     for (const [leaf, { view, host }] of hosts) {
       if (this.markdownModeObservers.has(leaf)) continue;
       let lastMode = view.getMode();
-      let lastPreview = findMarkdownPreviewRoot(host);
+      let lastRoot = this.markdownSurfaceRoot(view);
       const observer = new MutationObserver(() => {
         const mode = view.getMode();
-        const preview = findMarkdownPreviewRoot(host);
-        if (mode === lastMode && preview === lastPreview) return;
+        const root = this.markdownSurfaceRoot(view);
+        if (mode === lastMode && root === lastRoot) return;
         lastMode = mode;
-        lastPreview = preview;
+        lastRoot = root;
+        this.replacementAttachLeaves.add(leaf);
         this.scheduleDebouncedScan(0);
       });
       observer.observe(host, {
@@ -1564,16 +1572,16 @@ export default class NativePdfInkPlugin extends Plugin {
     if (this.unloaded) return;
     const leaves = [...new Set(this.app.workspace.getLeavesOfType("markdown"))];
     this.syncMarkdownModeObservers(leaves);
-    const readingLeaves = new Set(leaves.filter((leaf) => this.isMarkdownReadingLeaf(leaf)));
+    const supportedLeaves = new Set(leaves.filter((leaf) => this.isMarkdownAnnotationLeaf(leaf)));
     for (const leaf of leaves) {
       const file = this.fileForLeaf(leaf);
-      if (file instanceof TFile && file.extension.toLowerCase() === "md" && !readingLeaves.has(leaf)) {
+      if (file instanceof TFile && file.extension.toLowerCase() === "md" && !supportedLeaves.has(leaf)) {
         this.attachRetry.clear(file.path);
       }
     }
     await this.vaultDebugLog.writeUrgent("info", "scan-markdown-leaves", {
       markdownLeafCount: leaves.length,
-      readingLeafCount: readingLeaves.size,
+      supportedLeafCount: supportedLeaves.size,
       sessions: this.sessions.size,
       attachingLeaves: this.attachingLeaves.size,
       markdownHandwritingEnabled: this.inkSettings.enabledSurfaces.markdown,
@@ -1584,15 +1592,15 @@ export default class NativePdfInkPlugin extends Plugin {
     for (const [leaf, session] of [...this.sessions]) {
       const file = this.fileForLeaf(leaf);
       if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") continue;
-      if (!readingLeaves.has(leaf)) {
+      if (!supportedLeaves.has(leaf)) {
         const view = leaf.view;
         const reason = !this.inkSettings.enabledSurfaces.markdown
           ? "markdown-disabled"
           : !leaves.includes(leaf)
             ? "markdown-leaf-closed"
-            : view instanceof MarkdownView && view.getMode() !== "preview"
-              ? "markdown-editing-mode"
-              : "markdown-preview-unavailable";
+            : view instanceof MarkdownView && view.getMode() !== "preview" && view.getMode() !== "source"
+              ? "markdown-mode-unsupported"
+              : "markdown-surface-unavailable";
         if (!this.removeSessionFromRegistry(leaf, session, reason)) continue;
         this.syncPersistSession(session, reason);
         await this.destroySessionWithTelemetry(leaf, session, reason, { silent: true, alreadyPersisted: true })
@@ -1608,20 +1616,25 @@ export default class NativePdfInkPlugin extends Plugin {
         });
         continue;
       }
-      if (!session.isAttached()) {
-        if (!this.removeSessionFromRegistry(leaf, session, "markdown-detach-rescan")) continue;
+      if (this.replacementAttachLeaves.has(leaf) || !session.isAttached()) {
+        const reason = this.replacementAttachLeaves.has(leaf)
+          ? "markdown-surface-replaced"
+          : "markdown-detach-rescan";
+        if (!this.removeSessionFromRegistry(leaf, session, reason)) continue;
         this.replacementAttachLeaves.add(leaf);
-        this.syncPersistSession(session, "markdown-detach-rescan");
-        await this.trackSessionDestroy(leaf, session, "markdown-detach-rescan", { silent: true, alreadyPersisted: true })
+        this.syncPersistSession(session, reason);
+        await this.trackSessionDestroy(leaf, session, reason, { silent: true, alreadyPersisted: true })
           .catch(() => undefined);
       }
     }
 
-    for (const leaf of readingLeaves) {
+    for (const leaf of supportedLeaves) {
       if (this.sessions.has(leaf) || this.attachingLeaves.has(leaf)) continue;
       const view = leaf.view;
       const file = this.fileForLeaf(leaf);
       if (!(view instanceof MarkdownView) || !(file instanceof TFile)) continue;
+      const mode = view.getMode();
+      if (mode !== "preview" && mode !== "source") continue;
       if (!await this.waitForSessionDestroy(leaf)) {
         this.attachRetry.recordFailure(file.path);
         continue;
@@ -1648,7 +1661,7 @@ export default class NativePdfInkPlugin extends Plugin {
       });
       try {
         attachStage = "adapter-attach";
-        adapter = MarkdownViewAdapter.attach(view.containerEl, this.sessionAdapterCallbacks(() => session));
+        adapter = MarkdownViewAdapter.attach(view.containerEl, this.sessionAdapterCallbacks(() => session), { mode });
         attachStage = "session-create";
         session = await this.createInkSession(file, adapter, {
           onDetached: () => {
@@ -1675,7 +1688,12 @@ export default class NativePdfInkPlugin extends Plugin {
           }
         });
         attachStage = "session-created";
-        if (this.unloaded || detached || !this.isMarkdownReadingLeaf(leaf) || !adapter.root.isConnected || !session.isAttached()) {
+        if (this.unloaded
+          || detached
+          || !this.isMarkdownAnnotationLeaf(leaf)
+          || this.markdownSurfaceRoot(view) !== adapter.root
+          || !adapter.root.isConnected
+          || !session.isAttached()) {
           const reason = detached
             ? "markdown-detached-during-attach"
             : this.inkSettings.enabledSurfaces.markdown

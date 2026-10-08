@@ -147,6 +147,8 @@ export interface PointerRouterCallbacks {
   activeTool(): ToolId;
   /** Event-aware annotation gate (pen/touch/mouse policy). Replaces global Draw mode. */
   canAnnotatePointer(event: PointerEvent): boolean;
+  /** Permit annotation over a surface-owned editor only when that surface opts in. */
+  allowEditableAnnotationTarget?(event: PointerEvent): boolean;
   /** Whether the selected touch fallback is currently available for cursors. */
   touchAnnotationEnabled?(): boolean;
   /** Qualified mobile navigation gate; false preserves native touch behavior. */
@@ -402,6 +404,11 @@ export class PointerRouter {
     return { route: "native", reason: "unsupported-pointer" };
   }
 
+  private isRoutableInputTarget(event: PointerEvent): boolean {
+    return !isUiInputTarget(event.target)
+      || this.callbacks.allowEditableAnnotationTarget?.(event) === true;
+  }
+
   private isTextToolRoute(tool: ToolId, event: PointerEvent, penLike: boolean): boolean {
     return tool === "text" && (penLike || (event.pointerType === "mouse" && event.button === 0));
   }
@@ -487,7 +494,7 @@ export class PointerRouter {
       this.callbacks.onPointerRejected?.("inactive-owner", event, this.generation);
       return "ignored";
     }
-    if (classifyInputTarget(event.target).targetClass !== "page") {
+    if (classifyInputTarget(event.target).targetClass !== "page" && !this.isRoutableInputTarget(event)) {
       this.callbacks.onPointerRejected?.("annotation-chrome", event, this.generation);
       return "native";
     }
@@ -634,7 +641,7 @@ export class PointerRouter {
   private recoverMissingPointerDown(event: PointerEvent): boolean {
     if (this.abort.signal.aborted) return false;
     if (this.callbacks.isInputOwnerActive?.() === false) return false;
-    if (isUiInputTarget(event.target)) return false;
+    if (!this.isRoutableInputTarget(event)) return false;
     if (!this.callbacks.canAnnotatePointer(event) || !isTipContact(event)) return false;
     const penLike = event.pointerType === "pen" || this.palmPolicy.shouldTreatMouseTipAsPen(event);
     if (!penLike) return false;

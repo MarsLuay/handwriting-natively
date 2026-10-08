@@ -37,6 +37,9 @@ function markdownLeaf(mode: "preview" | "source"): {
   file: TFile;
   host: HTMLElement;
   preview: HTMLElement;
+  sourceView: HTMLElement;
+  editorRoot: HTMLElement;
+  editorContent: HTMLElement;
   setMode: (mode: "preview" | "source") => void;
 } {
   const file = Object.create(TFile.prototype) as TFile;
@@ -51,7 +54,30 @@ function markdownLeaf(mode: "preview" | "source"): {
     x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 800,
     width: 600, height: 800, toJSON: () => ({})
   });
-  host.append(preview);
+  const sourceView = document.createElement("div");
+  sourceView.className = "markdown-source-view";
+  const editor = document.createElement("div");
+  editor.className = "cm-editor";
+  const editorRoot = document.createElement("div");
+  editorRoot.className = "cm-scroller";
+  editorRoot.style.overflow = "auto";
+  Object.defineProperties(editorRoot, {
+    clientWidth: { configurable: true, value: 600 },
+    clientHeight: { configurable: true, value: 400 },
+    scrollWidth: { configurable: true, value: 600 },
+    scrollHeight: { configurable: true, value: 1_600 }
+  });
+  editorRoot.getBoundingClientRect = () => ({
+    x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400,
+    width: 600, height: 400, toJSON: () => ({})
+  });
+  const editorContent = document.createElement("div");
+  editorContent.className = "cm-content";
+  editorContent.setAttribute("contenteditable", "true");
+  editorRoot.append(editorContent);
+  editor.append(editorRoot);
+  sourceView.append(editor);
+  host.append(mode === "preview" ? preview : sourceView);
   document.body.append(host);
   const view = Object.create(MarkdownView.prototype) as MarkdownView;
   let currentMode = mode;
@@ -66,12 +92,15 @@ function markdownLeaf(mode: "preview" | "source"): {
     file,
     host,
     preview,
+    sourceView,
+    editorRoot,
+    editorContent,
     setMode: (nextMode) => { currentMode = nextMode; }
   };
 }
 
 function createPluginHarness(mode: "preview" | "source", enabled: boolean) {
-  const { leaf, file, host, preview, setMode } = markdownLeaf(mode);
+  const { leaf, file, host, preview, sourceView, editorRoot, editorContent, setMode } = markdownLeaf(mode);
   const sessions = new Map<WorkspaceLeaf, ViewerInkSession>();
   const markdownModeObservers = new Map<WorkspaceLeaf, MarkdownModeObserver>();
   trackedModeObservers.add(markdownModeObservers);
@@ -131,6 +160,9 @@ function createPluginHarness(mode: "preview" | "source", enabled: boolean) {
     file,
     host,
     preview,
+    sourceView,
+    editorRoot,
+    editorContent,
     setMode,
     markdownModeObservers,
     sessions,
@@ -165,12 +197,19 @@ describe("Markdown runtime attachment", () => {
     expect(harness.registerSession).toHaveBeenCalled();
   });
 
-  it("leaves Source mode native and detaches an existing Markdown session when disabled", async () => {
+  it("attaches Source and Live Preview editing through the shared session", async () => {
     const source = createPluginHarness("source", true);
     await source.scan();
-    expect(source.createInkSession).not.toHaveBeenCalled();
+    expect(source.createInkSession).toHaveBeenCalledOnce();
+    const [, adapter] = source.createInkSession.mock.calls[0] ?? [];
+    expect(adapter).toBeInstanceOf(MarkdownViewAdapter);
+    expect(adapter?.root).toBe(source.editorRoot);
+    expect(source.sessions.get(source.leaf)).toBe(source.session);
+    expect(source.editorContent.getAttribute("contenteditable")).toBe("true");
+  });
 
-    const disabled = createPluginHarness("preview", false);
+  it("persists and detaches a Markdown session when disabled", async () => {
+    const disabled = createPluginHarness("source", false);
     disabled.sessions.set(disabled.leaf, disabled.session);
     await disabled.scan();
 
@@ -196,21 +235,21 @@ describe("Markdown runtime attachment", () => {
     expect(harness.destroySessionWithTelemetry).toHaveBeenCalledOnce();
   });
 
-  it("rescans when the Markdown view switches between Reading and Source modes", async () => {
+  it("replaces the session and root when the Markdown view switches modes", async () => {
     const harness = createPluginHarness("preview", true);
     await harness.scan();
     expect(harness.sessions.has(harness.leaf)).toBe(true);
 
-    const sourceRoot = document.createElement("div");
-    sourceRoot.className = "markdown-source-view";
     harness.setMode("source");
-    harness.preview.replaceWith(sourceRoot);
+    harness.preview.replaceWith(harness.sourceView);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(harness.scheduleDebouncedScan).toHaveBeenCalledWith(0);
 
     await harness.scan();
-    expect(harness.sessions.has(harness.leaf)).toBe(false);
+    expect(harness.sessions.has(harness.leaf)).toBe(true);
     expect(harness.destroySessionWithTelemetry).toHaveBeenCalledOnce();
+    const [, sourceAdapter] = harness.createInkSession.mock.calls[1] ?? [];
+    expect(sourceAdapter?.root).toBe(harness.editorRoot);
 
     const previewRoot = document.createElement("div");
     previewRoot.className = "markdown-preview-view";
@@ -219,11 +258,11 @@ describe("Markdown runtime attachment", () => {
       width: 600, height: 800, toJSON: () => ({})
     });
     harness.setMode("preview");
-    sourceRoot.replaceWith(previewRoot);
+    harness.sourceView.replaceWith(previewRoot);
     await new Promise((resolve) => setTimeout(resolve, 0));
     await harness.scan();
 
-    expect(harness.createInkSession).toHaveBeenCalledTimes(2);
+    expect(harness.createInkSession).toHaveBeenCalledTimes(3);
     expect(harness.sessions.has(harness.leaf)).toBe(true);
   });
 });
