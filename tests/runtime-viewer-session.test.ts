@@ -1336,15 +1336,18 @@ describe("viewer runtime tracer", () => {
     await inactiveSession.destroy();
   });
 
-  it("preserves native wheel and pinch input inside an embedded PDF in Markdown", async () => {
+  it("preserves native wheel, pinch, and pointer input inside an embedded PDF in Markdown", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeMarkdownAdapter();
     const embed = document.createElement("div");
     embed.className = "internal-embed pdf-embed";
     const viewer = document.createElement("div");
     viewer.className = "pdf-viewer-container";
+    const toolbar = document.createElement("button");
+    toolbar.className = "pdf-toolbar-right";
+    viewer.append(toolbar);
     embed.append(viewer);
-    adapter.root.append(embed);
+    adapter.pageElement.append(embed);
     const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
       adapter,
@@ -1376,6 +1379,28 @@ describe("viewer runtime tracer", () => {
       viewer.dispatchEvent(wheel);
       expect(wheel.defaultPrevented).toBe(false);
     }
+
+    const pointerDown = pointer("pointerdown", 100, 120, { pointerId: 91 });
+    const pointerMove = pointer("pointermove", 110, 130, { pointerId: 91 });
+    const pointerUp = pointer("pointerup", 110, 130, { pointerId: 91 });
+    toolbar.dispatchEvent(pointerDown);
+    toolbar.dispatchEvent(pointerMove);
+    toolbar.dispatchEvent(pointerUp);
+    expect([pointerDown.defaultPrevented, pointerMove.defaultPrevented, pointerUp.defaultPrevented])
+      .toEqual([false, false, false]);
+
+    const nativePointerLogs = logs.filter(({ event, payload }) =>
+      event === "pointer seen" && payload.source === "native-embedded-pdf-input" && payload.pointerId === 91
+    );
+    expect(nativePointerLogs.map(({ payload }) => payload.phase)).toEqual([
+      "pointerdown", "pointermove", "pointerup"
+    ]);
+    expect(nativePointerLogs[0]?.payload).toMatchObject({
+      owner: "obsidian",
+      target: "button.pdf-toolbar-right",
+      defaultPrevented: false
+    });
+    expect((session as unknown as { ink: { all(): InkStroke[] } }).ink.all()).toEqual([]);
 
     expect(session.getViewerState().viewport).toEqual(viewportBefore);
     expect(logs).toContainEqual({

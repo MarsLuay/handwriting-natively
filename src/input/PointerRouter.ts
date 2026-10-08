@@ -147,6 +147,10 @@ export interface PointerRouterCallbacks {
   activeTool(): ToolId;
   /** Event-aware annotation gate (pen/touch/mouse policy). Replaces global Draw mode. */
   canAnnotatePointer(event: PointerEvent): boolean;
+  /** Keep nested host-owned inputs, such as Obsidian PDF embeds, out of this surface's routing. */
+  isHostOwnedInputTarget?(target: EventTarget | null): boolean;
+  /** Bounded diagnostic for input that remains with its host-owned viewer. */
+  onHostOwnedInput?(event: Event, phase: string): void;
   /** Permit annotation over a surface-owned editor only when that surface opts in. */
   allowEditableAnnotationTarget?(event: PointerEvent): boolean;
   /** Whether the selected touch fallback is currently available for cursors. */
@@ -224,6 +228,9 @@ export class PointerRouter {
   readonly generation: number;
   private readonly routed = new Map<number, "draw" | "edit" | "text">();
   private readonly routedPointerTypes = new Map<number, "pen" | "mouse" | "touch">();
+  /** Pointer sequences begun in an embedded host viewer remain native through their terminal event. */
+  private readonly hostOwnedPointers = new Set<number>();
+  private readonly hostOwnedInputEvents = new WeakSet<Event>();
   /** Same PointerEvent must not append ink twice when document and page both see it. */
   private readonly consumedStrokeEvents = new WeakSet<Event>();
   private readonly stylusErasers = new Set<number>();
@@ -404,6 +411,26 @@ export class PointerRouter {
     return { route: "native", reason: "unsupported-pointer" };
   }
 
+  private leaveHostOwnedInputNative(event: Event, phase: string, terminal = false): boolean {
+    const pointerEvent = event as PointerEvent;
+    const hasPointerId = typeof pointerEvent.pointerId === "number";
+    const pointerId = hasPointerId ? pointerEvent.pointerId : -1;
+    const targetOwned = this.callbacks.isHostOwnedInputTarget?.(event.target) === true;
+    const pointerOwned = hasPointerId && this.hostOwnedPointers.has(pointerId);
+    if (!targetOwned && !pointerOwned) return false;
+
+    if (targetOwned && hasPointerId
+      && (phase === "pointerdown" || (phase === "pointermove" && pointerEvent.buttons !== 0))) {
+      this.hostOwnedPointers.add(pointerId);
+    }
+    if (!this.hostOwnedInputEvents.has(event)) {
+      this.hostOwnedInputEvents.add(event);
+      this.callbacks.onHostOwnedInput?.(event, phase);
+    }
+    if (terminal && hasPointerId) this.hostOwnedPointers.delete(pointerId);
+    return true;
+  }
+
   private isRoutableInputTarget(event: PointerEvent): boolean {
     return !isUiInputTarget(event.target)
       || this.callbacks.allowEditableAnnotationTarget?.(event) === true;
@@ -455,6 +482,7 @@ export class PointerRouter {
    * ink or changing native one-finger navigation.
    */
   private readonly handleTouchNavigation = (event: TouchEvent): void => {
+    if (this.leaveHostOwnedInputNative(event, event.type)) return;
     if (classifyInputTarget(event.target).targetClass !== "page") return;
     if (this.navigationController.blockCompanionTouch(event)) return;
     this.navigationController.handleTouchFallback(
@@ -467,6 +495,7 @@ export class PointerRouter {
 
   /** Stop WebKit's parallel native GestureEvent recognizer on a qualified page. */
   private readonly handleNativeGesture = (event: Event): void => {
+    if (this.leaveHostOwnedInputNative(event, event.type)) return;
     if (classifyInputTarget(event.target).targetClass !== "page") return;
     this.navigationController.handleNativeGesture(event, this.customNavigationAllowed());
   };
@@ -489,11 +518,12 @@ export class PointerRouter {
       this.callbacks.onPointerRejected?.("stale-generation", event, this.generation);
       return "ignored";
     }
-    this.callbacks.onRouterReceived?.(event, this.generation);
     if (this.callbacks.isInputOwnerActive?.() === false) {
       this.callbacks.onPointerRejected?.("inactive-owner", event, this.generation);
       return "ignored";
     }
+    if (this.leaveHostOwnedInputNative(event, "pointerdown")) return "native";
+    this.callbacks.onRouterReceived?.(event, this.generation);
     if (classifyInputTarget(event.target).targetClass !== "page" && !this.isRoutableInputTarget(event)) {
       this.callbacks.onPointerRejected?.("annotation-chrome", event, this.generation);
       return "native";
@@ -691,6 +721,7 @@ export class PointerRouter {
 
   /** Cancel companion TouchEvents while stylus is down (iPad WebKit scroll path). */
   private readonly blockTouchScrollWhilePen = (event: TouchEvent): void => {
+    if (this.leaveHostOwnedInputNative(event, event.type)) return;
     if (event.type === "touchstart") this.callbacks.onTouchStart?.(event);
     // Touchstart can arrive without the Pencil pointerup after a page transition.
     this.palmPolicy.reconcileStalePenOnTouch();
@@ -708,6 +739,7 @@ export class PointerRouter {
 
   /** Pointer-less hosts keep Touch Events passive and native-only. */
   private readonly observeTouchFallback = (event: TouchEvent): void => {
+    if (this.leaveHostOwnedInputNative(event, event.type)) return;
     if (event.type === "touchstart") this.callbacks.onTouchStart?.(event);
   };
 
@@ -716,6 +748,7 @@ export class PointerRouter {
    * terminals (Ink). Clears finger bookkeeping; clears pen only if stale.
    */
   private readonly handleTouchTerminal = (event: TouchEvent): void => {
+    if (this.leaveHostOwnedInputNative(event, event.type)) return;
     const trackedBefore = this.touchCount();
     const hadActivePen = this.palmPolicy.hasActivePen();
     const stalePenCleared = this.palmPolicy.reconcileStalePenOnTouch();
@@ -931,6 +964,7 @@ export class PointerRouter {
 
   private readonly handleMove = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (this.leaveHostOwnedInputNative(event, "pointermove")) return;
     this.palmPolicy.notePenActivity(event);
     if (this.navigationController.handlePointerMove(event, this.generation)) return;
     this.scheduleCustomCursorUpdate(event);
@@ -968,6 +1002,7 @@ export class PointerRouter {
 
   private readonly handleEnd = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (this.leaveHostOwnedInputNative(event, "pointerup", true)) return;
     if (this.navigationController.handlePointerEnd(event, "pointerup")) {
       this.releasePenContact(event, "pointerup");
       this.hideCustomCursors();
@@ -996,6 +1031,7 @@ export class PointerRouter {
 
   private readonly handleCancel = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (this.leaveHostOwnedInputNative(event, "pointercancel", true)) return;
     if (this.navigationController.handlePointerEnd(event, "pointercancel")) {
       this.releasePenContact(event, "pointercancel");
       this.hideCustomCursors();
@@ -1021,6 +1057,7 @@ export class PointerRouter {
 
   private readonly handleLostPointerCapture = (event: PointerEvent): void => {
     if (this.abort.signal.aborted) return;
+    if (this.leaveHostOwnedInputNative(event, "lostpointercapture")) return;
     if (this.navigationController.handlePointerEnd(event, "lostpointercapture")) {
       this.releasePenContact(event, "lostpointercapture");
       return;
@@ -1046,6 +1083,7 @@ export class PointerRouter {
     const phase = event.type === "pointercancel" ? "pointercancel"
       : event.type === "lostpointercapture" ? "lostpointercapture"
         : "pointerup";
+    if (this.leaveHostOwnedInputNative(event, phase, phase === "pointerup" || phase === "pointercancel")) return;
     const trackedBefore = event.pointerType === "touch" ? this.touchCount() : 0;
     const hadNavigationContact = this.navigationController.ownsPointer(event.pointerId);
     if (this.navigationController.handlePointerEnd(event, phase)) {
@@ -1225,6 +1263,7 @@ export class PointerRouter {
     }
     this.routed.clear();
     this.routedPointerTypes.clear();
+    this.hostOwnedPointers.clear();
     if (this.stylusErasers.size > 0) this.callbacks.onStylusEraserEnd?.();
     this.stylusErasers.clear();
     this.navigationController.detachSurface(this.element);

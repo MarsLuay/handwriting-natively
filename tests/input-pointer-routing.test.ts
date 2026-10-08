@@ -24,6 +24,51 @@ async function nextAnimationFrame(): Promise<void> {
 }
 
 describe("PointerRouter", () => {
+  it("leaves embedded host-viewer pointer sequences native", () => {
+    const element = document.createElement("div");
+    const embed = document.createElement("div");
+    embed.className = "pdf-embed";
+    const toolbar = document.createElement("button");
+    toolbar.className = "pdf-toolbar-right";
+    embed.append(toolbar);
+    element.append(embed);
+    document.body.append(element);
+
+    const routes: string[] = [];
+    const starts = vi.fn();
+    const moves = vi.fn();
+    const ends = vi.fn();
+    const nativeInput = vi.fn();
+    const router = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true,
+      isHostOwnedInputTarget: (target) => target instanceof Element && Boolean(target.closest(".pdf-embed")),
+      onHostOwnedInput: nativeInput,
+      onRoute: (route) => routes.push(route),
+      onStart: starts,
+      onMove: moves,
+      onEnd: ends
+    });
+
+    const down = pointer("pen", 91, { type: "pointerdown" });
+    const move = pointer("pen", 91, { type: "pointermove" });
+    const up = pointer("pen", 91, { type: "pointerup", buttons: 0 });
+    toolbar.dispatchEvent(down);
+    toolbar.dispatchEvent(move);
+    toolbar.dispatchEvent(up);
+
+    expect([down.defaultPrevented, move.defaultPrevented, up.defaultPrevented]).toEqual([false, false, false]);
+    expect(nativeInput.mock.calls.map((call) => call[1])).toEqual(["pointerdown", "pointermove", "pointerup"]);
+    expect(routes).toEqual([]);
+    expect(starts).not.toHaveBeenCalled();
+    expect(moves).not.toHaveBeenCalled();
+    expect(ends).not.toHaveBeenCalled();
+    expect(router.activePenIds()).toEqual([]);
+
+    router.destroy();
+    element.remove();
+  });
+
   it("exposes listener health for diagnostics without changing routing state", () => {
     const element = document.createElement("div");
     document.body.append(element);

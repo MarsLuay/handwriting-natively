@@ -1409,6 +1409,10 @@ export class ViewerInkSession {
   private readonly seenPhysicalTouchEvents = new WeakSet<TouchEvent>();
   /** Capture-phase collectors and the document probe inspect the same down. */
   private readonly pointerHitTestCache = new WeakMap<PointerEvent, PointerHitTest>();
+  /** Native PDF embed contacts never enter Markdown fallback ink routing. */
+  private readonly nativeEmbeddedPdfPointerIds = new Set<number>();
+  private readonly nativeEmbeddedPdfInputEvents = new WeakSet<Event>();
+  private readonly nativeEmbeddedPdfMoveLogAt = new Map<string, { loggedAt: number; suppressed: number }>();
   /** Links a live PointerEvent id to the bounded physical-contact trace. */
   private readonly physicalContactIdsByPointer = new Map<number, string>();
   /** Pointer-down timestamps let completed stroke profiles separate startup from user draw time. */
@@ -2272,6 +2276,9 @@ export class ViewerInkSession {
     this.installPointerDownProbes(doc, options, within);
     this.installPointerUpCancelProbes(doc, options);
     doc.addEventListener("pointermove", (event: PointerEvent) => {
+      const startedInNativeEmbed = this.nativeEmbeddedPdfPointerIds.has(event.pointerId);
+      const targetedNativeEmbed = this.recordNativeEmbeddedPdfInput(event, "pointermove", "document-capture");
+      if (startedInNativeEmbed || targetedNativeEmbed) return;
       this.continueOpenPenStroke(event);
     }, { capture: true, passive: false, signal: this.pointerProbeAbort.signal });
     adapter.scrollElement().addEventListener("scroll", () => this.updatePenScrollEvidence(), options);
@@ -3560,12 +3567,64 @@ export class ViewerInkSession {
     this.logger.pointerTypeOrigin({ ...origin });
   }
 
+  private recordNativeEmbeddedPdfInput(event: Event, phase: string, source: string): boolean {
+    if (this.options.adapter.isHostOwnedInputTarget?.(event.target) !== true) return false;
+
+    const pointer = event as PointerEvent;
+    if (event.type === "pointerdown" && Number.isFinite(pointer.pointerId)) {
+      this.nativeEmbeddedPdfPointerIds.add(pointer.pointerId);
+      while (this.nativeEmbeddedPdfPointerIds.size > 32) {
+        const oldest = this.nativeEmbeddedPdfPointerIds.values().next().value;
+        if (oldest === undefined) break;
+        this.nativeEmbeddedPdfPointerIds.delete(oldest);
+      }
+    }
+    if (this.nativeEmbeddedPdfInputEvents.has(event)) return true;
+    this.nativeEmbeddedPdfInputEvents.add(event);
+
+    const isMove = phase === "pointermove" || phase === "touchmove" || phase === "gesturechange";
+    const pointerId = Number.isFinite(pointer.pointerId) ? pointer.pointerId : null;
+    let suppressedMoves = 0;
+    if (isMove) {
+      const key = `${event.type}:${pointerId ?? "touch"}`;
+      const now = performance.now();
+      const previous = this.nativeEmbeddedPdfMoveLogAt.get(key);
+      if (previous && now - previous.loggedAt < 120) {
+        previous.suppressed += 1;
+        return true;
+      }
+      suppressedMoves = previous?.suppressed ?? 0;
+      this.nativeEmbeddedPdfMoveLogAt.set(key, { loggedAt: now, suppressed: 0 });
+      while (this.nativeEmbeddedPdfMoveLogAt.size > 16) {
+        const oldest = this.nativeEmbeddedPdfMoveLogAt.keys().next().value;
+        if (oldest === undefined) break;
+        this.nativeEmbeddedPdfMoveLogAt.delete(oldest);
+      }
+    }
+
+    this.logger.pointerSeen({
+      source: "native-embedded-pdf-input",
+      owner: "obsidian",
+      phase,
+      eventType: event.type,
+      observer: source,
+      pointerType: pointer.pointerType || null,
+      pointerId,
+      buttons: Number.isFinite(pointer.buttons) ? pointer.buttons : null,
+      target: describeTarget(event.target),
+      defaultPrevented: event.defaultPrevented,
+      suppressedMoves
+    });
+    return true;
+  }
+
   private installPointerDownProbes(
     doc: Document,
     options: AddEventListenerOptions,
     within: (target: EventTarget | null) => boolean
   ): void {
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
+      if (this.recordNativeEmbeddedPdfInput(e, "pointerdown", "document-capture")) return;
       this.notePointerTypeOrigin(e, "document-pointer-probe", "capture");
       this.noteUiInput(e);
       const hitPage = this.closestPdfPageElement(e.target);
@@ -3672,6 +3731,7 @@ export class ViewerInkSession {
 
     // Bubble: if the page router never marked the pointer, own the stroke here.
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
+      if (this.recordNativeEmbeddedPdfInput(e, "pointerdown", "document-bubble")) return;
       this.notePointerTypeOrigin(e, "document-pointer-fallback", "bubble");
       const hitPage = this.closestPdfPageElement(e.target);
       const hitTest = this.shouldFallbackRoutePointer(e)
@@ -3686,6 +3746,12 @@ export class ViewerInkSession {
     options: AddEventListenerOptions
   ): void {
     const clearHandled = (e: PointerEvent): void => {
+      const nativeEmbedPointer = this.nativeEmbeddedPdfPointerIds.delete(e.pointerId);
+      const nativeEmbedTarget = this.recordNativeEmbeddedPdfInput(e, e.type, "document-terminal");
+      if (nativeEmbedPointer || nativeEmbedTarget) {
+        this.handledDrawPointers.delete(e.pointerId);
+        return;
+      }
       this.finishDocumentHandoff(e, e.type === "pointercancel" ? "pointercancel" : "pointerup", undefined, {
         terminalObservedByDocument: true,
         eventType: e.type
@@ -11103,6 +11169,10 @@ export class ViewerInkSession {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
       canAnnotatePointer: (event) => this.canAnnotateSurface(surface, event),
+      isHostOwnedInputTarget: (target) => this.options.adapter.isHostOwnedInputTarget?.(target) === true,
+      onHostOwnedInput: (event, phase) => {
+        this.recordNativeEmbeddedPdfInput(event, phase, "page-router");
+      },
       allowEditableAnnotationTarget: (event) => this.options.adapter.surfaceType === "markdown"
         && event.target instanceof Element
         && surface.page.element.contains(event.target)
@@ -11877,6 +11947,7 @@ export class ViewerInkSession {
     within: (target: EventTarget | null) => boolean,
     hitTest = this.inspectPointerHit(event, this.closestPdfPageElement(event.target), within(event.target))
   ): void {
+    if (this.recordNativeEmbeddedPdfInput(event, "pointerdown", "document-capture-fallback")) return;
     if (!this.shouldFallbackRoutePointer(event)) return;
     const targetWithin = within(event.target);
     if (isInputChromeTarget(event.target)) {
@@ -11997,6 +12068,7 @@ export class ViewerInkSession {
     within: (target: EventTarget | null) => boolean,
     hitTest = this.inspectPointerHit(event, this.closestPdfPageElement(event.target), within(event.target))
   ): void {
+    if (this.recordNativeEmbeddedPdfInput(event, "pointerdown", "document-bubble-fallback")) return;
     if (!this.shouldFallbackRoutePointer(event)) return;
     const fallbackPage = this.closestPdfPageElement(event.target);
     const fallbackSurface = fallbackPage
