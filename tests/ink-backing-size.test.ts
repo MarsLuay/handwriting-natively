@@ -4,7 +4,9 @@ import {
   inkBackingSize,
   MAX_INK_EDGE_PX,
   MAX_INK_PIXELS,
-  MOBILE_MAX_INK_EDGE_PX
+  markdownInkBackingBudget,
+  MOBILE_MAX_INK_EDGE_PX,
+  MOBILE_MAX_INK_PIXELS
 } from "../src/runtime/inkBackingSize";
 
 describe("inkBackingSize", () => {
@@ -41,5 +43,18 @@ describe("inkBackingSize", () => {
     const b = inkBackingSize(24000, 32000, 2);
     expect(a.pixelWidth).toBe(b.pixelWidth);
     expect(a.pixelHeight).toBe(b.pixelHeight);
+  });
+
+  it("gives tall Markdown canvases a larger edge while preserving platform pixel budgets", () => {
+    const desktop = markdownInkBackingBudget(false);
+    const desktopSize = inkBackingSize(640, 5_000, 2, desktop.maxEdge, desktop.maxPixels);
+    expect(desktopSize.backingScale).toBeCloseTo(2, 5);
+    expect(desktopSize.pixelWidth * desktopSize.pixelHeight).toBeLessThanOrEqual(MAX_INK_PIXELS);
+
+    const mobile = markdownInkBackingBudget(true);
+    const mobileSize = inkBackingSize(640, 5_000, 2, mobile.maxEdge, mobile.maxPixels);
+    const oldMobileSize = inkBackingSize(640, 5_000, 2, MOBILE_MAX_INK_EDGE_PX, MOBILE_MAX_INK_PIXELS);
+    expect(mobileSize.backingScale).toBeGreaterThan(oldMobileSize.backingScale);
+    expect(mobileSize.pixelWidth * mobileSize.pixelHeight).toBeLessThanOrEqual(MOBILE_MAX_INK_PIXELS);
   });
 });

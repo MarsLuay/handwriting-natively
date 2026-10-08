@@ -579,7 +579,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
 
     new Setting(contents)
       .setName("Vault debug log")
-      .setDesc("With this enabled, show session and informational diagnostics in Obsidian's developer console at the verbose level and append them to a line-delimited vault log. Copy logs also includes recent plugin warnings/errors emitted to DevTools and a live toolbar visibility/placement snapshot.")
+      .setDesc("With this enabled, show session and informational diagnostics in Obsidian's developer console at the verbose level and append them to a line-delimited vault log. Copy logs also includes recent plugin warnings/errors emitted to devtools and a live toolbar visibility/placement snapshot.")
       .addToggle((toggle) =>
         toggle.setValue(this.host.inkSettings.vaultDebugLog).onChange(async (value) => {
           await this.persistPatch({ vaultDebugLog: value });

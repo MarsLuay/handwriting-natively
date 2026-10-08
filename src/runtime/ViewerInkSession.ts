@@ -226,7 +226,7 @@ import { insertPagesIntoSidecar, removePageFromSidecar, reorderPageInSidecar, re
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultFs";
 import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
-import { inkBackingBudget, inkBackingSize } from "./inkBackingSize";
+import { inkBackingBudget, inkBackingSize, markdownInkBackingBudget } from "./inkBackingSize";
 import type { DebugState } from "../ui/DebugPanel";
 import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
 import { DropdownController } from "../ui/DropdownController";
@@ -17323,7 +17323,10 @@ export class ViewerInkSession {
     cssHeight: number,
     tier: "full" | "neighbor" = "full"
   ): ReturnType<typeof inkBackingSize> {
-    const budget = inkBackingBudget(this.runtimePlatform().mobile);
+    const mobile = this.runtimePlatform().mobile;
+    const budget = this.options.adapter.surfaceType === "markdown"
+      ? markdownInkBackingBudget(mobile)
+      : inkBackingBudget(mobile);
     const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
     if (tier === "neighbor") {
       return inkBackingSize(

@@ -12,6 +12,10 @@ export const MAX_INK_PIXELS = 8192 * 6144;
 export const MOBILE_MAX_INK_EDGE_PX = 4096;
 export const MOBILE_MAX_INK_PIXELS = 4096 * 3072;
 
+/** Markdown is one tall logical page, so its edge cap must not downscale ink prematurely. */
+export const MARKDOWN_MAX_INK_EDGE_PX = 16384;
+export const MOBILE_MARKDOWN_MAX_INK_EDGE_PX = 8192;
+
 export interface InkBackingBudget {
   maxEdge: number;
   maxPixels: number;
@@ -21,6 +25,13 @@ export function inkBackingBudget(mobile: boolean): InkBackingBudget {
   return mobile
     ? { maxEdge: MOBILE_MAX_INK_EDGE_PX, maxPixels: MOBILE_MAX_INK_PIXELS }
     : { maxEdge: MAX_INK_EDGE_PX, maxPixels: MAX_INK_PIXELS };
+}
+
+/** Taller edge limits for a note-wide canvas; retain each platform's pixel cap. */
+export function markdownInkBackingBudget(mobile: boolean): InkBackingBudget {
+  return mobile
+    ? { maxEdge: MOBILE_MARKDOWN_MAX_INK_EDGE_PX, maxPixels: MOBILE_MAX_INK_PIXELS }
+    : { maxEdge: MARKDOWN_MAX_INK_EDGE_PX, maxPixels: MAX_INK_PIXELS };
 }
 
 export interface InkBackingSize {

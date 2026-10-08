@@ -17,7 +17,7 @@ class MemoryFiles implements TextFileAdapter {
   async remove(path: string): Promise<void> { this.values.delete(path); }
 }
 
-function markdownHost(mode: "preview" | "source"): { host: HTMLElement; root: HTMLElement } {
+function markdownHost(mode: "preview" | "source", scrollHeight = 1_280): { host: HTMLElement; root: HTMLElement } {
   const host = document.createElement("div");
   host.className = "workspace-leaf";
   const root = document.createElement("div");
@@ -41,7 +41,7 @@ function markdownHost(mode: "preview" | "source"): { host: HTMLElement; root: HT
   Object.defineProperty(root, "clientWidth", { configurable: true, value: 640 });
   Object.defineProperty(root, "clientHeight", { configurable: true, value: 480 });
   Object.defineProperty(root, "scrollWidth", { configurable: true, value: 640 });
-  Object.defineProperty(root, "scrollHeight", { configurable: true, value: 1_280 });
+  Object.defineProperty(root, "scrollHeight", { configurable: true, value: scrollHeight });
   root.getBoundingClientRect = () => ({
     x: 0, y: 0, left: 0, top: 0, right: 640, bottom: 480,
     width: 640, height: 480, toJSON: () => ({})
@@ -224,6 +224,35 @@ describe("Markdown annotation session", () => {
       expect(adapter.pages()).toHaveLength(1);
       expect(adapter.pages()[0]?.element).toBe(adapter.root);
       expect(adapter.root).toBe(root);
+    } finally {
+      await session.destroy({ silent: true });
+    }
+  });
+
+  it("keeps tall Markdown note ink at display resolution within the backing pixel budget", async () => {
+    mockCanvasContext();
+    vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(2);
+    const files = new MemoryFiles();
+    const { host } = markdownHost("preview", 5_000);
+    const adapter = MarkdownViewAdapter.attach(host, {}, { mode: "preview" });
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/long-note.md",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "annotations/recovery"),
+      saveSettings: async () => undefined,
+      notice: () => undefined
+    });
+
+    try {
+      const internal = session as unknown as {
+        surfaces: Map<number, { canvas: HTMLCanvasElement }>;
+      };
+      const surface = internal.surfaces.get(1);
+      expect(surface).toBeDefined();
+      expect(surface!.canvas.width).toBe(1_280);
+      expect(surface!.canvas.height).toBe(10_000);
     } finally {
       await session.destroy({ silent: true });
     }

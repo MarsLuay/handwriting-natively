@@ -67,12 +67,12 @@ describe("PDF adapters", () => {
     const annotationLayer = document.createElement("div");
     annotationLayer.className = "annotationLayer";
     const annotationLink = document.createElement("a");
-    annotationLink.href = "https://example.com/annotation";
+    annotationLink.href = "#annotation";
     const linkChild = document.createElement("span");
     annotationLink.append(linkChild);
     annotationLayer.append(annotationLink);
     const ordinaryLink = document.createElement("a");
-    ordinaryLink.href = "https://example.com/ordinary";
+    ordinaryLink.href = "#ordinary";
     page.append(annotationLayer, ordinaryLink);
 
     const adapter = await NativePdfViewAdapter.attach(host);
