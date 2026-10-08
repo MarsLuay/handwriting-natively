@@ -85,7 +85,7 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(options.isEvalSupported).toBe(false);
   });
 
-  it("mounts the shared toolbar without a native PDF toolbar and keeps PDF actions", async () => {
+  it("mounts the shared toolbar, keeps PDF actions, and preserves the viewport across resize", async () => {
     const context = {
       beginPath: vi.fn(),
       clearRect: vi.fn(),
@@ -135,6 +135,27 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     const adapter = await PdfJsViewAdapter.create({ app, file, pluginDir: "pdfjs", host, runtime });
     expect(getPage.mock.calls.filter(([pageNumber]) => pageNumber === 1)).toHaveLength(1);
     expect(host.querySelector(".pdf-toolbar")).toBeNull();
+    const scroll = host.querySelector<HTMLElement>(".hn-owned-pdf-scroll");
+    expect(scroll).not.toBeNull();
+    if (!scroll) throw new Error("PDF scroll container was not mounted");
+    Object.defineProperties(scroll, {
+      clientWidth: { configurable: true, value: 600 },
+      clientHeight: { configurable: true, value: 800 },
+      scrollWidth: { configurable: true, value: 1800 },
+      scrollHeight: { configurable: true, value: 3000 }
+    });
+    adapter.onResize();
+    const initialFitScale = adapter.getViewState().scale;
+    scroll.scrollLeft = 180;
+    scroll.scrollTop = 540;
+    scroll.dispatchEvent(new Event("scroll"));
+    expect(adapter.getViewState().scaleMode).toBe("custom");
+    Object.defineProperty(scroll, "clientWidth", { configurable: true, value: 800 });
+    adapter.onResize();
+    expect(adapter.getViewState().scale).toBe(initialFitScale);
+    expect(scroll.scrollLeft).toBe(180);
+    expect(scroll.scrollTop).toBe(540);
+
     const toolbar = document.createElement("div");
     toolbar.className = "native-pdf-handwriting-toolbar";
     adapter.mountToolbar(toolbar, "right");

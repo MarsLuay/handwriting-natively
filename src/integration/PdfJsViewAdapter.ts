@@ -239,6 +239,8 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private rotation = 0;
   private currentPageNumber = 1;
   private currentScaleMode: ViewerScaleMode = "fit-width";
+  // Resolve the default fit once; later layout changes must preserve the user's viewport.
+  private initialScaleResolved = false;
   private zoomTimer: number | null = null;
   private layoutFrame: number | null = null;
   private readonly toolbarHost: HTMLElement;
@@ -369,6 +371,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       : Array.from({ length: Math.min(8, this.pdfDocument.numPages) }, (_, index) => index + 1);
     for (const pageNumber of preloadPages) this.queuePageRender(pageNumber, "high");
     await this.loadOutline();
+    if (!this.initialScaleResolved) this.fitWidth();
     this.callbacks.onPagesChanged?.("pdfjs-document-ready");
     this.emitViewState("pages-dom");
   }
@@ -473,6 +476,9 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   private installScrollTracking(): void {
     const onScroll = (): void => {
+      this.initialScaleResolved = true;
+      // Persist the chosen zoom once a scroll position exists instead of restoring a fit preset.
+      this.currentScaleMode = "custom";
       this.renderScheduler.notifyScrollPosition(this.scroll.scrollTop, this.scroll.scrollLeft);
       this.scheduleLayoutUpdate();
       this.emitViewState("scroll");
@@ -1052,6 +1058,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     const previous = this.scale;
     this.scale = clampScale(next);
     this.currentScaleMode = normalizeScaleMode(mode);
+    this.initialScaleResolved = true;
     if (Math.abs(previous - this.scale) < 0.001) return;
     const ratio = this.scale / previous;
     if (focalClientX !== undefined && focalClientY !== undefined) {
@@ -1087,8 +1094,9 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   private fitWidth(): void {
     const page = this.pagesByNumber.get(this.currentPageNumber);
-    if (!page || page.naturalWidth <= 0) return;
-    this.setScale((this.scroll.clientWidth - 32) / this.displayWidth(page), "fit-width");
+    const availableWidth = this.scroll.clientWidth - 32;
+    if (!page || page.naturalWidth <= 0 || availableWidth <= 0) return;
+    this.setScale(availableWidth / this.displayWidth(page), "fit-width");
   }
 
   private fitHeight(): void {
@@ -1456,10 +1464,9 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   onResize(): void {
     if (this.destroyed) return;
-    if (this.currentScaleMode === "fit-width") this.fitWidth();
-    else if (this.currentScaleMode === "fit-height") this.fitHeight();
-    else if (this.currentScaleMode === "fit-page") this.fitPage();
-    else this.scheduleLayoutUpdate();
+    // Obsidian also calls this for pane/sidebar layout changes, not just initial sizing.
+    if (!this.initialScaleResolved) this.fitWidth();
+    this.scheduleLayoutUpdate();
   }
 
   scrollElement(): HTMLElement { return this.scroll; }
