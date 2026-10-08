@@ -522,7 +522,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
 
     new Setting(contents)
       .setName("Vault debug log")
-      .setDesc("Append every plugin event to a line-delimited log file in the vault so agents can read it directly. Off by default. Includes left-toolbar PDF sidebar offset diagnostics (reason, rects, jumps).")
+      .setDesc("With this enabled, show session and informational diagnostics in Obsidian's developer console at the verbose level and append them to a line-delimited vault log for copy logs. Plugin operation warnings and errors stay visible when this is off. Includes left-toolbar PDF sidebar offset diagnostics (reason, rects, jumps).")
       .addToggle((toggle) =>
         toggle.setValue(this.host.inkSettings.vaultDebugLog).onChange(async (value) => {
           await this.persistPatch({ vaultDebugLog: value });

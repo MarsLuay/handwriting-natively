@@ -1,5 +1,5 @@
 import type { Vault } from "obsidian";
-import type { VaultLogSink, VaultLogLevel } from "./VaultLogSink";
+import type { VaultLogSink, VaultLogLevel, VaultLogWriteOptions } from "./VaultLogSink";
 import { normalizeVaultRelativePath } from "../storage/VaultFs";
 
 const LOG_RETENTION_MS = 60 * 60 * 1000;
@@ -65,9 +65,15 @@ export class VaultDebugLog implements VaultLogSink {
     this.scheduleRetentionPrune();
   }
 
-  write(level: VaultLogLevel, event: string, payload: Record<string, unknown> = {}): void {
-    if (!this.enabled()) return;
-    this.buffer.push(this.serialize(level, event, payload));
+  write(
+    level: VaultLogLevel,
+    event: string,
+    payload: Record<string, unknown> = {},
+    options: VaultLogWriteOptions = {}
+  ): void {
+    const line = this.capture(level, event, payload, options);
+    if (line === null) return;
+    this.buffer.push(line);
     this.scheduleFlush();
   }
 
@@ -75,9 +81,15 @@ export class VaultDebugLog implements VaultLogSink {
    * Write and flush immediately so breadcrumbs survive Obsidian Mobile crashes
    * that kill the WebView before the 200ms debounce flush runs.
    */
-  async writeUrgent(level: VaultLogLevel, event: string, payload: Record<string, unknown> = {}): Promise<void> {
-    if (!this.enabled()) return;
-    this.buffer.push(this.serialize(level, event, payload));
+  async writeUrgent(
+    level: VaultLogLevel,
+    event: string,
+    payload: Record<string, unknown> = {},
+    options: VaultLogWriteOptions = {}
+  ): Promise<void> {
+    const line = this.capture(level, event, payload, options);
+    if (line === null) return;
+    this.buffer.push(line);
     await this.flush();
   }
 
@@ -116,14 +128,29 @@ export class VaultDebugLog implements VaultLogSink {
     void this.flush();
   }
 
-  private serialize(level: VaultLogLevel, event: string, payload: Record<string, unknown>): string {
-    return JSON.stringify({
+  private capture(
+    level: VaultLogLevel,
+    event: string,
+    payload: Record<string, unknown>,
+    options: VaultLogWriteOptions
+  ): string | null {
+    const enabled = this.enabled();
+    const record = {
       ts: this.now().toISOString(),
       level,
       event,
       ...this.context(),
       ...payload
-    });
+    };
+    // Errors and warnings stay visible in DevTools even when file diagnostics
+    // are off. Informational diagnostics follow the existing opt-in setting.
+    if (enabled || level !== "info" || options.forceConsole) {
+      const prefix = "[Handwriting Natively]";
+      if (level === "info") console.debug(prefix, event, record);
+      else if (level === "warn") console.warn(prefix, event, record);
+      else console.error(prefix, event, record);
+    }
+    return enabled ? JSON.stringify(record) : null;
   }
 
   private scheduleFlush(): void {

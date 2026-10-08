@@ -1743,8 +1743,8 @@ export class ViewerInkSession {
       },
       layoutForAnnotation: (pageNumber, annotation) => this.findLayoutForAnnotation(pageNumber, annotation),
       onWarning: (message) => {
-        console.warn(`[Handwriting Natively] ${message}`);
-        this.options.vaultLog?.write("warn", message);
+        if (this.options.vaultLog) this.options.vaultLog.write("warn", message);
+        else console.warn(`[Handwriting Natively] ${message}`);
       },
       onDebug: (phase, details) => {
         if (!(this.options.debugEnabled?.() ?? false)) return;

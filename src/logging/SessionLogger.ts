@@ -1286,9 +1286,12 @@ export class SessionLogger {
 
   private emit(level: "info" | "warn", event: string, payload: Record<string, unknown>, force = false): void {
     if (!this.isEnabled() && !force) return;
-    if (level === "info") console.debug(PREFIX, event, payload);
+    if (this.vaultLog) {
+      // VaultDebugLog is the shared Obsidian console + file sink for real
+      // sessions. It enriches both outputs with the same version/timestamp.
+      this.vaultLog.write(level, event, payload, { forceConsole: force });
+    } else if (level === "info") console.debug(PREFIX, event, payload);
     else console.warn(PREFIX, event, payload);
-    this.vaultLog?.write(level, event, payload);
   }
 }
 

@@ -33,3 +33,11 @@ Centralize touch, pinch, hand-tool, and modifier-wheel navigation and validate t
 Paths: `src/input/GestureNavigationController.ts`, `src/input/PointerRouter.ts`, `src/runtime/ViewerInkSession.ts`, `docs/input-gesture-architecture.md`
 
 Checks: focused gesture and orientation tests, including persisted toolbar rotation; `npm test`; `npm run lint`; `npm run build` when the shared generated `main.js` is no longer being edited.
+
+## unified-developer-logs — done
+
+Route plugin diagnostic events through Obsidian's developer console and the same vault log used by Copy logs.
+
+Paths: `src/logging/SessionLogger.ts`, `src/logging/VaultDebugLog.ts`, `src/logging/VaultLogSink.ts`, `src/settings.ts`, `src/runtime/ViewerInkSession.ts`
+
+Checks: focused logger tests; `npm test`.
