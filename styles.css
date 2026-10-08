@@ -21,6 +21,21 @@
   min-width: 0;
 }
 
+.native-pdf-handwriting-toolbar-portal {
+  inset: 0;
+  pointer-events: none;
+  position: fixed;
+  z-index: var(--layer-popover, 1000);
+}
+
+.native-pdf-handwriting-toolbar-portal.is-owner-view-hidden {
+  visibility: hidden;
+}
+
+.native-pdf-handwriting-toolbar-portal > .native-pdf-handwriting-toolbar {
+  pointer-events: auto;
+}
+
 .native-pdf-handwriting-toolbar.native-pdf-handwriting-toolbar-floating-fallback {
   background: var(--background-primary, #fff);
   border: 1px solid var(--background-modifier-border, #d1d5db);

@@ -1041,6 +1041,8 @@ export class ViewerInkSession {
   private floatingToolbarHandle: HTMLButtonElement | null = null;
   private floatingToolbarAbort: AbortController | null = null;
   private floatingToolbarResizeObserver: ResizeObserver | null = null;
+  private floatingToolbarPortal: HTMLDivElement | null = null;
+  private floatingToolbarVisibilityObserver: IntersectionObserver | null = null;
   private floatingToolbarDragActive = false;
   private floatingToolbarPosition: FloatingToolbarPosition | null = null;
   private lastHandwritingUiMissingKey = "";
@@ -8311,7 +8313,8 @@ export class ViewerInkSession {
   private reconcileToolbarMount(reason: string): void {
     if (this.destroyed || !this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) return;
     const toolbar = this.toolbar.element;
-    const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
+    const portal = this.floatingToolbarPortal;
+    const toolbarConnected = toolbar.isConnected && portal?.contains(toolbar) === true;
     const floating = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback");
     const orientationChanged = this.applyToolbarOrientation(toolbar);
     if (toolbarConnected && floating && !orientationChanged) return;
@@ -8333,7 +8336,32 @@ export class ViewerInkSession {
     this.applyToolbarOrientation(toolbar);
     toolbar.classList.add("native-pdf-handwriting-toolbar-floating-fallback");
     toolbar.classList.remove("is-main", "is-sidebar-left", "is-sidebar-right");
-    this.options.adapter.host.append(toolbar);
+
+    let portal = this.floatingToolbarPortal;
+    if (!portal) {
+      portal = createDetachedDiv(toolbar.ownerDocument);
+      portal.className = "native-pdf-handwriting-toolbar-portal";
+      portal.dataset.focusOverlayInternal = "true";
+      portal.setAttribute("aria-hidden", "false");
+      this.floatingToolbarPortal = portal;
+      const IntersectionObserverClass = toolbar.ownerDocument.defaultView?.IntersectionObserver;
+      if (IntersectionObserverClass) {
+        this.floatingToolbarVisibilityObserver = new IntersectionObserverClass((entries) => {
+          const entry = entries.find(({ target }) => target === this.options.adapter.host);
+          if (!entry || this.floatingToolbarPortal !== portal) return;
+          const visible = entry.isIntersecting && entry.intersectionRatio > 0;
+          portal?.classList.toggle("is-owner-view-hidden", !visible);
+          portal?.setAttribute("aria-hidden", String(!visible));
+        });
+        this.floatingToolbarVisibilityObserver.observe(this.options.adapter.host);
+      }
+    }
+
+    if (!portal.isConnected) {
+      const target = toolbar.ownerDocument.body ?? this.options.adapter.host;
+      target.append(portal);
+    }
+    if (toolbar.parentElement !== portal) portal.append(toolbar);
 
     if (!this.floatingToolbarHandle) {
       const handle = createDetachedEl(toolbar.ownerDocument, "button");
@@ -8482,6 +8510,10 @@ export class ViewerInkSession {
     this.floatingToolbarAbort = null;
     this.floatingToolbarResizeObserver?.disconnect();
     this.floatingToolbarResizeObserver = null;
+    this.floatingToolbarVisibilityObserver?.disconnect();
+    this.floatingToolbarVisibilityObserver = null;
+    this.floatingToolbarPortal?.remove();
+    this.floatingToolbarPortal = null;
     this.floatingToolbarDragActive = false;
     this.floatingToolbarHandle?.remove();
     this.floatingToolbarHandle = null;
@@ -8523,7 +8555,7 @@ export class ViewerInkSession {
 
   private handwritingUiState(reason: string, details: Record<string, unknown> = {}): Record<string, unknown> {
     const toolbar = this.toolbar.element;
-    const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
+    const toolbarInPortal = toolbar.isConnected && this.floatingToolbarPortal?.contains(toolbar) === true;
     let currentPage: number | null = null;
     try {
       currentPage = this.options.adapter.getViewState().pageNumber;
@@ -8544,11 +8576,12 @@ export class ViewerInkSession {
         host: this.options.adapter.host.isConnected,
         viewer: this.options.adapter.root.isConnected,
         toolbar: toolbar.isConnected,
-        toolbarInHost: toolbarConnected
+        toolbarInHost: this.options.adapter.host.contains(toolbar),
+        toolbarInPortal
       },
       viewerConnected: this.options.adapter.root.isConnected,
       toolbarExpected: true,
-      toolbarConnected,
+      toolbarConnected: toolbarInPortal,
       floatingToolbar: toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback"),
       toolbarOrientation: this.currentToolbarOrientation(),
       pageCount: Math.min(999, this.options.adapter.pages().length),
@@ -8602,7 +8635,7 @@ export class ViewerInkSession {
       ...this.toolbarPresentationSnapshot(),
       rootConnected: root.isConnected,
       hostConnected: host.isConnected,
-      customToolbarCount: host.querySelectorAll(".native-pdf-handwriting-toolbar").length,
+      customToolbarCount: this.floatingToolbarPortal?.querySelectorAll(".native-pdf-handwriting-toolbar").length ?? 0,
       toolbarControls,
       eraserControlConnected: Boolean(toolbar.querySelector("[data-control='eraser']")),
       addPageControlCount: root.querySelectorAll(".native-pdf-handwriting-add-page").length,

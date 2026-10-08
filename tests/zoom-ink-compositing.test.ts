@@ -929,7 +929,7 @@ describe("zoom ink compositing", () => {
     const overlay = surface.overlay;
     expect(overlay).toBeTruthy();
     expect(page.contains(overlay) || overlay.isConnected).toBe(true);
-    expect(adapter.host.querySelector(".native-pdf-handwriting-toolbar-floating-fallback")).not.toBeNull();
+    expect(document.body.querySelector(".native-pdf-handwriting-toolbar-floating-fallback")).not.toBeNull();
     const routerBefore = surface.router;
     const scrollBefore = { left: scroll.scrollLeft, top: scroll.scrollTop };
 
