@@ -3,6 +3,7 @@ import type { App, WorkspaceLeaf } from "obsidian";
 import {
   ObsidianPdfToolbarBridge,
   captureObsidianPdfToolbarConstructor,
+  captureObsidianPdfToolbarConstructorResult,
   nativePdfToolbarConstructorFromLeaf,
   type NativePdfToolbarActions,
   type NativePdfToolbarConstructor,
@@ -263,6 +264,24 @@ describe("Obsidian PDF toolbar compatibility bridge", () => {
     };
 
     await expect(captureObsidianPdfToolbarConstructor({ workspace } as unknown as App)).rejects.toThrow("unexpectedly loaded a PDF document");
+    expect(scratchLeaf.detach).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a toolbar discovery failure from rejecting plugin startup", async () => {
+    const scratchLeaf = {
+      view: {},
+      setViewState: vi.fn(async () => { throw new Error("native PDF shell failed"); }),
+      detach: vi.fn()
+    } as unknown as WorkspaceLeaf;
+    const workspace = {
+      getLeavesOfType: vi.fn(() => []),
+      getLeaf: vi.fn(() => scratchLeaf)
+    };
+
+    await expect(captureObsidianPdfToolbarConstructorResult({ workspace } as unknown as App)).resolves.toEqual({
+      constructor: null,
+      error: expect.stringContaining("native PDF shell failed")
+    });
     expect(scratchLeaf.detach).toHaveBeenCalledOnce();
   });
 });

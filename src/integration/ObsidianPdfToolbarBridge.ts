@@ -70,6 +70,11 @@ export type NativePdfToolbarConstructor = new (
   child: NativePdfToolbarChild
 ) => NativePdfToolbar;
 
+export interface NativePdfToolbarCaptureResult {
+  constructor: NativePdfToolbarConstructor | null;
+  error: string | null;
+}
+
 function createElement<T extends keyof HTMLElementTagNameMap>(ownerDocument: Document, tag: T): HTMLElementTagNameMap[T] {
   if (!ownerDocument.body) throw new Error("PDF toolbar document body is unavailable");
   const element = ownerDocument.body.createEl(tag);
@@ -213,6 +218,22 @@ export async function captureObsidianPdfToolbarConstructor(app: App): Promise<Na
     ].filter(Boolean).join("; "));
   } finally {
     scratchLeaf.detach();
+  }
+}
+
+/**
+ * Toolbar discovery depends on Obsidian's private PDF view internals. Keep a
+ * discovery failure from rejecting the plugin's entire onload; the owned PDF
+ * view will surface the captured error if a PDF is opened without the toolbar.
+ */
+export async function captureObsidianPdfToolbarConstructorResult(app: App): Promise<NativePdfToolbarCaptureResult> {
+  try {
+    return { constructor: await captureObsidianPdfToolbarConstructor(app), error: null };
+  } catch (error) {
+    return {
+      constructor: null,
+      error: error instanceof Error ? error.message : String(error)
+    };
   }
 }
 

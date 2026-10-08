@@ -18,7 +18,7 @@ import { ImageViewAdapter } from "./integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
 import { PLUGIN_PDF_VIEW_TYPE, PluginPdfView } from "./integration/PluginPdfView";
 import { PdfJsViewAdapter } from "./integration/PdfJsViewAdapter";
-import { captureObsidianPdfToolbarConstructor } from "./integration/ObsidianPdfToolbarBridge";
+import { captureObsidianPdfToolbarConstructorResult } from "./integration/ObsidianPdfToolbarBridge";
 import { replaceDefaultPdfViewRegistration } from "./integration/PdfExtensionRegistration";
 import { nativePdfViewStateFromLegacyState } from "./integration/PdfViewStateMigration";
 import { isSupportedImageFile } from "./integration/ImageFileTypes";
@@ -242,17 +242,31 @@ export default class NativePdfInkPlugin extends Plugin {
       await this.loadData() as Partial<PluginSettings> | null,
       this.app.vault.configDir
     );
-    const toolbarConstructor = await captureObsidianPdfToolbarConstructor(this.app);
+    await this.vaultDebugLog.clear();
+    const toolbarCapture = await captureObsidianPdfToolbarConstructorResult(this.app);
+    const toolbarConstructor = toolbarCapture.constructor;
+    if (toolbarCapture.error) {
+      await this.vaultDebugLog.writeUrgent("error", "native-pdf-toolbar-capture-failed", {
+        error: toolbarCapture.error,
+        obsidianVersion: apiVersion,
+        mobile: Platform.isMobile
+      });
+    }
     this.registerView(PLUGIN_PDF_VIEW_TYPE, (leaf) => new PluginPdfView(leaf, {
       pluginDir,
-      createAdapter: (file, host, callbacks) => PdfJsViewAdapter.create({
-        app: this.app,
-        file,
-        host,
-        callbacks,
-        pluginDir,
-        toolbarConstructor
-      }),
+      createAdapter: async (file, host, callbacks) => {
+        if (!toolbarConstructor) {
+          throw new Error(`Obsidian native PDF toolbar is unavailable: ${toolbarCapture.error ?? "constructor capture failed"}`);
+        }
+        return PdfJsViewAdapter.create({
+          app: this.app,
+          file,
+          host,
+          callbacks,
+          pluginDir,
+          toolbarConstructor
+        });
+      },
       createSession: (file, adapter) => this.createInkSession(file, adapter),
       onSessionAttached: (view, session) => this.registerSession(view.leaf, session, "owned-pdf-view"),
       onSessionDetached: (view, session, reason) => {
@@ -262,7 +276,6 @@ export default class NativePdfInkPlugin extends Plugin {
     }));
     this.register(replaceDefaultPdfViewRegistration(this.app, PLUGIN_PDF_VIEW_TYPE));
     await this.adoptExistingNativePdfLeaves();
-    await this.vaultDebugLog.clear();
     this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(activeDocument, (diagnostic) => {
       this.vaultDebugLog.write("info", "mobile-navigation-swipe-blocked", { ...diagnostic });
     });
