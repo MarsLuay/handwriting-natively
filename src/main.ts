@@ -19,7 +19,6 @@ import { findMarkdownSurfaceRoot, MarkdownViewAdapter } from "./integration/Mark
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
 import { PLUGIN_PDF_VIEW_TYPE, PluginPdfView } from "./integration/PluginPdfView";
 import { PdfJsViewAdapter } from "./integration/PdfJsViewAdapter";
-import { replaceDefaultPdfViewRegistration } from "./integration/PdfExtensionRegistration";
 import { nativePdfViewStateFromLegacyState } from "./integration/PdfViewStateMigration";
 import { isSupportedImageFile } from "./integration/ImageFileTypes";
 import type { AnnotationSurface, AnnotationSurfaceCallbacks } from "./runtime/AnnotationSurface";
@@ -268,8 +267,6 @@ export default class NativePdfInkPlugin extends Plugin {
       },
       onDiagnostic: (event, payload) => this.vaultDebugLog.write("info", event, payload)
     }));
-    this.register(replaceDefaultPdfViewRegistration(this.app, PLUGIN_PDF_VIEW_TYPE));
-    await this.adoptExistingNativePdfLeaves();
     this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(activeDocument, (diagnostic) => {
       this.vaultDebugLog.write("info", "mobile-navigation-swipe-blocked", { ...diagnostic });
     });
@@ -359,7 +356,7 @@ export default class NativePdfInkPlugin extends Plugin {
         mobile: Platform.isMobile,
         phone: Platform.isPhone
       });
-      void this.adoptExistingNativePdfLeaves().finally(() => this.scheduleDebouncedScan());
+      this.scheduleDebouncedScan();
     });
     this.registerDomEvent(window, "beforeunload", () => {
       this.emergencyPersistAllSessions();
@@ -1124,6 +1121,7 @@ export default class NativePdfInkPlugin extends Plugin {
     this.scanInProgress = true;
     this.scanAgain = false;
     try {
+      await this.adoptExistingNativePdfLeaves();
       await this.scanPdfLeaves();
       await this.scanMarkdownLeaves();
       this.scanPdfEmbeds();
@@ -1942,7 +1940,7 @@ export default class NativePdfInkPlugin extends Plugin {
     if (this.unloaded) return;
     try {
       const leaf = this.app.workspace.getLeaf("tab");
-      await leaf.openFile(file, { active: true });
+      await leaf.setViewState({ type: PLUGIN_PDF_VIEW_TYPE, state: { file: file.path } });
       this.app.workspace.setActiveLeaf(leaf, { focus: true });
       this.vaultDebugLog.write("info", "embed annotate open tab", { document: file.path });
     } catch (error) {

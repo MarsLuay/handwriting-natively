@@ -16,6 +16,7 @@
         "npm run lint",
         "npm run build",
         "Verify direct PDF startup without a native PDFToolbar dependency",
+        "Confirm Markdown ![[PDF#page=27]] embeds render with Obsidian's core PDF mapping",
         "Manual PDF checks on current desktop, Android, and iPad builds"
       ]
     },

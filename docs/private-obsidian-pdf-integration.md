@@ -2,13 +2,13 @@
 
 ## Boundary
 
-Every undocumented PDF object lookup, extension-registry operation, and selector is confined to `src/integration/`. Annotation, tools, input, storage, and UI consume the page surface and viewer commands; they do not own Obsidian's private PDF objects.
+Every undocumented PDF object lookup and selector is confined to `src/integration/`. Annotation, tools, input, storage, and UI consume the page surface and viewer commands; they do not own Obsidian's private PDF objects.
 
 ## Direct viewer and shared toolbar
 
 Direct `.pdf` leaves use the plugin-owned `PluginPdfView`. `PdfJsViewAdapter` loads vault bytes with the pinned PDF.js 4.10.38 `getDocument` API and renders `PDFPageProxy` pages into plugin page shells. It is the only document renderer and the only navigation/page-state owner for that direct leaf. `ViewerInkSession` mounts the same draggable floating `AnnotationToolbar` used by image surfaces. The More menu keeps PDF page navigation, zoom, thumbnails, outline, search, print, and download actions available, and rotates the toolbar between persisted horizontal and vertical layouts. Old main/left/right placement values migrate to horizontal/vertical orientation and are removed from saved settings. Direct PDF startup does not capture or instantiate Obsidian's private `PDFToolbar` and does not depend on a host `.pdf-toolbar` element.
 
-Obsidian's public `registerExtensions` refuses to replace the core `pdf` mapping. `PdfExtensionRegistration` therefore capability-checks the private registry, requires the existing owner to be `pdf`, transfers only the `.pdf` mapping to `PluginPdfView`, and restores the prior owner on unload. `PdfViewStateMigration` maps existing native `{page,left,top,zoom}` state into the plugin's canonical `ViewerState`; new direct leaves use plugin state thereafter.
+Keep Obsidian's global `pdf` extension mapping unchanged. Markdown PDF embeds use that host mapping to create their native viewer; replacing it leaves a loaded embed shell without rendered pages. Direct PDF leaves remain plugin-owned: plugin-created tabs select `PluginPdfView` explicitly, and scans migrate any native direct PDF leaves with their page, position, zoom, and rotation state preserved by `PdfViewStateMigration`.
 
 ## Versioned per-viewer contract
 

@@ -4,7 +4,7 @@ Handwriting Natively adds one annotation system to Obsidian's direct and embedde
 
 ## Boundaries
 
-- `integration/`: only owner of undocumented Obsidian PDF objects, the private PDF extension registry, DOM selectors, PDF.js compatibility probes, viewer discovery, page location, and reversible patches.
+- `integration/`: only owner of undocumented Obsidian PDF objects, DOM selectors, PDF.js compatibility probes, viewer discovery, page location, and reversible patches. The plugin leaves Obsidian's global `.pdf` extension mapping intact for Markdown embeds; direct PDF leaves select `PluginPdfView` explicitly or migrate to it during the normal leaf scan.
 - `focus-view/`: embed Annotate chrome and helpers that open a PDF leaf (not a private-class viewer).
 - `input/`: Pointer Events policy. `GestureNavigationController` is shared by a viewer session's page routers and owns surface-enabled touch pan/pinch, hand-tool movement, modifier-wheel zoom, and pen exclusion. Markdown wheel, touch, and hand-tool scrolling stay native. `PointerRouter` delegates navigation movement and keeps annotation routing at the page boundary. See `docs/input-gesture-architecture.md`.
 - `runtime/AnnotationSurface.ts`: the minimal page-surface contract (`AnnotationPageInfo`, page-local geometry, view/scroll lifecycle, overlay/UI mounting, and teardown). PDF capability extensions live in `integration/ObsidianPdfAdapter.ts` and are never required by the shared runtime. `surfaceType` distinguishes PDF, image, and Markdown content without changing the direct/embedded host distinction.

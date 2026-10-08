@@ -44,12 +44,20 @@ describe("main PDF page actions", () => {
     expect(onload).toContain("this.scheduleDebouncedScan(0);");
   });
 
-  it("registers the plugin-owned viewer by default and adopts open native PDF leaves", () => {
+  it("keeps Obsidian's PDF extension mapping for embeds and migrates direct leaves", () => {
     const onload = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("  /** Catch uncaught errors"));
     expect(onload).not.toContain("captureObsidianPdfToolbarConstructor");
     expect(onload).toContain("PdfJsViewAdapter.create");
-    expect(onload).toContain("replaceDefaultPdfViewRegistration");
-    expect(onload).toContain("adoptExistingNativePdfLeaves");
+    expect(onload).not.toContain("replaceDefaultPdfViewRegistration");
+    expect(onload).not.toContain("viewRegistry");
+    expect(mainSource).not.toContain("PdfExtensionRegistration");
+    const scan = mainSource.slice(mainSource.indexOf("private async scanPdfViews()"), mainSource.indexOf("private async scanPdfLeaves()"));
+    expect(scan.indexOf("await this.adoptExistingNativePdfLeaves();")).toBeGreaterThanOrEqual(0);
+    expect(scan.indexOf("await this.adoptExistingNativePdfLeaves();")).toBeLessThan(scan.indexOf("await this.scanPdfLeaves();"));
+    expect(mainSource).toContain('getLeavesOfType("pdf")');
+    expect(mainSource).toContain('type: PLUGIN_PDF_VIEW_TYPE');
+    const openPdf = mainSource.slice(mainSource.indexOf("private async openPdfInNewTab("), mainSource.indexOf("  private activeSession()"));
+    expect(openPdf).toContain("leaf.setViewState({ type: PLUGIN_PDF_VIEW_TYPE, state: { file: file.path } })");
     expect(mainSource).not.toContain("restoreOwnedPdfLeavesToNative");
     expect(mainSource).not.toContain("onFallbackToNative");
     expect(mainSource).toContain("nativePdfViewStateFromLegacyState");

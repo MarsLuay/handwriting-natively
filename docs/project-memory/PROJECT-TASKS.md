@@ -8,7 +8,7 @@ Validate the plugin-owned PDF viewer and shared movable toolbar against current 
 
 Paths: `src/integration/`, `docs/current-limitations.md`
 
-Checks: `npm test`; `npm run lint`; `npm run build`; verify direct PDF startup without a native `PDFToolbar` dependency; manual PDF checks on current desktop, Android, and iPad builds.
+Checks: `npm test`; `npm run lint`; `npm run build`; verify direct PDF startup without a native `PDFToolbar` dependency; confirm Markdown `![[PDF#page=27]]` embeds render with Obsidian's core PDF mapping; manual PDF checks on current desktop, Android, and iPad builds.
 
 ## source-pdf-write-contract — complete
 
