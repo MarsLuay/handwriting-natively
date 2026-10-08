@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   HandwritingViewport,
   type HandwritingViewportBounds,
@@ -40,14 +40,9 @@ describe("HandwritingViewport", () => {
       maxY: 0
     });
 
-    // Document narrower than container (scaledW = 400 < 600) -> centered
+    // Document narrower than container remains anchored at the viewport origin.
     const boundsSmall = vp.getBounds(0.4);
-    // 1000 * 0.4 = 400. minX = (600 - 400) / 2 = 100.
-    // 1200 * 0.4 = 480. minY = (800 - 480) / 2 = 160.
-    expect(boundsSmall.minX).toBe(100);
-    expect(boundsSmall.maxX).toBe(100);
-    expect(boundsSmall.minY).toBe(160);
-    expect(boundsSmall.maxY).toBe(160);
+    expect(boundsSmall).toEqual({ minX: 0, maxX: 0, minY: 0, maxY: 0 });
   });
 
   it("projects only the temporary zoom ratio above the renderer scale", () => {
@@ -77,25 +72,45 @@ describe("HandwritingViewport", () => {
     target.remove();
   });
 
-  it("applies Apple-style rubber banding when panned outside bounds", () => {
+  it("stops pan at document bounds without rubber banding", () => {
     const vp = new HandwritingViewport({
       getContainerRect: () => rect(0, 0, 600, 800),
-      getContentSize: () => ({ width: 600, height: 800 })
+      getContentSize: () => ({ width: 1000, height: 1200 }),
+      initialState: { scale: 1, x: -300, y: -300 }
     });
 
-    // resting bounds: minX = 0, maxX = 0 (doc fits container exactly)
-    // Pan right by 100px (outside bounds x > 0)
-    vp.pan(100, 0);
-    const state = vp.getState();
-    // Damped x should be positive but significantly less than 100px
-    expect(state.x).toBeGreaterThan(0);
-    expect(state.x).toBeLessThan(100);
+    vp.pan(-200, -200);
+    expect(vp.getState()).toEqual({ scale: 1, x: -400, y: -400 });
 
-    // Pan further right by another 100px
-    vp.pan(100, 0);
-    const state2 = vp.getState();
-    expect(state2.x).toBeGreaterThan(state.x);
-    expect(state2.x).toBeLessThan(200);
+    vp.pan(500, 500);
+    expect(vp.getState()).toEqual({ scale: 1, x: 0, y: 0 });
+  });
+
+  it("hard-clamps pinch zoom and keeps the chosen scale when the pinch ends", () => {
+    const vp = new HandwritingViewport({
+      getContainerRect: () => rect(0, 0, 600, 800),
+      getContentSize: () => ({ width: 1000, height: 1200 }),
+      minScale: 0.5,
+      maxScale: 3
+    });
+
+    vp.startPinch({ x: 200, y: 200 });
+    vp.pinch(4, { x: 200, y: 200 });
+    expect(vp.getState().scale).toBe(3);
+    const chosen = vp.getState();
+
+    vp.endPinch();
+    expect(vp.getState()).toEqual(chosen);
+
+    vp.startPinch({ x: 200, y: 200 });
+    vp.pinch(0.1, { x: 200, y: 200 });
+    expect(vp.getState().scale).toBe(0.5);
+    expect(vp.getState().x).toBe(0);
+    expect(vp.getState().y).toBe(0);
+    const minimum = vp.getState();
+
+    vp.endPinch();
+    expect(vp.getState()).toEqual(minimum);
   });
 
   it("pins document content under focal point during pinch zoom", () => {
@@ -201,43 +216,6 @@ describe("HandwritingViewport", () => {
     const state = vp.getState();
     expect(state.x).toBeCloseTo(-250);
     expect(state.y).toBeCloseTo(-260);
-  });
-
-  it("settles overscroll back to valid bounds with spring animation", () => {
-    vi.useFakeTimers();
-    let currentTime = 1000;
-    const vp = new HandwritingViewport({
-      getContainerRect: () => rect(0, 0, 600, 800),
-      getContentSize: () => ({ width: 600, height: 800 }),
-      now: () => currentTime
-    });
-
-    // Pan right past maxX (0) into overscroll
-    vp.pan(150, 80);
-    expect(vp.getState().x).toBeGreaterThan(0);
-    expect(vp.getState().y).toBeGreaterThan(0);
-
-    let settledCalled = false;
-    vp.settle(() => {
-      settledCalled = true;
-    });
-
-    // Mid-spring (100ms)
-    currentTime += 100;
-    vi.advanceTimersByTime(100);
-    const midState = vp.getState();
-    expect(midState.x).toBeGreaterThan(0); // Still returning
-    expect(midState.x).toBeLessThan(100);
-
-    // End of spring (220ms total)
-    currentTime += 120;
-    vi.advanceTimersByTime(120);
-
-    const endState = vp.getState();
-    expect(endState.x).toBeCloseTo(0);
-    expect(endState.y).toBeCloseTo(0);
-    expect(settledCalled).toBe(true);
-    vi.useRealTimers();
   });
 
   it("converts client, viewport, and element-local coordinates through one transform", () => {

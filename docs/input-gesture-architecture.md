@@ -124,8 +124,10 @@ viewer/UI/Scribble ordering without participating in routing.
   one-finger pan, two-finger pan/pinch, hand-tool movement, modifier-wheel zoom,
   stylus exclusion, and navigation cleanup where the surface enables them. It
   updates the session viewport or PDF scroll root through one callback path.
-  Markdown wheel, touch, and hand-tool scrolling remain native; plugin viewport
-  rubber-band pan is reserved for surfaces that enable custom panning.
+  PDF and image panning stops at hard viewport bounds without elastic
+  overscroll or release settling. Zoom stays at the selected scale, and PDF
+  restore does not reapply a fit preset. Markdown wheel, touch, and hand-tool
+  scrolling remain native.
 - `PointerCapabilities.ts` owns feature detection and sample extraction only:
   Pointer Events, capture, coalesced events, predicted events, and observed
   stylus capability. It does not decide ownership.

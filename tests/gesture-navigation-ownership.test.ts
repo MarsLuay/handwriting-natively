@@ -81,34 +81,16 @@ function createSurface(): { element: HTMLElement; scrollRoot: HTMLElement } {
   return { element, scrollRoot };
 }
 
-function createRubberBandPanHarness(scrollRoot: HTMLElement) {
-  let currentTime = 1000;
-  let nextFrameId = 0;
-  let nextTimerId = 0;
-  const frames = new Map<number, (timestamp: number) => void>();
-  const timers = new Map<number, () => void>();
+function createPanHarness(scrollRoot: HTMLElement) {
   const viewport = new HandwritingViewport({
     getContainerRect: () => ({ left: 0, top: 0, width: 600, height: 800 }),
     getContentSize: () => ({ width: 600, height: 800 }),
-    now: () => currentTime,
-    requestFrame: (callback) => {
-      const id = ++nextFrameId;
-      frames.set(id, callback);
-      return id;
-    },
-    cancelFrame: (id) => frames.delete(id)
   });
   const controller = new GestureNavigationController({
     minScale: 0.1,
     maxScale: 10,
     getScale: () => viewport.getState().scale,
     getScrollRoot: () => scrollRoot,
-    setTimer: (callback) => {
-      const id = ++nextTimerId;
-      timers.set(id, callback);
-      return id;
-    },
-    clearTimer: (id) => timers.delete(id),
     onStart: () => ({ accepted: true, scale: 1 }),
     onPreview: () => undefined,
     onEnd: () => undefined,
@@ -118,27 +100,10 @@ function createRubberBandPanHarness(scrollRoot: HTMLElement) {
       viewport.pan(deltaX, deltaY);
       const after = viewport.getState();
       return Math.abs(after.x - before.x) > 0.01 || Math.abs(after.y - before.y) > 0.01;
-    },
-    onPanEnd: () => viewport.settle()
+    }
   });
 
-  return {
-    viewport,
-    controller,
-    frames,
-    timers,
-    finishWheelPan: () => {
-      const finish = timers.values().next().value;
-      timers.clear();
-      finish?.();
-    },
-    advanceSpring: (elapsed: number) => {
-      const frame = frames.values().next().value;
-      frames.clear();
-      currentTime += elapsed;
-      frame?.(currentTime);
-    }
-  };
+  return { viewport, controller };
 }
 
 describe("unified gesture navigation ownership", () => {
@@ -166,24 +131,17 @@ describe("unified gesture navigation ownership", () => {
     scrollRoot.remove();
   });
 
-  it("springs touch-pan overscroll back when the last finger is released", () => {
+  it("stops touch-pan at the document edge without rubber-banding", () => {
     const { element, scrollRoot } = createSurface();
-    const { viewport, controller, frames, advanceSpring } = createRubberBandPanHarness(scrollRoot);
+    const { viewport, controller } = createPanHarness(scrollRoot);
     const router = createRouter(element, { navigationController: controller, scrollRoot });
 
     element.dispatchEvent(pointer("pointerdown", "touch", 1, { clientX: 100, clientY: 100 }));
     element.dispatchEvent(pointer("pointermove", "touch", 1, { clientX: 150, clientY: 140 }));
-    expect(viewport.getState().x).toBeGreaterThan(0);
-    expect(viewport.getState().y).toBeGreaterThan(0);
+    expect(viewport.getState()).toEqual({ scale: 1, x: 0, y: 0 });
 
     element.dispatchEvent(pointer("pointerup", "touch", 1, { clientX: 150, clientY: 140 }));
-    expect(frames.size).toBe(1);
-
-    advanceSpring(100);
-    advanceSpring(120);
-
-    expect(viewport.getState().x).toBeCloseTo(0);
-    expect(viewport.getState().y).toBeCloseTo(0);
+    expect(viewport.getState()).toEqual({ scale: 1, x: 0, y: 0 });
 
     router.destroy();
     viewport.destroy();
@@ -191,30 +149,19 @@ describe("unified gesture navigation ownership", () => {
     scrollRoot.remove();
   });
 
-  it("springs trackpad wheel-pan overscroll back after input stops", () => {
+  it("stops trackpad wheel-pan at the document edge without rubber-banding", () => {
     const { element, scrollRoot } = createSurface();
-    const { viewport, controller, frames, timers, finishWheelPan, advanceSpring } =
-      createRubberBandPanHarness(scrollRoot);
+    const { viewport, controller } = createPanHarness(scrollRoot);
 
-    expect(controller.handleWheelPan({
+    controller.handleWheelPan({
       ctrlKey: false,
       metaKey: false,
       deltaX: -50,
       deltaY: -40,
       clientX: 100,
       clientY: 120
-    })).toBe(true);
-    expect(viewport.getState().x).toBeGreaterThan(0);
-    expect(viewport.getState().y).toBeGreaterThan(0);
-
-    expect(timers.size).toBe(1);
-    finishWheelPan();
-    expect(frames.size).toBe(1);
-
-    advanceSpring(100);
-    advanceSpring(120);
-    expect(viewport.getState().x).toBeCloseTo(0);
-    expect(viewport.getState().y).toBeCloseTo(0);
+    });
+    expect(viewport.getState()).toEqual({ scale: 1, x: 0, y: 0 });
 
     controller.destroy();
     viewport.destroy();
@@ -313,6 +260,48 @@ describe("unified gesture navigation ownership", () => {
     controller.destroy();
     element.remove();
     scrollRoot.remove();
+  });
+
+  it("keeps ctrl-wheel zoom at the selected scale instead of snapping back to 1", () => {
+    let scale = 1;
+    const frames: Array<(timestamp: number) => void> = [];
+    const wheelTimers: Array<() => void> = [];
+    const ends: number[] = [];
+    const controller = new GestureNavigationController({
+      minScale: 0.1,
+      maxScale: 10,
+      getScale: () => scale,
+      requestFrame: (callback) => {
+        frames.push(callback);
+        return frames.length;
+      },
+      cancelFrame: () => undefined,
+      setTimer: (callback) => {
+        wheelTimers.push(callback);
+        return 1;
+      },
+      clearTimer: () => undefined,
+      onStart: () => ({ accepted: true, scale }),
+      onPreview: (nextScale) => { scale = nextScale; },
+      onEnd: (nextScale) => { ends.push(nextScale); },
+      onCancel: () => undefined
+    });
+
+    controller.handleWheel({
+      ctrlKey: true,
+      metaKey: false,
+      deltaY: 1,
+      clientX: 40,
+      clientY: 60,
+      target: document.body
+    });
+    frames.shift()?.(16);
+    const chosenScale = Math.exp(-0.01);
+    wheelTimers.shift()?.();
+
+    expect(ends).toEqual([expect.closeTo(chosenScale, 6)]);
+    expect(frames).toHaveLength(0);
+    controller.destroy();
   });
 
   it("uses the same controller for hand-tool movement and removes navigation listeners on destroy", () => {

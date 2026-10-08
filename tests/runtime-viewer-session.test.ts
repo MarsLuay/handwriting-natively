@@ -1408,11 +1408,17 @@ describe("viewer runtime tracer", () => {
     Object.defineProperties(adapter.root, {
       scrollHeight: { value: 2_000, configurable: true },
       clientHeight: { value: 800, configurable: true },
+      scrollWidth: { value: 600, configurable: true },
+      clientWidth: { value: 600, configurable: true },
       scrollTop: {
         get: () => scrollTop,
         set: (value: number) => { scrollTop = value; },
         configurable: true
       }
+    });
+    adapter.root.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 800,
+      width: 600, height: 800, toJSON: () => ({})
     });
     const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
@@ -1446,6 +1452,23 @@ describe("viewer runtime tracer", () => {
       event: "pointer seen",
       payload: expect.objectContaining({ source: "wheel-pan", phase: "in-view", deltaY: 24, changed: true })
     });
+
+    scrollTop = 1_200;
+    const viewport = (session as unknown as {
+      handwritingViewport: { syncFromScroll(left: number, top: number, force: boolean): boolean };
+    }).handwritingViewport;
+    viewport.syncFromScroll(0, 1_200, true);
+    const atEdge = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      deltaY: 24,
+      clientX: 100,
+      clientY: 120
+    });
+    adapter.pageElement.dispatchEvent(atEdge);
+    expect(atEdge.defaultPrevented).toBe(true);
+    expect(scrollTop).toBe(1_200);
 
     await session.destroy();
     await inactiveSession.destroy();

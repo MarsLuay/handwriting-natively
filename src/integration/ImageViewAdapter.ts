@@ -15,6 +15,8 @@ export class ImageViewAdapter implements AnnotationSurface {
 
   private readonly image: HTMLImageElement;
   private readonly pageElement: HTMLElement;
+  private readonly scrollRoot: HTMLElement;
+  private readonly addedScrollPolicyClass: boolean;
   private readonly callbacks: AnnotationSurfaceCallbacks;
   private readonly cleanup: Array<() => void> = [];
   private readonly mounted = new Set<HTMLElement>();
@@ -29,6 +31,9 @@ export class ImageViewAdapter implements AnnotationSurface {
     this.pageElement = this.wrapImage(image);
     this.root = this.pageElement;
     this.wrappedImage = this.pageElement !== originalParent;
+    this.scrollRoot = this.findScrollElement();
+    this.addedScrollPolicyClass = !this.scrollRoot.classList.contains("native-pdf-handwriting-stable-scroll-root");
+    this.scrollRoot.classList.add("native-pdf-handwriting-stable-scroll-root");
     this.installObservers();
   }
 
@@ -70,7 +75,7 @@ export class ImageViewAdapter implements AnnotationSurface {
     if (state.pageNumber !== 1) return;
     this.pageElement.scrollIntoView?.({ block: "start" });
     const scrollRoot = this.scrollElement();
-    if (state.viewport && (Number.isFinite(state.viewport.y) && state.viewport.y > 0 || Number.isFinite(state.viewport.x) && state.viewport.x > 0)) {
+    if (state.viewport && Number.isFinite(state.viewport.x) && Number.isFinite(state.viewport.y)) {
       scrollRoot.scrollTop = state.viewport.y;
       scrollRoot.scrollLeft = state.viewport.x;
     } else if (typeof state.scrollFraction === "number" && Number.isFinite(state.scrollFraction)) {
@@ -86,6 +91,10 @@ export class ImageViewAdapter implements AnnotationSurface {
   }
 
   scrollElement(): HTMLElement {
+    return this.scrollRoot;
+  }
+
+  private findScrollElement(): HTMLElement {
     let current: HTMLElement | null = this.host;
     while (current) {
       const style = current.ownerDocument.defaultView?.getComputedStyle(current);
@@ -147,6 +156,7 @@ export class ImageViewAdapter implements AnnotationSurface {
     for (const cleanup of this.cleanup.splice(0)) cleanup();
     for (const mounted of this.mounted) mounted.remove();
     this.mounted.clear();
+    if (this.addedScrollPolicyClass) this.scrollRoot.classList.remove("native-pdf-handwriting-stable-scroll-root");
     if (this.wrappedImage && this.pageElement.parentElement) {
       this.pageElement.parentElement.insertBefore(this.image, this.pageElement);
       this.pageElement.remove();

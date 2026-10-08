@@ -1768,8 +1768,7 @@ export class ViewerInkSession {
         this.handwritingViewport.pan(deltaX, deltaY);
         const after = this.handwritingViewport.getState();
         return Math.abs(after.x - before.x) > 0.01 || Math.abs(after.y - before.y) > 0.01;
-      },
-      onPanEnd: () => this.handwritingViewport.settle()
+      }
     });
     this.addPageControl = options.onInsertPage
       ? new AddPageControl({
@@ -3922,8 +3921,15 @@ export class ViewerInkSession {
         return;
       }
       const changed = this.gestureNavigation.handleWheelPan(e);
-      if (changed) e.preventDefault();
-      logWheelPan(e, "in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
+      e.preventDefault();
+      logWheelPan(e, "in-view", {
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        within: true,
+        target,
+        changed,
+        preventDefault: true
+      });
     }, { ...options, passive: false });
   }
 
@@ -11051,7 +11057,7 @@ export class ViewerInkSession {
   }
 
   private cancelActiveMobilePinch(reason: string): void {
-    this.handwritingViewport.settle();
+    this.handwritingViewport.endPinch();
     this.mobilePdfZoomTrace.cancel(reason);
     this.activeMobilePinchSurface = null;
     this.logger.inputLifecycleEvent("mobile-pinch-cancel", { reason });

@@ -4,8 +4,9 @@ import { setElementCssProps } from "../dom/typeGuards";
  * Persistent Handwriting Viewport State and Controller.
  *
  * Owns the visual interaction viewport (scale, x, y) as the single source
- * of truth for all pinch-zoom, two-finger pan, one-finger pan, rubber banding,
- * bounds calculation, coordinate conversion, and spring settling.
+ * of truth for pinch-zoom, two-finger pan, one-finger pan, hard pan bounds,
+ * coordinate conversion, and renderer/scroll projection. Content smaller than
+ * the viewport stays anchored at its current origin instead of being centered.
  * PDF.js renders underneath it.
  */
 
@@ -38,27 +39,17 @@ export interface HandwritingViewportOptions {
   /** Scale already applied to page geometry by PDF.js or the host viewer. */
   initialRenderedScale?: number;
   onStateChange?: (state: HandwritingViewportState) => void;
-  requestFrame?: (callback: (timestamp: number) => void) => number;
-  cancelFrame?: (id: number) => void;
-  now?: () => number;
 }
 
 export class HandwritingViewport {
   private readonly state: HandwritingViewportState;
   private renderedScale: number;
-  private rawX: number;
-  private rawY: number;
   private pinchAnchor: { x: number; y: number } | null = null;
   private targetElement: HTMLElement | null = null;
-  private animationId: number | null = null;
   private lastProjectedScrollLeft = 0;
   private lastProjectedScrollTop = 0;
   private hasScrollProjection = false;
   private readonly options: HandwritingViewportOptions;
-
-  private readonly requestFrame: (callback: (timestamp: number) => void) => number;
-  private readonly cancelFrame: (id: number) => void;
-  private readonly now: () => number;
 
   constructor(options: HandwritingViewportOptions) {
     this.options = options;
@@ -71,23 +62,6 @@ export class HandwritingViewport {
     this.renderedScale = Number.isFinite(options.initialRenderedScale) && (options.initialRenderedScale ?? 0) > 0
       ? options.initialRenderedScale!
       : 1;
-    this.rawX = this.state.x;
-    this.rawY = this.state.y;
-
-    const view = options.getScrollElement?.()?.ownerDocument.defaultView ?? activeWindow;
-    this.requestFrame = options.requestFrame ?? (
-      view.requestAnimationFrame
-        ? view.requestAnimationFrame.bind(view)
-        : (cb) => view.setTimeout(() => cb(Date.now()), 16)
-    );
-    this.cancelFrame = options.cancelFrame ?? (
-      view.cancelAnimationFrame
-        ? view.cancelAnimationFrame.bind(view)
-        : (id) => view.clearTimeout(id)
-    );
-    this.now = options.now ?? (
-      typeof performance !== "undefined" ? performance.now.bind(performance) : Date.now
-    );
   }
 
   getState(): HandwritingViewportState {
@@ -101,14 +75,11 @@ export class HandwritingViewport {
   /** Rebase the temporary CSS projection after the renderer changes scale. */
   syncRenderedState(scale: number, scrollLeft: number, scrollTop: number): void {
     if (!Number.isFinite(scale) || scale <= 0) return;
-    this.cancelAnimation();
     this.pinchAnchor = null;
     this.renderedScale = scale;
     this.state.scale = scale;
-    this.rawX = -Math.max(0, Number.isFinite(scrollLeft) ? scrollLeft : 0);
-    this.rawY = -Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0);
-    this.state.x = this.rawX;
-    this.state.y = this.rawY;
+    this.state.x = -Math.max(0, Number.isFinite(scrollLeft) ? scrollLeft : 0);
+    this.state.y = -Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0);
     this.apply();
   }
 
@@ -133,12 +104,9 @@ export class HandwritingViewport {
       return false;
     }
 
-    this.cancelAnimation();
     this.pinchAnchor = null;
-    this.rawX = -left;
-    this.rawY = -top;
-    this.state.x = this.rawX;
-    this.state.y = this.rawY;
+    this.state.x = -left;
+    this.state.y = -top;
     this.apply();
     return true;
   }
@@ -162,17 +130,14 @@ export class HandwritingViewport {
   }
 
   setState(next: Partial<HandwritingViewportState>, applyNow = true): void {
-    this.cancelAnimation();
     if (typeof next.scale === "number" && Number.isFinite(next.scale) && next.scale > 0) {
       this.state.scale = next.scale;
     }
     if (typeof next.x === "number" && Number.isFinite(next.x)) {
       this.state.x = next.x;
-      this.rawX = next.x;
     }
     if (typeof next.y === "number" && Number.isFinite(next.y)) {
       this.state.y = next.y;
-      this.rawY = next.y;
     }
     if (applyNow) {
       this.apply();
@@ -200,9 +165,8 @@ export class HandwritingViewport {
       minX = container.width - scaledW;
       maxX = 0;
     } else {
-      // Centered horizontally when document fits within container width
-      minX = (container.width - scaledW) / 2;
-      maxX = minX;
+      minX = 0;
+      maxX = 0;
     }
 
     let minY: number;
@@ -211,55 +175,29 @@ export class HandwritingViewport {
       minY = container.height - scaledH;
       maxY = 0;
     } else {
-      minY = Math.max(0, (container.height - scaledH) / 2);
-      maxY = minY;
+      minY = 0;
+      maxY = 0;
     }
 
     return { minX, maxX, minY, maxY };
   }
 
-  /**
-   * GoodNotes/Apple-style rubber band elastic resistance when dragging outside bounds.
-   */
-  static rubberBand(delta: number, dimension: number, coefficient = 0.55): number {
-    if (dimension <= 0 || delta === 0) return delta;
-    const abs = Math.abs(delta);
-    const damped = (abs * coefficient * dimension) / (abs + coefficient * dimension);
-    return Math.sign(delta) * damped;
-  }
-
-  constrainWithRubberBand(x: number, y: number, bounds = this.getBounds()): { x: number; y: number } {
-    const container = this.options.getContainerRect();
-    const dimW = container?.width ?? 600;
-    const dimH = container?.height ?? 800;
-
-    let visualX = x;
-    if (x < bounds.minX) {
-      visualX = bounds.minX + HandwritingViewport.rubberBand(x - bounds.minX, dimW);
-    } else if (x > bounds.maxX) {
-      visualX = bounds.maxX + HandwritingViewport.rubberBand(x - bounds.maxX, dimW);
-    }
-
-    let visualY = y;
-    if (y < bounds.minY) {
-      visualY = bounds.minY + HandwritingViewport.rubberBand(y - bounds.minY, dimH);
-    } else if (y > bounds.maxY) {
-      visualY = bounds.maxY + HandwritingViewport.rubberBand(y - bounds.maxY, dimH);
-    }
-
-    return { x: visualX, y: visualY };
+  private constrainToBounds(x: number, y: number, bounds = this.getBounds()): { x: number; y: number } {
+    return {
+      x: Math.max(bounds.minX, Math.min(bounds.maxX, x)),
+      y: Math.max(bounds.minY, Math.min(bounds.maxY, y))
+    };
   }
 
   /**
    * Begins a pinch-zoom/pan gesture anchored at focalPoint.
    */
   startPinch(focalPoint: { x: number; y: number }): void {
-    this.cancelAnimation();
     if (this.state.scale > 0) {
       const focal = this.screenToContainer(focalPoint);
       this.pinchAnchor = {
-        x: (focal.x - this.rawX) / this.state.scale,
-        y: (focal.y - this.rawY) / this.state.scale
+        x: (focal.x - this.state.x) / this.state.scale,
+        y: (focal.y - this.state.y) / this.state.scale
       };
     }
   }
@@ -270,17 +208,10 @@ export class HandwritingViewport {
    * Also simultaneously tracks two-finger panning as focalPoint moves.
    */
   pinch(nextScale: number, focalPoint: { x: number; y: number }): void {
-    this.cancelAnimation();
     const minScale = this.options.minScale ?? 0.1;
     const maxScale = this.options.maxScale ?? 10;
-
-    // Apply elastic resistance if pinched outside scale limits
-    let effectiveScale = nextScale;
-    if (nextScale < minScale) {
-      effectiveScale = minScale - HandwritingViewport.rubberBand(minScale - nextScale, minScale * 0.5);
-    } else if (nextScale > maxScale) {
-      effectiveScale = maxScale + HandwritingViewport.rubberBand(nextScale - maxScale, maxScale * 0.5);
-    }
+    const requestedScale = Number.isFinite(nextScale) ? nextScale : this.state.scale;
+    const effectiveScale = Math.max(minScale, Math.min(maxScale, requestedScale));
 
     if (!this.pinchAnchor) {
       this.startPinch(focalPoint);
@@ -290,12 +221,8 @@ export class HandwritingViewport {
       const focal = this.screenToContainer(focalPoint);
       const newX = focal.x - this.pinchAnchor.x * effectiveScale;
       const newY = focal.y - this.pinchAnchor.y * effectiveScale;
-
-      this.rawX = newX;
-      this.rawY = newY;
       this.state.scale = effectiveScale;
-
-      const constrained = this.constrainWithRubberBand(newX, newY, this.getBounds(effectiveScale));
+      const constrained = this.constrainToBounds(newX, newY, this.getBounds(effectiveScale));
       this.state.x = constrained.x;
       this.state.y = constrained.y;
 
@@ -303,12 +230,9 @@ export class HandwritingViewport {
     }
   }
 
-  /**
-   * Ends a pinch gesture and settles overscroll/scale back to bounds.
-   */
+  /** End a pinch without changing the viewport the user selected. */
   endPinch(): void {
     this.pinchAnchor = null;
-    this.settle();
   }
 
   /**
@@ -316,89 +240,18 @@ export class HandwritingViewport {
    * Applicable for two-finger pan, one-finger pan, drag tool, or trackpad pan.
    */
   pan(deltaX: number, deltaY: number): void {
-    this.cancelAnimation();
-    this.rawX += deltaX;
-    this.rawY += deltaY;
-
-    const constrained = this.constrainWithRubberBand(this.rawX, this.rawY);
+    const constrained = this.constrainToBounds(this.state.x + deltaX, this.state.y + deltaY);
     this.state.x = constrained.x;
     this.state.y = constrained.y;
 
     this.apply();
   }
 
-  /**
-   * Settles any overscroll / rubber-band back to resting bounds with a smooth spring animation.
-   */
-  settle(onSettled?: () => void): void {
-    this.cancelAnimation();
-    this.pinchAnchor = null;
-
-    const minScale = this.options.minScale ?? 0.1;
-    const maxScale = this.options.maxScale ?? 10;
-    const targetScale = Math.max(minScale, Math.min(maxScale, this.state.scale));
-
-    const bounds = this.getBounds(targetScale);
-    const targetX = Math.max(bounds.minX, Math.min(bounds.maxX, this.rawX));
-    const targetY = Math.max(bounds.minY, Math.min(bounds.maxY, this.rawY));
-
-    this.rawX = targetX;
-    this.rawY = targetY;
-
-    const startX = this.state.x;
-    const startY = this.state.y;
-    const startScale = this.state.scale;
-
-    const diffX = targetX - startX;
-    const diffY = targetY - startY;
-    const diffScale = targetScale - startScale;
-
-    if (Math.abs(diffX) < 0.5 && Math.abs(diffY) < 0.5 && Math.abs(diffScale) < 0.001) {
-      this.state.x = targetX;
-      this.state.y = targetY;
-      this.state.scale = targetScale;
-      this.apply();
-      onSettled?.();
-      return;
-    }
-
-    const startTime = this.now();
-    const duration = 200;
-
-    const step = () => {
-      const elapsed = this.now() - startTime;
-      const progress = Math.min(1, elapsed / duration);
-      // Apple-standard cubic-bezier(0.25, 1, 0.5, 1) ease-out curve
-      const eased = 1 - Math.pow(1 - progress, 3);
-
-      this.state.x = startX + diffX * eased;
-      this.state.y = startY + diffY * eased;
-      this.state.scale = startScale + diffScale * eased;
-      this.apply();
-
-      if (progress < 1) {
-        this.animationId = this.requestFrame(step);
-      } else {
-        this.animationId = null;
-        this.state.x = targetX;
-        this.state.y = targetY;
-        this.state.scale = targetScale;
-        this.apply();
-        onSettled?.();
-      }
-    };
-
-    this.animationId = this.requestFrame(step);
-  }
-
   reset(): void {
-    this.cancelAnimation();
     this.pinchAnchor = null;
     this.state.scale = 1;
     this.state.x = 0;
     this.state.y = 0;
-    this.rawX = 0;
-    this.rawY = 0;
     this.apply();
   }
 
@@ -503,9 +356,8 @@ export class HandwritingViewport {
       this.lastProjectedScrollTop = actualScrollTop;
       this.hasScrollProjection = true;
 
-      // Native scroll represents the in-bounds portion. Only the residual
-      // translation (centered/negative overflow, rubber-band overscroll, etc.)
-      // is emitted as a GPU transform.
+      // Native scroll represents the in-bounds portion. Any scroll clamping
+      // difference is projected as a residual GPU transform.
       translateX = this.state.x + actualScrollLeft;
       translateY = this.state.y + actualScrollTop;
     } else {
@@ -531,15 +383,7 @@ export class HandwritingViewport {
     this.options.onStateChange?.({ ...this.state });
   }
 
-  private cancelAnimation(): void {
-    if (this.animationId !== null) {
-      this.cancelFrame(this.animationId);
-      this.animationId = null;
-    }
-  }
-
   destroy(): void {
-    this.cancelAnimation();
     this.pinchAnchor = null;
     this.hasScrollProjection = false;
     if (this.targetElement) {

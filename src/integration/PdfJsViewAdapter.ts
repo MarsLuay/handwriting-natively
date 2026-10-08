@@ -238,7 +238,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private scale = DEFAULT_SCALE;
   private rotation = 0;
   private currentPageNumber = 1;
-  private currentScaleMode: ViewerScaleMode = "fit-width";
+  private currentScaleMode: ViewerScaleMode = "custom";
   // Resolve the default fit once; later layout changes must preserve the user's viewport.
   private initialScaleResolved = false;
   private zoomTimer: number | null = null;
@@ -1096,7 +1096,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     const page = this.pagesByNumber.get(this.currentPageNumber);
     const availableWidth = this.scroll.clientWidth - 32;
     if (!page || page.naturalWidth <= 0 || availableWidth <= 0) return;
-    this.setScale(availableWidth / this.displayWidth(page), "fit-width");
+    this.setScale(availableWidth / this.displayWidth(page), "custom");
   }
 
   private fitHeight(): void {
@@ -1424,24 +1424,21 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   restoreViewState(state: ViewerState | AnnotationViewState): void {
     const rotation = normalizeRotation(state.rotation);
     if (rotation !== this.rotation) this.setRotation(rotation);
-    const mode = normalizeScaleMode(state.scaleMode);
     const scale = state.viewport?.scale ?? state.scale;
-    if (mode === "fit-width") {
-      this.fitWidth();
-    } else if (mode === "fit-height") {
-      this.fitHeight();
-    } else if (mode === "fit-page") {
-      this.fitPage();
-    } else if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) {
-      this.setScale(scale, mode);
+    if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) {
+      // Fit commands resolve to a numeric scale at invocation. Replaying a
+      // fit preset during restore would refit to the current pane and move
+      // the viewport after the user had selected a position and zoom.
+      this.setScale(scale, "custom");
     } else {
-      this.currentScaleMode = mode;
+      this.currentScaleMode = "custom";
+      this.initialScaleResolved = true;
     }
     this.currentPageNumber = Math.max(1, Math.min(this.pdfDocument.numPages, Math.round(state.pageNumber || 1)));
     this.lifecycleCoordinator.setActivePage(this.currentPageNumber);
     this.renderScheduler.setDocumentGeometry(this.pdfDocument.numPages, this.scale, this.rotation, this.currentPageNumber);
     const maxScroll = Math.max(0, this.scroll.scrollHeight - this.scroll.clientHeight);
-    if (state.viewport && (Number.isFinite(state.viewport.y) && state.viewport.y > 0 || Number.isFinite(state.viewport.x) && state.viewport.x > 0)) {
+    if (state.viewport && Number.isFinite(state.viewport.x) && Number.isFinite(state.viewport.y)) {
       this.scroll.scrollTop = state.viewport.y;
       this.scroll.scrollLeft = state.viewport.x;
     } else if (typeof state.scrollFraction === "number" && Number.isFinite(state.scrollFraction)) {

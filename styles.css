@@ -1,5 +1,12 @@
 .native-pdf-handwriting-relative { position: relative; }
 
+.native-pdf-handwriting-stable-scroll-root {
+  overflow-anchor: none !important;
+  overscroll-behavior: none !important;
+  scroll-behavior: auto !important;
+  scroll-snap-type: none !important;
+}
+
 .native-pdf-handwriting-image-page {
   display: inline-block;
   line-height: 0;
@@ -1250,9 +1257,11 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  overscroll-behavior: contain;
+  overflow-anchor: none !important;
+  overscroll-behavior: none !important;
   padding: 20px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto !important;
+  scroll-snap-type: none !important;
   touch-action: pan-x pan-y;
 }
 .hn-owned-pdf-pages {

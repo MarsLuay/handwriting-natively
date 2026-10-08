@@ -5,6 +5,23 @@ import { describe, expect, it } from "vitest";
 const styles = readFileSync("styles.css", "utf8");
 
 describe("text editor styles", () => {
+  it("keeps the plugin-owned PDF scroller immediate and disables browser edge bounce", () => {
+    const rule = styles.match(/\.hn-owned-pdf-scroll\s*\{(?<body>[^}]*)\}/s);
+    expect(rule?.groups?.body).toContain("scroll-behavior: auto");
+    expect(rule?.groups?.body).toContain("overscroll-behavior: none");
+    expect(rule?.groups?.body).toContain("overflow-anchor: none");
+    expect(rule?.groups?.body).toContain("scroll-snap-type: none");
+    expect(rule?.groups?.body).not.toContain("scroll-behavior: smooth");
+  });
+
+  it("disables browser settling on the active native PDF and image scrollers", () => {
+    const rule = styles.match(/\.native-pdf-handwriting-stable-scroll-root\s*\{(?<body>[^}]*)\}/s);
+    expect(rule?.groups?.body).toContain("scroll-behavior: auto");
+    expect(rule?.groups?.body).toContain("overscroll-behavior: none");
+    expect(rule?.groups?.body).toContain("overflow-anchor: none");
+    expect(rule?.groups?.body).toContain("scroll-snap-type: none");
+  });
+
   it("keeps Draw-mode hit policy without blocking native finger scroll", () => {
     expect(styles).toContain(".pdf-viewer .native-pdf-handwriting-draw-hit-page");
     expect(styles).toContain(".pdfViewer .native-pdf-handwriting-draw-hit-page");

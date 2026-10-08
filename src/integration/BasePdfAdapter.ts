@@ -127,6 +127,12 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     this.callbacks = callbacks;
     this.layoutTrace = new LayoutWorkTrace({ enabled: () => Boolean(Reflect.get(this.callbacks, "onDebugLog")) });
     this.locator = new PdfPageLocator(this.root, compatibility.privateViewer);
+    const scrollRoot = this.scrollElement();
+    const addedStableScrollClass = !scrollRoot.classList.contains("native-pdf-handwriting-stable-scroll-root");
+    scrollRoot.classList.add("native-pdf-handwriting-stable-scroll-root");
+    this.registerCleanup(() => {
+      if (addedStableScrollClass) scrollRoot.classList.remove("native-pdf-handwriting-stable-scroll-root");
+    });
     this.registerCleanup(() => {
       if (this.zoomSettleTimer !== null) window.clearTimeout(this.zoomSettleTimer);
       this.zoomSettleTimer = null;
@@ -320,25 +326,22 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     if (viewer) {
       try {
         if (state.rotation !== undefined) viewer.pagesRotation = state.rotation;
-        if (state.scaleMode !== undefined) {
-          if (state.scaleMode === "fit-width") viewer.currentScaleValue = "page-width";
-          else if (state.scaleMode === "fit-height") viewer.currentScaleValue = "page-height";
-          else if (state.scaleMode === "fit-page") viewer.currentScaleValue = "page-fit";
-          else viewer.currentScaleValue = state.scaleMode;
-        } else if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) {
+        if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) {
           viewer.currentScale = scale;
         }
       } catch {
         // Some Obsidian PDF.js builds expose a read-only scale property.
-        if (typeof scale === "number" && Number.isFinite(scale)) {
-          viewer.updateScale?.({ scaleFactor: scale });
+        const currentScale = viewer.currentScale;
+        if (typeof scale === "number" && Number.isFinite(scale) && scale > 0
+          && typeof currentScale === "number" && Number.isFinite(currentScale) && currentScale > 0) {
+          viewer.updateScale?.({ scaleFactor: scale / currentScale });
         }
       }
     }
     const page = this.locator.page(state.pageNumber);
     page?.element.scrollIntoView?.({ block: "start" });
     const scroller = this.scrollElement();
-    if (state.viewport && (Number.isFinite(state.viewport.y) && state.viewport.y > 0 || Number.isFinite(state.viewport.x) && state.viewport.x > 0)) {
+    if (state.viewport && Number.isFinite(state.viewport.x) && Number.isFinite(state.viewport.y)) {
       scroller.scrollTop = state.viewport.y;
       scroller.scrollLeft = state.viewport.x;
     } else if (typeof state.scrollFraction === "number" && Number.isFinite(state.scrollFraction)) {

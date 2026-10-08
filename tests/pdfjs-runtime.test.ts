@@ -188,6 +188,7 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     });
     adapter.onResize();
     const initialFitScale = adapter.getViewState().scale;
+    expect(adapter.getViewState().scaleMode).toBe("custom");
     scroll.scrollLeft = 180;
     scroll.scrollTop = 540;
     scroll.dispatchEvent(new Event("scroll"));
@@ -248,6 +249,19 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(adapter.getViewState().scale).toBe(2);
     adapter.restoreViewState({ ...adapter.getViewState(), rotation: 90 });
     expect(adapter.getViewState().rotation).toBe(90);
+
+    scroll.scrollLeft = 250;
+    scroll.scrollTop = 360;
+    adapter.restoreViewState({
+      ...adapter.getViewState(),
+      viewport: { scale: 1.75, x: 0, y: 0 },
+      scale: 1.75,
+      scaleMode: "fit-width"
+    });
+    expect(adapter.getViewState().scale).toBe(1.75);
+    expect(adapter.getViewState().scaleMode).toBe("custom");
+    expect(scroll.scrollLeft).toBe(0);
+    expect(scroll.scrollTop).toBe(0);
 
     const commands: PdfViewerCommandBridge = {
       zoomIn: vi.fn(() => true),
