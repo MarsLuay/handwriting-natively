@@ -81,8 +81,12 @@ export class EffectiveFrameBudget {
     // Multiple callbacks from the same animation frame share a timestamp.
     if (intervalMs <= 0 || intervalMs < MIN_CLEAN_FRAME_INTERVAL_MS || intervalMs > MAX_CLEAN_FRAME_INTERVAL_MS) return;
     const samples = this.samplesByKind[sampleKind];
-    if (samples.length < FRAME_PROFILE_SAMPLE_LIMIT) samples.push(intervalMs);
-    else samples.shift(), samples.push(intervalMs);
+    if (samples.length < FRAME_PROFILE_SAMPLE_LIMIT) {
+      samples.push(intervalMs);
+    } else {
+      samples.shift();
+      samples.push(intervalMs);
+    }
     this.acceptedSampleCountByKind[sampleKind] += 1;
     const selectedSource = this.selectedSampleSource();
     if (selectedSource !== this.measuredSampleSource

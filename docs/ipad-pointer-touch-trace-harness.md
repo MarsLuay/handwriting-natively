@@ -8,11 +8,17 @@ change `touch-action`, route gestures, store coordinates, or store annotation
 content. Multiple HN viewer sessions share one document observer.
 
 The trace is enabled only when the host reports an iPadOS Obsidian runtime and
-vault debug logging is enabled. It records pointer/touch IDs, pointer capture
+vault debug logging is enabled. Ordered pointer boundary events are retained
+alongside contact events. Each retained event includes the browser's
+`eventTimeStamp` and the observer's `at` time, plus pointer/touch IDs, capture
 observations, target class, `touch-action`, event phase, cancellation state,
-Scribble/IME event metadata, lifecycle transitions, and the active pointer and
-touch identifier sets. `beforeinput` and composition data are recorded as
-event type, `inputType`, and composing state only; text is never persisted.
+pressure, contact width/height, tilt, and twist. Passive Pencil hover moves
+stay out of the event buffer; the first and last bounded hover samples retain
+their timestamp and sensor metadata so hover-to-contact transitions can be
+checked without logging every move. `beforeinput` and composition data are
+recorded as event type, `inputType`, and composing state only; text is never
+persisted. The extended trace uses `schemaVersion: 5`; a missing numeric
+sensor value is `null`, while an observed zero remains `0`.
 
 ## Physical run
 

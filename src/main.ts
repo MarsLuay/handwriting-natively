@@ -13,7 +13,6 @@ import {
 } from "obsidian";
 import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
 import { isObsidianSidebarOpen, MobileSidebarSwipeBlocker } from "./input/MobileSidebarSwipeBlocker";
-import { getPhysicalContactCollectorSnapshot, type PhysicalContactCollectorSnapshot } from "./input/PhysicalContactCollector";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
@@ -621,14 +620,6 @@ export default class NativePdfInkPlugin extends Plugin {
       .filter((owner) => owner.active);
     const count = (selector: string): number => [...roots]
       .reduce((total, root) => total + root.querySelectorAll(selector).length, 0);
-    const physicalContactCollectors = [...new Set([...roots].map((root) => root.ownerDocument))]
-      .map((document) => getPhysicalContactCollectorSnapshot(document))
-      .filter((snapshot): snapshot is PhysicalContactCollectorSnapshot => snapshot !== null);
-    const registeredSessionIds = new Set([...this.sessions.values()].map((session) => session.getDocumentId()));
-    const staleCollectorCount = physicalContactCollectors.reduce(
-      (count, collector) => count + collector.owners.filter(({ sessionId }) => !registeredSessionIds.has(sessionId)).length,
-      0
-    );
     return {
       pdfLeafCount: pdfLeaves.length,
       sessions: this.sessions.size,
@@ -1718,11 +1709,10 @@ export default class NativePdfInkPlugin extends Plugin {
         }
       });
     };
-    const registerHistory = (id: string, name: string, action: "undo" | "redo", shift = false): void => {
+    const registerHistory = (id: string, name: string, action: "undo" | "redo"): void => {
       this.addCommand({
         id,
         name,
-        hotkeys: [{ modifiers: shift ? ["Mod", "Alt", "Shift"] : ["Mod", "Alt"], key: "z" }],
         checkCallback: (checking) => {
           const session = this.activeSession();
           if (!session || !(action === "undo" ? session.canUndo() : session.canRedo())) return false;
@@ -1742,7 +1732,7 @@ export default class NativePdfInkPlugin extends Plugin {
     registerTool("select-pdf-text", "Switch to text", "text");
     registerTool("select-pdf-drag", "Switch to drag tool", "drag");
     registerHistory("undo-pdf-annotation", "Undo ink", "undo");
-    registerHistory("redo-pdf-annotation", "Redo ink", "redo", true);
+    registerHistory("redo-pdf-annotation", "Redo ink", "redo");
   }
 
   private registerViewerCommands(): void {

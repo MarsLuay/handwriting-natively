@@ -126,13 +126,13 @@ export class PointerCapabilities {
    */
   static predictedSamples(event: PointerEvent): PointerSample[] {
     if (event.pointerType !== "pen" || event.type !== "pointermove") return [];
-    const getPredicted = (event as PointerEvent & {
+    const pointer = event as PointerEvent & {
       getPredictedEvents?: () => PointerEvent[];
-    }).getPredictedEvents;
-    if (typeof getPredicted !== "function") return [];
+    };
+    if (typeof pointer.getPredictedEvents !== "function") return [];
     let predicted: PointerEvent[];
     try {
-      predicted = getPredicted.call(event);
+      predicted = pointer.getPredictedEvents();
     } catch {
       return [];
     }

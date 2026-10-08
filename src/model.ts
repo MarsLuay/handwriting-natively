@@ -585,7 +585,7 @@ function readLegacyDrawingPresets(value: unknown): LegacyDrawingPreset[] {
     if (typeof id !== "string" || !id || typeof tool !== "string" || !isDrawingTool(tool) || seen.has(id)) continue;
     if (!isRecord(candidate.settings)) continue;
     seen.add(id);
-    result.push({ id, tool, settings: candidate.settings as Partial<DrawingToolPreferences> });
+    result.push({ id, tool, settings: candidate.settings });
     if (result.length === 8) break;
   }
   return result;

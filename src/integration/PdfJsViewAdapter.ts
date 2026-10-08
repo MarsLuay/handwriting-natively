@@ -6,7 +6,7 @@ import type {
   ViewerState,
   ViewerScaleMode
 } from "../runtime/AnnotationSurface";
-import { normalizeScaleMode } from "../runtime/ViewerState";
+import { normalizeScaleMode, VIEWER_ZOOM_STEP } from "../runtime/ViewerState";
 import {
   PageLifecycleCoordinator,
   type ManagedPageRecord
@@ -23,6 +23,7 @@ import type { PdfPageInfo } from "./PdfPageLocator";
 import type {
   PdfInkPreview,
   PdfInkPreviewProvider,
+  PdfViewerCommandBridge,
   PdfSurfaceExtensions
 } from "./ObsidianPdfAdapter";
 import {
@@ -66,7 +67,6 @@ export interface PdfJsViewAdapterOptions {
 const DEFAULT_SCALE = 1;
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 5;
-const SCALE_STEP = 1.15;
 const PAGE_GAP = 20;
 const RENDER_NEIGHBOR_RADIUS = 2;
 const MAX_TEXT_ITEMS = 4_000;
@@ -247,6 +247,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private readonly pageNumberInput: HTMLInputElement;
   private readonly pageCountLabel: HTMLElement;
   private readonly zoomSelect: HTMLSelectElement;
+  private handButton: HTMLButtonElement | null = null;
   private readonly findBar: HTMLElement;
   private readonly findInput: HTMLInputElement;
   private readonly findStatus: HTMLElement;
@@ -267,6 +268,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private findMatches: Array<{ pageNumber: number; offset: number }> = [];
   private findIndex = -1;
   private handToolActive = false;
+  private viewerCommands: PdfViewerCommandBridge | null = null;
 
   private constructor(
     options: PdfJsViewAdapterOptions,
@@ -294,6 +296,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     });
     this.renderScheduler = new RenderScheduler({
       coordinator: this.lifecycleCoordinator,
+      timerWindow: ownerDocument.defaultView ?? window,
       executeRender: (job, signal) => this.executePageRender(job, signal),
       onEvict: (pageNumber) => this.performPageEvictionByNumber(pageNumber),
       getDevicePixelRatio: () => Math.max(1, Math.min(3, this.root.ownerDocument.defaultView?.devicePixelRatio ?? 1))
@@ -443,22 +446,50 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       option.value = value;
       this.zoomSelect.append(option);
     }
-    const findButton = this.navigationButton(ownerDocument, "Find in document", "Find", () => this.toggleFindBar());
-    const handButton = this.navigationButton(ownerDocument, "Hand tool", "Hand", () => this.toggleHandTool());
+    const findButton = this.navigationButton(ownerDocument, "Find in document", "Find", () => {
+      if (this.viewerCommands) this.viewerCommands.toggleSearch();
+      else this.toggleFindBar();
+    });
+    this.handButton = this.navigationButton(ownerDocument, "Hand tool", "Hand", () => {
+      if (this.viewerCommands) this.viewerCommands.toggleHandMode();
+      else this.toggleHandTool();
+    });
+    this.handButton.setAttribute("aria-pressed", "false");
     controls.append(
-      this.navigationButton(ownerDocument, "Previous page", "‹", () => this.focusPage(this.currentPageNumber - 1)),
-      this.navigationButton(ownerDocument, "Next page", "›", () => this.focusPage(this.currentPageNumber + 1)),
+      this.navigationButton(ownerDocument, "Previous page", "‹", () => {
+        if (this.viewerCommands) this.viewerCommands.previousPage();
+        else this.focusPage(this.currentPageNumber - 1);
+      }),
+      this.navigationButton(ownerDocument, "Next page", "›", () => {
+        if (this.viewerCommands) this.viewerCommands.nextPage();
+        else this.focusPage(this.currentPageNumber + 1);
+      }),
       this.pageIndicator,
       this.zoomSelect,
-      this.navigationButton(ownerDocument, "Zoom out", "−", () => this.setScale(this.scale / SCALE_STEP)),
-      this.navigationButton(ownerDocument, "Zoom in", "+", () => this.setScale(this.scale * SCALE_STEP)),
-      this.navigationButton(ownerDocument, "Fit page width", "Fit", () => this.fitWidth()),
-      this.navigationButton(ownerDocument, "Rotate counterclockwise", "↶", () => this.setRotation(this.rotation - 90)),
-      this.navigationButton(ownerDocument, "Rotate clockwise", "↷", () => this.setRotation(this.rotation + 90)),
+      this.navigationButton(ownerDocument, "Zoom out", "−", () => {
+        if (this.viewerCommands) this.viewerCommands.zoomOut();
+        else this.setScale(this.scale / VIEWER_ZOOM_STEP);
+      }),
+      this.navigationButton(ownerDocument, "Zoom in", "+", () => {
+        if (this.viewerCommands) this.viewerCommands.zoomIn();
+        else this.setScale(this.scale * VIEWER_ZOOM_STEP);
+      }),
+      this.navigationButton(ownerDocument, "Fit page width", "Fit", () => {
+        if (this.viewerCommands) this.viewerCommands.fitWidth();
+        else this.fitWidth();
+      }),
+      this.navigationButton(ownerDocument, "Rotate counterclockwise", "↶", () => {
+        if (this.viewerCommands) this.viewerCommands.rotateCounterclockwise();
+        else this.setRotation(this.rotation - 90);
+      }),
+      this.navigationButton(ownerDocument, "Rotate clockwise", "↷", () => {
+        if (this.viewerCommands) this.viewerCommands.rotateClockwise();
+        else this.setRotation(this.rotation + 90);
+      }),
       this.navigationButton(ownerDocument, "Toggle outline", "Outline", () => this.toggleSidebar("outline")),
       this.navigationButton(ownerDocument, "Toggle thumbnails", "Thumbs", () => this.toggleSidebar("thumbnails")),
       findButton,
-      handButton,
+      this.handButton,
       this.navigationButton(ownerDocument, "Presentation mode", "Present", () => this.togglePresentationMode()),
       this.navigationButton(ownerDocument, "Print PDF", "Print", () => this.printPdf()),
       this.navigationButton(ownerDocument, "Download PDF", "Download", () => this.downloadPdf())
@@ -468,13 +499,20 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     const findClose = this.navigationButton(ownerDocument, "Close find bar", "×", () => this.toggleFindBar(false));
     this.findBar.append(findPrevious, findNext, findClose);
     this.toolbarHost.append(controls, this.findBar);
-    const onPageChange = (): void => { this.focusPage(Number(this.pageNumberInput.value)); };
+    const onPageChange = (): void => {
+      const pageNumber = Number(this.pageNumberInput.value);
+      if (this.viewerCommands) this.viewerCommands.goToPage(pageNumber);
+      else this.focusPage(pageNumber);
+    };
     const onPageKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Enter") { event.preventDefault(); onPageChange(); }
     };
     const onZoomChange = (): void => {
       const value = this.zoomSelect.value;
-      if (value === "auto") this.fitWidth();
+      if (value === "auto") {
+        if (this.viewerCommands) this.viewerCommands.fitWidth();
+        else this.fitWidth();
+      } else if (this.viewerCommands) this.viewerCommands.setZoom(Number(value));
       else this.setScale(Number(value));
     };
     const onFindInput = (): void => { void this.findDocument(this.findInput.value); };
@@ -515,24 +553,43 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   private installKeyboardNavigation(): void {
     const onKeyDown = (event: KeyboardEvent): void => {
+      const view = this.root.ownerDocument.defaultView;
+      const ElementConstructor = view?.Element;
+      const target = ElementConstructor && event.target instanceof ElementConstructor
+        ? event.target
+        : null;
+      const isTextEditing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
+      if (this.viewerCommands?.handleKeyDown(event, isTextEditing)) return;
+      if (event.defaultPrevented) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
-        this.toggleFindBar(true);
+        if (this.viewerCommands) this.viewerCommands.toggleSearch(true);
+        else this.toggleFindBar(true);
         return;
       }
       if (event.key === "Escape" && !this.findBar.hidden) {
         event.preventDefault();
-        this.toggleFindBar(false);
+        if (this.viewerCommands) this.viewerCommands.closeSearch();
+        else this.toggleFindBar(false);
         return;
       }
+      if (isTextEditing) return;
       if (event.key === "PageDown" || event.key === "ArrowDown") {
-        event.preventDefault(); this.focusPage(Math.min(this.pdfDocument.numPages, this.currentPageNumber + 1));
+        event.preventDefault();
+        if (this.viewerCommands) this.viewerCommands.nextPage();
+        else this.focusPage(Math.min(this.pdfDocument.numPages, this.currentPageNumber + 1));
       } else if (event.key === "PageUp" || event.key === "ArrowUp") {
-        event.preventDefault(); this.focusPage(Math.max(1, this.currentPageNumber - 1));
+        event.preventDefault();
+        if (this.viewerCommands) this.viewerCommands.previousPage();
+        else this.focusPage(Math.max(1, this.currentPageNumber - 1));
       } else if (event.key === "+" || event.key === "=") {
-        event.preventDefault(); this.setScale(this.scale * SCALE_STEP);
+        event.preventDefault();
+        if (this.viewerCommands) this.viewerCommands.zoomIn();
+        else this.setScale(this.scale * VIEWER_ZOOM_STEP);
       } else if (event.key === "-") {
-        event.preventDefault(); this.setScale(this.scale / SCALE_STEP);
+        event.preventDefault();
+        if (this.viewerCommands) this.viewerCommands.zoomOut();
+        else this.setScale(this.scale / VIEWER_ZOOM_STEP);
       }
     };
     this.root.addEventListener("keydown", onKeyDown);
@@ -849,8 +906,8 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       });
       return;
     }
-    const setTimeout = view?.setTimeout ?? window.setTimeout;
-    this.inkPreviewTimer = setTimeout(() => {
+    const timerWindow = view ?? window;
+    this.inkPreviewTimer = timerWindow.setTimeout(() => {
       this.inkPreviewTimer = null;
       this.flushInkPreviewQueue();
     }, 0);
@@ -1029,7 +1086,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       try { resolved = await this.pdfDocument.getDestination(resolved); } catch { return undefined; }
     }
     if (!Array.isArray(resolved) || resolved.length === 0) return undefined;
-    const pageReference = resolved[0];
+    const pageReference: unknown = resolved[0];
     let pageIndex: number | undefined;
     if (typeof pageReference === "number") {
       pageIndex = pageReference;
@@ -1077,7 +1134,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     return this.lifecycleCoordinator.getWorkingSet();
   }
 
-  private setScale(next: number, mode: ViewerScaleMode | string | number = "custom"): void {
+  private setScale(next: number, mode: ViewerScaleMode | number = "custom"): void {
     this.setScaleAtFocalPoint(next, undefined, undefined, mode);
   }
 
@@ -1085,7 +1142,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     next: number,
     focalClientX?: number,
     focalClientY?: number,
-    mode: ViewerScaleMode | string | number = "custom"
+    mode: ViewerScaleMode | number = "custom"
   ): void {
     const previous = this.scale;
     this.scale = clampScale(next);
@@ -1305,10 +1362,20 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   
 
-  private toggleHandTool(): void {
-    this.handToolActive = !this.handToolActive;
+  setViewerCommandBridge(commands: PdfViewerCommandBridge | null): void {
+    this.viewerCommands = commands;
+    this.setHandToolActive(commands?.isHandMode() ?? false);
+  }
+
+  setHandToolActive(active: boolean): void {
+    this.handToolActive = active;
     this.root.classList.toggle("is-hand-tool", this.handToolActive);
     setElementCssProps(this.scroll, { cursor: this.handToolActive ? "grab" : "auto" });
+    this.handButton?.setAttribute("aria-pressed", String(this.handToolActive));
+  }
+
+  private toggleHandTool(): void {
+    this.setHandToolActive(!this.handToolActive);
   }
 
   private togglePresentationMode(): void {
@@ -1384,6 +1451,10 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     return this.lifecycleCoordinator.getRecord(pageNumber)?.mountGeneration
       ?? this.pagesByNumber.get(pageNumber)?.mountGeneration
       ?? 0;
+  }
+
+  viewportContentElement(): HTMLElement {
+    return this.pageContainer;
   }
 
   private pageInfo(page: OwnedPage): PdfPageInfo {

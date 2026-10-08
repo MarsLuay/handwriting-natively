@@ -44,7 +44,7 @@ export interface AnnotationViewState {
   scale: number;
   rotation: number;
   /** PDF.js scale mode (`auto`, `page-fit`, etc.) when the host exposes it. */
-  scaleMode?: ViewerScaleMode | string | number;
+  scaleMode?: string | number;
   /** Canonical visual interaction viewport (scale, x, y). */
   viewport?: ViewerViewportState;
 }

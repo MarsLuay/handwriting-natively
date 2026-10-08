@@ -43,7 +43,7 @@ During `active`:
 5. Normalize pointer/page-layout coordinates by the active root zoom; child overlays and canvas backing sizes remain in their unzoomed PDF coordinate space while screen projections multiply the root zoom.
 6. Coalesce visual updates to one animation frame. No annotation model mutation, sidecar write, PDF rewrite, or PDF.js scale commit is part of the gesture.
 
-The final CSS/container zoom remains after `settled`; cancellation restores the pre-gesture zoom and scroll. PDF.js continues rendering and keeps its own canonical scale unchanged.
+The final CSS/container zoom remains after `settled`; cancellation restores the pre-gesture zoom and scroll. On successful settle, the session records the effective viewport scale in its canonical viewer snapshot with `scaleMode: "custom"`, so a saved/restored view does not reapply an earlier fit mode. This is view state, not sidecar annotation data. PDF.js continues rendering at its existing scale during the gesture and keeps that render scale unchanged.
 
 ## PDF.js boundary
 

@@ -1,5 +1,5 @@
 import type { Menu as ObsidianMenu } from "obsidian";
-import { isElement, isHTMLElement } from "../dom/typeGuards";
+import { isElement, isHTMLElement, setElementCssProps } from "../dom/typeGuards";
 
 type MenuConstructor = new () => ObsidianMenu;
 let menuConstructor: MenuConstructor | undefined;
@@ -400,15 +400,17 @@ export class PdfThumbnailSidebarActions {
       ? insertionIndex
       : insertionIndex + 1;
     this.clearReorderIndicator();
-    const indicator = this.host.ownerDocument.createElement("div");
+    const indicator = domWindow(this.host.ownerDocument).createDiv();
     indicator.className = "native-pdf-handwriting-thumbnail-reorder-indicator";
     indicator.setAttribute("aria-hidden", "true");
-    indicator.style.background = "var(--interactive-accent, #7c3aed)";
-    indicator.style.height = "3px";
-    indicator.style.margin = "2px 0";
-    indicator.style.pointerEvents = "none";
-    indicator.style.position = "relative";
-    indicator.style.zIndex = "2";
+    setElementCssProps(indicator, {
+      background: "var(--interactive-accent, #7c3aed)",
+      height: "3px",
+      margin: "2px 0",
+      pointerEvents: "none",
+      position: "relative",
+      zIndex: "2"
+    });
     const before = items[insertionIndex];
     if (before) thumbnailView.insertBefore(indicator, before);
     else {

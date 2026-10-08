@@ -8,6 +8,7 @@ import NativePdfInkPlugin, { scheduleSessionRecoveryAfterDestroy } from "../src/
 import { MobileSidebarSwipeBlocker } from "../src/input/MobileSidebarSwipeBlocker";
 import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from "../src/runtime/AnnotationSurface";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
+import type { PdfViewerCommandBridge } from "../src/integration/ObsidianPdfAdapter";
 import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation, type ToolbarPlacement } from "../src/model";
 import { AttachRetryPolicy } from "../src/runtime/AttachRetryPolicy";
 import { ScanDebounce } from "../src/runtime/ScanDebounce";
@@ -93,6 +94,21 @@ class FakeAdapter implements AnnotationSurface {
     return { errors: [], warnings: [] };
   }
   destroy(): void { this.destroyed = true; this.root.remove(); }
+}
+
+class CommandBridgeAdapter extends FakeAdapter {
+  readonly supportsPdfExport = true as const;
+  commandBridge: PdfViewerCommandBridge | null = null;
+  handToolActive = false;
+
+  setViewerCommandBridge(commands: PdfViewerCommandBridge | null): void {
+    this.commandBridge = commands;
+    this.setHandToolActive(commands?.isHandMode() ?? false);
+  }
+
+  setHandToolActive(active: boolean): void {
+    this.handToolActive = active;
+  }
 }
 
 class OwnedRailAdapter extends FakeAdapter {
@@ -285,6 +301,58 @@ describe("viewer runtime tracer", () => {
       "stale-session-destroy-failed"
     ]);
     expect(blocked[1]?.error).toEqual(new Error("destroy failed"));
+  });
+
+  it("owns a cloned canonical viewer snapshot and restores through the adapter once", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/viewer-state.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    try {
+      const snapshot = session.getViewerState();
+      snapshot.viewport.scale = 8;
+      expect(session.getViewerState().viewport.scale).toBe(1);
+
+      const restoreCount = adapter.restoredViewStates.length;
+      session.restoreViewerState({
+        viewport: { scale: 2, x: 40, y: 60 },
+        pageNumber: 1,
+        rotation: 90,
+        scaleMode: "custom"
+      });
+      expect(adapter.restoredViewStates).toHaveLength(restoreCount + 1);
+      expect(session.getViewerState()).toMatchObject({
+        viewport: { scale: 2, x: 40, y: 60 },
+        pageNumber: 1,
+        rotation: 90,
+        scaleMode: "custom"
+      });
+
+      adapter.viewState = {
+        ...adapter.viewState,
+        viewport: { scale: 2.5, x: 40, y: 60 },
+        pageNumber: 1,
+        rotation: 180,
+        scale: 2.5
+      };
+      session.onViewStateChange(adapter.getViewState(), "scalechanging");
+      expect(session.getViewerState()).toMatchObject({
+        viewport: { scale: 2.5 },
+        rotation: 180
+      });
+    } finally {
+      await session.destroy();
+    }
   });
 
   it("can switch from a sidebar to the PDF toolbar on mobile", async () => {
@@ -1048,11 +1116,13 @@ describe("viewer runtime tracer", () => {
 
   it("keeps hand-mode page drags on the native PDF scroll root", async () => {
     const files = new MemoryFiles();
-    const adapter = new FakeAdapter();
+    const adapter = new CommandBridgeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
     let scrollTop = 100;
     Object.defineProperties(adapter.root, {
       scrollHeight: { value: 2_000, configurable: true },
       clientHeight: { value: 800, configurable: true },
+      clientWidth: { value: 832, configurable: true },
       scrollTop: {
         get: () => scrollTop,
         set: (value: number) => { scrollTop = value; },
@@ -1067,7 +1137,7 @@ describe("viewer runtime tracer", () => {
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/hand-mode.pdf",
-      settings: structuredClone(DEFAULT_SETTINGS),
+      settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
       saveSettings: async () => undefined,
@@ -1076,14 +1146,23 @@ describe("viewer runtime tracer", () => {
       notice: () => undefined
     });
 
-    expect(session.commandController.setHandMode(true)).toBe(true);
+    expect(adapter.commandBridge).toBe(session.commandController);
+    expect(adapter.handToolActive).toBe(false);
+    expect(adapter.commandBridge?.toggleHandMode()).toBe(true);
+    expect(settings.toolPreferences.activeTool).toBe("drag");
+    expect(adapter.handToolActive).toBe(true);
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerId: 41 }));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 100, 140, { pointerId: 41 }));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 140, { pointerId: 41, pressure: 0 }));
 
     expect(scrollTop).toBe(80);
     expect(adapter.root.style.transform).toBe("");
+    expect(session.commandController.setRotation(90)).toBe(true);
+    expect(session.commandController.fitWidth()).toBe(true);
+    expect(session.getViewerState().viewport.scale).toBe(1);
     await session.destroy();
+    expect(adapter.commandBridge).toBeNull();
+    expect(adapter.handToolActive).toBe(false);
   });
 
   it("routes an in-view MockTab wheel pan to its PDF when another HN session claimed the document event", async () => {
@@ -4767,7 +4846,7 @@ describe("viewer runtime tracer", () => {
     await session.addPageAt(2);
 
     expect(adapter.restoredViewStates).toHaveLength(1);
-    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.1789, scaleMode: 2.1789, scrollFraction: 0.82 });
+    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.1789, scaleMode: "custom", scrollFraction: 0.82 });
     const lifecycle = logs
       .filter((entry) => entry.event === "add-page lifecycle")
       .map((entry) => entry.payload);
@@ -4829,7 +4908,7 @@ describe("viewer runtime tracer", () => {
     (session as unknown as { onPagesChanged(reason: string): void }).onPagesChanged("pages-dom");
 
     expect(adapter.restoredViewStates).toHaveLength(1);
-    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.4, scaleMode: 2.4, scrollFraction: 0.74 });
+    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.4, scaleMode: "custom", scrollFraction: 0.74 });
     expect(resolved).toHaveBeenCalledTimes(1);
     await session.destroy();
   });

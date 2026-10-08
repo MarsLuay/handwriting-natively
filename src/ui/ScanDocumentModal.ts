@@ -10,6 +10,7 @@ import {
   type ScanPoint
 } from "../scanning/ScanDocument";
 import { createDetachedEl } from "../vendor/createDetached";
+import { setElementCssProps } from "../dom/typeGuards";
 
 type Corner = keyof DocumentQuad;
 
@@ -214,8 +215,10 @@ export class ScanDocumentModal extends Modal {
     const image = this.currentImage;
     if (!image) return;
     const degrees = this.currentRotation * 90;
-    image.style.transformOrigin = "center center";
-    image.style.transform = degrees === 0 ? "" : `rotate(${degrees}deg)`;
+    setElementCssProps(image, {
+      transformOrigin: "center center",
+      transform: degrees === 0 ? "" : `rotate(${degrees}deg)`
+    });
     this.preview?.setAttribute("data-rotation", String(this.currentRotation));
   }
 
