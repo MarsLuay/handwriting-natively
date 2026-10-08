@@ -135,6 +135,45 @@ describe("safe defaults", () => {
     });
   });
 
+  it("exposes a Markdown surface toggle and persists its value", async () => {
+    const tab = Object.create(NativePdfInkSettingTab.prototype) as InstanceType<typeof NativePdfInkSettingTab>;
+    const host = {
+      inkSettings: { ...DEFAULT_SETTINGS, enabledSurfaces: { pdf: true, image: true, markdown: true } },
+      saveSettings: vi.fn(async (settings) => {
+        host.inkSettings = settings;
+      })
+    };
+    Object.assign(tab, { host });
+
+    const definition = tab.getSettingDefinitions().find((item) =>
+      "name" in item && item.name === "Enable on Markdown"
+    );
+    expect(definition).toBeDefined();
+    if (!definition || !("render" in definition) || typeof definition.render !== "function") return;
+
+    let onChange: ((value: boolean) => Promise<void>) | undefined;
+    const toggle = {
+      setValue: vi.fn().mockReturnThis(),
+      onChange: vi.fn((handler: (value: boolean) => Promise<void>) => {
+        onChange = handler;
+        return toggle;
+      })
+    };
+    const setting = {
+      addToggle: (render: (control: typeof toggle) => unknown) => {
+        render(toggle);
+        return setting;
+      }
+    };
+    definition.render(setting as never);
+
+    expect(toggle.setValue).toHaveBeenCalledWith(true);
+    await onChange?.(false);
+    expect(host.saveSettings).toHaveBeenCalledWith(expect.objectContaining({
+      enabledSurfaces: { pdf: true, image: true, markdown: false }
+    }));
+  });
+
   it("migrates the retired plugin-owned PDF viewer preference to the native viewer", () => {
     expect(DEFAULT_SETTINGS).not.toHaveProperty("preferPluginPdfView");
     expect(mergeSettings(undefined)).not.toHaveProperty("preferPluginPdfView");

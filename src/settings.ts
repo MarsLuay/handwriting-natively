@@ -244,6 +244,19 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         }
       },
       {
+        name: "Enable on Markdown",
+        desc: "Enable annotation on Markdown Reading views. Runtime attachment is still scaffold-only; source mode and Live Preview are unsupported.",
+        render: (setting: Setting) => {
+          setting.addToggle((toggle) =>
+            toggle.setValue(this.host.inkSettings.enabledSurfaces.markdown).onChange(async (value) => {
+              await this.persistPatch({
+                enabledSurfaces: { ...this.host.inkSettings.enabledSurfaces, markdown: value }
+              });
+            })
+          );
+        }
+      },
+      {
         name: "Autosave",
         desc: "Save completed edits automatically. Enabled by default.",
         render: (setting: Setting) => {

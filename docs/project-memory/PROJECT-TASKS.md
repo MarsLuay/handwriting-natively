@@ -41,3 +41,11 @@ Route plugin diagnostic events through Obsidian's developer console and the same
 Paths: `src/logging/SessionLogger.ts`, `src/logging/VaultDebugLog.ts`, `src/logging/VaultLogSink.ts`, `src/settings.ts`, `src/runtime/ViewerInkSession.ts`
 
 Checks: focused logger tests; `npm test`.
+
+## markdown-surface-preference — done
+
+Expose and persist the Markdown enabled-surface preference while Markdown view attachment remains scaffold-only.
+
+Paths: `src/settings.ts`, `tests/settings.test.ts`
+
+Checks: `tests/settings.test.ts`; `npm run lint`.
