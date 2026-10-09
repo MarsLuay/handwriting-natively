@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HandwritingViewport } from "../src/integration/HandwritingViewport";
+import { ImageViewAdapter } from "../src/integration/ImageViewAdapter";
+import { resolvePageCoordinateLayout } from "../src/pdf/PageCoordinateLayout";
 import { PageCoordinateMapper, PageCoordinateSpace } from "../src/runtime/PageCoordinateMapper";
 
 function rect(left: number, top: number, width: number, height: number): DOMRect {
@@ -17,6 +19,84 @@ function rect(left: number, top: number, width: number, height: number): DOMRect
 }
 
 describe("PageCoordinateSpace", () => {
+  it("keeps image ink in natural-image coordinates across native zoom and resize", () => {
+    const host = document.createElement("div");
+    const image = document.createElement("img");
+    Object.defineProperties(image, {
+      naturalWidth: { configurable: true, value: 1200 },
+      naturalHeight: { configurable: true, value: 800 }
+    });
+    let imageRect = rect(210, 140, 1200, 800);
+    image.getBoundingClientRect = () => imageRect;
+    host.style.overflow = "auto";
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 600 },
+      clientHeight: { configurable: true, value: 400 }
+    });
+    host.append(image);
+    document.body.append(host);
+
+    const adapter = ImageViewAdapter.attach(host);
+    const page = adapter.pages()[0]!;
+    const overlay = adapter.mountOverlay(1);
+    adapter.root.getBoundingClientRect = () => imageRect;
+    overlay.getBoundingClientRect = () => imageRect;
+    const viewport = new HandwritingViewport({
+      getContainerRect: () => ({ left: 0, top: 0, width: 600, height: 400 }),
+      getContentSize: () => ({ width: page.width, height: page.height }),
+      initialRenderedScale: 1,
+      initialState: { scale: 1 }
+    });
+    const inkPoint = { x: page.width * 0.42, y: page.height * 0.63 };
+    const imageScales = [
+      { x: 0.25, y: 0.25 },
+      { x: 0.5, y: 0.5 },
+      { x: 1, y: 1 },
+      { x: 2, y: 2 },
+      { x: 4, y: 4 },
+      { x: 1.5, y: 1.25 }
+    ];
+
+    try {
+      for (const scale of imageScales) {
+        const width = page.width * scale.x;
+        const height = page.height * scale.y;
+        const scrollLeft = Math.max(0, width - 600) * 0.2;
+        const scrollTop = Math.max(0, height - 400) * 0.3;
+        host.scrollLeft = scrollLeft;
+        host.scrollTop = scrollTop;
+        imageRect = rect(210 - scrollLeft, 140 - scrollTop, width, height);
+        const layout = resolvePageCoordinateLayout(adapter.pages()[0]!);
+        const coordinates = new PageCoordinateSpace(
+          viewport,
+          overlay,
+          new PageCoordinateMapper({
+            width: page.width,
+            height: page.height,
+            scale: layout.scale,
+            scaleX: layout.scaleX,
+            scaleY: layout.scaleY,
+            origin: page.coordinateOrigin ?? "top-left"
+          })
+        );
+        const clientPoint = coordinates.pageToClient(inkPoint, imageRect);
+        const context = `imageScaleX=${scale.x}, imageScaleY=${scale.y}`;
+
+        expect((clientPoint.x - imageRect.left) / imageRect.width, `${context}: horizontal image position`)
+          .toBeCloseTo(inkPoint.x / page.width, 6);
+        expect((clientPoint.y - imageRect.top) / imageRect.height, `${context}: vertical image position`)
+          .toBeCloseTo(inkPoint.y / page.height, 6);
+        const restored = coordinates.clientToPage(clientPoint, imageRect);
+        expect(restored.x, `${context}: restored image x`).toBeCloseTo(inkPoint.x, 5);
+        expect(restored.y, `${context}: restored image y`).toBeCloseTo(inkPoint.y, 5);
+      }
+    } finally {
+      viewport.destroy();
+      adapter.destroy();
+      host.remove();
+    }
+  });
+
   it("round-trips client through viewport and bottom-left PDF/page coordinates", () => {
     const viewport = new HandwritingViewport({
       getContainerRect: () => ({ left: 50, top: 80, width: 600, height: 800 }),

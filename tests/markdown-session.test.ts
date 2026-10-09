@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, type InkStroke } from "../src/model";
 import { MarkdownViewAdapter } from "../src/integration/MarkdownViewAdapter";
+import { HandwritingViewport } from "../src/integration/HandwritingViewport";
+import { PageCoordinateMapper, PageCoordinateSpace } from "../src/runtime/PageCoordinateMapper";
+import { resolvePageCoordinateLayout } from "../src/pdf/PageCoordinateLayout";
 import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
 import { RecoveryRepository } from "../src/storage/RecoveryRepository";
 import { SidecarRepository, type TextFileAdapter } from "../src/storage/SidecarRepository";
@@ -98,6 +101,76 @@ afterEach(() => {
 });
 
 describe("Markdown annotation session", () => {
+  it.each(["preview", "source"] as const)("keeps Markdown ink page-relative across zoom and native scrolling in %s mode", (mode) => {
+    const { host, root } = markdownHost(mode);
+    root.style.overflow = "auto";
+    const adapter = MarkdownViewAdapter.attach(host, {}, { mode });
+    const overlay = adapter.mountOverlay(1);
+    const initialPage = adapter.pages()[0]!;
+    const viewport = new HandwritingViewport({
+      getContainerRect: () => ({ left: 0, top: 0, width: 640, height: 480 }),
+      getContentSize: () => ({ width: initialPage.width, height: initialPage.height }),
+      initialRenderedScale: 1,
+      initialState: { scale: 1 }
+    });
+    const inkPoint = { x: initialPage.width * 0.42, y: initialPage.height * 0.63 };
+    const zoomSteps = [0.75, 1, 1.25, 1.5, 2, 1.5, 1, 0.75];
+    let overlayRect: DOMRect = {
+      left: 0, top: 0, right: 640, bottom: 1_280,
+      width: 640, height: 1_280, x: 0, y: 0, toJSON: () => ({})
+    };
+
+    overlay.getBoundingClientRect = () => overlayRect;
+
+    try {
+      for (const zoomScale of zoomSteps) {
+        const contentWidth = Math.max(initialPage.width, initialPage.width * zoomScale);
+        const contentHeight = Math.max(root.clientHeight, initialPage.height * zoomScale);
+        Object.defineProperty(root, "scrollWidth", { configurable: true, get: () => contentWidth });
+        Object.defineProperty(root, "scrollHeight", { configurable: true, value: contentHeight });
+        const layout = resolvePageCoordinateLayout({
+          ...initialPage,
+          width: initialPage.width,
+          height: initialPage.height
+        });
+        const maxScrollLeft = Math.max(0, contentWidth - root.clientWidth);
+        const maxScrollTop = Math.max(0, contentHeight - root.clientHeight);
+        root.scrollLeft = maxScrollLeft * 0.2;
+        root.scrollTop = maxScrollTop * 0.35;
+        overlayRect = {
+          left: 80 - root.scrollLeft,
+          top: 120 - root.scrollTop,
+          right: 80 - root.scrollLeft + contentWidth,
+          bottom: 120 - root.scrollTop + contentHeight,
+          width: contentWidth,
+          height: contentHeight,
+          x: 80 - root.scrollLeft,
+          y: 120 - root.scrollTop,
+          toJSON: () => ({})
+        };
+        const mapper = new PageCoordinateMapper({
+          width: initialPage.width,
+          height: initialPage.height,
+          scale: layout.scale,
+          scaleX: layout.scaleX,
+          scaleY: layout.scaleY,
+          origin: "top-left"
+        });
+        const zoomedCoordinates = new PageCoordinateSpace(viewport, overlay, mapper);
+        const clientPoint = zoomedCoordinates.pageToClient(inkPoint, overlayRect);
+
+        expect((clientPoint.x - overlayRect.left) / overlayRect.width).toBeCloseTo(inkPoint.x / initialPage.width, 6);
+        expect((clientPoint.y - overlayRect.top) / overlayRect.height).toBeCloseTo(inkPoint.y / initialPage.height, 6);
+        const restored = zoomedCoordinates.clientToPage(clientPoint, overlayRect);
+        expect(restored.x).toBeCloseTo(inkPoint.x, 5);
+        expect(restored.y).toBeCloseTo(inkPoint.y, 5);
+      }
+    } finally {
+      viewport.destroy();
+      adapter.destroy();
+    }
+  });
+
   it("leaves horizontal wheel and trackpad navigation to Markdown's native scroller", async () => {
     mockCanvasContext();
     const files = new MemoryFiles();
