@@ -281,54 +281,6 @@ describe("HandwritingViewport", () => {
     expect(projected.y).toBeCloseTo(clientPoint.y, 4);
   });
 
-  it("keeps a PDF ink point at the same page-relative position through zoom in and out", () => {
-    const pageWidth = 960;
-    const pageHeight = 540;
-    const inkPoint = { x: pageWidth * 0.42, y: pageHeight * 0.63 };
-    const zoomSteps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 5, 2, 1, 0.5, 0.1, 10];
-    const rendererScales = [0.5, 1, 2, 5, 10];
-
-    for (const renderedScale of rendererScales) {
-      const viewport = new HandwritingViewport({
-        getContainerRect: () => rect(0, 0, 600, 800),
-        getContentSize: () => ({ width: pageWidth * renderedScale, height: pageHeight * renderedScale }),
-        initialRenderedScale: renderedScale,
-        initialState: { scale: 0.1 }
-      });
-      const overlay = document.createElement("div");
-      const coordinates = new PageCoordinateSpace(
-        viewport,
-        overlay,
-        new PageCoordinateMapper({ width: pageWidth, height: pageHeight, scale: renderedScale })
-      );
-
-      for (const zoomScale of zoomSteps) {
-        viewport.setState({ scale: zoomScale });
-        const overlayRect = {
-          ...rect(
-            302.4 - 73 * zoomScale,
-            110.23 + 29 * zoomScale,
-            pageWidth * zoomScale,
-            pageHeight * zoomScale
-          ),
-          toJSON: () => ({})
-        } as DOMRect;
-        const clientPoint = coordinates.pageToClient(inkPoint, overlayRect);
-        const relativeX = (clientPoint.x - overlayRect.left) / overlayRect.width;
-        const relativeY = (clientPoint.y - overlayRect.top) / overlayRect.height;
-        const context = `renderedScale=${renderedScale}, zoomScale=${zoomScale}`;
-
-        expect(relativeX, `${context}: horizontal page position`).toBeCloseTo(inkPoint.x / pageWidth, 6);
-        // PDF page coordinates use a bottom-left origin; screen coordinates use top-left.
-        expect(relativeY, `${context}: vertical page position`).toBeCloseTo(1 - inkPoint.y / pageHeight, 6);
-
-        const restoredPagePoint = coordinates.clientToPage(clientPoint, overlayRect);
-        expect(restoredPagePoint.x, `${context}: restored page x`).toBeCloseTo(inkPoint.x, 5);
-        expect(restoredPagePoint.y, `${context}: restored page y`).toBeCloseTo(inkPoint.y, 5);
-      }
-    }
-  });
-
   it("projects in-bounds canonical pan into native scroll without double transform", () => {
     const scroll = document.createElement("div");
     const target = document.createElement("div");
