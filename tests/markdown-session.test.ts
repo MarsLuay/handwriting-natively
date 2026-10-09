@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AddStrokeCommand } from "../src/history/AnnotationCommands";
+import type { InkSession } from "../src/ink/InkSession";
 import { DEFAULT_SETTINGS, type InkStroke } from "../src/model";
 import { MarkdownViewAdapter } from "../src/integration/MarkdownViewAdapter";
 import { ViewerInkSession } from "../src/runtime/ViewerInkSession";
@@ -51,7 +53,7 @@ function markdownHost(mode: "preview" | "source", scrollHeight = 1_280): { host:
   return { host, root };
 }
 
-function mockCanvasContext(): void {
+function mockCanvasContext() {
   const context = {
     setTransform: vi.fn(), clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(),
     beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), moveTo: vi.fn(), closePath: vi.fn(),
@@ -61,6 +63,7 @@ function mockCanvasContext(): void {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext")
     .mockReturnValue(context as unknown as CanvasRenderingContext2D);
   vi.spyOn(console, "debug").mockImplementation(() => undefined);
+  return context;
 }
 
 function historyStroke(id: string): InkStroke {
@@ -262,16 +265,19 @@ describe("Markdown annotation session", () => {
     }
   });
 
-  it("keeps tall Markdown note ink at display resolution within the backing pixel budget", async () => {
-    mockCanvasContext();
+  it("keeps tall Markdown ink sharp at display resolution and preserves pen pressure detail", async () => {
+    const context = mockCanvasContext();
     vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(2);
     const files = new MemoryFiles();
     const { host } = markdownHost("preview", 5_000);
     const adapter = MarkdownViewAdapter.attach(host, {}, { mode: "preview" });
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.pen.pressureSensitivity = true;
+    settings.toolPreferences.pen.thinning = 0.65;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/long-note.md",
-      settings: structuredClone(DEFAULT_SETTINGS),
+      settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "annotations/recovery"),
       saveSettings: async () => undefined,
@@ -280,12 +286,42 @@ describe("Markdown annotation session", () => {
 
     try {
       const internal = session as unknown as {
-        surfaces: Map<number, { canvas: HTMLCanvasElement }>;
+        ink: InkSession;
+        executeHistory(command: AddStrokeCommand, pages?: number | readonly number[] | null): void;
+        surfaces: Map<number, {
+          canvas: HTMLCanvasElement;
+          inkLayer: HTMLCanvasElement | null;
+          inkLayerValid: boolean;
+          inkLayerBackingScale: number | null;
+        }>;
       };
       const surface = internal.surfaces.get(1);
       expect(surface).toBeDefined();
       expect(surface!.canvas.width).toBe(1_280);
       expect(surface!.canvas.height).toBe(10_000);
+      expect(surface!.inkLayer?.width).toBe(1_280);
+      expect(surface!.inkLayer?.height).toBe(10_000);
+
+      const stroke: InkStroke = {
+        ...historyStroke("markdown-pressure-detail"),
+        points: [
+          { x: 12.25, y: 20.5, pressure: 0.1, time: 1 },
+          { x: 30.75, y: 35.25, pressure: 0.9, time: 20 }
+        ]
+      };
+      context.arc.mockClear();
+      context.setTransform.mockClear();
+      internal.executeHistory(new AddStrokeCommand(internal.ink, stroke), 1);
+
+      expect(surface!.inkLayerValid).toBe(true);
+      expect(surface!.inkLayerBackingScale).toBe(2);
+      expect(context.setTransform).toHaveBeenCalledWith(2, 0, 0, 2, 0, 0);
+      const stamps = context.arc.mock.calls;
+      const firstStamp = stamps.find(([x, y]) => x === 12.25 && y === 20.5);
+      const lastStamp = stamps.find(([x, y]) => x === 30.75 && y === 35.25);
+      expect(stamps.length).toBeGreaterThan(2);
+      expect(firstStamp?.[2]).toBeGreaterThan(0);
+      expect(lastStamp?.[2]).toBeGreaterThan(firstStamp?.[2] ?? 0);
     } finally {
       await session.destroy({ silent: true });
     }
