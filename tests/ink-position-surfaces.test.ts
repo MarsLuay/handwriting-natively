@@ -23,6 +23,7 @@ class MemoryFiles implements TextFileAdapter {
 }
 
 const canvasContexts = new WeakMap<HTMLCanvasElement, CanvasRenderingContext2D>();
+const canvasArcCalls = new WeakMap<HTMLCanvasElement, number[][]>();
 
 function rect(left: number, top: number, width: number, height: number): DOMRect {
   return {
@@ -78,8 +79,11 @@ function pointer(type: "pointerdown" | "pointermove" | "pointerup", x: number, y
 
 function canvasContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
   const noOp = (): void => undefined;
+  const arcCalls: number[][] = [];
+  canvasArcCalls.set(canvas, arcCalls);
   const context = new Proxy({
     canvas,
+    arc: (...args: number[]) => { arcCalls.push(args); },
     measureText: (text: string) => ({ width: text.length * 8, actualBoundingBoxAscent: 8, actualBoundingBoxDescent: 2 }),
     getLineDash: () => [],
     getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
@@ -127,13 +131,14 @@ function newSettings(): typeof DEFAULT_SETTINGS {
 
 async function createSession(
   adapter: ImageViewAdapter | MarkdownViewAdapter | PdfJsViewAdapter,
-  path: string
+  path: string,
+  settings = newSettings()
 ): Promise<ViewerInkSession> {
   const files = new MemoryFiles();
   return ViewerInkSession.create({
     adapter,
     documentPath: path,
-    settings: newSettings(),
+    settings,
     sidecars: new SidecarRepository(files, "annotations"),
     recovery: new RecoveryRepository(files, "annotations/recovery"),
     saveSettings: async () => undefined,
@@ -267,6 +272,176 @@ describe("ink placement through production surface adapters and viewer sessions"
       await session.destroy({ silent: true });
     }
   });
+
+  it("resizes an existing PDF stroke with the PDF.js page during actual zoom", async () => {
+    installCanvasContexts();
+    const data = Uint8Array.from(await readFile("tests/fixtures/lorem-ipsum.pdf"));
+    const app = {
+      vault: { readBinary: async () => data.slice().buffer },
+      loadLocalStorage: () => null
+    } as unknown as App;
+    const host = document.createElement("div");
+    document.body.append(host);
+    let liveSession: ViewerInkSession | null = null;
+    const adapter = await PdfJsViewAdapter.create({
+      app,
+      file: { name: "existing-ink.pdf" } as TFile,
+      pluginDir: "pdfjs",
+      host,
+      callbacks: {
+        onViewStateChange: (state, source) => liveSession?.onViewStateChange(state, source),
+        onPagesChanged: (reason) => liveSession?.onPagesChanged(reason),
+        onPageLifecycleChange: (change) => liveSession?.onPageLifecycleChange(change),
+        onZoomChange: (change) => liveSession?.onZoomChange(change),
+        onPageContentMutationTrace: (change) => liveSession?.onPdfPageContentMutation(change)
+      }
+    });
+    const scroll = host.querySelector<HTMLElement>(".hn-owned-pdf-scroll");
+    const page = adapter.page(1);
+    if (!scroll || !page) throw new Error("The actual PDF.js adapter did not mount its first page");
+    const pageShell = page.element;
+    const pdfCanvas = pageShell.querySelector<HTMLCanvasElement>(".hn-owned-pdf-canvas");
+    if (!pdfCanvas) throw new Error("PDF.js did not mount the rendered page canvas");
+
+    const baseLeft = 90;
+    const baseTop = 70;
+    const getPageBox = (): DOMRect => rect(
+      baseLeft - scroll.scrollLeft,
+      baseTop - scroll.scrollTop,
+      stylePixels(pageShell, "width", page.width),
+      stylePixels(pageShell, "height", page.height)
+    );
+    setRect(scroll, () => rect(baseLeft - 20, baseTop - 20, 800, 600));
+    installScrollMetrics(
+      scroll,
+      () => stylePixels(pageShell, "width", page.width),
+      () => stylePixels(pageShell, "height", page.height),
+      800,
+      600
+    );
+    setRect(pageShell, getPageBox);
+    setRect(pdfCanvas, getPageBox);
+
+    const settings = newSettings();
+    settings.toolPreferences.activeTool = "pen";
+    settings.toolPreferences.pen.penType = "fountain";
+    const session = await createSession(adapter, "Notes/existing-ink.pdf", settings);
+    liveSession = session;
+    const overlay = pageShell.querySelector<HTMLElement>(".native-pdf-handwriting-page-overlay");
+    if (!overlay) throw new Error("ViewerInkSession did not mount the PDF annotation surface");
+    setRect(overlay, getPageBox);
+
+    type InkSurfaceProbe = {
+      canvas: HTMLCanvasElement;
+      inkLayer: HTMLCanvasElement | null;
+      inkLayerValid: boolean;
+      inkLayerBurstCapture: boolean;
+      inkLayerRevision: number | null;
+    };
+    const internal = session as unknown as {
+      ink: { pageRevision(pageNumber: number): number };
+      surfaces: Map<number, InkSurfaceProbe>;
+    };
+    const surface = internal.surfaces.get(1);
+    if (!surface) throw new Error("ViewerInkSession did not create the PDF ink surface");
+
+    try {
+      const fraction = { x: 0.2, y: 0.3 };
+      const stroke = drawAtPageFraction(session, pageShell, getPageBox, fraction, 501);
+      expect(stroke.points[0]!.x).toBeCloseTo(page.width * fraction.x, 2);
+      expect(stroke.points[0]!.y).toBeCloseTo(page.height * (1 - fraction.y), 2);
+      expect(committedStrokes(session)).toHaveLength(1);
+
+      type ZoomObservation = {
+        previousPageBox: DOMRect;
+        pageBox: DOMRect;
+        pdfWidth: number;
+        pdfHeight: number;
+        inkWidth: number;
+        inkHeight: number;
+        arc: number[];
+      };
+
+      const zoomAndCapture = async (): Promise<ZoomObservation> => {
+        const before = internal.surfaces.get(1)!;
+        const previousPageBox = getPageBox();
+        const previousCanvasWidth = before.canvas.width;
+        const previousCanvasHeight = before.canvas.height;
+        const previousPdfWidth = pdfCanvas.width;
+        const previousPdfHeight = pdfCanvas.height;
+        const previousCalls = before.inkLayer ? canvasArcCalls.get(before.inkLayer) : undefined;
+        if (previousCalls) previousCalls.length = 0;
+        const previousScale = adapter.getViewState().scale;
+        adapter.root.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "=",
+          bubbles: true,
+          cancelable: true
+        }));
+        expect(adapter.getViewState().scale).toBeGreaterThan(previousScale);
+        expect(getPageBox().width).toBeGreaterThan(previousPageBox.width);
+        expect(getPageBox().height).toBeGreaterThan(previousPageBox.height);
+
+        await vi.waitFor(() => {
+          const current = internal.surfaces.get(1);
+          const calls = current?.inkLayer ? canvasArcCalls.get(current.inkLayer) : undefined;
+          expect(current?.inkLayer).not.toBeNull();
+          expect(current?.inkLayerValid).toBe(true);
+          expect(current?.inkLayerBurstCapture).toBe(false);
+          expect(current?.inkLayerRevision).toBe(internal.ink.pageRevision(1));
+          expect(current?.inkLayer?.width).toBe(current?.canvas.width);
+          expect(current?.inkLayer?.height).toBe(current?.canvas.height);
+          expect(current?.canvas.width).toBeGreaterThan(previousCanvasWidth);
+          expect(current?.canvas.height).toBeGreaterThan(previousCanvasHeight);
+          expect(pdfCanvas.width).toBeGreaterThan(previousPdfWidth);
+          expect(pdfCanvas.height).toBeGreaterThan(previousPdfHeight);
+          expect(calls?.length).toBeGreaterThan(0);
+        }, { timeout: 5_000, interval: 20 });
+
+        const current = internal.surfaces.get(1)!;
+        const layer = current.inkLayer!;
+        const arc = canvasArcCalls.get(layer)?.[0];
+        if (!arc) throw new Error("Canonical PDF ink repaint did not issue a pen stamp");
+        return {
+          previousPageBox,
+          pageBox: getPageBox(),
+          pdfWidth: pdfCanvas.width,
+          pdfHeight: pdfCanvas.height,
+          inkWidth: layer.width,
+          inkHeight: layer.height,
+          arc
+        };
+      };
+
+      const firstScale = adapter.getViewState().scale;
+      const first = await zoomAndCapture();
+      expect(adapter.getViewState().scale).toBeGreaterThan(firstScale);
+      expect(first.inkWidth / first.pdfWidth).toBeCloseTo(1, 2);
+      expect(first.inkHeight / first.pdfHeight).toBeCloseTo(1, 2);
+
+      const secondScale = adapter.getViewState().scale;
+      const second = await zoomAndCapture();
+      expect(adapter.getViewState().scale).toBeGreaterThan(secondScale);
+      expect(second.pageBox.width).toBeGreaterThan(first.pageBox.width);
+      expect(second.pageBox.height).toBeGreaterThan(first.pageBox.height);
+      expect(second.inkWidth / second.pdfWidth).toBeCloseTo(1, 2);
+      expect(second.inkHeight / second.pdfHeight).toBeCloseTo(1, 2);
+      expect(second.inkWidth / first.inkWidth).toBeCloseTo(second.pdfWidth / first.pdfWidth, 2);
+      expect(second.inkHeight / first.inkHeight).toBeCloseTo(second.pdfHeight / first.pdfHeight, 2);
+
+      // The actual canonical pen stamps must keep the same page-relative center
+      // and thickness when the retained PDF-space stroke is repainted at zoom.
+      const normalizedCenterX = stroke.points[0]!.x / page.width;
+      const normalizedCenterY = (page.height - stroke.points[0]!.y) / page.height;
+      expect(first.arc[0]! / first.pageBox.width).toBeCloseTo(normalizedCenterX, 3);
+      expect(first.arc[1]! / first.pageBox.height).toBeCloseTo(normalizedCenterY, 3);
+      expect(second.arc[0]! / second.pageBox.width).toBeCloseTo(normalizedCenterX, 3);
+      expect(second.arc[1]! / second.pageBox.height).toBeCloseTo(normalizedCenterY, 3);
+      expect(second.arc[2]! / second.pageBox.width).toBeCloseTo(first.arc[2]! / first.pageBox.width, 3);
+      expect(committedStrokes(session)).toEqual([stroke]);
+    } finally {
+      await session.destroy({ silent: true });
+    }
+  }, 15_000);
 
   it("keeps image ink in natural-image coordinates while the native image element changes size", async () => {
     installCanvasContexts();
