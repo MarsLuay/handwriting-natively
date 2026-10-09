@@ -53,12 +53,19 @@
       "title": "Centralize touch, pinch, hand-tool, and modifier-wheel navigation and validate the canonical floating toolbar.",
       "paths": [
         "src/input/GestureNavigationController.ts",
+        "src/integration/HandwritingViewport.ts",
+        "src/integration/ImageViewAdapter.ts",
+        "src/integration/PdfJsViewAdapter.ts",
         "src/input/PointerRouter.ts",
         "src/runtime/ViewerInkSession.ts",
+        "styles.css",
+        "tests/",
         "docs/input-gesture-architecture.md"
       ],
       "checks": [
         "Focused gesture and orientation tests, including persisted toolbar rotation",
+        "PDF/image pan stops at hard bounds without rubber-banding or release spring",
+        "Zoom and restore do not snap to a previous scale or fit preset",
         "Markdown wheel, touch, and hand-tool scrolling remain native",
         "npm test",
         "npm run lint",

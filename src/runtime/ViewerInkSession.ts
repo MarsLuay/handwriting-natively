@@ -1,6 +1,8 @@
 import type { DrawingTool, FloatingToolbarPosition, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarOrientation, ToolPreferences } from "../model";
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
-import { resolveFloatingToolbarPosition } from "./FloatingToolbarPosition";
+import { FloatingToolbarController } from "./FloatingToolbarController";
+import { LaserOverlayController } from "./LaserOverlayController";
+import { SelectionChromeRenderer } from "./SelectionChromeRenderer";
 import {
   annotationPageMountMatches,
   annotationPageSafetyReason,
@@ -210,11 +212,6 @@ import { eraseStrokes, eraseWholeStrokes } from "../tools/EraserTool";
 import { recognizeHeldShape, resizeShapePoints, shapeResizeAnchor, shapeResizeHandle, SHAPE_RECOGNITION_HOLD_MS, type ShapeRecognition } from "../tools/ShapeRecognizer";
 import { boundingShapeFromSelection, filterSelectableStrokes, selectStrokes, selectionShapeArea, shapeBounds, shapeContainsPoint, translateShape, visibleStrokeSegments, type SelectionShape } from "../tools/LassoTool";
 import { drawHighlighterStroke, drawHighlighterStrokeWithMasks } from "../tools/HighlighterTool";
-import {
-  drawLaserStroke,
-  laserTrailStillVisible,
-  mapLaserPoints
-} from "../tools/LaserTool";
 import { drawGraphiteStroke, seedFromId } from "../tools/PencilTool";
 import { drawPenStroke } from "../tools/PenTool";
 import { AutosaveQueue } from "../storage/AutosaveQueue";
@@ -242,7 +239,7 @@ import {
 } from "./ZoomNativeHandoffTrace";
 import type { VaultLogSink } from "../logging/VaultLogSink";
 import type { AnnotationViewState, ViewerState, ViewerViewportState } from "./AnnotationSurface";
-import { cloneViewerState, createViewerState } from "./ViewerState";
+import { cloneViewerState, createViewerState, type ViewerScaleMode } from "./ViewerState";
 import { describeScrollElement } from "../integration/PdfScrollRoot";
 import { TextAnnotationSession } from "../text/TextAnnotationSession";
 import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../text/TextAnnotationCommands";
@@ -659,17 +656,6 @@ export interface ViewerInkSessionOptions {
   livePersistEpoch?: (documentId: string) => number;
   /** Host runtime flags — avoid importing `obsidian` here so unit tests stay portable. */
   runtimePlatform?: () => { mobile: boolean; phone: boolean; ipad?: boolean };
-}
-
-interface LaserTrail {
-  id: string;
-  page: number;
-  points: PagePoint[];
-  color: string;
-  width: number;
-  opacity: number;
-  holdMs: number;
-  fadeMs: number;
 }
 
 interface RectSnapshot {
@@ -1095,18 +1081,13 @@ export class ViewerInkSession {
   private toolbarUiGeneration = 0;
   private lastToolbarMountReason = "not-mounted";
   private lastToolbarUnmountReason: string | null = null;
-  private floatingToolbarHandle: HTMLButtonElement | null = null;
-  private floatingToolbarAbort: AbortController | null = null;
-  private floatingToolbarResizeObserver: ResizeObserver | null = null;
-  private floatingToolbarPortal: HTMLDivElement | null = null;
-  private floatingToolbarVisibilityObserver: IntersectionObserver | null = null;
-  private floatingToolbarDragActive = false;
-  private floatingToolbarPosition: FloatingToolbarPosition | null = null;
+  private readonly floatingToolbar: FloatingToolbarController;
   private lastHandwritingUiMissingKey = "";
   private uiIntegrityTimer: number | null = null;
   private readonly previousViewerElementDebugId: number | null;
   private lastAddPageOperationId: string | null;
   private readonly selectionToolbar: SelectionToolbar;
+  private readonly selectionChromeRenderer: SelectionChromeRenderer<PageSurface>;
   private readonly textContextMenu: DropdownController;
   private textContextMenuTargetId: string | null = null;
   private textContextMenuSuppressTimer: number | null = null;
@@ -1206,6 +1187,11 @@ export class ViewerInkSession {
   private pendingMobileScrollRemount = false;
   private mountBurst = 0;
   private zoomSettleTimer: number | null = null;
+  /** Debounced backing refresh for CSS-only image zoom and PDF pinch projection. */
+  private viewportProjectionRepaintTimer: number | null = null;
+  private viewportProjectionRepaintGeneration = 0;
+  private pendingViewportProjectionRepaint = false;
+  private devicePixelRatioResizeCleanup: (() => void) | null = null;
   /** Live ink blocks HQ settle until the tip lifts. One pause, not a poll. */
   private zoomSettlePausedForLiveInk = false;
   private zoomSettlePausedAt: number | null = null;
@@ -1300,13 +1286,7 @@ export class ViewerInkSession {
   private lastObservedTool: ToolId = "pen";
   private lastDrawOwner = "idle";
   private lastActivePenIds: number[] = [];
-  private laserTrails: LaserTrail[] = [];
-  private laserFadeFrame: number | null = null;
-  private lastLaserPaintAt = 0;
-  /** Laser fade loop caps ~30fps — full page repaint every frame is too heavy. */
-  private static readonly LASER_FADE_MIN_MS = 32;
-  /** Bound CPU, allocations, and canvas commands for high-rate stylus input. */
-  private static readonly MAX_LASER_DRAFT_POINTS = 1024;
+  private readonly laserOverlay: LaserOverlayController<PageSurface>;
   private lastZoomSignalAt = 0;
   private zoomCompositing = false;
   /** Number of pages admitted to the active pinch working set. */
@@ -1444,7 +1424,6 @@ export class ViewerInkSession {
   private constructor(private readonly options: ViewerInkSessionOptions) {
     this.mouseNavigationActive = this.mouseInkingConfigured()
       && options.settings.toolPreferences.mouseNavigationActive;
-    this.floatingToolbarPosition = options.settings.floatingToolbarPosition;
     this.previousViewerElementDebugId = options.restoredAddPageMutation?.viewerElementDebugIdBefore ?? null;
     this.lastAddPageOperationId = options.restoredAddPageMutation?.operationId ?? null;
     const identityInput: DocumentIdentityInput = {
@@ -1629,6 +1608,43 @@ export class ViewerInkSession {
       onClear: () => this.clearSelection()
     }, options.adapter.host.ownerDocument);
     this.selectionToolbar.bindViewport(options.adapter.root);
+    this.selectionChromeRenderer = new SelectionChromeRenderer<PageSurface>({
+      pageLayout: (surface) => this.pageLayout(surface),
+      displayScale: (surface) => this.displayScale(surface),
+      toViewport: (surface, point) => this.mapper(surface).toViewport(point)
+    });
+    this.floatingToolbar = new FloatingToolbarController({
+      host: options.adapter.host,
+      toolbar: this.toolbar.element,
+      initialPosition: options.settings.floatingToolbarPosition,
+      getOrientation: () => this.currentToolbarOrientation(),
+      onPositionPersist: (position) => {
+        const save = this.options.savePluginSettings?.({ floatingToolbarPosition: position });
+        if (!save) return;
+        void save.catch((error) => {
+          this.options.vaultLog?.write("error", "floating-toolbar-position-save-failed", {
+            error: this.errorMessage(error)
+          });
+        });
+      }
+    });
+    this.laserOverlay = new LaserOverlayController<PageSurface>({
+      getSurface: (pageNumber) => this.surfaces.get(pageNumber),
+      getAllSurfaces: () => this.surfaces.values(),
+      toViewport: (surface, point) => this.mapper(surface).toViewport(point),
+      displayScale: (surface) => this.displayScale(surface),
+      pageLayout: (surface) => this.pageLayout(surface),
+      resolveInkBacking: (width, height) => this.resolveInkBacking(width, height),
+      blitInkLayerToCanvas: (surface, pixelWidth, pixelHeight, backingScale) =>
+        this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale),
+      renderPage: (pageNumber) => this.renderPage(pageNumber),
+      getLaserPreferences: () => this.options.settings.toolPreferences.laser,
+      onSlowRepaint: (pageNumber, durationMs, draftPointCount, trailCount) => {
+        this.logger.laserRepaintSlow(pageNumber, durationMs, draftPointCount, trailCount);
+      },
+      isDestroyed: () => this.destroyed,
+      defaultView: () => this.options.adapter.host.ownerDocument.defaultView
+    });
     this.textContextMenu = new DropdownController(options.adapter.host.ownerDocument);
     this.autosave = new AutosaveQueue<SidecarSchemaV1>({
       delayMs: options.settings.autosaveDelayMs,
@@ -1701,6 +1717,9 @@ export class ViewerInkSession {
     const initialViewState = adapter.getViewState();
     this.canonicalViewerState = createViewerState(initialViewState);
     const initialScroll = adapter.scrollElement();
+    // HandwritingViewport starts with its rendered scale, so its initial
+    // projection is 1. Seed this value to ensure the first CSS zoom is observed.
+    let previousViewportProjectionScale = 1;
     this.handwritingViewport = new HandwritingViewport({
       getContainerRect: () => {
         try {
@@ -1733,11 +1752,39 @@ export class ViewerInkSession {
         x: -(Number.isFinite(initialScroll.scrollLeft) ? initialScroll.scrollLeft : 0),
         y: -(Number.isFinite(initialScroll.scrollTop) ? initialScroll.scrollTop : 0)
       },
-      onStateChange: (viewport) => this.updateViewerStateFromViewport(viewport)
+      onStateChange: (viewport) => {
+        this.updateViewerStateFromViewport(viewport);
+        const renderedScale = this.handwritingViewport.getRenderedScale();
+        const projectionScale = viewport.scale / Math.max(0.1, renderedScale);
+        const previousProjectionScale = previousViewportProjectionScale;
+        previousViewportProjectionScale = projectionScale;
+        // Image zoom and mobile PDF pinch are CSS projections; they do not
+        // produce the PDF.js render signal required by scheduleZoomRepaint's
+        // native handoff. Refresh retained ink after the projection settles.
+        if (Math.abs(projectionScale - previousProjectionScale) > 0.001) {
+          this.scheduleViewportProjectionRepaint();
+        }
+      }
     });
     this.handwritingViewport.setTarget(
       pdfSurfaceExtensions(adapter)?.viewportContentElement?.() ?? adapter.root
     );
+    const ownerWindow = adapter.host.ownerDocument.defaultView;
+    if (ownerWindow) {
+      let lastDevicePixelRatio = ownerWindow.devicePixelRatio || 1;
+      const refreshBackingAfterDisplayChange = (): void => {
+        const nextDevicePixelRatio = ownerWindow.devicePixelRatio || 1;
+        if (Math.abs(nextDevicePixelRatio - lastDevicePixelRatio) < 0.001) return;
+        lastDevicePixelRatio = nextDevicePixelRatio;
+        for (const surface of this.surfaces.values()) {
+          this.renderPage(surface.page.pageNumber, undefined, "device-pixel-ratio-change");
+        }
+      };
+      ownerWindow.addEventListener("resize", refreshBackingAfterDisplayChange);
+      this.devicePixelRatioResizeCleanup = () => {
+        ownerWindow.removeEventListener("resize", refreshBackingAfterDisplayChange);
+      };
+    }
     this.lifecycleVisibilityUnsubscribe = pdfExtensions?.lifecycleCoordinator?.onVisibilityChange(
       (event) => this.onLifecycleVisibilityChange(event)
     ) ?? null;
@@ -1984,10 +2031,41 @@ export class ViewerInkSession {
     this.applyViewerState(state, true);
   }
 
+  private applyZoomAtViewportCenter(
+    scale: number,
+    scaleMode: ViewerScaleMode = "custom"
+  ): boolean {
+    const extensions = pdfSurfaceExtensions(this.options.adapter);
+    if (extensions?.setScaleAtViewportCenter) {
+      extensions.setScaleAtViewportCenter(scale);
+      this.canonicalViewerState = createViewerState({
+        ...this.canonicalViewerState,
+        viewport: { ...this.canonicalViewerState.viewport, scale },
+        scale,
+        scaleMode
+      });
+      return true;
+    }
+    if (this.options.adapter.surfaceType !== "image"
+      && this.options.adapter.surfaceType !== "markdown") return false;
+
+    const center = this.handwritingViewport.getContainerCenter();
+    if (!center) return false;
+    this.handwritingViewport.startPinch(center);
+    this.handwritingViewport.pinch(scale, center);
+    this.handwritingViewport.endPinch();
+    this.canonicalViewerState = createViewerState({
+      ...this.canonicalViewerState,
+      scaleMode
+    });
+    return true;
+  }
+
   private createViewerCommandHost(): ViewerCommandHost {
     return {
       getViewerState: () => this.getViewerState(),
       setViewerState: (patch) => this.setViewerState(patch),
+      setZoomAtViewportCenter: (scale) => this.applyZoomAtViewportCenter(scale),
 
       getScale: () => this.getViewerState().viewport.scale,
       setScale: (scale: number) => {
@@ -2008,12 +2086,14 @@ export class ViewerInkSession {
           const rotated = viewer.rotation % 180 !== 0;
           const pageWidth = page ? (rotated ? page.height : page.width) : 612;
           if (containerWidth > 0 && pageWidth > 0) {
-            const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
+          const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
+          if (!this.applyZoomAtViewportCenter(targetScale, "fit-width")) {
             this.setViewerState({
               viewport: { scale: targetScale, x: 0, y: viewer.viewport.y },
               scale: targetScale,
               scaleMode: "fit-width"
             });
+          }
           }
         } catch {
           // Fit commands are optional while PDF page geometry is being replaced.
@@ -2288,7 +2368,10 @@ export class ViewerInkSession {
       if (startedInNativeEmbed || targetedNativeEmbed) return;
       this.continueOpenPenStroke(event);
     }, { capture: true, passive: false, signal: this.pointerProbeAbort.signal });
-    adapter.scrollElement().addEventListener("scroll", () => this.updatePenScrollEvidence(), options);
+    adapter.scrollElement().addEventListener("scroll", () => {
+      if (adapter.surfaceType === "markdown") this.handwritingViewport.syncFromScroll();
+      this.updatePenScrollEvidence();
+    }, options);
     this.installWheelProbes(doc, options, within);
     this.installGestureProbes(doc, options, within);
     this.installUiShellMutationWatch(doc);
@@ -4980,6 +5063,41 @@ export class ViewerInkSession {
   }
 
   /**
+   * CSS-projected zoom changes the ink canvas's required pixel density without
+   * changing renderer geometry. Debounce until projection input pauses, then
+   * restamp retained strokes at the settled backing size. PDF.js native zoom
+   * continues through its separate render-signal handoff.
+   */
+  private scheduleViewportProjectionRepaint(): void {
+    if (this.destroyed) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) return;
+    if (this.viewportProjectionRepaintTimer !== null) {
+      view.clearTimeout(this.viewportProjectionRepaintTimer);
+    }
+    const generation = ++this.viewportProjectionRepaintGeneration;
+    this.viewportProjectionRepaintTimer = view.setTimeout(() => {
+      this.viewportProjectionRepaintTimer = null;
+      if (this.destroyed || generation !== this.viewportProjectionRepaintGeneration) return;
+      if (this.zoomCompositing) {
+        // Keep the request until the native PDF compositor has released its
+        // mask; renderPage intentionally refuses canonical paint mid-handoff.
+        this.pendingViewportProjectionRepaint = true;
+        return;
+      }
+      for (const surface of this.surfaces.values()) {
+        this.renderPage(surface.page.pageNumber, undefined, "viewport-projection-settle");
+      }
+    }, 120);
+  }
+
+  private flushPendingViewportProjectionRepaint(): void {
+    if (!this.pendingViewportProjectionRepaint || this.zoomCompositing || this.destroyed) return;
+    this.pendingViewportProjectionRepaint = false;
+    this.scheduleViewportProjectionRepaint();
+  }
+
+  /**
    * Page renders and scroll ticks after the scale has stopped were restarting
    * the 560ms quiet window and writing a vault log each time. The last iPad
    * paste summed those cancelled waits into a 12–23s settle-timer-churn while
@@ -6742,6 +6860,7 @@ export class ViewerInkSession {
     this.lastZoomFrameAttributionSummary = this.zoomFrameDiagnostics.finish();
     // Strict settle may have deferred off-screen pages; idle-margin prefetch once handoff ends.
     this.scheduleViewportPaint();
+    this.flushPendingViewportProjectionRepaint();
   }
 
   /**
@@ -8499,10 +8618,10 @@ export class ViewerInkSession {
   private reconcileToolbarMount(reason: string): void {
     if (this.destroyed || !this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) return;
     const toolbar = this.toolbar.element;
-    const portal = this.floatingToolbarPortal;
+    const portal = this.floatingToolbar.getPortal();
     const toolbarConnected = toolbar.isConnected && portal?.contains(toolbar) === true;
     const floating = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback");
-    const orientationChanged = this.applyToolbarOrientation(toolbar);
+    const orientationChanged = this.floatingToolbar.applyOrientation(toolbar);
     if (toolbarConnected && floating && !orientationChanged) return;
 
     this.lastToolbarUnmountReason = toolbar.isConnected ? `reconcile:${reason}` : reason;
@@ -8513,203 +8632,12 @@ export class ViewerInkSession {
     } catch {
       // The floating toolbar can attach directly to the host if adapter mounting fails.
     }
-    this.mountFloatingToolbar(toolbar);
+    this.floatingToolbar.mount(toolbar);
     this.lastToolbarMountReason = `${reason}:floating`;
   }
 
-  private mountFloatingToolbar(toolbar: HTMLElement): void {
-    const alreadyFloating = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback");
-    this.applyToolbarOrientation(toolbar);
-    toolbar.classList.add("native-pdf-handwriting-toolbar-floating-fallback");
-    toolbar.classList.remove("is-main", "is-sidebar-left", "is-sidebar-right");
-
-    let portal = this.floatingToolbarPortal;
-    if (!portal) {
-      portal = createDetachedDiv(toolbar.ownerDocument);
-      portal.className = "native-pdf-handwriting-toolbar-portal";
-      portal.dataset.focusOverlayInternal = "true";
-      portal.setAttribute("aria-hidden", "false");
-      this.floatingToolbarPortal = portal;
-      const IntersectionObserverClass = toolbar.ownerDocument.defaultView?.IntersectionObserver;
-      if (IntersectionObserverClass) {
-        this.floatingToolbarVisibilityObserver = new IntersectionObserverClass((entries) => {
-          const entry = entries.find(({ target }) => target === this.options.adapter.host);
-          if (!entry || this.floatingToolbarPortal !== portal) return;
-          const visible = entry.isIntersecting && entry.intersectionRatio > 0;
-          portal?.classList.toggle("is-owner-view-hidden", !visible);
-          portal?.setAttribute("aria-hidden", String(!visible));
-        });
-        this.floatingToolbarVisibilityObserver.observe(this.options.adapter.host);
-      }
-    }
-
-    if (!portal.isConnected) {
-      const target = toolbar.ownerDocument.body ?? this.options.adapter.host;
-      target.append(portal);
-    }
-    if (toolbar.parentElement !== portal) portal.append(toolbar);
-
-    if (!this.floatingToolbarHandle) {
-      const handle = createDetachedEl(toolbar.ownerDocument, "button");
-      handle.type = "button";
-      handle.className = "native-pdf-handwriting-toolbar-drag-handle";
-      handle.textContent = "⠿";
-      handle.title = "Move handwriting toolbar";
-      handle.setAttribute("aria-label", "Move handwriting toolbar");
-      toolbar.prepend(handle);
-      this.floatingToolbarHandle = handle;
-      this.installFloatingToolbarDrag(toolbar, handle);
-    }
-
-    const rect = toolbar.getBoundingClientRect();
-    this.applyFloatingToolbarPosition(
-      toolbar,
-      this.floatingToolbarPosition,
-      alreadyFloating ? { left: rect.left, top: rect.top } : null
-    );
-  }
-
-  private applyFloatingToolbarPosition(
-    toolbar: HTMLElement,
-    savedPosition: FloatingToolbarPosition | null,
-    currentPosition: FloatingToolbarPosition | null
-  ): void {
-    const rect = toolbar.getBoundingClientRect();
-    const hostRect = this.options.adapter.host.getBoundingClientRect();
-    const view = toolbar.ownerDocument.defaultView;
-    const position = resolveFloatingToolbarPosition({
-      savedPosition,
-      currentPosition,
-      hostPosition: { left: hostRect.left, top: hostRect.top },
-      viewport: {
-        width: view?.innerWidth ?? hostRect.right,
-        height: view?.innerHeight ?? hostRect.bottom
-      },
-      toolbarSize: { width: rect.width, height: rect.height }
-    });
-    setElementCssProps(toolbar, {
-      left: `${position.left}px`,
-      top: `${position.top}px`,
-      right: "auto",
-      bottom: "auto"
-    });
-  }
-
-  private applyToolbarOrientation(toolbar: HTMLElement): boolean {
-    const orientation = this.currentToolbarOrientation();
-    const changed = toolbar.classList.contains("is-vertical") !== (orientation === "vertical");
-    toolbar.classList.toggle("is-vertical", orientation === "vertical");
-    toolbar.classList.toggle("is-horizontal", orientation === "horizontal");
-    return changed;
-  }
-
-  private installFloatingToolbarDrag(toolbar: HTMLElement, handle: HTMLButtonElement): void {
-    const abort = new AbortController();
-    this.floatingToolbarAbort = abort;
-    let drag: { pointerId: number; startX: number; startY: number; left: number; top: number; moved: boolean } | null = null;
-    const reapplyPosition = (): void => {
-      if (drag || this.floatingToolbarDragActive) return;
-      const rect = toolbar.getBoundingClientRect();
-      this.applyFloatingToolbarPosition(
-        toolbar,
-        this.floatingToolbarPosition,
-        { left: rect.left, top: rect.top }
-      );
-    };
-    this.floatingToolbarResizeObserver?.disconnect();
-    this.floatingToolbarResizeObserver = typeof ResizeObserver === "undefined"
-      ? null
-      : new ResizeObserver(reapplyPosition);
-    this.floatingToolbarResizeObserver?.observe(toolbar);
-    toolbar.ownerDocument.defaultView?.addEventListener("resize", reapplyPosition, { signal: abort.signal });
-    const finish = (event: PointerEvent): void => {
-      if (!drag || event.pointerId !== drag.pointerId) return;
-      const finishedDrag = drag;
-      drag = null;
-      this.floatingToolbarDragActive = false;
-      if (handle.hasPointerCapture(event.pointerId)) {
-        try { handle.releasePointerCapture(event.pointerId); } catch { /* already released */ }
-      }
-      if (event.cancelable) event.preventDefault();
-      event.stopImmediatePropagation();
-      if (finishedDrag.moved) {
-        const rect = toolbar.getBoundingClientRect();
-        this.persistFloatingToolbarPosition({ left: rect.left, top: rect.top });
-      } else {
-        const rect = toolbar.getBoundingClientRect();
-        this.applyFloatingToolbarPosition(
-          toolbar,
-          this.floatingToolbarPosition,
-          { left: rect.left, top: rect.top }
-        );
-      }
-    };
-    handle.addEventListener("pointerdown", (event: PointerEvent) => {
-      if (event.button !== 0 || event.isPrimary === false) return;
-      const rect = toolbar.getBoundingClientRect();
-      const styleLeft = Number.parseFloat(toolbar.style.left);
-      const styleTop = Number.parseFloat(toolbar.style.top);
-      drag = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        left: Number.isFinite(styleLeft) ? styleLeft : rect.left,
-        top: Number.isFinite(styleTop) ? styleTop : rect.top,
-        moved: false
-      };
-      this.floatingToolbarDragActive = true;
-      try { handle.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
-      if (event.cancelable) event.preventDefault();
-      event.stopImmediatePropagation();
-    }, { capture: true, passive: false, signal: abort.signal });
-    handle.addEventListener("pointermove", (event: PointerEvent) => {
-      if (!drag || event.pointerId !== drag.pointerId) return;
-      const rect = toolbar.getBoundingClientRect();
-      const view = toolbar.ownerDocument.defaultView;
-      const maxLeft = Math.max(0, (view?.innerWidth ?? rect.right) - rect.width);
-      const maxTop = Math.max(0, (view?.innerHeight ?? rect.bottom) - rect.height);
-      const left = Math.min(Math.max(drag.left + event.clientX - drag.startX, 0), maxLeft);
-      const top = Math.min(Math.max(drag.top + event.clientY - drag.startY, 0), maxTop);
-      drag.moved = true;
-      setElementCssProps(toolbar, { left: `${left}px`, top: `${top}px` });
-      if (event.cancelable) event.preventDefault();
-      event.stopImmediatePropagation();
-    }, { capture: true, passive: false, signal: abort.signal });
-    for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
-      handle.addEventListener(type, finish, { capture: true, passive: false, signal: abort.signal });
-    }
-  }
-
-  private persistFloatingToolbarPosition(position: FloatingToolbarPosition): void {
-    this.setFloatingToolbarPosition(position);
-    const save = this.options.savePluginSettings?.({ floatingToolbarPosition: position });
-    if (!save) return;
-    void save.catch((error) => {
-      this.options.vaultLog?.write("error", "floating-toolbar-position-save-failed", {
-        error: this.errorMessage(error)
-      });
-    });
-  }
-
   private clearFloatingToolbarFallback(): void {
-    this.floatingToolbarAbort?.abort();
-    this.floatingToolbarAbort = null;
-    this.floatingToolbarResizeObserver?.disconnect();
-    this.floatingToolbarResizeObserver = null;
-    this.floatingToolbarVisibilityObserver?.disconnect();
-    this.floatingToolbarVisibilityObserver = null;
-    this.floatingToolbarPortal?.remove();
-    this.floatingToolbarPortal = null;
-    this.floatingToolbarDragActive = false;
-    this.floatingToolbarHandle?.remove();
-    this.floatingToolbarHandle = null;
-    const toolbar = this.toolbar.element;
-    toolbar.classList.remove("native-pdf-handwriting-toolbar-floating-fallback");
-    toolbar.style.removeProperty("left");
-    toolbar.style.removeProperty("top");
-    toolbar.style.removeProperty("right");
-    toolbar.style.removeProperty("bottom");
-    toolbar.classList.remove("is-horizontal", "is-vertical");
+    this.floatingToolbar.destroy();
   }
 
   private scheduleUiIntegrityCheck(reason: string): void {
@@ -8741,7 +8669,7 @@ export class ViewerInkSession {
 
   private handwritingUiState(reason: string, details: Record<string, unknown> = {}): Record<string, unknown> {
     const toolbar = this.toolbar.element;
-    const toolbarInPortal = toolbar.isConnected && this.floatingToolbarPortal?.contains(toolbar) === true;
+    const toolbarInPortal = toolbar.isConnected && this.floatingToolbar.getPortal()?.contains(toolbar) === true;
     let currentPage: number | null = null;
     try {
       currentPage = this.options.adapter.getViewState().pageNumber;
@@ -8821,7 +8749,7 @@ export class ViewerInkSession {
       ...this.toolbarPresentationSnapshot(),
       rootConnected: root.isConnected,
       hostConnected: host.isConnected,
-      customToolbarCount: this.floatingToolbarPortal?.querySelectorAll(".native-pdf-handwriting-toolbar").length ?? 0,
+      customToolbarCount: this.floatingToolbar.getPortal()?.querySelectorAll(".native-pdf-handwriting-toolbar").length ?? 0,
       toolbarControls,
       eraserControlConnected: Boolean(toolbar.querySelector("[data-control='eraser']")),
       addPageControlCount: root.querySelectorAll(".native-pdf-handwriting-add-page").length,
@@ -10452,11 +10380,7 @@ export class ViewerInkSession {
     }
     this.beginInputTeardown();
     this.destroyed = true;
-    if (this.laserFadeFrame !== null) {
-      window.cancelAnimationFrame(this.laserFadeFrame);
-      this.laserFadeFrame = null;
-    }
-    this.laserTrails = [];
+    this.laserOverlay.clearTrails();
     if (this.resizeFrame !== null) {
       window.cancelAnimationFrame(this.resizeFrame);
       this.resizeFrame = null;
@@ -10481,6 +10405,12 @@ export class ViewerInkSession {
       this.mobileScrollRefreshFrame = null;
     }
     this.pendingMobileScrollRemount = false;
+    if (this.viewportProjectionRepaintTimer !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.clearTimeout(this.viewportProjectionRepaintTimer);
+      this.viewportProjectionRepaintTimer = null;
+    }
+    this.viewportProjectionRepaintGeneration += 1;
+    this.pendingViewportProjectionRepaint = false;
     this.clearZoomBurstWatchdog();
     this.zoomSettlePausedForLiveInk = false;
     this.zoomSettlePausedAt = null;
@@ -10507,6 +10437,8 @@ export class ViewerInkSession {
     this.finishZoomNativeHandoffTrace();
     this.syncAnnotationCursorMode(true);
     this.resizeObserver?.disconnect();
+    this.devicePixelRatioResizeCleanup?.();
+    this.devicePixelRatioResizeCleanup = null;
     for (const surface of this.surfaces.values()) {
       if (surface.textIntent) this.clearTextIntentTimer(surface.textIntent);
       this.logger.inputLifecycleEvent("surface-unmount", {
@@ -10552,6 +10484,7 @@ export class ViewerInkSession {
     this.documentInputOwnership = null;
     this.pointerProbeAbort.abort();
     this.clearFloatingToolbarFallback();
+    this.laserOverlay.destroy();
     this.toolbar.destroy();
     pdfSurfaceExtensions(this.options.adapter)?.setInkPreviewProvider?.(null);
     this.options.adapter.destroy();
@@ -14097,7 +14030,7 @@ export class ViewerInkSession {
     }
     if (laserDraft) {
       const laser = this.options.settings.toolPreferences.laser;
-      this.laserTrails.push({
+      this.laserOverlay.addTrail({
         id: stroke.id,
         page: stroke.page,
         points: stroke.points,
@@ -14117,7 +14050,7 @@ export class ViewerInkSession {
         ? { x: stroke.points.at(-1)!.x, y: stroke.points.at(-1)!.y }
         : this.lastPointerPdf;
       this.logDraw(surface, "end", "laser", stroke.points, terminal);
-      this.ensureLaserFadeLoop();
+      this.laserOverlay.ensureFadeLoop();
     } else {
       const tool = resolveDrawingTool(this.activeTool());
       const penContactId = this.strokePenContactIds.get(stroke.id) ?? null;
@@ -16500,7 +16433,7 @@ export class ViewerInkSession {
     if (includeActivePreview && surface.builder?.preview().length) {
       if (surface.laserDraft) {
         const laser = this.options.settings.toolPreferences.laser;
-        this.paintLaserPoints(
+        this.laserOverlay.paintPoints(
           surface,
           surface.builder.preview(true),
           laser.color,
@@ -16639,135 +16572,20 @@ export class ViewerInkSession {
       && page.bottom >= root.top - margin && page.top <= root.bottom + margin;
   }
 
-  private paintLaserPoints(
-    surface: PageSurface,
-    points: readonly PagePoint[],
-    color: string,
-    width: number,
-    opacity: number,
-    holdMs: number,
-    fadeMs: number
-  ): void {
-    if (!points.length) return;
-    const mapper = this.mapper(surface);
-    const scale = this.displayScale(surface);
-    drawLaserStroke(surface.context, mapLaserPoints(points, (point) => mapper.toViewport(point)), {
-      color,
-      width: Math.max(1, width * scale),
-      opacity,
-      nowMs: performance.now(),
-      holdMs,
-      fadeMs
-    });
-    this.lastLaserPaintAt = performance.now();
-  }
-
   private trimLaserDraft(surface: PageSurface, now: number): void {
-    if (!surface.laserDraft || !surface.builder) return;
-    const laser = this.options.settings.toolPreferences.laser;
-    const retentionMs = Math.max(0, laser.holdMs) + Math.max(1, laser.fadeMs);
-    surface.laserDiscardedPoints += surface.builder.discardBefore(now - retentionMs);
-    surface.laserDiscardedPoints += surface.builder.discardToMaxPoints(ViewerInkSession.MAX_LASER_DRAFT_POINTS);
+    this.laserOverlay.trimDraft(surface, now);
   }
 
   private paintLaserTrails(surface: PageSurface, pageNumber: number): void {
-    for (const trail of this.laserTrails) {
-      if (trail.page !== pageNumber) continue;
-      this.paintLaserPoints(
-        surface,
-        trail.points,
-        trail.color,
-        trail.width,
-        trail.opacity,
-        trail.holdMs,
-        trail.fadeMs
-      );
-    }
+    this.laserOverlay.paintTrails(surface, pageNumber);
   }
 
-  /** Blit cached ink + lasers only — avoids full committed-stroke rebuild every fade tick. */
   private repaintLaserOverlay(pageNumber: number): void {
-    const surface = this.surfaces.get(pageNumber);
-    if (!surface) return;
-    const rect = surface.overlay.getBoundingClientRect();
-    const layout = this.pageLayout(surface);
-    const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
-    const height = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
-    const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
-    const deferredRaster = !surface.inkLayerValid
-      && Boolean(surface.inkLayer)
-      && (surface.inkLayerBurstCapture || surface.rasterFallbackReady)
-      && surface.settleUpgradePending
-      && surface.inkLayer!.width === pixelWidth
-      && surface.inkLayer!.height === pixelHeight;
-    if ((!surface.inkLayerValid || !surface.inkLayer) && !deferredRaster) {
-      this.renderPage(pageNumber);
-      return;
-    }
-    // Must restore CSS-pixel transform after the identity blit — same as blitInkLayerToCanvas.
-    const startedAt = performance.now();
-    this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
-    const laserDraftPoints = surface.laserDraft ? surface.builder?.preview(true) ?? [] : [];
-    if (laserDraftPoints.length) {
-      const laser = this.options.settings.toolPreferences.laser;
-      this.paintLaserPoints(
-        surface,
-        laserDraftPoints,
-        laser.color,
-        laser.width,
-        laser.opacity,
-        laser.holdMs,
-        laser.fadeMs
-      );
-    } else if (surface.builder?.preview().length && !surface.laserDraft) {
-      this.renderPage(pageNumber);
-      return;
-    }
-    this.paintLaserTrails(surface, pageNumber);
-    const durationMs = performance.now() - startedAt;
-    if (durationMs >= SLOW_SPAN_SYNC_MS) {
-      this.logger.laserRepaintSlow(pageNumber, durationMs, laserDraftPoints.length, this.laserTrails.length);
-    }
+    this.laserOverlay.repaintOverlay(pageNumber);
   }
 
   private ensureLaserFadeLoop(): void {
-    if (this.destroyed || this.laserFadeFrame !== null) return;
-    const view = this.options.adapter.host.ownerDocument.defaultView;
-    if (!view) return;
-    const tick = (now: number): void => {
-      this.laserFadeFrame = null;
-      if (this.destroyed) return;
-
-      const dirtyPages = new Set<number>();
-      for (const trail of this.laserTrails) dirtyPages.add(trail.page);
-      let visibleDraft = false;
-      for (const surface of this.surfaces.values()) {
-        if (!surface.laserDraft) continue;
-        this.trimLaserDraft(surface, now);
-        const laser = this.options.settings.toolPreferences.laser;
-        const points = surface.builder?.preview(true) ?? [];
-        if (!laserTrailStillVisible(points, now, laser.holdMs, laser.fadeMs)) continue;
-        visibleDraft = true;
-        dirtyPages.add(surface.page.pageNumber);
-      }
-
-      this.laserTrails = this.laserTrails.filter((trail) => {
-        dirtyPages.add(trail.page);
-        return laserTrailStillVisible(trail.points, now, trail.holdMs, trail.fadeMs);
-      });
-
-      // Skip if pointermove just painted (avoids double full-canvas work while dragging).
-      const recentlyPainted = now - this.lastLaserPaintAt < ViewerInkSession.LASER_FADE_MIN_MS;
-      if (!recentlyPainted) {
-        for (const page of dirtyPages) this.repaintLaserOverlay(page);
-      }
-
-      const stillActive = this.laserTrails.length > 0 || visibleDraft;
-      if (stillActive) {
-        this.laserFadeFrame = view.requestAnimationFrame(tick);
-      }
-    };
-    this.laserFadeFrame = view.requestAnimationFrame(tick);
+    this.laserOverlay.ensureFadeLoop();
   }
 
   private lassoShape(surface: PageSurface): SelectionShape | null {
@@ -16783,178 +16601,27 @@ export class ViewerInkSession {
     };
   }
 
-  private prepareSelectionCanvas(surface: PageSurface): number {
-    const layout = this.pageLayout(surface);
-    const fallbackWidth = Math.max(1, Math.round(layout.contentWidth));
-    const fallbackHeight = Math.max(1, Math.round(layout.contentHeight));
-    const width = surface.canvas.width || fallbackWidth;
-    const height = surface.canvas.height || fallbackHeight;
-    if (surface.selectionCanvas.width !== width) surface.selectionCanvas.width = width;
-    if (surface.selectionCanvas.height !== height) surface.selectionCanvas.height = height;
-    return width / Math.max(1, layout.contentWidth);
-  }
-
   private clearSelectionChrome(surface: PageSurface): void {
-    const context = surface.selectionContext;
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, surface.selectionCanvas.width, surface.selectionCanvas.height);
-    surface.liveLassoChromeBounds = null;
-    surface.canvas.classList.remove("is-selection-chrome-raised");
-  }
-
-  private clearLiveLassoChromeRegion(surface: PageSurface, scale: number): void {
-    const previous = surface.liveLassoChromeBounds;
-    if (!previous) return;
-    const context = surface.selectionContext;
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    const padding = 10 * scale;
-    const left = Math.max(0, Math.floor(previous.minX * scale - padding));
-    const top = Math.max(0, Math.floor(previous.minY * scale - padding));
-    const right = Math.min(surface.selectionCanvas.width, Math.ceil(previous.maxX * scale + padding));
-    const bottom = Math.min(surface.selectionCanvas.height, Math.ceil(previous.maxY * scale + padding));
-    if (right > left && bottom > top) context.clearRect(left, top, right - left, bottom - top);
-    surface.liveLassoChromeBounds = null;
-  }
-
-  private drawStrokeSelectionChrome(surface: PageSurface, stroke: InkStroke, context: CanvasRenderingContext2D): void {
-    const mapper = this.mapper(surface);
-    const scale = this.displayScale(surface);
-    const segments = stroke.tool === "highlighter"
-      ? visibleStrokeSegments(stroke.points, stroke.eraseMasks)
-      : stroke.points.length ? [stroke.points] : [];
-    context.save();
-    context.globalAlpha = 0.9;
-    context.strokeStyle = "#2563eb";
-    context.lineWidth = Math.max(0.5, stroke.width * scale) + 4;
-    context.setLineDash([4, 3]);
-    context.lineCap = "round";
-    context.lineJoin = "round";
-    for (const segment of segments) {
-      if (!segment.length) continue;
-      const first = mapper.toViewport(segment[0]!);
-      context.beginPath();
-      if (segment.length === 1) {
-        context.arc(first.x, first.y, Math.max(2, context.lineWidth / 2), 0, Math.PI * 2);
-      } else {
-        context.moveTo(first.x, first.y);
-        for (const point of segment.slice(1)) {
-          const view = mapper.toViewport(point);
-          context.lineTo(view.x, view.y);
-        }
-        context.stroke();
-      }
-      if (segment.length === 1) context.stroke();
-    }
-    context.restore();
+    this.selectionChromeRenderer.clear(surface);
   }
 
   private renderSelectionChrome(surface: PageSurface): void {
-    this.clearSelectionChrome(surface);
-    const tool = this.activeTool();
-    if ((tool !== "lasso" && tool !== "text")
-      || this.selectionPage !== surface.page.pageNumber
-      || !this.selectionShape) return;
-    const shape = this.moveShapePreview ?? this.selectionShape;
-    if (tool === "text") {
-      // Keep the text transform marquee on the committed canvas for the
-      // text-layer interaction contract; lasso chrome uses the disposable
-      // canvas below so drawing-tool changes are cheap and clean.
-      this.drawSelectionShape(surface, shape, { closeFreeform: true });
-      surface.canvas.classList.add("is-selection-chrome-raised");
-      return;
-    }
-    const scale = this.prepareSelectionCanvas(surface);
-    const context = surface.selectionContext;
-    context.setTransform(scale, 0, 0, scale, 0, 0);
-    this.drawSelectionShape(surface, shape, { closeFreeform: true }, context);
-    for (const stroke of this.selected) {
-      if (stroke.page !== surface.page.pageNumber) continue;
-      const preview = this.movePreview?.find((item) => item.id === stroke.id) ?? stroke;
-      this.drawStrokeSelectionChrome(surface, preview, context);
-    }
-    surface.canvas.classList.add("is-selection-chrome-raised");
-  }
-
-  private drawLassoPreview(surface: PageSurface, context = surface.context): void {
-    const shape = this.lassoShape(surface);
-    if (shape) this.drawSelectionShape(surface, shape, { closeFreeform: false }, context);
+    this.selectionChromeRenderer.render(surface, {
+      activeTool: this.activeTool(),
+      selectionPage: this.selectionPage,
+      selectionShape: this.selectionShape,
+      moveShapePreview: this.moveShapePreview,
+      selected: this.selected,
+      movePreview: this.movePreview
+    });
   }
 
   private renderLiveLassoPreview(surface: PageSurface): void {
-    if (this.activeTool() !== "lasso") {
-      this.clearSelectionChrome(surface);
-      return;
-    }
-    const scale = this.prepareSelectionCanvas(surface);
-    this.clearLiveLassoChromeRegion(surface, scale);
-    const context = surface.selectionContext;
-    context.setTransform(scale, 0, 0, scale, 0, 0);
-    this.drawLassoPreview(surface, context);
-    const mapper = this.mapper(surface);
-    const viewPoints = surface.editPath.map((point) => mapper.toViewport(point));
-    if (viewPoints.length) {
-      const xs = viewPoints.map((point) => point.x);
-      const ys = viewPoints.map((point) => point.y);
-      surface.liveLassoChromeBounds = {
-        minX: Math.min(...xs), minY: Math.min(...ys),
-        maxX: Math.max(...xs), maxY: Math.max(...ys)
-      };
-    }
-    surface.canvas.classList.add("is-selection-chrome-raised");
-  }
-
-  private drawSelectionShape(
-    surface: PageSurface,
-    shape: SelectionShape,
-    options: { closeFreeform: boolean },
-    targetContext = surface.context
-  ): void {
-    const mapper = this.mapper(surface);
-    const context = targetContext;
-    context.save();
-    context.strokeStyle = "#2563eb";
-    context.fillStyle = "rgba(37, 99, 235, 0.12)";
-    context.lineWidth = 2;
-    context.setLineDash([6, 4]);
-    context.globalAlpha = 0.95;
-
-    if (shape.type === "freeform") {
-      const points = shape.points;
-      if (!points.length) {
-        context.restore();
-        return;
-      }
-      const first = mapper.toViewport(points[0]!);
-      context.beginPath();
-      if (points.length === 1) {
-        context.arc(first.x, first.y, 3, 0, Math.PI * 2);
-        context.fill();
-      } else {
-        context.moveTo(first.x, first.y);
-        for (const point of points.slice(1)) {
-          const view = mapper.toViewport(point);
-          context.lineTo(view.x, view.y);
-        }
-        if (options.closeFreeform && points.length >= 3) {
-          context.closePath();
-          context.fill();
-        }
-        context.stroke();
-      }
-      context.restore();
-      return;
-    }
-
-    const bounds = shape.bounds;
-    const topLeft = mapper.toViewport({ x: bounds.minX, y: bounds.maxY });
-    const bottomRight = mapper.toViewport({ x: bounds.maxX, y: bounds.minY });
-    const width = bottomRight.x - topLeft.x;
-    const height = bottomRight.y - topLeft.y;
-    context.beginPath();
-    context.rect(topLeft.x, topLeft.y, width, height);
-    context.fill();
-    context.stroke();
-    context.restore();
+    this.selectionChromeRenderer.renderLassoPreview(
+      surface,
+      this.activeTool(),
+      this.lassoShape(surface)
+    );
   }
 
   private renderImageAnnotations(target: ImageRasterRenderTarget, page: AnnotationPageInfo): void {
@@ -17332,9 +16999,10 @@ export class ViewerInkSession {
       width: layout.contentWidth,
       height: layout.contentHeight
     };
-    const zoom = Math.max(0.1, this.handwritingViewport.getState().scale);
-    const overlayWidth = overlayRect.width >= 8 ? overlayRect.width / zoom : layout.contentWidth;
-    const overlayHeight = overlayRect.height >= 8 ? overlayRect.height / zoom : layout.contentHeight;
+    const renderedScale = Math.max(0.1, this.handwritingViewport.getRenderedScale());
+    const projectionScale = Math.max(0.1, this.handwritingViewport.getState().scale) / renderedScale;
+    const overlayWidth = overlayRect.width >= 8 ? overlayRect.width / projectionScale : layout.contentWidth;
+    const overlayHeight = overlayRect.height >= 8 ? overlayRect.height / projectionScale : layout.contentHeight;
     const firstStroke = this.ink.page(surface.page.pageNumber)[0];
     const anchorPoint = firstStroke?.points[0];
     const mapped = anchorPoint ? this.mapper(surface, layout).toViewport(anchorPoint) : null;
@@ -17455,7 +17123,20 @@ export class ViewerInkSession {
     const budget = this.options.adapter.surfaceType === "markdown"
       ? markdownInkBackingBudget(mobile)
       : inkBackingBudget(mobile);
-    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    const devicePixelRatio = this.options.adapter.host.ownerDocument.defaultView?.devicePixelRatio || 1;
+    const viewportScale = this.handwritingViewport?.getState().scale;
+    const renderedScale = this.handwritingViewport?.getRenderedScale();
+    const projectionScale = typeof viewportScale === "number"
+      && Number.isFinite(viewportScale)
+      && typeof renderedScale === "number"
+      && Number.isFinite(renderedScale)
+      && renderedScale > 0
+      ? viewportScale / renderedScale
+      : 1;
+    // The ink canvas is sized in the renderer's unprojected CSS space. Include
+    // the viewport's live CSS scale so transformed image and pinch views retain
+    // device-pixel density instead of stretching a low-resolution backing.
+    const dpr = devicePixelRatio * projectionScale;
     if (tier === "neighbor") {
       return inkBackingSize(
         cssWidth,
@@ -17486,6 +17167,11 @@ export class ViewerInkSession {
   }
 
   private unscalePageLayoutForViewportScale(layout: PageCoordinateLayout): PageCoordinateLayout {
+    // Markdown page coordinates already use unscaled scroll-content metrics.
+    // Its scroll root is the CSS projection target, so the element-local
+    // transform removes zoom at pointer conversion; dividing this layout too
+    // would scale newly drawn points a second time.
+    if (this.options.adapter.surfaceType === "markdown") return layout;
     // The DOM geometry already includes the scale applied by the PDF renderer.
     // Only remove the temporary CSS projection layered over that geometry.
     const renderedScale = Math.max(0.1, this.handwritingViewport.getRenderedScale());
@@ -17512,6 +17198,13 @@ export class ViewerInkSession {
   }
 
   private metricsFor(surface: PageSurface): { width: number; height: number } {
+    // Markdown is one scrollable note, not a fixed-size PDF page. Its live
+    // content bounds can grow as the user edits; keeping its initial height
+    // pinned would rescale retained ink vertically after a reflow.
+    if (this.options.adapter.surfaceType === "markdown") {
+      this.rememberPageMetrics(surface.page);
+      return { width: surface.page.width, height: surface.page.height };
+    }
     const pinned = this.pageMetrics.get(surface.page.pageNumber);
     if (pinned) return pinned;
     this.rememberPageMetrics(surface.page);
@@ -17522,8 +17215,13 @@ export class ViewerInkSession {
   }
 
   private rememberPageMetrics(page: AnnotationPageInfo): void {
+    if (page.geometrySafe === false) return;
     if (!(page.width > 1 && page.height > 1)) return;
     const existing = this.pageMetrics.get(page.pageNumber);
+    if (this.options.adapter.surfaceType === "markdown") {
+      this.pageMetrics.set(page.pageNumber, { width: page.width, height: page.height });
+      return;
+    }
     // Prefer first trusted sidecar/live size; only replace placeholder or clearly wrong CSS-pixel sizes.
     if (!existing || existing.width <= 1 || existing.height <= 1) {
       this.pageMetrics.set(page.pageNumber, { width: page.width, height: page.height });
@@ -17779,11 +17477,7 @@ export class ViewerInkSession {
   }
 
   setFloatingToolbarPosition(position: FloatingToolbarPosition): void {
-    this.floatingToolbarPosition = { ...position };
-    if (this.destroyed || this.floatingToolbarDragActive) return;
-    const toolbar = this.toolbar.element;
-    if (!toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")) return;
-    this.applyFloatingToolbarPosition(toolbar, this.floatingToolbarPosition, null);
+    this.floatingToolbar.setPosition(position);
   }
 
   /** False after PDF++ (or Obsidian) tears down the PDF DOM under this session. */

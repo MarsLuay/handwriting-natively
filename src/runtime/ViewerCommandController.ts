@@ -20,6 +20,8 @@ export interface ViewerCommandHost {
   // Canonical state
   getViewerState?(): ViewerState;
   setViewerState?(patch: Partial<ViewerState>): void;
+  /** Optional surface-owned zoom path that preserves its viewport anchor. */
+  setZoomAtViewportCenter?(scale: number): boolean;
 
   // Zoom
   getScale(): number;
@@ -120,7 +122,10 @@ export class ViewerCommandController {
   setZoom(scale: number): boolean {
     if (!Number.isFinite(scale) || scale <= 0) return false;
     const clamped = Math.max(0.1, Math.min(10, scale));
-    if (typeof this.host.setViewerState === "function") {
+    if (this.host.setZoomAtViewportCenter?.(clamped) === true) {
+      // The owning surface applies its anchor correction and publishes the
+      // resulting canonical state through the normal adapter callback.
+    } else if (typeof this.host.setViewerState === "function") {
       const current = this.getViewerState();
       this.host.setViewerState({
         viewport: { ...current.viewport, scale: clamped },

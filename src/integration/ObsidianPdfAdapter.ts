@@ -80,6 +80,8 @@ export interface PdfSurfaceExtensions {
   viewportContentElement?(): HTMLElement | null;
   /** Bind the shared session command controller to adapter-owned controls. */
   setViewerCommandBridge?(commands: PdfViewerCommandBridge | null): void;
+  /** Apply shared zoom commands around the PDF viewer's viewport center. */
+  setScaleAtViewportCenter?(scale: number): void;
   /** Run PDF-only actions from the shared annotation toolbar's More menu. */
   performToolbarAction?(action: PdfToolbarAction): boolean;
   /** Keep adapter-owned Hand control chrome in sync with the session tool. */

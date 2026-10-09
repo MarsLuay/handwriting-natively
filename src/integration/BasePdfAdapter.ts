@@ -14,9 +14,7 @@ import { resolvePdfScrollRoot } from "./PdfScrollRoot";
 import { PdfSidebarLayoutObserver } from "./PdfSidebarLayoutObserver";
 import {
   findPdfContentContainer,
-  findPdfSidebarContainer,
   isAuthoritativePdfSidebarLayoutTrigger,
-  mutationTogglesPdfSidebarOpen,
   syncLeftChromeWithPdfSidebar,
   type PdfSidebarOffsetDiag,
   type PdfSidebarOffsetReason

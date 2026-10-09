@@ -49,6 +49,9 @@ export class HandwritingViewport {
   private lastProjectedScrollLeft = 0;
   private lastProjectedScrollTop = 0;
   private hasScrollProjection = false;
+  private lastAppliedProjectionScale = 1;
+  private lastAppliedTranslateX = 0;
+  private lastAppliedTranslateY = 0;
   private readonly options: HandwritingViewportOptions;
 
   constructor(options: HandwritingViewportOptions) {
@@ -105,10 +108,32 @@ export class HandwritingViewport {
     }
 
     this.pinchAnchor = null;
-    this.state.x = -left;
-    this.state.y = -top;
+    const scrollProjectionScale = this.isScrollTransformTarget() ? this.viewportProjectionScale() : 1;
+    const previousScrollProjectionScale = this.isScrollTransformTarget()
+      ? this.lastAppliedProjectionScale
+      : 1;
+    if (!force && this.hasScrollProjection) {
+      // A native scroll delta moves content by the active CSS projection
+      // scale when the scroll host itself is transformed. Preserve that
+      // visual movement while allowing apply() to re-project the final state.
+      this.state.x -= (left - this.lastProjectedScrollLeft) * previousScrollProjectionScale;
+      this.state.y -= (top - this.lastProjectedScrollTop) * previousScrollProjectionScale;
+    } else {
+      this.state.x = -left * scrollProjectionScale;
+      this.state.y = -top * scrollProjectionScale;
+    }
     this.apply();
     return true;
+  }
+
+  /** Stable center of the visible scrollport, normalized around its own transform. */
+  getContainerCenter(): { x: number; y: number } | null {
+    const container = this.readContainerRect();
+    if (!container || container.width <= 0 || container.height <= 0) return null;
+    return {
+      x: container.left + container.width / 2,
+      y: container.top + container.height / 2
+    };
   }
 
   setTarget(element: HTMLElement | null): void {
@@ -149,7 +174,7 @@ export class HandwritingViewport {
    * on container viewport size and scaled document content size.
    */
   getBounds(scale = this.state.scale): HandwritingViewportBounds {
-    const container = this.options.getContainerRect();
+    const container = this.readContainerRect();
     const content = this.options.getContentSize();
     if (!container || !content || container.width <= 0 || container.height <= 0 || content.width <= 0 || content.height <= 0) {
       return { minX: -Infinity, maxX: Infinity, minY: -Infinity, maxY: Infinity };
@@ -256,7 +281,7 @@ export class HandwritingViewport {
   }
 
   private screenToContainer(screenPoint: { x: number; y: number }): { x: number; y: number } {
-    const container = this.options.getContainerRect();
+    const container = this.readContainerRect();
     return {
       x: screenPoint.x - (container?.left ?? 0),
       y: screenPoint.y - (container?.top ?? 0)
@@ -280,7 +305,7 @@ export class HandwritingViewport {
    * Convert canonical unscaled viewer viewport coordinates back to client space.
    */
   viewportToScreen(docPoint: { x: number; y: number }): { x: number; y: number } {
-    const container = this.options.getContainerRect();
+    const container = this.readContainerRect();
     const originX = container?.left ?? 0;
     const originY = container?.top ?? 0;
     return {
@@ -328,6 +353,41 @@ export class HandwritingViewport {
     return Math.max(0.1, this.state.scale) / Math.max(0.1, this.renderedScale);
   }
 
+  private isScrollTransformTarget(): boolean {
+    const scroll = this.options.getScrollElement?.() ?? null;
+    return scroll !== null && scroll === this.targetElement && scroll.isConnected;
+  }
+
+  /** Target origin in unscaled scroll-content coordinates. */
+  private targetOffsetWithinScroll(): { x: number; y: number } {
+    const scroll = this.options.getScrollElement?.() ?? null;
+    const target = this.targetElement;
+    if (!scroll?.isConnected || !target?.isConnected || target === scroll) return { x: 0, y: 0 };
+    const scrollRect = scroll.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    return {
+      x: targetRect.left - scrollRect.left + scroll.scrollLeft - this.lastAppliedTranslateX,
+      y: targetRect.top - scrollRect.top + scroll.scrollTop - this.lastAppliedTranslateY
+    };
+  }
+
+  /**
+   * The scroll host remains the user's fixed viewport when it is also the
+   * temporary CSS transform target. Undo that transform for viewport geometry
+   * reads so anchors and bounds stay in stable screen coordinates.
+   */
+  private readContainerRect(): ReturnType<HandwritingViewportOptions["getContainerRect"]> {
+    const container = this.options.getContainerRect();
+    if (!container || !this.isScrollTransformTarget()) return container;
+    const scale = Math.max(0.1, this.lastAppliedProjectionScale);
+    return {
+      left: container.left - this.lastAppliedTranslateX,
+      top: container.top - this.lastAppliedTranslateY,
+      width: container.width / scale,
+      height: container.height / scale
+    };
+  }
+
   /**
    * @deprecated Prefer PageCoordinateSpace for page/PDF conversions.
    */
@@ -342,12 +402,18 @@ export class HandwritingViewport {
     let translateX = this.state.x;
     let translateY = this.state.y;
     const scroll = this.options.getScrollElement?.() ?? null;
+    const projectionScale = this.state.scale / this.renderedScale;
+    const scrollProjectionScale = scroll !== null
+      && scroll === this.targetElement
+      && scroll.isConnected
+      ? projectionScale
+      : 1;
 
     if (scroll?.isConnected) {
       const maxScrollLeft = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
       const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
-      const desiredScrollLeft = Math.max(0, Math.min(maxScrollLeft, -this.state.x));
-      const desiredScrollTop = Math.max(0, Math.min(maxScrollTop, -this.state.y));
+      const desiredScrollLeft = Math.max(0, Math.min(maxScrollLeft, -this.state.x / scrollProjectionScale));
+      const desiredScrollTop = Math.max(0, Math.min(maxScrollTop, -this.state.y / scrollProjectionScale));
 
       if (Math.abs(scroll.scrollLeft - desiredScrollLeft) > 0.01) {
         scroll.scrollLeft = desiredScrollLeft;
@@ -364,14 +430,18 @@ export class HandwritingViewport {
 
       // Native scroll represents the in-bounds portion. Any scroll clamping
       // difference is projected as a residual GPU transform.
-      translateX = this.state.x + actualScrollLeft;
-      translateY = this.state.y + actualScrollTop;
+      const targetOffset = this.targetOffsetWithinScroll();
+      translateX = this.state.x
+        + actualScrollLeft * scrollProjectionScale
+        + targetOffset.x * (projectionScale - 1);
+      translateY = this.state.y
+        + actualScrollTop * scrollProjectionScale
+        + targetOffset.y * (projectionScale - 1);
     } else {
       this.hasScrollProjection = false;
     }
 
     if (this.targetElement && this.targetElement.isConnected) {
-      const projectionScale = this.state.scale / this.renderedScale;
       if (Math.abs(projectionScale - 1) < 0.0001
         && Math.abs(translateX) < 0.01
         && Math.abs(translateY) < 0.01) {
@@ -385,6 +455,13 @@ export class HandwritingViewport {
         });
         this.targetElement.classList.add("native-pdf-handwriting-pinch-active");
       }
+      this.lastAppliedProjectionScale = projectionScale;
+      this.lastAppliedTranslateX = translateX;
+      this.lastAppliedTranslateY = translateY;
+    } else {
+      this.lastAppliedProjectionScale = 1;
+      this.lastAppliedTranslateX = 0;
+      this.lastAppliedTranslateY = 0;
     }
     this.options.onStateChange?.({ ...this.state });
   }

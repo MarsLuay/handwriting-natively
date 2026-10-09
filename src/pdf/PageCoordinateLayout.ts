@@ -78,11 +78,13 @@ export function resolvePageCoordinateLayout(page: AnnotationPageInfo): PageCoord
     // layers. Keep the last reported PDF scale for live text editors: zero
     // would collapse the contenteditable before the real canvas returns.
     const fallbackScale = Number.isFinite(page.scale) && page.scale > 0 ? page.scale : 1;
+    const layoutWidth = Math.max(page.element.scrollWidth, page.element.clientWidth);
+    const layoutHeight = Math.max(page.element.scrollHeight, page.element.clientHeight);
     const contentWidth = page.scrollContentGeometry
-      ? Math.max(page.element.scrollWidth, page.element.clientWidth, hostRect.width)
+      ? layoutWidth || hostRect.width
       : hostRect.width;
     const contentHeight = page.scrollContentGeometry
-      ? Math.max(page.element.scrollHeight, page.element.clientHeight, hostRect.height)
+      ? layoutHeight || hostRect.height
       : hostRect.height;
     const scaleX = contentWidth > 0 ? contentWidth / Math.max(1, pdfWidth) : fallbackScale;
     const scaleY = contentHeight > 0 ? contentHeight / Math.max(1, pdfHeight) : fallbackScale;
