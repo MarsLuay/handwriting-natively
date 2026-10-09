@@ -4,6 +4,7 @@ import {
   type HandwritingViewportBounds,
   type HandwritingViewportState
 } from "../src/integration/HandwritingViewport";
+import { PageCoordinateMapper, PageCoordinateSpace } from "../src/runtime/PageCoordinateMapper";
 
 function rect(left: number, top: number, width: number, height: number) {
   return { left, top, width, height };
@@ -242,6 +243,42 @@ describe("HandwritingViewport", () => {
     const pageLocal = vp.screenToPageLocal(mockPage, screenPoint);
     expect(pageLocal).toEqual({ x: 150, y: 170 });
     expect(vp.elementLocalToScreen(mockPage, pageLocal)).toEqual(screenPoint);
+  });
+
+  it("maps PDF ink correctly while the renderer scale differs from the visible viewport scale", () => {
+    const displayScale = 1109.2 / 960;
+    const viewport = new HandwritingViewport({
+      getContainerRect: () => rect(302.4, 110.23, 1109.2, 623.92),
+      getContentSize: () => ({ width: 4800, height: 2700 }),
+      initialRenderedScale: 5,
+      initialState: { scale: displayScale }
+    });
+    const overlay = document.createElement("div");
+    const overlayRect = {
+      left: 302.4,
+      top: 110.23,
+      right: 1411.6,
+      bottom: 734.15,
+      width: 1109.2,
+      height: 623.92,
+      x: 302.4,
+      y: 110.23,
+      toJSON: () => ({})
+    } as DOMRect;
+    const space = new PageCoordinateSpace(
+      viewport,
+      overlay,
+      new PageCoordinateMapper({ width: 960, height: 540, scale: 5 })
+    );
+    const clientPoint = { x: 841.82, y: 445.63 };
+
+    const pagePoint = space.clientToPage(clientPoint, overlayRect);
+
+    expect(pagePoint.x).toBeCloseTo((clientPoint.x - overlayRect.left) / displayScale, 4);
+    expect(pagePoint.y).toBeCloseTo(540 - (clientPoint.y - overlayRect.top) / displayScale, 4);
+    const projected = space.pageToClient(pagePoint, overlayRect);
+    expect(projected.x).toBeCloseTo(clientPoint.x, 4);
+    expect(projected.y).toBeCloseTo(clientPoint.y, 4);
   });
 
   it("projects in-bounds canonical pan into native scroll without double transform", () => {

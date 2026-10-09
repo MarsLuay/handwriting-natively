@@ -299,11 +299,13 @@ export class HandwritingViewport {
     screenPoint: { x: number; y: number },
     rect = element.getBoundingClientRect()
   ): { x: number; y: number } {
-    const point = this.screenToViewport(screenPoint);
-    const origin = this.screenToViewport({ x: rect.left, y: rect.top });
+    // Element-local coordinates are still in the renderer's CSS pixel space.
+    // Remove only the temporary compositor ratio here; PageCoordinateMapper
+    // separately accounts for the renderer's scale when mapping to PDF units.
+    const projectionScale = this.viewportProjectionScale();
     return {
-      x: point.x - origin.x,
-      y: point.y - origin.y
+      x: (screenPoint.x - rect.left) / projectionScale,
+      y: (screenPoint.y - rect.top) / projectionScale
     };
   }
 
@@ -315,11 +317,15 @@ export class HandwritingViewport {
     localPoint: { x: number; y: number },
     rect = element.getBoundingClientRect()
   ): { x: number; y: number } {
-    const origin = this.screenToViewport({ x: rect.left, y: rect.top });
-    return this.viewportToScreen({
-      x: origin.x + localPoint.x,
-      y: origin.y + localPoint.y
-    });
+    const projectionScale = this.viewportProjectionScale();
+    return {
+      x: rect.left + localPoint.x * projectionScale,
+      y: rect.top + localPoint.y * projectionScale
+    };
+  }
+
+  private viewportProjectionScale(): number {
+    return Math.max(0.1, this.state.scale) / Math.max(0.1, this.renderedScale);
   }
 
   /**
