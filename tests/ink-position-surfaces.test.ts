@@ -305,12 +305,20 @@ describe("ink placement through production surface adapters and viewer sessions"
 
     const baseLeft = 90;
     const baseTop = 70;
-    const getPageBox = (): DOMRect => rect(
-      baseLeft - scroll.scrollLeft,
-      baseTop - scroll.scrollTop,
-      stylePixels(pageShell, "width", page.width),
-      stylePixels(pageShell, "height", page.height)
-    );
+    const getPageBox = (): DOMRect => {
+      const transform = adapter.viewportContentElement().style.transform;
+      const projection = /scale\(([-\d.]+)\)/.exec(transform);
+      const translation = /translate3d\(([-\d.]+)px,\s*([-\d.]+)px/.exec(transform);
+      const projectionScale = Number(projection?.[1] ?? 1);
+      const translateX = Number(translation?.[1] ?? 0);
+      const translateY = Number(translation?.[2] ?? 0);
+      return rect(
+        baseLeft - scroll.scrollLeft + translateX,
+        baseTop - scroll.scrollTop + translateY,
+        stylePixels(pageShell, "width", page.width) * projectionScale,
+        stylePixels(pageShell, "height", page.height) * projectionScale
+      );
+    };
     setRect(scroll, () => rect(baseLeft - 20, baseTop - 20, 800, 600));
     installScrollMetrics(
       scroll,
@@ -335,12 +343,18 @@ describe("ink placement through production surface adapters and viewer sessions"
       canvas: HTMLCanvasElement;
       inkLayer: HTMLCanvasElement | null;
       inkLayerValid: boolean;
+      inkLayerBackingScale: number | null;
       inkLayerBurstCapture: boolean;
       inkLayerRevision: number | null;
     };
     const internal = session as unknown as {
       ink: { pageRevision(pageNumber: number): number };
       surfaces: Map<number, InkSurfaceProbe>;
+      handwritingViewport: {
+        getRenderedScale(): number;
+        setState(state: { scale: number; x: number; y: number }): void;
+        syncRenderedState(scale: number, scrollLeft: number, scrollTop: number): void;
+      };
     };
     const surface = internal.surfaces.get(1);
     if (!surface) throw new Error("ViewerInkSession did not create the PDF ink surface");
@@ -352,6 +366,24 @@ describe("ink placement through production surface adapters and viewer sessions"
       expect(stroke.points[0]!.y).toBeCloseTo(page.height * (1 - fraction.y), 2);
       expect(committedStrokes(session)).toHaveLength(1);
 
+      // Exercise HandwritingViewport's temporary CSS projection while PDF.js
+      // still owns the rendered scale. New ink must map through the projection
+      // and return to stable PDF coordinates at both magnifications.
+      const renderedScale = internal.handwritingViewport.getRenderedScale();
+      const baselineBox = getPageBox();
+      const pinchStrokes: InkStroke[] = [];
+      for (const [index, projectionScale] of [2, 0.5, 1].entries()) {
+        internal.handwritingViewport.setState({ scale: renderedScale * projectionScale, x: 0, y: 0 });
+        const projectedBox = getPageBox();
+        expect(projectedBox.width).toBeCloseTo(baselineBox.width * projectionScale, 2);
+        const projectedStroke = drawAtPageFraction(session, pageShell, getPageBox, fraction, 502 + index);
+        pinchStrokes.push(projectedStroke);
+        expect(projectedStroke.points[0]!.x).toBeCloseTo(page.width * fraction.x, 2);
+        expect(projectedStroke.points[0]!.y).toBeCloseTo(page.height * (1 - fraction.y), 2);
+      }
+      internal.handwritingViewport.syncRenderedState(renderedScale, scroll.scrollLeft, scroll.scrollTop);
+      expect(committedStrokes(session)).toEqual([stroke, ...pinchStrokes]);
+
       type ZoomObservation = {
         previousPageBox: DOMRect;
         pageBox: DOMRect;
@@ -362,7 +394,8 @@ describe("ink placement through production surface adapters and viewer sessions"
         arc: number[];
       };
 
-      const zoomAndCapture = async (): Promise<ZoomObservation> => {
+      const zoomAndCapture = async (key: "=" | "-" = "="): Promise<ZoomObservation> => {
+        const zoomingIn = key === "=";
         const before = internal.surfaces.get(1)!;
         const previousPageBox = getPageBox();
         const previousCanvasWidth = before.canvas.width;
@@ -373,13 +406,19 @@ describe("ink placement through production surface adapters and viewer sessions"
         if (previousCalls) previousCalls.length = 0;
         const previousScale = adapter.getViewState().scale;
         adapter.root.dispatchEvent(new KeyboardEvent("keydown", {
-          key: "=",
+          key,
           bubbles: true,
           cancelable: true
         }));
-        expect(adapter.getViewState().scale).toBeGreaterThan(previousScale);
-        expect(getPageBox().width).toBeGreaterThan(previousPageBox.width);
-        expect(getPageBox().height).toBeGreaterThan(previousPageBox.height);
+        if (zoomingIn) {
+          expect(adapter.getViewState().scale).toBeGreaterThan(previousScale);
+          expect(getPageBox().width).toBeGreaterThan(previousPageBox.width);
+          expect(getPageBox().height).toBeGreaterThan(previousPageBox.height);
+        } else {
+          expect(adapter.getViewState().scale).toBeLessThan(previousScale);
+          expect(getPageBox().width).toBeLessThan(previousPageBox.width);
+          expect(getPageBox().height).toBeLessThan(previousPageBox.height);
+        }
 
         await vi.waitFor(() => {
           const current = internal.surfaces.get(1);
@@ -390,10 +429,17 @@ describe("ink placement through production surface adapters and viewer sessions"
           expect(current?.inkLayerRevision).toBe(internal.ink.pageRevision(1));
           expect(current?.inkLayer?.width).toBe(current?.canvas.width);
           expect(current?.inkLayer?.height).toBe(current?.canvas.height);
-          expect(current?.canvas.width).toBeGreaterThan(previousCanvasWidth);
-          expect(current?.canvas.height).toBeGreaterThan(previousCanvasHeight);
-          expect(pdfCanvas.width).toBeGreaterThan(previousPdfWidth);
-          expect(pdfCanvas.height).toBeGreaterThan(previousPdfHeight);
+          if (zoomingIn) {
+            expect(current?.canvas.width).toBeGreaterThan(previousCanvasWidth);
+            expect(current?.canvas.height).toBeGreaterThan(previousCanvasHeight);
+            expect(pdfCanvas.width).toBeGreaterThan(previousPdfWidth);
+            expect(pdfCanvas.height).toBeGreaterThan(previousPdfHeight);
+          } else {
+            expect(current?.canvas.width).toBeLessThan(previousCanvasWidth);
+            expect(current?.canvas.height).toBeLessThan(previousCanvasHeight);
+            expect(pdfCanvas.width).toBeLessThan(previousPdfWidth);
+            expect(pdfCanvas.height).toBeLessThan(previousPdfHeight);
+          }
           expect(calls?.length).toBeGreaterThan(0);
         }, { timeout: 5_000, interval: 20 });
 
@@ -428,20 +474,84 @@ describe("ink placement through production surface adapters and viewer sessions"
       expect(second.inkWidth / first.inkWidth).toBeCloseTo(second.pdfWidth / first.pdfWidth, 2);
       expect(second.inkHeight / first.inkHeight).toBeCloseTo(second.pdfHeight / first.pdfHeight, 2);
 
+      const reverseGesture = await zoomAndCapture("-");
+      const reverseToFitGesture = await zoomAndCapture("-");
+      expect(adapter.getViewState().scale).toBeCloseTo(firstScale, 4);
+      expect(reverseGesture.pageBox.width).toBeLessThan(second.pageBox.width);
+      expect(reverseToFitGesture.pageBox.width).toBeCloseTo(page.width, 2);
+
       // The actual canonical pen stamps must keep the same page-relative center
       // and thickness when the retained PDF-space stroke is repainted at zoom.
       const normalizedCenterX = stroke.points[0]!.x / page.width;
       const normalizedCenterY = (page.height - stroke.points[0]!.y) / page.height;
+      const normalizedPenRadius = first.arc[2]! / first.pageBox.width;
       expect(first.arc[0]! / first.pageBox.width).toBeCloseTo(normalizedCenterX, 3);
       expect(first.arc[1]! / first.pageBox.height).toBeCloseTo(normalizedCenterY, 3);
       expect(second.arc[0]! / second.pageBox.width).toBeCloseTo(normalizedCenterX, 3);
       expect(second.arc[1]! / second.pageBox.height).toBeCloseTo(normalizedCenterY, 3);
       expect(second.arc[2]! / second.pageBox.width).toBeCloseTo(first.arc[2]! / first.pageBox.width, 3);
-      expect(committedStrokes(session)).toEqual([stroke]);
+
+      const repaintAtScale = async (scale: number): Promise<ZoomObservation> => {
+        const previousLayer = internal.surfaces.get(1)?.inkLayer;
+        const previousCalls = previousLayer ? canvasArcCalls.get(previousLayer) : undefined;
+        if (previousCalls) previousCalls.length = 0;
+        session.setViewerState({
+          viewport: { ...session.getViewerState().viewport, scale, x: 0, y: 0 },
+          scale,
+          scaleMode: "custom"
+        });
+        expect(adapter.getViewState().scale).toBeCloseTo(scale, 4);
+
+        await vi.waitFor(() => {
+          const current = internal.surfaces.get(1);
+          const calls = current?.inkLayer ? canvasArcCalls.get(current.inkLayer) : undefined;
+          expect(current?.inkLayer).not.toBeNull();
+          expect(current?.inkLayerValid).toBe(true);
+          expect(current?.inkLayerBurstCapture).toBe(false);
+          expect(current?.inkLayerRevision).toBe(internal.ink.pageRevision(1));
+          expect(current?.inkLayerBackingScale).toBeGreaterThan(0);
+          expect(current?.inkLayer?.width).toBe(current?.canvas.width);
+          expect(current?.inkLayer?.height).toBe(current?.canvas.height);
+          expect(calls?.length).toBeGreaterThan(0);
+        }, { timeout: 5_000, interval: 20 });
+
+        const current = internal.surfaces.get(1)!;
+        const layer = current.inkLayer!;
+        const arc = canvasArcCalls.get(layer)?.[0];
+        if (!arc) throw new Error(`Canonical PDF ink repaint did not issue a pen stamp at scale ${scale}`);
+        return {
+          previousPageBox: getPageBox(),
+          pageBox: getPageBox(),
+          pdfWidth: pdfCanvas.width,
+          pdfHeight: pdfCanvas.height,
+          inkWidth: layer.width,
+          inkHeight: layer.height,
+          arc
+        };
+      };
+
+      // Keep the same stored PDF-space stroke while the real PDF.js page is
+      // rendered at high zoom, zoomed far out, and brought back up again.
+      const highMagnification = await repaintAtScale(5);
+      const zoomedOut = await repaintAtScale(0.25);
+      const zoomedInAgain = await repaintAtScale(4);
+      const restored = await repaintAtScale(1);
+      for (const observation of [reverseGesture, reverseToFitGesture, highMagnification, zoomedOut, zoomedInAgain, restored]) {
+        expect(observation.inkWidth / observation.pdfWidth).toBeCloseTo(1, 2);
+        expect(observation.inkHeight / observation.pdfHeight).toBeCloseTo(1, 2);
+        expect(observation.arc[0]! / observation.pageBox.width).toBeCloseTo(normalizedCenterX, 3);
+        expect(observation.arc[1]! / observation.pageBox.height).toBeCloseTo(normalizedCenterY, 3);
+        expect(observation.arc[2]! / observation.pageBox.width).toBeCloseTo(normalizedPenRadius, 3);
+      }
+      expect(highMagnification.pageBox.width).toBeGreaterThan(second.pageBox.width);
+      expect(zoomedOut.pageBox.width).toBeLessThan(first.pageBox.width);
+      expect(zoomedInAgain.pageBox.width).toBeGreaterThan(zoomedOut.pageBox.width);
+      expect(restored.pageBox.width).toBeCloseTo(page.width, 2);
+      expect(committedStrokes(session)).toEqual([stroke, ...pinchStrokes]);
     } finally {
       await session.destroy({ silent: true });
     }
-  }, 15_000);
+  }, 30_000);
 
   it("keeps image ink in natural-image coordinates while the native image element changes size", async () => {
     installCanvasContexts();

@@ -12,8 +12,8 @@ export const MAX_INK_PIXELS = 8192 * 6144;
 export const MOBILE_MAX_INK_EDGE_PX = 4096;
 export const MOBILE_MAX_INK_PIXELS = 4096 * 3072;
 
-/** Markdown is one tall logical page, so its edge cap must not downscale ink prematurely. */
-export const MARKDOWN_MAX_INK_EDGE_PX = 16384;
+/** Markdown uses one tall canvas; allow long notes to retain DPR before the area budget applies. */
+export const MARKDOWN_MAX_INK_EDGE_PX = 32767;
 export const MOBILE_MARKDOWN_MAX_INK_EDGE_PX = 8192;
 
 export interface InkBackingBudget {

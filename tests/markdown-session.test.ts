@@ -265,12 +265,15 @@ describe("Markdown annotation session", () => {
     }
   });
 
-  it("keeps tall Markdown ink sharp at display resolution and preserves pen pressure detail", async () => {
+  it.each(["preview", "source"] as const)("keeps long Markdown ink at display resolution beyond the legacy edge cap in %s mode", async (mode) => {
     const context = mockCanvasContext();
     vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(2);
     const files = new MemoryFiles();
-    const { host } = markdownHost("preview", 5_000);
-    const adapter = MarkdownViewAdapter.attach(host, {}, { mode: "preview" });
+    // At DPR 2, the previous 16,384 px edge cap reduced the backing scale
+    // below 2x once a note exceeded 8,192 CSS px. Keep this above that edge.
+    const noteHeight = 10_000;
+    const { host } = markdownHost(mode, noteHeight);
+    const adapter = MarkdownViewAdapter.attach(host, {}, { mode });
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.toolPreferences.pen.pressureSensitivity = true;
     settings.toolPreferences.pen.thinning = 0.65;
@@ -298,9 +301,9 @@ describe("Markdown annotation session", () => {
       const surface = internal.surfaces.get(1);
       expect(surface).toBeDefined();
       expect(surface!.canvas.width).toBe(1_280);
-      expect(surface!.canvas.height).toBe(10_000);
+      expect(surface!.canvas.height).toBe(noteHeight * 2);
       expect(surface!.inkLayer?.width).toBe(1_280);
-      expect(surface!.inkLayer?.height).toBe(10_000);
+      expect(surface!.inkLayer?.height).toBe(noteHeight * 2);
 
       const stroke: InkStroke = {
         ...historyStroke("markdown-pressure-detail"),
@@ -315,6 +318,8 @@ describe("Markdown annotation session", () => {
 
       expect(surface!.inkLayerValid).toBe(true);
       expect(surface!.inkLayerBackingScale).toBe(2);
+      expect(surface!.canvas.width / 640).toBe(2);
+      expect(surface!.canvas.height / noteHeight).toBe(2);
       expect(context.setTransform).toHaveBeenCalledWith(2, 0, 0, 2, 0, 0);
       const stamps = context.arc.mock.calls;
       const firstStamp = stamps.find(([x, y]) => x === 12.25 && y === 20.5);

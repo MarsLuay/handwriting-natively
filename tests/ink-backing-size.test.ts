@@ -47,7 +47,7 @@ describe("inkBackingSize", () => {
 
   it("gives tall Markdown canvases a larger edge while preserving platform pixel budgets", () => {
     const desktop = markdownInkBackingBudget(false);
-    const desktopSize = inkBackingSize(640, 5_000, 2, desktop.maxEdge, desktop.maxPixels);
+    const desktopSize = inkBackingSize(640, 10_000, 2, desktop.maxEdge, desktop.maxPixels);
     expect(desktopSize.backingScale).toBeCloseTo(2, 5);
     expect(desktopSize.pixelWidth * desktopSize.pixelHeight).toBeLessThanOrEqual(MAX_INK_PIXELS);
 
