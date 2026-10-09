@@ -27,6 +27,7 @@ import type {
   PdfSurfaceExtensions,
   PdfToolbarAction
 } from "./ObsidianPdfAdapter";
+import { PdfSidebarLayoutObserver } from "./PdfSidebarLayoutObserver";
 import {
   loadPdfJsRuntime,
   pdfJsDocumentOptions,
@@ -232,6 +233,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private readonly mounted = new Set<HTMLElement>();
   private readonly cleanups: Array<() => void> = [];
   private resizeObserver: ResizeObserver | null = null;
+  private lastDevicePixelRatio = 1;
   private lifecycleGeneration = 0;
   private thumbnailGeneration = 0;
   private destroyed = false;
@@ -299,6 +301,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       onEvict: (pageNumber) => this.performPageEvictionByNumber(pageNumber),
       getDevicePixelRatio: () => Math.max(1, Math.min(3, this.root.ownerDocument.defaultView?.devicePixelRatio ?? 1))
     });
+    this.lastDevicePixelRatio = this.renderScheduler.getTargetDpr();
     this.toolbarHost = createElement(ownerDocument, "div", "hn-owned-pdf-toolbar-host");
     this.toolbarHost.setAttribute("aria-label", "Handwriting toolbar");
     this.scroll = createElement(ownerDocument, "div", "hn-owned-pdf-scroll");
@@ -330,6 +333,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.installZoomGestures();
     this.installIntersectionObserver();
     this.installResizeObserver();
+    this.installSidebarLayoutObserver();
   }
 
   static async create(options: PdfJsViewAdapterOptions): Promise<PdfJsViewAdapter> {
@@ -602,11 +606,31 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     });
   }
 
+  private installSidebarLayoutObserver(): void {
+    const observer = new PdfSidebarLayoutObserver({
+      host: this.host,
+      getLayoutScope: () => this.root,
+      onLayout: (_trigger) => {
+        this.onResize();
+        this.scheduleLayoutUpdate();
+      },
+      resizeDeltaGatePx: 1.5
+    });
+    observer.install();
+    this.cleanups.push(() => observer.disconnect());
+  }
+
   private installResizeObserver(): void {
-    if (typeof ResizeObserver !== "function") return;
-    this.resizeObserver = new ResizeObserver(() => this.onResize());
-    this.resizeObserver.observe(this.scroll);
-    this.cleanups.push(() => this.resizeObserver?.disconnect());
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizeObserver = new ResizeObserver(() => this.onResize());
+      this.resizeObserver.observe(this.scroll);
+      this.cleanups.push(() => this.resizeObserver?.disconnect());
+    }
+    const view = this.root.ownerDocument.defaultView;
+    if (!view) return;
+    const onWindowResize = (): void => this.onResize();
+    view.addEventListener("resize", onWindowResize);
+    this.cleanups.push(() => view.removeEventListener("resize", onWindowResize));
   }
 
   private scheduleLayoutUpdate(): void {
@@ -706,6 +730,15 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       page.viewport = viewport;
       page.naturalWidth = Math.max(1, canonicalViewport.width);
       page.naturalHeight = Math.max(1, canonicalViewport.height);
+      // Initial shells use page 1 as a cheap placeholder until PDF.js loads
+      // each page. Keep lifecycle and render-budget geometry page-local once
+      // the real page viewport is available.
+      this.lifecycleCoordinator.registerPage({
+        pageNumber: page.pageNumber,
+        shell: page.shell,
+        naturalWidth: page.naturalWidth,
+        naturalHeight: page.naturalHeight
+      });
       setPixelSize(page.shell, viewport.width, viewport.height);
 
       const dpr = job.dpr;
@@ -1061,17 +1094,24 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.initialScaleResolved = true;
     if (Math.abs(previous - this.scale) < 0.001) return;
     const ratio = this.scale / previous;
+    const computedStyle = this.scroll.ownerDocument.defaultView?.getComputedStyle(this.scroll);
+    const paddingLeft = Number.parseFloat(computedStyle?.paddingLeft ?? "") || 0;
+    const paddingTop = Number.parseFloat(computedStyle?.paddingTop ?? "") || 0;
+    const contentOriginX = this.scroll.clientLeft + paddingLeft;
+    const contentOriginY = this.scroll.clientTop + paddingTop;
+    let nextScrollLeft: number;
+    let nextScrollTop: number;
     if (focalClientX !== undefined && focalClientY !== undefined) {
       const rect = this.scroll.getBoundingClientRect();
-      const offsetX = focalClientX - rect.left;
-      const offsetY = focalClientY - rect.top;
-      this.scroll.scrollLeft = (this.scroll.scrollLeft + offsetX) * ratio - offsetX;
-      this.scroll.scrollTop = (this.scroll.scrollTop + offsetY) * ratio - offsetY;
+      const offsetX = focalClientX - rect.left - contentOriginX;
+      const offsetY = focalClientY - rect.top - contentOriginY;
+      nextScrollLeft = (this.scroll.scrollLeft + offsetX) * ratio - offsetX;
+      nextScrollTop = (this.scroll.scrollTop + offsetY) * ratio - offsetY;
     } else {
-      const centerX = this.scroll.scrollLeft + this.scroll.clientWidth / 2;
-      const centerY = this.scroll.scrollTop + this.scroll.clientHeight / 2;
-      this.scroll.scrollLeft = centerX * ratio - this.scroll.clientWidth / 2;
-      this.scroll.scrollTop = centerY * ratio - this.scroll.clientHeight / 2;
+      const centerOffsetX = this.scroll.clientWidth / 2 - contentOriginX;
+      const centerOffsetY = this.scroll.clientHeight / 2 - contentOriginY;
+      nextScrollLeft = (this.scroll.scrollLeft + centerOffsetX) * ratio - centerOffsetX;
+      nextScrollTop = (this.scroll.scrollTop + centerOffsetY) * ratio - centerOffsetY;
     }
     this.renderScheduler.notifyScale(this.scale, this.rotation);
     for (const page of this.pagesByNumber.values()) {
@@ -1079,6 +1119,11 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
       setPixelSize(page.shell, this.displayWidth(page) * this.scale, this.displayHeight(page) * this.scale);
       setElementCssProps(page.canvas, { width: `${this.displayWidth(page) * this.scale}px`, height: `${this.displayHeight(page) * this.scale}px` });
     }
+    // Expand or shrink the page geometry before assigning scroll offsets.
+    // Browsers clamp scrollLeft/Top against the current scroll range; setting
+    // the anchor correction before the larger zoomed page exists loses it.
+    this.scroll.scrollLeft = nextScrollLeft;
+    this.scroll.scrollTop = nextScrollTop;
     this.callbacks.onZoomChange?.({ phase: "begin", scale: this.scale, source: "geometry", viewerGeneration: this.viewerGeneration });
     for (const page of this.nearbyPages()) this.queuePageRender(page);
     if (this.zoomTimer !== null) window.clearTimeout(this.zoomTimer);
@@ -1284,6 +1329,10 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     this.setHandToolActive(commands?.isHandMode() ?? false);
   }
 
+  setScaleAtViewportCenter(scale: number): void {
+    this.setScale(scale);
+  }
+
   setHandToolActive(active: boolean): void {
     this.handToolActive = active;
     this.root.classList.toggle("is-hand-tool", this.handToolActive);
@@ -1461,6 +1510,13 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   onResize(): void {
     if (this.destroyed) return;
+    const devicePixelRatio = this.renderScheduler.getTargetDpr();
+    if (Math.abs(devicePixelRatio - this.lastDevicePixelRatio) >= 0.001) {
+      this.lastDevicePixelRatio = devicePixelRatio;
+      // A display move can change DPR without changing page CSS dimensions.
+      // Requeue visible pages at target density while preserving PDF scale.
+      this.renderScheduler.notifySettled();
+    }
     // Obsidian also calls this for pane/sidebar layout changes, not just initial sizing.
     if (!this.initialScaleResolved) this.fitWidth();
     this.scheduleLayoutUpdate();

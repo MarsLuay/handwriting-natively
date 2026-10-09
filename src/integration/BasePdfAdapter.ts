@@ -11,6 +11,7 @@ import type { ToolbarPlacement } from "../model";
 import type { ObsidianPdfAdapter, PdfAdapterCallbacks, PdfViewState } from "./ObsidianPdfAdapter";
 import { PdfPageLocator, type PdfPageInfo } from "./PdfPageLocator";
 import { resolvePdfScrollRoot } from "./PdfScrollRoot";
+import { PdfSidebarLayoutObserver } from "./PdfSidebarLayoutObserver";
 import {
   findPdfContentContainer,
   findPdfSidebarContainer,
@@ -830,98 +831,33 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private watchPdfSidebarLayout(): void {
     if (this.sidebarWatchInstalled) return;
     this.sidebarWatchInstalled = true;
-    const scope = this.pdfLayoutScope();
-    const content = findPdfContentContainer(scope);
-    const sidebar = findPdfSidebarContainer(scope);
-    const onLayout = (trigger: string): void => {
-      if (!this.isLeftToolbarActive()) {
-        this.noteIgnoredSidebarLayoutTrigger(trigger);
-        return;
-      }
-      // Pinch zoom owns the compositor. PDF.js style/resize churn must not
-      // restart a 480 ms geometry follow loop mid-gesture. Real sidebar
-      // open/close still applies one coalesced offset sync; the multi-frame
-      // follow resumes after settle so the rail catches the rest of the
-      // open/close animation without fighting pinch frames.
-      if (this.inkZoomBurstActive) {
-        if (!isAuthoritativePdfSidebarLayoutTrigger(trigger)) {
-          this.noteSuppressedSidebarFollowDuringZoom(trigger);
+    const observer = new PdfSidebarLayoutObserver({
+      host: this.host,
+      getLayoutScope: () => this.pdfLayoutScope(),
+      onLayout: (trigger: string): void => {
+        if (!this.isLeftToolbarActive()) {
+          this.noteIgnoredSidebarLayoutTrigger(trigger);
           return;
         }
-        this.sidebarFollowDeferredAfterZoom = true;
-        this.queueSyncLeftRailWithPdfSidebar(false, trigger);
-        return;
-      }
-      this.queueSyncLeftRailWithPdfSidebar(true, trigger);
-    };
-    // Sidebar transitions toggle one of these containers. Never observe the
-    // whole descendant tree: PDF.js and annotation style churn would otherwise
-    // restart a 480 ms rail-follow loop on every paint frame.
-    const classHosts = [content, sidebar, this.host, isElement(scope) ? scope : null]
-      .filter((node): node is HTMLElement => isHTMLElement(node));
-    if (classHosts.length > 0) {
-      const watched = new Set(classHosts);
-      const observer = new MutationObserver((records) => {
-        const operation = this.layoutTrace.start("sidebar-observer", "mutation");
-        try {
-          if (!records.some((record) => isHTMLElement(record.target) && watched.has(record.target))) {
+        if (this.inkZoomBurstActive) {
+          if (!isAuthoritativePdfSidebarLayoutTrigger(trigger)) {
+            this.noteSuppressedSidebarFollowDuringZoom(trigger);
             return;
           }
-          onLayout(
-            mutationTogglesPdfSidebarOpen(records) ? "mutation-sidebar-open" : "mutation"
-          );
-        } finally {
-          this.reportLayoutResult(operation.finish());
+          this.sidebarFollowDeferredAfterZoom = true;
+          this.queueSyncLeftRailWithPdfSidebar(false, trigger);
+          return;
         }
-      });
-      for (const host of new Set(classHosts)) {
-        observer.observe(host, {
-          attributes: true,
-          attributeFilter: ["class", "style"],
-          attributeOldValue: true
-        });
-      }
-      this.registerCleanup(() => observer.disconnect());
-    }
-    if (typeof ResizeObserver !== "undefined") {
-      const resize = new ResizeObserver((entries) => {
-        let changed = false;
-        for (const entry of entries) {
-          const next = {
-            width: entry.contentRect.width,
-            height: entry.contentRect.height
-          };
-          const previous = this.sidebarResizeSnapshots.get(entry.target);
-          this.sidebarResizeSnapshots.set(entry.target, next);
-          if (!previous
-            || Math.abs(next.width - previous.width) >= BasePdfAdapter.RESIZE_DELTA_GATE_PX
-            || Math.abs(next.height - previous.height) >= BasePdfAdapter.RESIZE_DELTA_GATE_PX) {
-            changed = true;
-          }
-        }
-        if (!changed) return;
-        const operation = this.layoutTrace.start("sidebar-observer", "resize");
-        try {
-          onLayout("resize");
-        } finally {
-          this.reportLayoutResult(operation.finish());
-        }
-      });
-      if (sidebar) resize.observe(sidebar);
-      const chromeEl = this.host.querySelector(".native-pdf-handwriting-chrome");
-      if (isHTMLElement(chromeEl)) resize.observe(chromeEl);
-      this.registerCleanup(() => resize.disconnect());
-    }
-    const eventBus = this.compatibility.privateViewer?.eventBus;
-    for (const event of ["sidebarviewchanged", "togglesidebar"] as const) {
-      const handler = (): void => onLayout(event);
-      eventBus?.on?.(event, handler);
-      this.registerCleanup(() => eventBus?.off?.(event, handler));
-    }
-    // Thumbnail / outline toolbar buttons often toggle layout without eventBus in tests.
-    const onClick = (): void => onLayout("click");
-    this.host.addEventListener("click", onClick, true);
-    this.registerCleanup(() => this.host.removeEventListener("click", onClick, true));
+        this.queueSyncLeftRailWithPdfSidebar(true, trigger);
+      },
+      eventBus: this.compatibility.privateViewer?.eventBus,
+      getChromeElement: () => this.host.querySelector<HTMLElement>(".native-pdf-handwriting-chrome"),
+      layoutTrace: this.layoutTrace,
+      reportLayoutResult: (result) => this.reportLayoutResult(result),
+      resizeDeltaGatePx: BasePdfAdapter.RESIZE_DELTA_GATE_PX
+    });
+    observer.install();
+    this.registerCleanup(() => observer.disconnect());
   }
 
   private noteSuppressedSidebarFollowDuringZoom(trigger: string): void {
