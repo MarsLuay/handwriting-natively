@@ -46,7 +46,7 @@ const UI_MENU_SELECTOR = [
 
 /**
  * Classify the initial contact target before any pointer can claim ownership.
- * The result is intentionally independent of the active tool or mouse policy:
+ * The result is intentionally independent of the active tool:
  * UI controls remain native for Pencil and mouse, while captured page contacts
  * are governed by their existing route after the initial classification.
  */

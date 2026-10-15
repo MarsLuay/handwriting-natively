@@ -294,12 +294,12 @@ describe("SessionLogger", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const logger = new SessionLogger("Notes/example.pdf");
 
-    logger.pointerRoute("touch-pan", { pointerType: "touch", page: 1 });
+    logger.pointerRoute("native", { pointerType: "touch", page: 1 });
     logger.pointerRoute("ignored", { pointerType: "touch", page: 1 });
     logger.pointerSeen({ source: "pointerdown", pointerType: "pen", within: true });
     logger.pointerSeen({ source: "touchstart", pointerType: "touch", within: true });
 
-    expect(debug.mock.calls.some((call) => call[1] === "pointer route" && (call[2] as { route: string }).route === "touch-pan")).toBe(true);
+    expect(debug.mock.calls.some((call) => call[1] === "pointer route" && (call[2] as { route: string }).route === "native")).toBe(true);
     expect(debug.mock.calls.some((call) => call[1] === "pointer seen" && (call[2] as { pointerType: string }).pointerType === "touch")).toBe(true);
     debug.mockRestore();
   });

@@ -1,7 +1,5 @@
 /** Bounded, local-only correlation for native PDF.js replacement and zoom handoff. */
 
-import type { MobilePdfZoomTraceMode } from "./MobilePdfZoomDiagnostics";
-
 const MAX_SIGNAL_TYPES = 8;
 const MAX_PAGES = 64;
 const MAX_VIEWER_GENERATIONS = 8;
@@ -13,7 +11,7 @@ export type NativeHandoffSignalName =
   | "resizeObserver"
   | "mutationObserver";
 
-export type NativeHandoffPhase = "active-pinch" | "post-pinch-live-ink" | "handoff" | "settled";
+export type NativeHandoffPhase = "active-zoom" | "post-zoom-live-ink" | "handoff" | "settled";
 
 export interface ZoomNativeHandoffSignalSummary {
   count: number;
@@ -35,7 +33,6 @@ export interface ZoomNativeHandoffPhaseSummary {
 
 export interface ZoomNativeHandoffSummary {
   event: "zoom-native-handoff";
-  mode: MobilePdfZoomTraceMode;
   zoomBurstId: string | null;
   firstNativeSignal: NativeHandoffSignalName | null;
   lastNativeSignal: NativeHandoffSignalName | null;
@@ -164,8 +161,6 @@ function updatePhase(
 export class ZoomNativeHandoffTrace {
   private readonly clock: Clock;
   private active = false;
-  private mode: MobilePdfZoomTraceMode = "native";
-  private pendingMode: MobilePdfZoomTraceMode = "native";
   private zoomBurstId: string | null = null;
   private firstNativeSignal: NativeHandoffSignalName | null = null;
   private lastNativeSignal: NativeHandoffSignalName | null = null;
@@ -198,14 +193,8 @@ export class ZoomNativeHandoffTrace {
     return this.active;
   }
 
-  setMode(mode: MobilePdfZoomTraceMode): void {
-    this.pendingMode = mode;
-  }
-
-  begin(zoomBurstId: string | null, at = this.clock.now(), mode = this.pendingMode): void {
+  begin(zoomBurstId: string | null, at = this.clock.now()): void {
     this.active = true;
-    this.mode = mode;
-    this.pendingMode = "native";
     this.zoomBurstId = zoomBurstId;
     this.firstNativeSignal = null;
     this.lastNativeSignal = null;
@@ -229,7 +218,7 @@ export class ZoomNativeHandoffTrace {
     this.phases.clear();
     this.signals.clear();
     this.lastSummary = null;
-    updatePhase(this.phases, "active-pinch", at);
+    updatePhase(this.phases, "active-zoom", at);
   }
 
   noteSignal(input: SignalInput): void {
@@ -328,7 +317,6 @@ export class ZoomNativeHandoffTrace {
       : null;
     return {
       event: "zoom-native-handoff",
-      mode: this.mode,
       zoomBurstId: this.zoomBurstId,
       firstNativeSignal: this.firstNativeSignal,
       lastNativeSignal: this.lastNativeSignal,

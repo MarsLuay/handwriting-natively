@@ -43,7 +43,6 @@ import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import { PDF_PAGE_SELECTOR } from "./pdfPageSelectors";
 import { getDebugNodeId } from "../dom/debugNodeId";
 import { LayoutWorkTrace, type LayoutOperationResult } from "../runtime/LayoutWorkTrace";
-import { MobilePdfZoomHandoff } from "./MobilePdfZoomHandoff";
 
 export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   abstract readonly kind: "direct" | "embedded";
@@ -240,16 +239,6 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
     } catch {
       return false;
     }
-  }
-
-  createMobilePdfZoomHandoff(): MobilePdfZoomHandoff {
-    return new MobilePdfZoomHandoff({
-      viewerGeneration: () => this.viewerGeneration,
-      getViewState: () => this.getViewState(),
-      page: (pageNumber) => this.page(pageNumber),
-      scrollElement: () => this.scrollElement(),
-      commitScale: (scale, focalPoint) => this.commitNativeScale(scale, focalPoint)
-    });
   }
 
   getViewState(): PdfViewState {

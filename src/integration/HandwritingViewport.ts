@@ -3,10 +3,9 @@ import { setElementCssProps } from "../dom/typeGuards";
 /**
  * Persistent Handwriting Viewport State and Controller.
  *
- * Owns the visual interaction viewport (scale, x, y) as the single source
- * of truth for pinch-zoom, two-finger pan, one-finger pan, hard pan bounds,
- * coordinate conversion, and renderer/scroll projection. Content smaller than
- * the viewport stays anchored at its current origin instead of being centered.
+ * Owns the visual viewport (scale, x, y), hard pan bounds, coordinate
+ * conversion, and renderer/scroll projection. Content smaller than the
+ * viewport stays anchored at its current origin instead of being centered.
  * PDF.js renders underneath it.
  */
 
@@ -44,7 +43,6 @@ export interface HandwritingViewportOptions {
 export class HandwritingViewport {
   private readonly state: HandwritingViewportState;
   private renderedScale: number;
-  private pinchAnchor: { x: number; y: number } | null = null;
   private targetElement: HTMLElement | null = null;
   private lastProjectedScrollLeft = 0;
   private lastProjectedScrollTop = 0;
@@ -78,7 +76,6 @@ export class HandwritingViewport {
   /** Rebase the temporary CSS projection after the renderer changes scale. */
   syncRenderedState(scale: number, scrollLeft: number, scrollTop: number): void {
     if (!Number.isFinite(scale) || scale <= 0) return;
-    this.pinchAnchor = null;
     this.renderedScale = scale;
     this.state.scale = scale;
     this.state.x = -Math.max(0, Number.isFinite(scrollLeft) ? scrollLeft : 0);
@@ -107,7 +104,6 @@ export class HandwritingViewport {
       return false;
     }
 
-    this.pinchAnchor = null;
     const scrollProjectionScale = this.isScrollTransformTarget() ? this.viewportProjectionScale() : 1;
     const previousScrollProjectionScale = this.isScrollTransformTarget()
       ? this.lastAppliedProjectionScale
@@ -142,7 +138,7 @@ export class HandwritingViewport {
       this.targetElement.style.removeProperty("transform");
       this.targetElement.style.removeProperty("transform-origin");
       this.targetElement.style.removeProperty("transition");
-      this.targetElement.classList.remove("native-pdf-handwriting-pinch-active");
+      this.targetElement.classList.remove("native-pdf-handwriting-viewport-transform-active");
     }
     this.targetElement = element;
     if (this.targetElement) {
@@ -214,55 +210,29 @@ export class HandwritingViewport {
     };
   }
 
-  /**
-   * Begins a pinch-zoom/pan gesture anchored at focalPoint.
-   */
-  startPinch(focalPoint: { x: number; y: number }): void {
-    if (this.state.scale > 0) {
-      const focal = this.screenToContainer(focalPoint);
-      this.pinchAnchor = {
-        x: (focal.x - this.state.x) / this.state.scale,
-        y: (focal.y - this.state.y) / this.state.scale
-      };
-    }
-  }
-
-  /**
-   * Pinch zoom around a focal point on screen.
-   * Keeps the document content point currently under focalPoint pinned under focalPoint.
-   * Also simultaneously tracks two-finger panning as focalPoint moves.
-   */
-  pinch(nextScale: number, focalPoint: { x: number; y: number }): void {
+  /** Set the scale while keeping the content under a screen point in place. */
+  setScaleAtPoint(nextScale: number, screenPoint: { x: number; y: number }): void {
     const minScale = this.options.minScale ?? 0.1;
     const maxScale = this.options.maxScale ?? 10;
     const requestedScale = Number.isFinite(nextScale) ? nextScale : this.state.scale;
     const effectiveScale = Math.max(minScale, Math.min(maxScale, requestedScale));
+    if (this.state.scale <= 0) return;
 
-    if (!this.pinchAnchor) {
-      this.startPinch(focalPoint);
-    }
-
-    if (this.pinchAnchor) {
-      const focal = this.screenToContainer(focalPoint);
-      const newX = focal.x - this.pinchAnchor.x * effectiveScale;
-      const newY = focal.y - this.pinchAnchor.y * effectiveScale;
-      this.state.scale = effectiveScale;
-      const constrained = this.constrainToBounds(newX, newY, this.getBounds(effectiveScale));
-      this.state.x = constrained.x;
-      this.state.y = constrained.y;
-
-      this.apply();
-    }
-  }
-
-  /** End a pinch without changing the viewport the user selected. */
-  endPinch(): void {
-    this.pinchAnchor = null;
+    const focal = this.screenToContainer(screenPoint);
+    const anchorX = (focal.x - this.state.x) / this.state.scale;
+    const anchorY = (focal.y - this.state.y) / this.state.scale;
+    const newX = focal.x - anchorX * effectiveScale;
+    const newY = focal.y - anchorY * effectiveScale;
+    this.state.scale = effectiveScale;
+    const constrained = this.constrainToBounds(newX, newY, this.getBounds(effectiveScale));
+    this.state.x = constrained.x;
+    this.state.y = constrained.y;
+    this.apply();
   }
 
   /**
    * Pan the viewport by deltaX and deltaY (in screen pixels).
-   * Applicable for two-finger pan, one-finger pan, drag tool, or trackpad pan.
+   * Applies a bounded viewport translation.
    */
   pan(deltaX: number, deltaY: number): void {
     const constrained = this.constrainToBounds(this.state.x + deltaX, this.state.y + deltaY);
@@ -273,7 +243,6 @@ export class HandwritingViewport {
   }
 
   reset(): void {
-    this.pinchAnchor = null;
     this.state.scale = 1;
     this.state.x = 0;
     this.state.y = 0;
@@ -447,13 +416,13 @@ export class HandwritingViewport {
         && Math.abs(translateY) < 0.01) {
         this.targetElement.style.removeProperty("transform");
         this.targetElement.style.removeProperty("transform-origin");
-        this.targetElement.classList.remove("native-pdf-handwriting-pinch-active");
+        this.targetElement.classList.remove("native-pdf-handwriting-viewport-transform-active");
       } else {
         setElementCssProps(this.targetElement, {
           transformOrigin: "0 0",
           transform: `translate3d(${translateX}px, ${translateY}px, 0) scale(${projectionScale})`
         });
-        this.targetElement.classList.add("native-pdf-handwriting-pinch-active");
+        this.targetElement.classList.add("native-pdf-handwriting-viewport-transform-active");
       }
       this.lastAppliedProjectionScale = projectionScale;
       this.lastAppliedTranslateX = translateX;
@@ -467,13 +436,12 @@ export class HandwritingViewport {
   }
 
   destroy(): void {
-    this.pinchAnchor = null;
     this.hasScrollProjection = false;
     if (this.targetElement) {
       this.targetElement.style.removeProperty("transform");
       this.targetElement.style.removeProperty("transform-origin");
       this.targetElement.style.removeProperty("transition");
-      this.targetElement.classList.remove("native-pdf-handwriting-pinch-active");
+      this.targetElement.classList.remove("native-pdf-handwriting-viewport-transform-active");
       this.targetElement = null;
     }
   }

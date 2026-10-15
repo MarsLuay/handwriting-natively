@@ -6,7 +6,7 @@ Handwriting Natively adds one annotation system to Obsidian's direct and embedde
 
 - `integration/`: only owner of undocumented Obsidian PDF objects, DOM selectors, PDF.js compatibility probes, viewer discovery, page location, and reversible patches. The plugin leaves Obsidian's global `.pdf` extension mapping intact for Markdown embeds; direct PDF leaves select `PluginPdfView` explicitly or migrate to it during the normal leaf scan.
 - `focus-view/`: embed Annotate chrome and helpers that open a PDF leaf (not a private-class viewer).
-- `input/`: Pointer Events policy. `GestureNavigationController` is shared by a viewer session's page routers and owns surface-enabled touch pan/pinch, hand-tool movement, modifier-wheel zoom, and pen exclusion. PDF and image pan stop at hard viewport bounds with no elastic overscroll or release settling; restored PDF views keep their numeric zoom instead of reapplying fit presets. Markdown wheel, touch, and hand-tool scrolling stay native. `PointerRouter` delegates navigation movement and keeps annotation routing at the page boundary. See `docs/input-gesture-architecture.md`.
+- `input/`: Pointer Events policy. Only confirmed stylus input can annotate. Ordinary mouse and touch remain native for every selected tool; `GestureNavigationController` handles stylus hand-pan and blocks companion touch only while a stylus is active. PDF modifier-wheel zoom remains in `PdfJsViewAdapter`; image zoom and viewport projection remain in `ViewerInkSession` and `HandwritingViewport`. See `docs/input-gesture-architecture.md`.
 - `runtime/AnnotationSurface.ts`: the minimal page-surface contract (`AnnotationPageInfo`, page-local geometry, view/scroll lifecycle, overlay/UI mounting, and teardown). PDF capability extensions live in `integration/ObsidianPdfAdapter.ts` and are never required by the shared runtime. `surfaceType` distinguishes PDF, image, and Markdown content without changing the direct/embedded host distinction.
 - `ink/`: strokes, filtering, rendering, simplification, hit testing. Coordinates use page-local document space for every surface.
 - `tools/`: tool state and behavior. Preferences stay outside annotation documents.
@@ -35,12 +35,12 @@ Each attached viewer owns one disposable session. Closing PDF, removing embed, s
 
 ## First use
 
-Open PDF, select Pen, Pencil, Highlighter, or Laser. Pen/pencil/highlighter persist to the sidecar. Laser trails fade away after a short hold and are never saved. Stylus input annotates directly, qualified mobile PDF navigation goes through the shared controller, unsupported modes retain browser navigation, and mouse behavior follows the selected input policy. Status reads `Saved`, `Saving…`, `Unsaved changes`, or `Save failed`.
+Open PDF, select Pen, Pencil, Highlighter, or Laser. Pen/pencil/highlighter persist to the sidecar. Laser trails fade away after a short hold and are never saved. Confirmed stylus input annotates directly. Ordinary mouse and touch navigation remain native for every selected tool; active stylus input blocks companion touch from scrolling beneath a stroke. Status reads `Saved`, `Saving…`, `Unsaved changes`, or `Save failed`.
 
 ## Coordinate and input invariants
 
 - Persisted annotation geometry is page-local document data; viewport CSS pixels, scroll offsets, zoom, rotation, and device-pixel-ratio are render-time inputs only.
-- Pointer Events are the authoritative input stream when available. `GestureOwnership` tracks annotation contacts; `GestureNavigationController` owns movement and zoom contacts. Losing pointer capture alone does not release active-pen exclusion. No global `touch-action: none` is applied.
+- Pointer Events are the authoritative input stream when available. `GestureOwnership` tracks stylus annotation contacts; `GestureNavigationController` handles stylus hand-pan and active-stylus companion-touch blocking. Losing pointer capture alone does not release active-pen exclusion. No global `touch-action: none` is applied.
 - The shared toolbar always floats with a drag handle. Its More menu rotates it between horizontal and vertical layouts; the orientation persists across sessions. Session teardown aborts drag listeners.
 - Viewer/page generations invalidate stale async work. A replacement page is revalidated before an overlay accepts input.
 - A non-PDF surface may expose only page geometry and lifecycle. The shared session does not require PDF.js objects, PDF selectors, native text layers, or source-PDF mutation callbacks.

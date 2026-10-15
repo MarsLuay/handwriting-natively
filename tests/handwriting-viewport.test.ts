@@ -87,7 +87,7 @@ describe("HandwritingViewport", () => {
     expect(vp.getState()).toEqual({ scale: 1, x: 0, y: 0 });
   });
 
-  it("hard-clamps pinch zoom and keeps the chosen scale when the pinch ends", () => {
+  it("hard-clamps viewport scale at a focal point", () => {
     const vp = new HandwritingViewport({
       getContainerRect: () => rect(0, 0, 600, 800),
       getContentSize: () => ({ width: 1000, height: 1200 }),
@@ -95,26 +95,15 @@ describe("HandwritingViewport", () => {
       maxScale: 3
     });
 
-    vp.startPinch({ x: 200, y: 200 });
-    vp.pinch(4, { x: 200, y: 200 });
+    vp.setScaleAtPoint(4, { x: 200, y: 200 });
     expect(vp.getState().scale).toBe(3);
-    const chosen = vp.getState();
-
-    vp.endPinch();
-    expect(vp.getState()).toEqual(chosen);
-
-    vp.startPinch({ x: 200, y: 200 });
-    vp.pinch(0.1, { x: 200, y: 200 });
+    vp.setScaleAtPoint(0.1, { x: 200, y: 200 });
     expect(vp.getState().scale).toBe(0.5);
     expect(vp.getState().x).toBe(0);
     expect(vp.getState().y).toBe(0);
-    const minimum = vp.getState();
-
-    vp.endPinch();
-    expect(vp.getState()).toEqual(minimum);
   });
 
-  it("pins document content under focal point during pinch zoom", () => {
+  it("pins document content under a focal point when scaling", () => {
     const vp = new HandwritingViewport({
       getContainerRect: () => rect(0, 0, 600, 800),
       getContentSize: () => ({ width: 1000, height: 1200 }),
@@ -123,11 +112,7 @@ describe("HandwritingViewport", () => {
     });
 
     // Initial state: scale = 1, x = 0, y = 0
-    // Touch at focal point (200, 200)
-    vp.startPinch({ x: 200, y: 200 });
-
-    // Zoom to 2.0 while keeping focal point stationary at (200, 200)
-    vp.pinch(2.0, { x: 200, y: 200 });
+    vp.setScaleAtPoint(2.0, { x: 200, y: 200 });
 
     // The content point (200, 200) must still be at screen (200, 200)
     // (x_screen - state.x) / scale = (200 - (-200)) / 2 = 400 / 2 = 200
@@ -141,7 +126,7 @@ describe("HandwritingViewport", () => {
     expect(docPoint.y).toBeCloseTo(200);
   });
 
-  it("keeps the selected zoom transform after the pinch ends", () => {
+  it("applies the selected zoom transform", () => {
     const target = document.createElement("div");
     document.body.append(target);
     const viewport = new HandwritingViewport({
@@ -150,15 +135,11 @@ describe("HandwritingViewport", () => {
       initialRenderedScale: 1
     });
     viewport.setTarget(target);
-    viewport.startPinch({ x: 200, y: 200 });
-    viewport.pinch(2, { x: 200, y: 200 });
-    const transformDuringPinch = target.style.transform;
-
-    viewport.endPinch();
+    viewport.setScaleAtPoint(2, { x: 200, y: 200 });
 
     expect(viewport.getState()).toMatchObject({ scale: 2, x: -200, y: -200 });
     expect(viewport.getRenderedScale()).toBe(1);
-    expect(target.style.transform).toBe(transformDuringPinch);
+    expect(target.style.transform).not.toBe("");
     viewport.destroy();
     target.remove();
   });
@@ -171,52 +152,11 @@ describe("HandwritingViewport", () => {
       maxScale: 3.0
     });
 
-    vp.startPinch({ x: 280, y: 320 });
-    vp.pinch(2.0, { x: 280, y: 320 });
+    vp.setScaleAtPoint(2.0, { x: 280, y: 320 });
 
     expect(vp.getState().x).toBe(-200);
     expect(vp.getState().y).toBe(-200);
     expect(vp.screenToViewport({ x: 280, y: 320 })).toEqual({ x: 200, y: 200 });
-  });
-
-  it("tracks simultaneous two-finger panning during pinch zoom", () => {
-    const vp = new HandwritingViewport({
-      getContainerRect: () => rect(0, 0, 600, 800),
-      getContentSize: () => ({ width: 2000, height: 2000 }),
-      minScale: 0.5,
-      maxScale: 4.0
-    });
-
-    // Touch down at (200, 200)
-    vp.startPinch({ x: 200, y: 200 });
-
-    // Fingers move to (250, 220) while zooming to 1.5
-    vp.pinch(1.5, { x: 250, y: 220 });
-
-    // Check that the original document point (200, 200) is now under the new finger position (250, 220)
-    const docPoint = vp.screenToViewport({ x: 250, y: 220 });
-    expect(docPoint.x).toBeCloseTo(200);
-    expect(docPoint.y).toBeCloseTo(200);
-  });
-
-  it("handles pure two-finger pan when scale does not change", () => {
-    const vp = new HandwritingViewport({
-      getContainerRect: () => rect(0, 0, 600, 800),
-      getContentSize: () => ({ width: 2000, height: 2000 }),
-      minScale: 0.5,
-      maxScale: 4.0,
-      initialState: { scale: 1, x: -300, y: -300 }
-    });
-
-    // Touch at (300, 300)
-    vp.startPinch({ x: 300, y: 300 });
-
-    // Fingers pan +50px X and +40px Y with scale remaining 1.0
-    vp.pinch(1.0, { x: 350, y: 340 });
-
-    const state = vp.getState();
-    expect(state.x).toBeCloseTo(-250);
-    expect(state.y).toBeCloseTo(-260);
   });
 
   it("converts client, viewport, and element-local coordinates through one transform", () => {
@@ -373,7 +313,7 @@ describe("HandwritingViewport", () => {
     scroll.remove();
   });
 
-  it("updates target DOM element with GPU transform and pinch-active class", () => {
+  it("updates target DOM element with a compositor transform while scaled", () => {
     const target = document.createElement("div");
     document.body.append(target);
 
@@ -387,11 +327,11 @@ describe("HandwritingViewport", () => {
 
     vp.pan(-40, -60);
     expect(target.style.getPropertyValue("transform")).toBe("translate3d(-40px, -60px, 0) scale(1)");
-    expect(target.classList.contains("native-pdf-handwriting-pinch-active")).toBe(true);
+    expect(target.classList.contains("native-pdf-handwriting-viewport-transform-active")).toBe(true);
 
     vp.destroy();
     expect(target.style.getPropertyValue("transform")).toBe("");
-    expect(target.classList.contains("native-pdf-handwriting-pinch-active")).toBe(false);
+    expect(target.classList.contains("native-pdf-handwriting-viewport-transform-active")).toBe(false);
     target.remove();
   });
 });

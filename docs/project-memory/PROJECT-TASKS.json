@@ -50,7 +50,7 @@
     {
       "id": "unified-gesture-navigation",
       "status": "pending",
-      "title": "Centralize touch, pinch, hand-tool, and modifier-wheel navigation and validate the canonical floating toolbar.",
+  "title": "Physically qualify native mouse/touch behavior, confirmed-stylus annotation, stylus hand-pan, and retained native zoom handoff paths.",
       "paths": [
         "src/input/GestureNavigationController.ts",
         "src/integration/HandwritingViewport.ts",
@@ -63,13 +63,12 @@
         "docs/input-gesture-architecture.md"
       ],
       "checks": [
-        "Focused gesture and orientation tests, including persisted toolbar rotation",
-        "PDF/image pan stops at hard bounds without rubber-banding or release spring",
-        "Zoom and restore do not snap to a previous scale or fit preset",
-        "Markdown wheel, touch, and hand-tool scrolling remain native",
-        "npm test",
-        "npm run lint",
-        "npm run build when the shared generated main.js is no longer being edited"
+    "Run the physical iPadOS and Android input matrix for stylus, companion touch, native mouse/touch navigation, PDF native pinch/wheel zoom, and image zoom",
+    "Confirm stylus hand-pan and first post-zoom contacts",
+    "Keep status pending until named-device traces are captured",
+    "npm test",
+    "npm run lint",
+    "npm run build"
       ]
     },
     {

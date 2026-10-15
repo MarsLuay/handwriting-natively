@@ -237,32 +237,6 @@ describe("PDF adapters", () => {
     expect(scrollRoot.classList.contains("native-pdf-handwriting-stable-scroll-root")).toBe(false);
   });
 
-  it("commits an absolute custom scale through PDF.js and writable-scale fallbacks", async () => {
-    const host = compatibleHost();
-    const updateScale = vi.fn();
-    const privateViewer = { currentScale: 2, updateScale };
-    const adapter = await NativePdfViewAdapter.attach(host, {}, { privateViewer });
-    const handoff = adapter.createMobilePdfZoomHandoff();
-
-    expect(adapter.nativeScaleCommitAvailable?.()).toBe(true);
-    expect(handoff.begin({ pageNumber: 1, focalPoint: { x: 100, y: 100 } })).toBe(true);
-    expect(handoff.commit(3)).toMatchObject({ accepted: true });
-    expect(updateScale).toHaveBeenCalledWith({ scaleFactor: 1.5, origin: [100, 100] });
-    adapter.destroy();
-
-    const fallbackHost = compatibleHost();
-    const rejectingViewer = {
-      currentScale: 2,
-      updateScale: vi.fn(() => { throw new Error("native update rejected"); })
-    };
-    const fallbackAdapter = await NativePdfViewAdapter.attach(fallbackHost, {}, { privateViewer: rejectingViewer });
-    const fallbackHandoff = fallbackAdapter.createMobilePdfZoomHandoff();
-    expect(fallbackHandoff.begin({ pageNumber: 1, focalPoint: { x: 100, y: 100 } })).toBe(true);
-    expect(fallbackHandoff.commit(3)).toMatchObject({ accepted: true });
-    expect(rejectingViewer.currentScale).toBe(3);
-    fallbackAdapter.destroy();
-  });
-
   it("replaces stale annotation toolbars when mounting again", async () => {
     const host = compatibleHost();
     const adapter = await NativePdfViewAdapter.attach(host);

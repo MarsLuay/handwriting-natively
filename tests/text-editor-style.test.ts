@@ -22,26 +22,12 @@ describe("text editor styles", () => {
     expect(rule?.groups?.body).toContain("scroll-snap-type: none");
   });
 
-  it("keeps Draw-mode hit policy without blocking native finger scroll", () => {
-    expect(styles).toContain(".pdf-viewer .native-pdf-handwriting-draw-hit-page");
-    expect(styles).toContain(".pdfViewer .native-pdf-handwriting-draw-hit-page");
-    expect(styles).not.toMatch(/native-pdf-handwriting-draw-hit-page[^}]*touch-action:\s*none/);
-    // Legacy finger-draw class must not force touch-action:none anymore.
-    expect(styles).toMatch(/native-pdf-handwriting-touch-draw-page[^}]*touch-action:\s*auto/);
-    // Stylus tip down: touch-none. Draw on + tip up: touch-pan-xy (see PointerRouter).
+  it("blocks companion touch only during active stylus input", () => {
+    expect(styles).toContain(".pdf-viewer .page.native-pdf-handwriting-touch-none");
+    expect(styles).toContain(".pdfViewer .page.native-pdf-handwriting-touch-none");
     expect(styles).toMatch(/native-pdf-handwriting-touch-none[^}]*touch-action:\s*none/);
-    expect(styles).toMatch(/native-pdf-handwriting-touch-pan-xy[^}]*touch-action:\s*pan-x\s+pan-y/);
-    // Legacy alias still maps to none for older in-memory sessions.
-    expect(styles).toMatch(/native-pdf-handwriting-pen-capturing[^}]*touch-action:\s*none/);
-  });
-
-  it("disables native textLayer hits while Draw mode owns the page", () => {
-    expect(styles).toMatch(
-      /\.native-pdf-handwriting-draw-hit-page\s*>\s*\.textLayer[\s\S]*?pointer-events:\s*none(?!\s*!important)/
-    );
-    expect(styles).not.toMatch(
-      /\.native-pdf-handwriting-draw-hit-page\s*>\s*\.textLayer[\s\S]*?pointer-events:\s*none\s*!important/
-    );
+    expect(styles).not.toMatch(/native-pdf-handwriting-touch-(?:pan-xy|custom-pinch|draw-page)/);
+    expect(styles).not.toContain("native-pdf-handwriting-pen-capturing");
   });
 
   it("keeps the active text editor transparent in every Obsidian theme", () => {

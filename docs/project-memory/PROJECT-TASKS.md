@@ -30,11 +30,11 @@ Checks: profile dense pages; profile lasso resize and clipboard behavior.
 
 ## unified-gesture-navigation — pending
 
-Centralize touch, pinch, hand-tool, and modifier-wheel navigation and validate the canonical floating toolbar.
+Physically qualify native mouse/touch behavior, confirmed-stylus annotation, stylus hand-pan, and retained native zoom handoff paths.
 
 Paths: `src/input/GestureNavigationController.ts`, `src/input/PointerRouter.ts`, `src/integration/HandwritingViewport.ts`, `src/integration/ImageViewAdapter.ts`, `src/integration/PdfJsViewAdapter.ts`, `src/runtime/ViewerInkSession.ts`, `styles.css`, `tests/`, `docs/input-gesture-architecture.md`
 
-Checks: focused gesture and orientation tests, including persisted toolbar rotation; PDF/image pan stops at hard bounds with no rubber-banding or release spring; zoom and restore do not snap to a previous scale or fit preset; Markdown wheel, touch, and hand-tool scrolling remain native; `npm test`; `npm run lint`; `npm run build` when the shared generated `main.js` is no longer being edited.
+Checks: run the physical iPadOS and Android input matrix for stylus, companion touch, native mouse/touch navigation, PDF native pinch/wheel zoom, and image zoom; confirm stylus hand-pan and first post-zoom contacts; keep status pending until named-device traces are captured. `npm test`; `npm run lint`; `npm run build`.
 
 ## unified-developer-logs — done
 

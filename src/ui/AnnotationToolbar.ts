@@ -58,8 +58,6 @@ export interface AnnotationToolbarCallbacks {
   onHandMode?(): void;
   onSave?(): void | Promise<void>;
   onMore?(action: MoreAction): void;
-  /** True returns mouse input to native interaction; false routes it to the active ink tool. */
-  onMouseModeChange?(nativeSelection: boolean): void;
   toolbarOrientation?(): ToolbarOrientation;
 }
 
@@ -68,9 +66,6 @@ export interface AnnotationToolbarOptions {
   autosave: boolean;
   callbacks: AnnotationToolbarCallbacks;
   supportedMoreActions?: MoreAction[];
-  /** Show the mouse/native-selection control while mouse annotation is configured. */
-  mouseInkingEnabled?: boolean;
-  mouseNavigationActive?: boolean;
   ownerDocument?: Document;
 }
 
@@ -85,16 +80,12 @@ export class AnnotationToolbar {
   private readonly buttons = new Map<string, HTMLButtonElement>();
   private readonly controls: HTMLElement;
   private autosave: boolean;
-  private mouseModeAvailable: boolean;
-  private mouseNavigationActive: boolean;
 
   constructor(options: AnnotationToolbarOptions) {
     this.ownerDocument = options.ownerDocument ?? activeDocument;
     this.callbacks = options.callbacks;
     this.preferences = options.preferences;
     this.autosave = options.autosave;
-    this.mouseModeAvailable = options.mouseInkingEnabled === true;
-    this.mouseNavigationActive = this.mouseModeAvailable && options.mouseNavigationActive === true;
     this.dropdown = new DropdownController(this.ownerDocument);
     this.saveStatus = new SaveStatusIndicator(this.ownerDocument);
     this.element = createDetachedDiv(this.ownerDocument);
@@ -105,10 +96,6 @@ export class AnnotationToolbar {
     this.controls = createDetachedDiv(this.ownerDocument);
     this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
-    const mouse = this.actionButton("mouse", "Use mouse for native interaction", () => {
-      this.setMouseNavigationActive(!this.mouseNavigationActive);
-    });
-    if (this.mouseModeAvailable) this.controls.append(mouse);
     this.controls.append(this.drawingButton("pen"));
     this.controls.append(this.drawingButton("pencil"));
     this.controls.append(this.drawingButton("highlighter"));
@@ -144,18 +131,6 @@ export class AnnotationToolbar {
     }
   }
 
-  /** Show/hide and synchronize the session-local mouse navigation mode. */
-  setMouseModeState(available: boolean, nativeSelection: boolean): void {
-    this.mouseModeAvailable = available;
-    this.mouseNavigationActive = available && nativeSelection;
-    const mouse = this.buttons.get("mouse");
-    if (mouse) {
-      if (available && mouse.parentElement !== this.controls) this.controls.prepend(mouse);
-      if (!available) mouse.remove();
-    }
-    this.updateButtons();
-  }
-
   /**
    * Select a tool without opening its options menu. Used by palette commands
    * and hotkeys so they follow the exact same preference/change path as the
@@ -178,7 +153,7 @@ export class AnnotationToolbar {
 
   private drawingButton(tool: DrawingTool): HTMLButtonElement {
     const button = this.actionButton(tool, DRAWING_LABELS[tool], () => {
-      if (this.preferences.activeTool === tool && !this.mouseNavigationActive) {
+      if (this.preferences.activeTool === tool) {
         this.dropdown.toggle(`drawing-${tool}`, button, this.drawingMenu(tool));
       } else {
         this.activate(tool);
@@ -191,7 +166,7 @@ export class AnnotationToolbar {
 
   private groupedTool(id: "text" | "eraser" | "lasso" | "laser", menu: () => DropdownOpenOptions): HTMLButtonElement {
     const main = this.actionButton(id, id, () => {
-      const active = this.preferences.activeTool === id && !this.mouseNavigationActive;
+      const active = this.preferences.activeTool === id;
       if (active) this.dropdown.toggle(id, main, menu());
       else this.activate(id);
     });
@@ -455,18 +430,8 @@ export class AnnotationToolbar {
   }
 
   private activate(tool: ToolId): void {
-    this.setMouseNavigationActive(false);
     this.preferences.activeTool = tool;
     this.changed("tool");
-  }
-
-  private setMouseNavigationActive(active: boolean): void {
-    const next = this.mouseModeAvailable && active;
-    if (this.mouseNavigationActive === next) return;
-    this.mouseNavigationActive = next;
-    this.dropdown.close(false);
-    this.updateButtons();
-    this.callbacks.onMouseModeChange?.(next);
   }
 
   private changed(reason: PreferenceChangeReason = "general"): void {
@@ -476,20 +441,10 @@ export class AnnotationToolbar {
 
   private updateButtons(): void {
     const active = this.preferences.activeTool;
-    const inkModeActive = !this.mouseNavigationActive;
-    const mouse = this.buttons.get("mouse");
-    if (mouse) {
-      this.presentButton(
-        mouse,
-        this.mouseNavigationActive ? "Switch mouse to inking" : "Use mouse for native interaction",
-        "mouse"
-      );
-      mouse.setAttribute("aria-pressed", String(this.mouseNavigationActive));
-    }
     for (const tool of ["pen", "pencil", "highlighter"] as const) {
       const button = this.buttons.get(tool)!;
       this.presentButton(button, DRAWING_LABELS[tool], tool);
-      button.setAttribute("aria-pressed", String(inkModeActive && active === tool));
+      button.setAttribute("aria-pressed", String(active === tool));
     }
     this.presentButton(this.buttons.get("eraser")!, "Eraser", "eraser");
     this.presentButton(this.buttons.get("laser")!, "Laser pointer", "laser");
@@ -500,10 +455,10 @@ export class AnnotationToolbar {
       this.presentButton(dragButton, "Drag", "drag");
       dragButton.setAttribute("aria-pressed", String(active === "drag"));
     }
-    this.buttons.get("eraser")!.setAttribute("aria-pressed", String(inkModeActive && active === "eraser"));
-    this.buttons.get("laser")!.setAttribute("aria-pressed", String(inkModeActive && active === "laser"));
-    this.buttons.get("lasso")!.setAttribute("aria-pressed", String(inkModeActive && active === "lasso"));
-    this.buttons.get("text")!.setAttribute("aria-pressed", String(inkModeActive && active === "text"));
+    this.buttons.get("eraser")!.setAttribute("aria-pressed", String(active === "eraser"));
+    this.buttons.get("laser")!.setAttribute("aria-pressed", String(active === "laser"));
+    this.buttons.get("lasso")!.setAttribute("aria-pressed", String(active === "lasso"));
+    this.buttons.get("text")!.setAttribute("aria-pressed", String(active === "text"));
     const colorValue = active === "laser"
       ? this.preferences.laser.color
       : active === "text"

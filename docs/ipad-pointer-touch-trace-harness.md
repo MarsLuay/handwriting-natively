@@ -52,7 +52,7 @@ zoom, or cancel a gesture; it is an observer only.
 | P4 | Pencil leaves page bounds | `pointerleave` and capture/lost-capture ordering; terminal cleanup and page-boundary target classes |
 | T1 | One-finger native drag | Touch identifiers, pointer/touch ordering, `touch-action`, native pass-through, and no duplicate ink/pan action |
 | T2 | Two-finger pinch | Both touch IDs, pointer pairing/order, gesture/scale events if present, and terminal cleanup for both contacts |
-| T3 | Pencil plus finger | Pen and companion touch relationship, capture, `touch-action`, and no touch transfer of pen ownership |
+| T3 | Pencil plus finger | Pen and companion touch relationship, capture, `touch-action`, and companion touch blocked from scrolling beneath the active stroke |
 | T4 | Palm before and during Pencil | Pointer/touch ordering and cancellation/cleanup without a stale pen or touch ID |
 | U1 | Toolbar/sidebar/page-boundary contact | Target classes and page/UI classification for native UI, thumbnail/sidebar, page, and empty viewer space |
 | U2 | Scribble/text-field interaction | `beforeinput`/composition event order, `inputType`, composing state, target class, and no text content in the trace |

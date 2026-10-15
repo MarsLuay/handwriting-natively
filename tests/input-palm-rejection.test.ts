@@ -68,31 +68,22 @@ describe("PalmRejectionPolicy", () => {
     now = 4;
     expect(policy.reconcileStalePenOnTouch()).toBe(false);
     expect(policy.hasActivePen()).toBe(true);
-    expect(policy.shouldIgnore({
-      pointerType: "touch",
-      width: 1,
-      height: 1,
-      pressure: 0.2
-    } as PointerEvent)).toBe(true);
   });
 
-  it("keeps large ordinary fingers available for native navigation", () => {
+  it("clears only the stylus contact that received pointerup", () => {
     const policy = new PalmRejectionPolicy({
       setTimeout: () => 1,
       clearTimeout: () => undefined
     });
+    const resets: Array<{ reason: string; ids: number[] }> = [];
+    policy.setResetListener((reason, ids) => resets.push({ reason, ids }));
+    policy.pointerDown({ pointerType: "pen", pointerId: 10 } as PointerEvent);
+    policy.pointerDown({ pointerType: "pen", pointerId: 11 } as PointerEvent);
 
-    expect(policy.shouldIgnore({
-      pointerType: "touch",
-      width: 64,
-      height: 64,
-      pressure: 0.8
-    } as PointerEvent)).toBe(false);
-    expect(policy.shouldIgnore({
-      pointerType: "touch",
-      width: 64,
-      height: 64,
-      pressure: 0.8
-    } as PointerEvent, { allowGeometryHeuristic: true })).toBe(true);
+    policy.pointerUp({ pointerType: "pen", pointerId: 10 } as PointerEvent);
+
+    expect(policy.activePenIds()).toEqual([11]);
+    expect(resets).toEqual([{ reason: "pointerup", ids: [10] }]);
   });
+
 });

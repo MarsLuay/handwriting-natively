@@ -20,9 +20,6 @@ describe("ZoomPipelineTrace", () => {
       nativeMutationCount: 2,
       inputPending: true,
       activeAnnotationGesture: true,
-      activePinchPointers: 1,
-      activePinchTouches: 1,
-      activeTouchPointerCount: 1,
       visiblePages: 3,
       overlaysTouched: 3,
       totalPluginWorkMs: 7
@@ -41,9 +38,6 @@ describe("ZoomPipelineTrace", () => {
       },
       inputPending: true,
       activeAnnotationGesture: true,
-      activePinchPointers: 1,
-      activePinchTouches: 1,
-      activeTouchPointerCount: 1,
       duplicateWork: { "overlay-layout": 1 }
     });
     expect(trace.finish()).toMatchObject({

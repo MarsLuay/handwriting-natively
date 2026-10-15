@@ -4,9 +4,9 @@
 
 ## Compact controls
 
-- There is no global Draw checkbox. Stylus input selects the active ink/edit tool directly; fingers remain native PDF navigation, and mouse behavior follows the persisted pan/annotate/native policy.
+- There is no global Draw checkbox. Confirmed stylus input selects the active ink/edit tool directly; ordinary mouse and finger input keep native host behavior for every tool.
 - Annotation actions use compact icon buttons that match Obsidian's native PDF controls. Save status sits in a separate fixed-width area, so status text never shifts the tools.
-- Pen, Pencil, and Highlighter are permanent drawing buttons. Clicking the active tool opens its numeric widths with live previews (highlighter uses a wider size set) and advanced pressure/stabilization/opacity/thinning/texture/tilt/mouse controls; each tool's settings are edited and persisted independently.
+- Pen, Pencil, and Highlighter are permanent drawing buttons. Clicking the active tool opens its numeric widths with live previews (highlighter uses a wider size set) and advanced pressure/stabilization/opacity/thinning/texture/tilt controls; each tool's settings are edited and persisted independently.
 - Laser pointer is a sibling toolbar control (like Eraser). Flat solid trails hold briefly, then fade and erase from the oldest tip; they never enter the sidecar. Dropdown: width, hold time, fade duration. Color button edits laser color while Laser is active.
 - Eraser exposes Small, Medium, and Large circular sizes with matching previews. It removes only ink inside the swept circle.
 - Color exposes recent colors and the active swatch.

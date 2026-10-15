@@ -585,54 +585,12 @@
   pointer-events: none;
   position: fixed;
 }
-/* Draw mode: native text/annotation layers must not steal mouse/stylus hits.
-   Touch-action modes live on the page shell via PointerRouter:
-   - .touch-pan-xy while the manipulation machine is armed and the Pencil tip is up
-   - .touch-none while the Pencil tip is down, or a vertical axis lock is active
-   Finger touch stays native and does not depend on a Draw mode.
-   Single-finger Draw scroll: after 4px, axis lock — vertical drives PDF scroll;
-   horizontal leaves native (avoids fighty diagonal pan next to writing). */
-.pdf-viewer .native-pdf-handwriting-draw-hit-page > .textLayer,
-.pdf-viewer .native-pdf-handwriting-draw-hit-page > .textLayer *,
-.pdf-viewer .native-pdf-handwriting-draw-hit-page > .annotationLayer,
-.pdf-viewer .native-pdf-handwriting-draw-hit-page > .annotationLayer *,
-.pdfViewer .native-pdf-handwriting-draw-hit-page > .textLayer,
-.pdfViewer .native-pdf-handwriting-draw-hit-page > .textLayer *,
-.pdfViewer .native-pdf-handwriting-draw-hit-page > .annotationLayer,
-.pdfViewer .native-pdf-handwriting-draw-hit-page > .annotationLayer * {
-  pointer-events: none;
-}
 .pdf-viewer .page.native-pdf-handwriting-touch-none,
 .pdfViewer .page.native-pdf-handwriting-touch-none,
 .pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-none,
-.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-none,
-/* Legacy 0.1.42–0.1.45 alias */
-.pdf-viewer .page.native-pdf-handwriting-pen-capturing,
-.pdfViewer .page.native-pdf-handwriting-pen-capturing,
-.pdf-viewer .pdf-page-view.native-pdf-handwriting-pen-capturing,
-.pdfViewer .pdf-page-view.native-pdf-handwriting-pen-capturing {
+.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-none {
   touch-action: none;
 }
-.pdf-viewer .page.native-pdf-handwriting-touch-pan-xy,
-.pdfViewer .page.native-pdf-handwriting-touch-pan-xy,
-.pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-pan-xy,
-.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-pan-xy {
-  touch-action: pan-x pan-y pinch-zoom;
-}
-/* The unified controller owns pan and pinch once the mobile path is qualified. */
-.pdf-viewer .page.native-pdf-handwriting-touch-custom-pinch,
-.pdf-viewer .page.native-pdf-handwriting-touch-custom-pinch *,
-.pdfViewer .page.native-pdf-handwriting-touch-custom-pinch,
-.pdfViewer .page.native-pdf-handwriting-touch-custom-pinch *,
-.pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch,
-.pdf-viewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch *,
-.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch,
-.pdfViewer .pdf-page-view.native-pdf-handwriting-touch-custom-pinch * {
-  touch-action: none;
-}
-/* Legacy finger-draw class (pre-0.1.28). Kept inert so old sessions clear cleanly. */
-.pdf-viewer .native-pdf-handwriting-touch-draw-page,
-.pdfViewer .native-pdf-handwriting-touch-draw-page { touch-action: auto; }
 .native-pdf-handwriting-canvas,
 .native-pdf-handwriting-draft-canvas,
 .native-pdf-handwriting-prediction-canvas,
@@ -754,9 +712,9 @@
 .native-pdf-handwriting-text-style-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
 .native-pdf-handwriting-text-style-buttons button[aria-pressed="true"] { background: var(--interactive-accent, #2563eb); color: var(--text-on-accent, #fff); }
 .native-pdf-handwriting-text-menu-note { color: var(--text-muted); font-size: .85em; line-height: 1.35; margin: 0; }
-/* Allow smooth GPU translation on the PDF root during active mobile pinch gestures. */
-.pdfViewer.native-pdf-handwriting-pinch-active,
-.pdf-viewer.native-pdf-handwriting-pinch-active {
+/* Keep the viewport transform on a compositor layer while it is active. */
+.pdfViewer.native-pdf-handwriting-viewport-transform-active,
+.pdf-viewer.native-pdf-handwriting-viewport-transform-active {
   transform-origin: 0 0;
   will-change: transform;
 }
@@ -775,20 +733,6 @@
 }
 /* Beat PDF.js / PDF++ text-layer `cursor: text` while our custom ink cursor is up.
  * Prefer high-specificity selectors over !important (Obsidian baseline / Stylelint). */
-.native-pdf-handwriting-hide-native-cursor,
-.native-pdf-handwriting-hide-native-cursor .pdfViewer,
-.native-pdf-handwriting-hide-native-cursor .pdfViewer .page,
-.native-pdf-handwriting-hide-native-cursor .pdfViewer .page .textLayer,
-.native-pdf-handwriting-hide-native-cursor .pdfViewer .page .textLayer *,
-.native-pdf-handwriting-hide-native-cursor .pdfViewer .page .annotationLayer,
-.native-pdf-handwriting-hide-native-cursor .pdfViewer .page .annotationLayer *,
-.native-pdf-handwriting-hide-native-cursor .pdfViewer .page canvas,
-.native-pdf-handwriting-hide-native-cursor .page,
-.native-pdf-handwriting-hide-native-cursor .page .textLayer,
-.native-pdf-handwriting-hide-native-cursor .page .textLayer *,
-.native-pdf-handwriting-hide-native-cursor .page .annotationLayer,
-.native-pdf-handwriting-hide-native-cursor .page .annotationLayer *,
-.native-pdf-handwriting-hide-native-cursor .page canvas,
 .native-pdf-handwriting-has-eraser-cursor,
 .native-pdf-handwriting-has-eraser-cursor .page,
 .native-pdf-handwriting-has-eraser-cursor .page .textLayer,
@@ -798,30 +742,6 @@
 .native-pdf-handwriting-has-draw-cursor .page .textLayer,
 .native-pdf-handwriting-has-draw-cursor .page .textLayer * {
   cursor: none;
-}
-/* Keep toolbar / chrome clickable cursors usable if nested under the viewer root. */
-.native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-toolbar,
-.native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-toolbar *,
-.native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-chrome,
-.native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-chrome *,
-.native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-selection-toolbar,
-.native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-selection-toolbar * {
-  cursor: auto;
-}
-.native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-toolbar button,
-.native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-toolbar .clickable-icon,
-.native-pdf-handwriting-hide-native-cursor .native-pdf-handwriting-selection-toolbar button {
-  cursor: pointer;
-}
-.native-pdf-handwriting-drag-tool,
-.native-pdf-handwriting-drag-tool .page,
-.native-pdf-handwriting-drag-tool .page * {
-  cursor: grab;
-}
-.native-pdf-handwriting-drag-tool .native-pdf-handwriting-toolbar button,
-.native-pdf-handwriting-drag-tool .native-pdf-handwriting-toolbar .clickable-icon,
-.native-pdf-handwriting-drag-tool .native-pdf-handwriting-selection-toolbar button {
-  cursor: pointer;
 }
 .native-pdf-handwriting-panning { cursor: grabbing; }
 .native-pdf-handwriting-panning * { cursor: grabbing; }
@@ -1248,7 +1168,6 @@
   background: rgb(255 210 0 / 62%);
   color: transparent;
 }
-.hn-owned-pdf-viewer.is-hand-tool .hn-owned-pdf-page { cursor: grab; }
 .hn-owned-pdf-themed .hn-owned-pdf-page {
   background: var(--hn-owned-pdf-page-background, var(--background-primary));
 }

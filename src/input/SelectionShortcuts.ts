@@ -16,15 +16,12 @@ export function shouldIgnoreSelectionShortcut(target: EventTarget | null): boole
 }
 
 /**
- * Parse ink copy/cut/paste/select-all. Ctrl/Cmd+Alt is always the explicit ink
- * chord; plain Ctrl/Cmd is accepted only while the caller owns mouse inking.
+ * Parse ink copy/cut/paste/select-all. Ctrl/Cmd+Alt is the explicit ink chord;
+ * plain Ctrl/Cmd remains available to the host application.
  */
-export function parseSelectionShortcut(
-  event: KeyboardEvent,
-  plainModifierForInk = false
-): SelectionShortcutAction | null {
+export function parseSelectionShortcut(event: KeyboardEvent): SelectionShortcutAction | null {
   const mod = event.ctrlKey || event.metaKey;
-  if (mod && (event.altKey || plainModifierForInk)) {
+  if (mod && event.altKey) {
     if (event.shiftKey) return null;
     const key = event.key.toLowerCase();
     if (key === "a") return "selectAll";
@@ -61,11 +58,11 @@ export type InkHotkeyCommand =
   | "undo-ink"
   | "redo-ink";
 
-export function inkHotkeyCommand(event: KeyboardEvent, plainModifierForInk = false): InkHotkeyCommand | null {
+export function inkHotkeyCommand(event: KeyboardEvent): InkHotkeyCommand | null {
   const history = parseHistoryShortcut(event);
   if (history === "undo") return "undo-ink";
   if (history === "redo") return "redo-ink";
-  const action = parseSelectionShortcut(event, plainModifierForInk);
+  const action = parseSelectionShortcut(event);
   if (action === "selectAll") return "select-all-ink";
   if (action === "copy") return "copy-ink";
   if (action === "cut") return "cut-ink";

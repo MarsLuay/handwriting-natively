@@ -37,34 +37,6 @@ const diagnostics = {
 };
 
 describe("safe defaults", () => {
-  it("appends the current mobile PDF pinch gate and observed mode", () => {
-    const copied = buildCopiedLogDiagnostics({
-      ...diagnostics,
-      mobilePdfZoom: [{
-        sessionNumber: 1,
-        settingEnabled: true,
-        gateMode: "custom-mobile",
-        fallbackReason: null,
-        active: false,
-        activePhase: null,
-        traceMode: "custom-mobile",
-        tracePhase: "settled",
-        observedCustomGesture: true,
-        gestureBeginCount: 1,
-        transformFrameCount: 12,
-        transformTotalMs: 4.8,
-        transformMaxMs: 0.9,
-        nativeCommitWaitMs: 38.2,
-        releaseReason: "stable"
-      }]
-    });
-
-    expect(copied).toContain("Mobile PDF pinch zoom:");
-    expect(copied).toContain("setting=on gate=custom-mobile active=no phase=none observed=yes");
-    expect(copied).toContain("trace=custom-mobile/settled begins=1 transformFrames=12");
-    expect(copied).toContain("nativeCommitWaitMs=38.2 release=stable fallback=none");
-  });
-
   it("appends copy-time diagnostics while retaining the full short log", () => {
     const copied = getCopiedLogText("short log", diagnostics);
 
@@ -180,11 +152,13 @@ describe("safe defaults", () => {
     expect(mergeSettings({ preferPluginPdfView: true } as never)).not.toHaveProperty("preferPluginPdfView");
   });
 
-  it("enables finger double-tap eraser switching by default and preserves an explicit opt-out", () => {
-    expect(DEFAULT_SETTINGS.touchDoubleTapEraser).toBe(true);
-    expect(mergeSettings(undefined).touchDoubleTapEraser).toBe(true);
-    expect(mergeSettings({ touchDoubleTapEraser: false }).touchDoubleTapEraser).toBe(false);
-    expect(mergeSettings({ touchDoubleTapEraser: "false" } as never).touchDoubleTapEraser).toBe(true);
+  it("drops retired touch-gesture settings so touch stays native", () => {
+    const merged = mergeSettings({
+      touchDoubleTapEraser: true,
+      customMobilePdfPinchZoom: true
+    } as never);
+    expect(merged).not.toHaveProperty("touchDoubleTapEraser");
+    expect(merged).not.toHaveProperty("customMobilePdfPinchZoom");
   });
 
   it("keeps swipe navigation blocking opt-in and migrates legacy settings", () => {
@@ -240,15 +214,10 @@ describe("safe defaults", () => {
     }
   });
 
-  it("enables custom mobile PDF pinch zoom by default while preserving an explicit opt-out", () => {
-    expect(DEFAULT_SETTINGS.customMobilePdfPinchZoom).toBe(true);
-    const retiredZoomSetting = mergeSettings({ boostedPdfZoom: true } as never);
-    expect("boostedPdfZoom" in retiredZoomSetting).toBe(false);
-    expect(mergeSettings(undefined).customMobilePdfPinchZoom).toBe(true);
-    expect(retiredZoomSetting.customMobilePdfPinchZoom).toBe(true);
-    expect(mergeSettings({ customMobilePdfPinchZoom: true }).customMobilePdfPinchZoom).toBe(true);
-    expect(mergeSettings({ customMobilePdfPinchZoom: false }).customMobilePdfPinchZoom).toBe(false);
-    expect(mergeSettings({ customMobilePdfPinchZoom: "true" } as never).customMobilePdfPinchZoom).toBe(true);
+  it("drops retired boosted PDF zoom settings", () => {
+    const merged = mergeSettings({ boostedPdfZoom: true } as never);
+    expect(merged).not.toHaveProperty("boostedPdfZoom");
+    expect(merged).not.toHaveProperty("customMobilePdfPinchZoom");
   });
 
   it("enables autosave", () => {
@@ -341,21 +310,17 @@ describe("safe defaults", () => {
     expect(mergeSettings({ toolPreferences: { activeTool: "shape" } as never }).toolPreferences.activeTool).toBe("pen");
   });
 
-  it("defaults mouse inking off and migrates the legacy annotate mode", () => {
-    expect(DEFAULT_SETTINGS.mouseInkingEnabled).toBe(false);
-    expect(mergeSettings({ mouseInkingEnabled: true }).mouseInkingEnabled).toBe(true);
-    expect(mergeSettings({ mouseInputMode: "annotate" } as never).mouseInkingEnabled).toBe(true);
-    expect(mergeSettings({ mouseInputMode: "annotate", mouseLeftDragDraw: false } as never).mouseInkingEnabled).toBe(false);
-    expect(mergeSettings({ mouseInputMode: "pan", mouseLeftDragDraw: true } as never).mouseInkingEnabled).toBe(false);
-    expect(mergeSettings({ mouseLeftDragDraw: true } as never).mouseInkingEnabled).toBe(true);
-  });
-
-  it("preserves a saved Mouse toolbar mode and rejects malformed values", () => {
-    expect(DEFAULT_SETTINGS.toolPreferences.mouseNavigationActive).toBe(false);
-    expect(mergeSettings({ toolPreferences: { mouseNavigationActive: true } } as never)
-      .toolPreferences.mouseNavigationActive).toBe(true);
-    expect(mergeSettings({ toolPreferences: { mouseNavigationActive: "true" } } as never)
-      .toolPreferences.mouseNavigationActive).toBe(false);
+  it("discards saved mouse annotation settings and toolbar mode", () => {
+    const merged = mergeSettings({
+      mouseInkingEnabled: true,
+      mouseInputMode: "annotate",
+      mouseLeftDragDraw: true,
+      toolPreferences: { mouseNavigationActive: true }
+    } as never);
+    expect(merged).not.toHaveProperty("mouseInkingEnabled");
+    expect(merged).not.toHaveProperty("mouseInputMode");
+    expect(merged).not.toHaveProperty("mouseLeftDragDraw");
+    expect(merged.toolPreferences).not.toHaveProperty("mouseNavigationActive");
   });
 
   it("drops retired mouse pan and right-button eraser settings", () => {
@@ -365,7 +330,7 @@ describe("safe defaults", () => {
       mouseRightDragErase: true,
       toolPreferences: { eraser: { eraseWithRightMouseButton: true } }
     } as never);
-    expect(merged.mouseInkingEnabled).toBe(false);
+    expect(merged).not.toHaveProperty("mouseInkingEnabled");
     expect(merged).not.toHaveProperty("mouseInputMode");
     expect(merged).not.toHaveProperty("mouseDragScroll");
     expect(merged).not.toHaveProperty("mouseRightDragErase");

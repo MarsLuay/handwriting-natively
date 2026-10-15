@@ -13,7 +13,7 @@ describe("ZoomNativeHandoffTrace", () => {
       viewerGeneration: 3,
       mountGenerations: { "2": 7 },
       replacementRecordCount: 4,
-      phase: "active-pinch"
+      phase: "active-zoom"
     });
     trace.noteSignal({
       name: "mutationObserver",

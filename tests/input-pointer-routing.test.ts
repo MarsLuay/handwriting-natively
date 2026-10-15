@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { canAnnotatePointer } from "../src/input/annotationInputPolicy";
 import { isStylusEraserInput, PointerRouter, safeReleasePointerCapture } from "../src/input/PointerRouter";
 import { PalmRejectionPolicy } from "../src/input/PalmRejectionPolicy";
+import { GestureOwnership } from "../src/input/GestureOwnership";
 import type { ToolId } from "../src/model";
 
 function pointer(type: string, pointerId: number, extra: Record<string, unknown> = {}): PointerEvent {
@@ -24,6 +26,56 @@ async function nextAnimationFrame(): Promise<void> {
 }
 
 describe("PointerRouter", () => {
+  it("keeps rejected stylus contacts ignored when the router hands off an active stroke", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const ownership = new GestureOwnership();
+    const starts = vi.fn();
+    const moves = vi.fn();
+    let handoff: Parameters<NonNullable<ConstructorParameters<typeof PointerRouter>[1]["onPointerOwnerReleased"]>>[1];
+    const oldRouter = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true,
+      onStart: starts,
+      onMove: moves,
+      onPointerOwnerReleased: (_generation, state) => { handoff = state; }
+    }, undefined, ownership);
+
+    element.dispatchEvent(pointer("pen", 20));
+    element.dispatchEvent(pointer("pen", 21));
+    expect(starts).toHaveBeenCalledOnce();
+
+    oldRouter.destroy({ preserveRoutedPointers: true });
+    const newRouter = new PointerRouter(element, {
+      activeTool: () => "pen",
+      canAnnotatePointer: () => true,
+      onStart: starts,
+      onMove: moves
+    }, undefined, ownership);
+    expect(handoff).toBeDefined();
+    expect(handoff!.ignoredPenIds).toEqual([21]);
+    newRouter.adoptPointerState(handoff!);
+    expect(ownership.ignoredPenContactIds()).toEqual([21]);
+
+    element.dispatchEvent(pointer("pen", 20, { eventType: "pointermove" }));
+    element.dispatchEvent(pointer("pen", 21, { eventType: "pointermove" }));
+    expect(moves).toHaveBeenCalledTimes(1);
+    expect(starts).toHaveBeenCalledOnce();
+
+    element.dispatchEvent(pointer("pen", 20, { eventType: "pointerup", buttons: 0 }));
+    expect(ownership.ignoredPenContactIds()).toEqual([21]);
+    expect(newRouter.gesturePolicy()).toMatchObject({ stylusActive: true, companionTouchBlocked: true });
+    element.dispatchEvent(pointer("pen", 21, { eventType: "pointermove" }));
+    expect(starts).toHaveBeenCalledOnce();
+    element.dispatchEvent(pointer("pen", 21, { eventType: "pointerup", buttons: 0 }));
+    expect(newRouter.gesturePolicy()).toMatchObject({ stylusActive: false, companionTouchBlocked: false });
+    element.dispatchEvent(pointer("pen", 21));
+    expect(starts).toHaveBeenCalledTimes(2);
+
+    newRouter.destroy();
+    element.remove();
+  });
+
   it("leaves embedded host-viewer pointer sequences native", () => {
     const element = document.createElement("div");
     const embed = document.createElement("div");
@@ -125,15 +177,12 @@ describe("PointerRouter", () => {
       canAnnotatePointer: () => true
     });
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
     expect(router.gesturePolicy()).toMatchObject({
-      customNavigationEnabled: false,
-      touchPanXyClassPresent: true,
-      touchNoneClassPresent: false
+      stylusActive: false,
+      companionTouchBlocked: false
     });
     element.dispatchEvent(pointer("pen", 90, { pressure: 0.5 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
     router.destroy();
     element.remove();
   });
@@ -148,13 +197,11 @@ describe("PointerRouter", () => {
       releasePointerCapture: vi.fn()
     });
     let tool: ToolId = "pen";
-    let mouseAnnotate = false;
     const starts = vi.fn();
     const routes: string[] = [];
     const router = new PointerRouter(element, {
       activeTool: () => tool,
-      // Pencil-first: pen always may annotate; mouse follows explicit policy flag.
-      canAnnotatePointer: (event) => event.pointerType === "pen" || mouseAnnotate,
+      canAnnotatePointer,
       onStart: starts,
       onRoute: (route) => routes.push(route)
     });
@@ -162,7 +209,7 @@ describe("PointerRouter", () => {
     const touch = pointer("touch", 1);
     element.dispatchEvent(touch);
     expect(touch.defaultPrevented).toBe(false);
-    expect(routes.at(-1)).toBe("touch-pan");
+    expect(routes.at(-1)).toBe("native");
 
     const mouse = pointer("mouse", 2);
     element.dispatchEvent(mouse);
@@ -180,13 +227,13 @@ describe("PointerRouter", () => {
     starts.mockClear();
     captures.length = 0;
 
-    mouseAnnotate = true;
     const sidecarPencil = pointer("mouse", 4, { pressure: 0.8, tiltX: 12 });
     element.dispatchEvent(sidecarPencil);
     expect(sidecarPencil.defaultPrevented).toBe(true);
     expect(captures).toEqual([4]);
     // Pen was already seen above + digitizer pressure → remap.
     expect(starts.mock.calls[0]?.[0][0]).toMatchObject({ pressure: 0.8, tiltX: 12, pointerType: "pen" });
+    element.dispatchEvent(pointer("mouse", 4, { eventType: "pointerup", buttons: 0, pressure: 0 }));
 
     const stylus = pointer("pen", 5, { pressure: 0.7 });
     element.dispatchEvent(stylus);
@@ -197,8 +244,9 @@ describe("PointerRouter", () => {
     starts.mockClear();
     const plainMouse = pointer("mouse", 6, { pressure: 0.5, tiltX: 0 });
     element.dispatchEvent(plainMouse);
-    expect(plainMouse.defaultPrevented).toBe(true);
-    expect(starts.mock.calls[0]?.[0][0]).toMatchObject({ pressure: 0.5, pointerType: "mouse" });
+    expect(plainMouse.defaultPrevented).toBe(false);
+    expect(routes.at(-1)).toBe("native");
+    expect(starts).not.toHaveBeenCalled();
     router.destroy();
   });
 
@@ -210,7 +258,7 @@ describe("PointerRouter", () => {
     const second = pointer("touch", 11, { isPrimary: false });
     element.dispatchEvent(first);
     element.dispatchEvent(second);
-    expect(routes).toEqual(["touch-pan", "touch-pan"]);
+    expect(routes).toEqual(["native", "native"]);
     expect(first.defaultPrevented).toBe(false);
     expect(second.defaultPrevented).toBe(false);
     router.destroy();
@@ -234,7 +282,7 @@ describe("PointerRouter", () => {
     });
     const finger = pointer("touch", 21);
     element.dispatchEvent(finger);
-    expect(routes.at(-1)).toBe("touch-pan");
+    expect(routes.at(-1)).toBe("native");
     expect(finger.defaultPrevented).toBe(false);
     expect(starts).not.toHaveBeenCalled();
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
@@ -265,17 +313,13 @@ describe("PointerRouter", () => {
     element.dispatchEvent(stylus);
     expect(routes.at(-1)).toBe("draw");
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(false);
 
     const palm = pointer("touch", 51, { width: 64, height: 64, pressure: 0.6 });
     element.dispatchEvent(palm);
-    expect(routes.at(-1)).toBe("ignored");
-    expect(palm.defaultPrevented).toBe(true);
-    expect(lifecycle).toHaveBeenCalledWith(
-      "scroll-block",
-      palm,
-      expect.objectContaining({ reason: "ignored-pointer", activePens: true })
-    );
+    expect(routes.at(-1)).toBe("native");
+    expect(palm.defaultPrevented).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
+    expect(lifecycle).not.toHaveBeenCalled();
 
     const touchStart = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
     Object.defineProperty(touchStart, "touches", {
@@ -294,7 +338,6 @@ describe("PointerRouter", () => {
 
     element.dispatchEvent(pointer("pen", 50, { eventType: "pointerup", pressure: 0 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
     expect(router.gesturePolicy().stylusActive).toBe(false);
 
     const fingerScroll = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
@@ -365,7 +408,6 @@ describe("PointerRouter", () => {
     const finger = pointer("touch", 50, { clientX: 10, clientY: 10 });
     element.dispatchEvent(finger);
     element.dispatchEvent(pointer("touch", 50, { eventType: "pointermove", clientX: 10, clientY: 40 }));
-    expect(lifecycle).not.toHaveBeenCalledWith("axis-lock", expect.any(Event), expect.anything());
     expect(finger.defaultPrevented).toBe(false);
     router.destroy();
     element.remove();
@@ -392,7 +434,7 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
-  it("clears tracked fingers on document touchend when pointerup was stolen by capture", () => {
+  it("leaves native finger terminals outside the page untracked", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -410,9 +452,9 @@ describe("PointerRouter", () => {
     });
 
     element.dispatchEvent(pointer("touch", 80));
-    expect(routes.at(-1)).toBe("touch-pan");
+    expect(routes.at(-1)).toBe("native");
     element.dispatchEvent(pointer("touch", 81, { isPrimary: false }));
-    expect(routes.at(-1)).toBe("touch-pan");
+    expect(routes.at(-1)).toBe("native");
 
     const touchEnd = new Event("touchend", { bubbles: true, cancelable: true }) as TouchEvent;
     Object.defineProperty(touchEnd, "touches", { value: [] });
@@ -421,20 +463,10 @@ describe("PointerRouter", () => {
     });
     document.dispatchEvent(touchEnd);
 
-    expect(lifecycle).toHaveBeenCalledWith(
-      "touchend",
-      touchEnd,
-      expect.objectContaining({
-        reason: "touchend-terminal",
-        trackedBefore: 2,
-        trackedAfter: 0,
-        touchCount: 0,
-        stalePenCleared: false
-      })
-    );
+    expect(lifecycle).not.toHaveBeenCalled();
 
     element.dispatchEvent(pointer("touch", 82));
-    expect(routes.at(-1)).toBe("touch-pan");
+    expect(routes.at(-1)).toBe("native");
 
     router.destroy();
     element.remove();
@@ -459,7 +491,7 @@ describe("PointerRouter", () => {
     const lifecycle = vi.fn();
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
-      canAnnotatePointer: () => true,
+      canAnnotatePointer: () => false,
       onTouchLifecycle: lifecycle
     }, palm);
 
@@ -505,7 +537,7 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
-  it("keeps pen lock across lostpointercapture until pointerup", () => {
+  it("keeps companion touch behavior native while the CSS guard is active", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -513,9 +545,11 @@ describe("PointerRouter", () => {
       hasPointerCapture: () => true,
       releasePointerCapture: vi.fn()
     });
+    const routes: string[] = [];
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
-      canAnnotatePointer: () => true
+      canAnnotatePointer: () => true,
+      onRoute: (route) => routes.push(route)
     });
     element.dispatchEvent(pointer("pen", 71, { pressure: 0.7 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
@@ -523,8 +557,9 @@ describe("PointerRouter", () => {
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
     const companionTouch = pointer("touch", 72);
     element.dispatchEvent(companionTouch);
-    expect(companionTouch.defaultPrevented).toBe(true);
-    expect(router.activeTouchPointerIds()).toEqual([]);
+    expect(routes.at(-1)).toBe("native");
+    expect(companionTouch.defaultPrevented).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
     element.dispatchEvent(pointer("pen", 71, { eventType: "pointerup", pressure: 0, buttons: 0, clientX: 40, clientY: 50 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
     router.destroy();
@@ -590,7 +625,7 @@ describe("PointerRouter", () => {
     });
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
-      canAnnotatePointer: () => true
+      canAnnotatePointer: () => false
     }, policy);
     element.dispatchEvent(pointer("pen", 81, { pressure: 0.7 }));
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(true);
@@ -605,7 +640,7 @@ describe("PointerRouter", () => {
     element.remove();
   });
 
-  it("routes mouse and stylus to Draw when annotation is allowed", () => {
+  it("keeps ordinary mouse native even when the callback is permissive", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -625,10 +660,10 @@ describe("PointerRouter", () => {
     const pen = pointer("pen", 32);
     element.dispatchEvent(mouse);
     element.dispatchEvent(pen);
-    expect(routes).toEqual(["draw", "draw"]);
-    expect(mouse.defaultPrevented).toBe(true);
+    expect(routes).toEqual(["native", "draw"]);
+    expect(mouse.defaultPrevented).toBe(false);
     expect(pen.defaultPrevented).toBe(true);
-    expect(starts).toHaveBeenCalledTimes(2);
+    expect(starts).toHaveBeenCalledTimes(1);
 
     element.dispatchEvent(pointer("mouse", 31, { type: "pointerup" }));
     element.dispatchEvent(pointer("pen", 32, { type: "pointerup" }));
@@ -654,18 +689,18 @@ describe("PointerRouter", () => {
     });
     const finger = pointer("touch", 21);
     element.dispatchEvent(finger);
-    expect(routes.at(-1)).toBe("touch-pan");
+    expect(routes.at(-1)).toBe("native");
     expect(finger.defaultPrevented).toBe(false);
     expect(starts).not.toHaveBeenCalled();
     const second = pointer("touch", 22, { isPrimary: false });
     element.dispatchEvent(second);
-    expect(routes.at(-1)).toBe("touch-pan");
+    expect(routes.at(-1)).toBe("native");
     expect(second.defaultPrevented).toBe(false);
     router.destroy();
     element.remove();
   });
 
-  it("clears a native touch that ends on document before the next drawing touch", () => {
+  it("keeps touch pointer sequences native when their terminal lands on document", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -684,18 +719,18 @@ describe("PointerRouter", () => {
     });
 
     element.dispatchEvent(pointer("touch", 40));
-    expect(routes.at(-1)).toBe("touch-pan");
+    expect(routes.at(-1)).toBe("native");
     document.dispatchEvent(pointer("touch", 40, { eventType: "pointerup" }));
     annotateEnabled = true;
     element.dispatchEvent(pointer("touch", 41));
 
-    expect(routes.at(-1)).toBe("touch-pan");
-    expect(lifecycle).toHaveBeenCalledWith("pointerup", expect.any(Event), { trackedBefore: 1, trackedAfter: 0 });
+    expect(routes.at(-1)).toBe("native");
+    expect(lifecycle).not.toHaveBeenCalled();
     router.destroy();
     element.remove();
   });
 
-  it("does not finish a finger scroll as a draw when pointerup lands outside the page", () => {
+  it("does not finish a native finger scroll as annotation when pointerup lands outside the page", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -716,25 +751,21 @@ describe("PointerRouter", () => {
     document.dispatchEvent(pointer("touch", 42, { eventType: "pointerup" }));
 
     expect(onEnd).not.toHaveBeenCalled();
-    expect(lifecycle).toHaveBeenCalledWith("pointerup", expect.any(Event), {
-      trackedBefore: 1,
-      trackedAfter: 0
-    });
+    expect(lifecycle).not.toHaveBeenCalled();
     router.destroy();
     element.remove();
   });
 
-  it("routes Text explicitly while leaving right-click native", () => {
+  it("routes stylus Text explicitly while leaving right-click native", () => {
     const element = document.createElement("div");
     let tool: ToolId = "text";
     const starts = vi.fn();
     const router = new PointerRouter(element, {
       activeTool: () => tool,
       canAnnotatePointer: () => true,
-      mouseInkingEnabled: () => true,
       onStart: starts
     });
-    const text = pointer("mouse", 30);
+    const text = pointer("pen", 30);
     element.dispatchEvent(text);
     expect(text.defaultPrevented).toBe(true);
     expect(starts.mock.calls[0]?.[1]).toBe("text");
@@ -746,14 +777,13 @@ describe("PointerRouter", () => {
     router.destroy();
   });
 
-  it("routes left mouse only when inking is enabled and always leaves right-click native", () => {
+  it("keeps left and right mouse input native regardless of selected tool", () => {
     const element = document.createElement("div");
     const starts = vi.fn();
-    let enabled = false;
+    let tool: ToolId = "pen";
     const router = new PointerRouter(element, {
-      activeTool: () => "pen",
+      activeTool: () => tool,
       canAnnotatePointer: () => true,
-      mouseInkingEnabled: () => enabled,
       onStart: starts
     });
 
@@ -767,16 +797,16 @@ describe("PointerRouter", () => {
     expect(rightNative.defaultPrevented).toBe(false);
     expect(starts).not.toHaveBeenCalled();
 
-    enabled = true;
+    tool = "text";
     const leftDraw = pointer("mouse", 42);
     element.dispatchEvent(leftDraw);
-    expect(leftDraw.defaultPrevented).toBe(true);
-    expect(starts.mock.calls.at(-1)?.[1]).toBe("draw");
+    expect(leftDraw.defaultPrevented).toBe(false);
 
+    tool = "eraser";
     const rightStillNative = pointer("mouse", 43, { button: 2, buttons: 2 });
     element.dispatchEvent(rightStillNative);
     expect(rightStillNative.defaultPrevented).toBe(false);
-    expect(starts).toHaveBeenCalledTimes(1);
+    expect(starts).not.toHaveBeenCalled();
 
     router.destroy();
   });
@@ -806,7 +836,8 @@ describe("PointerRouter", () => {
   it("identifies physical stylus eraser tips", () => {
     expect(isStylusEraserInput({ pointerType: "pen", button: 5, buttons: 32 })).toBe(true);
     expect(isStylusEraserInput({ pointerType: "pen", button: 0, buttons: 32 })).toBe(true);
-    expect(isStylusEraserInput({ pointerType: "mouse", button: 5, buttons: 32 })).toBe(true);
+    expect(isStylusEraserInput({ pointerType: "mouse", button: 5, buttons: 32 })).toBe(false);
+    expect(isStylusEraserInput({ pointerType: "mouse", button: 5, buttons: 32 }, true)).toBe(true);
   });
 
   it("recovers a MockTab mouse-tip stroke and eraser when pointerdown is missing", () => {
@@ -846,7 +877,11 @@ describe("PointerRouter", () => {
     expect(tipMove.defaultPrevented).toBe(true);
     expect(captures).toContain(71);
     expect(received).toHaveBeenCalledWith(tipMove, router.generation);
-    expect(routeDecisions).toHaveBeenCalledWith("draw", "recovered-pointerdown", tipMove);
+    expect(routeDecisions).toHaveBeenCalledWith("draw", "recovered-pointerdown", tipMove, expect.objectContaining({
+      effectivePointerType: "pen",
+      reason: "mocktab-stylus-tip",
+      stylusRemapped: true
+    }));
     expect(claims).toHaveBeenCalledWith("draw", tipMove, expect.objectContaining({
       preventDefaultCalled: true,
       propagationStopped: true,
@@ -987,7 +1022,7 @@ describe("PointerRouter", () => {
     expect(lifecycle).toHaveBeenCalledWith(
       "pointercancel",
       hidden,
-      expect.objectContaining({ reason: "lifecycle-visibilitychange", trackedBefore: 1, trackedAfter: 0 })
+      expect.objectContaining({ reason: "lifecycle-visibilitychange", trackedBefore: 0, trackedAfter: 0 })
     );
 
     element.dispatchEvent(pointer("pen", 69));
@@ -1010,7 +1045,6 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "eraser",
       canAnnotatePointer: () => true,
-      mouseInkingEnabled: () => true,
       eraserCursorDiameter: () => 36
     });
 
@@ -1042,7 +1076,6 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
       canAnnotatePointer: () => true,
-      mouseInkingEnabled: () => true,
       drawCursorColor: () => "#ff0000"
     });
 
@@ -1075,7 +1108,7 @@ describe("PointerRouter", () => {
     expect(cursor?.isConnected).toBe(false);
   });
 
-  it("routes laser pointer freehand as draw when Draw is on", () => {
+  it("routes stylus laser freehand as draw", () => {
     const element = document.createElement("div");
     document.body.append(element);
     Object.assign(element, {
@@ -1089,9 +1122,9 @@ describe("PointerRouter", () => {
       canAnnotatePointer: () => true,
       onStart: starts
     });
-    const mouse = pointer("mouse", 42);
-    element.dispatchEvent(mouse);
-    expect(mouse.defaultPrevented).toBe(true);
+    const pen = pointer("pen", 42);
+    element.dispatchEvent(pen);
+    expect(pen.defaultPrevented).toBe(true);
     expect(starts).toHaveBeenCalledOnce();
     expect(starts.mock.calls[0]?.[1]).toBe("draw");
     router.destroy();
@@ -1110,7 +1143,6 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "eraser",
       canAnnotatePointer: () => true,
-      mouseInkingEnabled: () => true,
       eraserCursorDiameter: () => diameter
     });
 
@@ -1138,7 +1170,6 @@ describe("PointerRouter", () => {
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
       canAnnotatePointer: () => true,
-      mouseInkingEnabled: () => true,
       projectCursor
     });
 
@@ -1301,7 +1332,7 @@ describe("PointerRouter", () => {
     expect(router.activeRoutedPointerIds()).toEqual([302]);
     router.destroy();
 
-    expect(handoff).toEqual({ routed: [{ pointerId: 302, route: "draw" }], activePenIds: [302] });
+    expect(handoff).toEqual({ routed: [{ pointerId: 302, route: "draw" }], activePenIds: [302], ignoredPenIds: [] });
     expect(router.activeRoutedPointerIds()).toEqual([]);
     element.remove();
   });
@@ -1411,10 +1442,9 @@ describe("Regression Tests", () => {
       activeTool: () => "pen",
       canAnnotatePointer: () => false
     });
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    expect(router.gesturePolicy().companionTouchBlocked).toBe(false);
     router.syncToolState();
-    expect(element.classList.contains("native-pdf-handwriting-touch-pan-xy")).toBe(true);
     expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
     router.destroy();
     element.remove();

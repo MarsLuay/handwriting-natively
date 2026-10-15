@@ -58,21 +58,73 @@ describe("GestureOwnership", () => {
     expect(stale.persistSamples).toEqual([]);
   });
 
-  it("leaves UI and native mouse targets unclaimed while explicit mouse ink owns its contact", () => {
+  it("leaves UI, mouse, and touch contacts unclaimed while stylus ink owns its contact", () => {
     const ownership = new GestureOwnership();
     expect(ownership.pointerDown({ pointerId: 4, pointerType: "pen", target: "ui", inkToolSelected: true }).action).toBe("ignore");
-    const nativeMouse = ownership.pointerDown({ pointerId: 5, pointerType: "mouse", target: "page", buttons: 1 });
+    const nativeMouse = ownership.pointerDown({ pointerId: 5, pointerType: "mouse", target: "page", inkToolSelected: true });
     expect(nativeMouse.state.owner).toBe("idle");
     expect(nativeMouse.preventDefault).toBe(false);
+    const nativeTouch = ownership.pointerDown({ pointerId: 6, pointerType: "touch", target: "page", inkToolSelected: true });
+    expect(nativeTouch.state.owner).toBe("idle");
+    expect(nativeTouch.preventDefault).toBe(false);
     const draw = ownership.pointerDown({
-      pointerId: 6,
-      pointerType: "mouse",
+      pointerId: 7,
+      pointerType: "pen",
       target: "page",
-      inkToolSelected: true,
-      inkIntent: true,
-      buttons: 1
+      inkToolSelected: true
     });
-    expect(draw.state.owner).toBe("mouse-ink");
+    expect(draw.state.owner).toBe("pen-ink");
     expect(draw.action).toBe("claim-ink");
+  });
+
+  it("keeps one stylus stroke owner and suppresses a competing stylus until it lifts", () => {
+    const ownership = new GestureOwnership();
+    ownership.pointerDown({ pointerId: 10, pointerType: "pen", target: "page", inkToolSelected: true });
+
+    const competingDown = ownership.pointerDown({ pointerId: 11, pointerType: "pen", target: "page", inkToolSelected: true });
+    expect(competingDown).toMatchObject({ action: "ignore", preventDefault: true, state: { activePenId: 10 } });
+    expect(ownership.pointerMove({ pointerId: 11, pointerType: "pen" })).toMatchObject({
+      action: "ignore",
+      preventDefault: true,
+      state: { activePenId: 10 }
+    });
+    expect(ownership.pointerMove({ pointerId: 10, pointerType: "pen", samples: ["primary"] }).action).toBe("append-ink");
+    expect(ownership.pointerUp({ pointerId: 11, pointerType: "pen" })).toMatchObject({
+      action: "ignore",
+      preventDefault: true,
+      state: { activePenId: 10 }
+    });
+    expect(ownership.pointerUp({ pointerId: 10, pointerType: "pen" }).action).toBe("finalize-ink");
+    expect(ownership.snapshot()).toMatchObject({ owner: "idle", activePenId: null });
+  });
+
+  it("keeps a rejected stylus suppressed across capture loss and ownership handoff", () => {
+    const ownership = new GestureOwnership();
+    ownership.pointerDown({ pointerId: 20, pointerType: "pen", target: "page", inkToolSelected: true });
+    ownership.pointerDown({ pointerId: 21, pointerType: "pen", target: "page", inkToolSelected: true });
+
+    const ignoredPenIds = ownership.ignoredPenContactIds();
+    ownership.replaceGeneration();
+    ownership.adoptPenContact(20);
+    ownership.adoptIgnoredPenContacts(ignoredPenIds);
+
+    expect(ownership.lostCapture({ pointerId: 21, pointerType: "pen" })).toMatchObject({
+      action: "ignore",
+      preventDefault: true,
+      state: { activePenId: 20 }
+    });
+    expect(ownership.pointerUp({ pointerId: 20, pointerType: "pen" }).action).toBe("finalize-ink");
+    expect(ownership.pointerDown({ pointerId: 21, pointerType: "pen", target: "page", inkToolSelected: true })).toMatchObject({
+      action: "ignore",
+      preventDefault: true,
+      state: { activePenId: null, owner: "idle" }
+    });
+    expect(ownership.pointerMove({ pointerId: 21, pointerType: "pen", samples: ["must-not-ink"] })).toMatchObject({
+      action: "ignore",
+      preventDefault: true,
+      persistSamples: []
+    });
+    expect(ownership.pointerUp({ pointerId: 21, pointerType: "pen" }).action).toBe("ignore");
+    expect(ownership.pointerDown({ pointerId: 21, pointerType: "pen", target: "page", inkToolSelected: true }).action).toBe("claim-ink");
   });
 });

@@ -19,10 +19,10 @@ describe("selection shortcuts", () => {
     expect(parseSelectionShortcut(keyEvent({ key: "Backspace" }))).toBe("delete");
   });
 
-  it("keeps selection shortcuts modifier-gated while using standard undo and redo chords", () => {
-    expect(parseSelectionShortcut(keyEvent({ key: "a", ctrlKey: true }), true)).toBe("selectAll");
-    expect(parseSelectionShortcut(keyEvent({ key: "c", metaKey: true }), true)).toBe("copy");
-    expect(parseSelectionShortcut(keyEvent({ key: "Delete" }), true)).toBe("delete");
+  it("keeps plain selection shortcuts native while using standard undo and redo chords", () => {
+    expect(parseSelectionShortcut(keyEvent({ key: "a", ctrlKey: true }))).toBeNull();
+    expect(parseSelectionShortcut(keyEvent({ key: "c", metaKey: true }))).toBeNull();
+    expect(parseSelectionShortcut(keyEvent({ key: "Delete" }))).toBe("delete");
     expect(parseHistoryShortcut(keyEvent({ key: "z", metaKey: true }))).toBe("undo");
     expect(parseHistoryShortcut(keyEvent({ key: "z", ctrlKey: true }))).toBe("undo");
     expect(parseHistoryShortcut(keyEvent({ key: "z", ctrlKey: true, shiftKey: true }))).toBe("redo");

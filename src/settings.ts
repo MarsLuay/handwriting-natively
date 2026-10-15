@@ -17,24 +17,6 @@ export interface SettingsHost {
 export const MAX_COPIED_LOG_CHARACTERS = 32_000;
 export const COPIED_LOG_DIAGNOSTICS_SEPARATOR = "\n\n--- Handwriting Natively diagnostics ---\n";
 
-export interface CopiedMobilePdfZoomDiagnostics {
-  sessionNumber: number;
-  settingEnabled: boolean;
-  gateMode: "custom-mobile" | "native-fallback";
-  fallbackReason: string | null;
-  active: boolean;
-  activePhase: string | null;
-  traceMode: "native" | "custom-mobile" | "native-fallback";
-  tracePhase: string;
-  observedCustomGesture: boolean;
-  gestureBeginCount: number;
-  transformFrameCount: number;
-  transformTotalMs: number;
-  transformMaxMs: number;
-  nativeCommitWaitMs: number | null;
-  releaseReason: string | null;
-}
-
 export interface CopiedLogDiagnostics {
   pluginVersion: string;
   obsidianVersion: string;
@@ -44,8 +26,6 @@ export interface CopiedLogDiagnostics {
   userAgent?: string;
   devicePixelRatio?: number;
   profileSchemaVersion?: number;
-  /** Copy-time status is appended outside the potentially truncated log tail. */
-  mobilePdfZoom?: readonly CopiedMobilePdfZoomDiagnostics[];
   /** Fresh toolbar presentation snapshots, including computed visibility and viewport bounds. */
   toolbarSessionCount?: number;
   toolbarSnapshots?: readonly Record<string, unknown>[];
@@ -57,36 +37,6 @@ function diagnosticValue(value: string | number | undefined): string {
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : "unavailable";
   const normalized = value?.trim();
   return normalized ? normalized.slice(0, MAX_DIAGNOSTIC_VALUE_CHARACTERS) : "unavailable";
-}
-
-function mobilePdfZoomDiagnosticsText(
-  sessions: readonly CopiedMobilePdfZoomDiagnostics[] | undefined
-): string {
-  if (!sessions || sessions.length === 0) {
-    return [
-      "Mobile PDF pinch zoom:",
-      "Sessions: 0",
-      "Experimental pinch cannot be active without a registered PDF session."
-    ].join("\n");
-  }
-  return [
-    "Mobile PDF pinch zoom:",
-    `Sessions: ${sessions.length}`,
-    ...sessions.slice(0, 8).map((session) => [
-      `Session ${session.sessionNumber}: setting=${session.settingEnabled ? "on" : "off"}`,
-      `gate=${session.gateMode}`,
-      `active=${session.active ? "yes" : "no"}`,
-      `phase=${session.activePhase ?? "none"}`,
-      `observed=${session.observedCustomGesture ? "yes" : "no"}`,
-      `trace=${session.traceMode}/${session.tracePhase}`,
-      `begins=${session.gestureBeginCount}`,
-      `transformFrames=${session.transformFrameCount}`,
-      `transformMs=${session.transformTotalMs}/${session.transformMaxMs}`,
-      `nativeCommitWaitMs=${session.nativeCommitWaitMs ?? "none"}`,
-      `release=${session.releaseReason ?? "none"}`,
-      `fallback=${session.fallbackReason ?? "none"}`
-    ].join(" "))
-  ].join("\n");
 }
 
 function copiedRecord(value: unknown): Record<string, unknown> | undefined {
@@ -141,7 +91,6 @@ export function buildCopiedLogDiagnostics(
     "DevTools records: Handwriting Natively logger only (current session); Obsidian/core and other-plugin console history unavailable."
   ].join("\n");
   const toolbar = toolbarSnapshotsDiagnosticsText(diagnostics.toolbarSnapshots, diagnostics.toolbarSessionCount);
-  const mobilePdfZoom = mobilePdfZoomDiagnosticsText(diagnostics.mobilePdfZoom);
   const optional = [
     `Runtime: ${diagnosticValue(diagnostics.runtime)}`,
     `User agent: ${diagnosticValue(diagnostics.userAgent)}`,
@@ -151,7 +100,7 @@ export function buildCopiedLogDiagnostics(
   const budget = Math.max(0, maxCharacters);
   if (core.length >= budget) return core.slice(0, budget);
   let result = core;
-  for (const section of [toolbar, mobilePdfZoom, optional]) {
+  for (const section of [toolbar, optional]) {
     const remaining = budget - result.length - 1;
     if (remaining <= 0) return result;
     if (section.length <= remaining) {
@@ -258,7 +207,7 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
     return [
       {
         name: "About",
-        desc: "PDF handwriting for a stylus or mouse. Ink remains editable in a sidecar; Add page updates the PDF itself.",
+        desc: "PDF handwriting with a confirmed stylus. Ink remains editable in a sidecar; Add page updates the PDF itself.",
         searchable: false
       },
       {
@@ -350,50 +299,6 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         type: "group" as const,
         heading: "PDF navigation",
         items: [
-          {
-            name: "Enable mouse for inking",
-            desc: "Allow the left mouse button to draw or edit with the active tool on PDF pages. The toolbar mouse button temporarily returns the mouse and standard shortcuts to native PDF selection; choosing an ink tool switches them back to annotations.",
-            render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.mouseInkingEnabled).onChange(async (value) => {
-                  await this.persistPatch({ mouseInkingEnabled: value });
-                })
-              );
-            }
-          },
-          {
-            name: "Touch drawing fallback",
-            desc: "Allow one-finger touch to use the selected annotation tool when no confirmed stylus has been observed. Off keeps touch native; enable only on touch-only or ambiguous devices.",
-            render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.touchDrawFallback).onChange(async (value) => {
-                  await this.persistPatch({ touchDrawFallback: value });
-                })
-              );
-            }
-          },
-          {
-            name: "Finger double-tap switches to eraser",
-            desc: "Double-tap the PDF page with one finger to switch to the eraser, like Apple Pencil double-tap in Goodnotes. Enabled by default.",
-            render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.touchDoubleTapEraser).onChange(async (value) => {
-                  await this.persistPatch({ touchDoubleTapEraser: value });
-                })
-              );
-            }
-          },
-          {
-            name: "Experimental mobile PDF pinch zoom",
-            desc: "Experimental mobile-only custom PDF pinch path, enabled by default. Turn it off to keep native pinch zoom; Pencil, one-finger navigation, PDF links/search, and unsupported hosts keep their native behavior, while unsafe or unavailable hosts fall back to native zoom. This may use more memory during the temporary preview.",
-            render: (setting: Setting) => {
-              setting.addToggle((toggle) =>
-                toggle.setValue(this.host.inkSettings.customMobilePdfPinchZoom).onChange(async (value) => {
-                  await this.persistPatch({ customMobilePdfPinchZoom: value });
-                })
-              );
-            }
-          },
           ...(Platform.isMobile ? [{
             name: "Disable swipe-activated sidebars",
             desc: "Prevent one-finger swipe gestures from opening Obsidian’s left sidebar, right sidebar, or command palette on mobile/iPad. Buttons and normal commands still work.",
@@ -413,17 +318,17 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         items: [
           {
             name: "Stylus-first input",
-            desc: "Stylus input annotates with the selected tool. Fingers keep native PDF scrolling and pinch; mouse behavior follows the Mouse input policy above."
+            desc: "Only confirmed stylus input annotates. Ordinary mouse and touch keep native behavior for every selected tool."
           },
           {
             name: "Input pressure profile",
-            desc: "Auto uses real stylus pressure and steady mouse/finger ink. Choose Pen to force stylus pressure, or Mouse for a steady pressure-independent stroke.",
+            desc: "Auto uses reported stylus pressure when available. Choose Pen to force it, or Steady for pressure-independent strokes.",
             render: (setting: Setting) => {
               setting.addDropdown((dropdown) =>
                 dropdown
                   .addOption("auto", "Auto (recommended)")
                   .addOption("pen", "Pen")
-                  .addOption("mouse", "Mouse")
+                  .addOption("mouse", "Steady")
                   .setValue(this.host.inkSettings.pressureProfile)
                   .onChange(async (value) => {
                     if (value === "auto" || value === "pen" || value === "mouse") {

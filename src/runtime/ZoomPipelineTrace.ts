@@ -1,6 +1,4 @@
-/** Bounded, local-only stage evidence for the complete native pinch pipeline. */
-
-import type { MobilePdfZoomTraceMode } from "./MobilePdfZoomDiagnostics";
+/** Bounded, local-only stage evidence for native zoom and render handoff. */
 
 const MAX_RETAINED_FRAMES = 32;
 const MAX_REPRESENTATIVE_FRAMES = 6;
@@ -37,7 +35,6 @@ export interface ZoomPipelineStageTiming {
 }
 
 export interface ZoomPipelineFrame {
-  mode: MobilePdfZoomTraceMode;
   frameIndex: number;
   timestampMs: number;
   deltaMs: number;
@@ -52,9 +49,6 @@ export interface ZoomPipelineFrame {
   nativeMutationCount: number;
   inputPending: boolean;
   activeAnnotationGesture: boolean;
-  activePinchPointers: number;
-  activePinchTouches: number;
-  activeTouchPointerCount: number;
   visiblePages: number;
   overlaysTouched: number;
   totalPluginWorkMs: number;
@@ -64,7 +58,6 @@ export interface ZoomPipelineFrame {
 
 export interface ZoomPipelineSummary {
   event: "zoom-frame-pipeline";
-  mode: MobilePdfZoomTraceMode;
   zoomBurstId: string | null;
   framesObserved: number;
   slowFrameCount: number;
@@ -93,9 +86,6 @@ interface FrameInput {
   nativeMutationCount: number;
   inputPending?: boolean;
   activeAnnotationGesture?: boolean;
-  activePinchPointers?: number;
-  activePinchTouches?: number;
-  activeTouchPointerCount?: number;
   visiblePages: number;
   overlaysTouched: number;
   totalPluginWorkMs: number;
@@ -145,8 +135,6 @@ export class ZoomPipelineTrace {
   private readonly clock: Clock;
   private readonly enabled: () => boolean;
   private active = false;
-  private mode: MobilePdfZoomTraceMode = "native";
-  private pendingMode: MobilePdfZoomTraceMode = "native";
   private burstId: string | null = null;
   private frameIndex = 0;
   private lastFrameAt: number | null = null;
@@ -169,15 +157,9 @@ export class ZoomPipelineTrace {
     return this.active;
   }
 
-  setMode(mode: MobilePdfZoomTraceMode): void {
-    this.pendingMode = mode;
-  }
-
-  begin(zoomBurstId: string | null, at = this.clock.now(), mode = this.pendingMode): void {
+  begin(zoomBurstId: string | null, at = this.clock.now()): void {
     if (!this.enabled()) return;
     this.active = true;
-    this.mode = mode;
-    this.pendingMode = "native";
     this.burstId = zoomBurstId;
     this.frameIndex = 0;
     this.lastFrameAt = at;
@@ -239,7 +221,6 @@ export class ZoomPipelineTrace {
 
     const eventCount = this.eventCount;
     const frame: ZoomPipelineFrame = {
-      mode: this.mode,
       frameIndex: this.frameIndex,
       timestampMs: roundMs(timestampMs),
       deltaMs: roundMs(deltaMs),
@@ -254,9 +235,6 @@ export class ZoomPipelineTrace {
       nativeMutationCount: Math.max(0, Math.floor(input.nativeMutationCount)),
       inputPending: input.inputPending === true,
       activeAnnotationGesture: input.activeAnnotationGesture === true,
-      activePinchPointers: Math.max(0, Math.floor(input.activePinchPointers ?? 0)),
-      activePinchTouches: Math.max(0, Math.floor(input.activePinchTouches ?? 0)),
-      activeTouchPointerCount: Math.max(0, Math.floor(input.activeTouchPointerCount ?? 0)),
       visiblePages: Math.max(0, Math.floor(input.visiblePages)),
       overlaysTouched: Math.max(0, Math.floor(input.overlaysTouched)),
       totalPluginWorkMs: roundMs(input.totalPluginWorkMs),
@@ -300,7 +278,6 @@ export class ZoomPipelineTrace {
   private buildSummary(): ZoomPipelineSummary {
     return {
       event: "zoom-frame-pipeline",
-      mode: this.mode,
       zoomBurstId: this.burstId,
       framesObserved: this.frameIndex,
       slowFrameCount: this.frames.filter((frame) => frame.deltaMs >= frame.runtimeBudgetMs * 1.5 || frame.totalPluginWorkMs >= frame.runtimeBudgetMs).length,

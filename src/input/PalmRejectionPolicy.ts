@@ -1,8 +1,6 @@
-import { isEraserTip, isTipContact } from "./PenPresence";
+import { resolvePointerIdentity, type PointerIdentityResolution } from "./PenPresence";
 
 export interface PalmRejectionOptions {
-  ignoreTouchWhilePenActive?: boolean;
-  palmWidthThreshold?: number;
   /** Clear contact if a finger arrives this long after the last pen sample (ms). */
   stalePenTouchMs?: number;
   /** Safety clear when no pen activity arrives (ms). */
@@ -30,8 +28,6 @@ export type PenStateResetReason =
 export class PalmRejectionPolicy {
   /** Evidence-only pen contact tracking; PointerRouter owns canonical gestures. */
   private readonly activePenPointers = new Set<number>();
-  private readonly ignoreTouchWhilePenActive: boolean;
-  private readonly palmWidthThreshold: number;
   private readonly stalePenTouchMs: number;
   private readonly penInactivityMs: number;
   private readonly now: () => number;
@@ -39,13 +35,11 @@ export class PalmRejectionPolicy {
   private readonly clearSchedule: (id: number) => void;
   private lastPenEventAt = 0;
   private penResetTimer: number | undefined;
-  private onReset: ((reason: PenStateResetReason, activePenIds: number[]) => void) | null = null;
+  private onReset: ((reason: PenStateResetReason, resetPenIds: number[]) => void) | null = null;
   /** True after any `pointerType=pen` sample (hover or tip) in this session. */
   private penSeen = false;
 
   constructor(options: PalmRejectionOptions = {}) {
-    this.ignoreTouchWhilePenActive = options.ignoreTouchWhilePenActive ?? true;
-    this.palmWidthThreshold = options.palmWidthThreshold ?? 42;
     this.stalePenTouchMs = options.stalePenTouchMs ?? 150;
     this.penInactivityMs = options.penInactivityMs ?? 250;
     this.now = options.now ?? (() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
@@ -55,14 +49,17 @@ export class PalmRejectionPolicy {
       ?? ((id) => window.clearTimeout(id));
   }
 
-  /** Optional diagnostic hook when contact flips from active → empty. */
-  setResetListener(listener: ((reason: PenStateResetReason, activePenIds: number[]) => void) | null): void {
+  /** Reports the stylus contacts cleared by a reset. */
+  setResetListener(listener: ((reason: PenStateResetReason, resetPenIds: number[]) => void) | null): void {
     this.onReset = listener;
   }
 
   /** Record pen hover/tip so later mouse tip (MockTab) counts as stylus. */
-  notePenPresence(event: Pick<PointerEvent, "pointerType">): void {
-    if (event.pointerType === "pen") this.penSeen = true;
+  notePenPresence(
+    event: Pick<PointerEvent, "pointerType" | "type" | "buttons" | "pressure" | "button">,
+    identity = resolvePointerIdentity(event, this.penSeen)
+  ): void {
+    if (identity.effectivePointerType === "pen") this.penSeen = true;
   }
 
   hasPenSeen(): boolean {
@@ -73,32 +70,33 @@ export class PalmRejectionPolicy {
    * Mouse tip after pen was seen (MockTab tip-as-mouse). Requires non-default
    * tip pressure so a normal mouse (0 / 0.5 / 1) after stylus use stays mouse.
    */
-  shouldTreatMouseTipAsPen(event: PointerEvent): boolean {
-    if (event.pointerType !== "mouse") return false;
-    // `button=5` / bit 32 is an unambiguous physical eraser, even if its
-    // proximity hover was missed before the first contact frame.
-    if (isEraserTip(event)) return true;
-    if (!this.penSeen) return false;
-    if (!isTipContact(event)) return false;
-    const p = event.pressure;
-    // Typical mouse tips are 0, 0.5, or 1. Digitizer tips land elsewhere.
-    return p > 0 && p < 1 && Math.abs(p - 0.5) > 0.02;
+  shouldTreatMouseTipAsPen(
+    event: PointerEvent,
+    identity = resolvePointerIdentity(event, this.penSeen)
+  ): boolean {
+    return identity.stylusRemapped;
   }
 
-  private isPenLikeContact(event: PointerEvent): boolean {
-    return event.pointerType === "pen" || this.shouldTreatMouseTipAsPen(event);
+  private isPenLikeContact(event: PointerEvent, identity: PointerIdentityResolution): boolean {
+    return identity.effectivePointerType === "pen";
   }
 
-  pointerDown(event: PointerEvent): void {
-    this.notePenPresence(event);
-    if (!this.isPenLikeContact(event)) return;
+  pointerDown(
+    event: PointerEvent,
+    identity = resolvePointerIdentity(event, this.penSeen)
+  ): void {
+    this.notePenPresence(event, identity);
+    if (!this.isPenLikeContact(event, identity)) return;
     this.activePenPointers.add(event.pointerId);
     this.markPenActivity();
   }
 
   /** Refresh inactivity timer while tip still reports contact. */
-  notePenActivity(event: PointerEvent): void {
-    this.notePenPresence(event);
+  notePenActivity(
+    event: PointerEvent,
+    identity = resolvePointerIdentity(event, this.penSeen)
+  ): void {
+    this.notePenPresence(event, identity);
     if (!this.activePenIds().includes(event.pointerId)) return;
     if (event.pointerType !== "pen" && event.pointerType !== "mouse") return;
     if (event.buttons === 0 && event.pressure <= 0) return;
@@ -116,7 +114,7 @@ export class PalmRejectionPolicy {
     if (!before.includes(pointerId)) return false;
     this.clearInactivityTimer();
     this.activePenPointers.delete(pointerId);
-    this.onReset?.(reason, before);
+    this.onReset?.(reason, [pointerId]);
     return true;
   }
 
@@ -141,20 +139,6 @@ export class PalmRejectionPolicy {
     if (this.activePenIds().length === 0) return false;
     if (this.now() - this.lastPenEventAt <= this.stalePenTouchMs) return false;
     return this.clearAll("touch-after-stale-pen");
-  }
-
-  /**
-   * Decide whether a touch contact may enter an ink path.
-   *
-   * Geometry is opt-in for an explicitly ambiguous/touch-drawing fallback;
-   * ordinary native navigation must not reject a large finger contact.
-   */
-  shouldIgnore(event: PointerEvent, options: { allowGeometryHeuristic?: boolean } = {}): boolean {
-    if (event.pointerType !== "touch") return false;
-    if (this.ignoreTouchWhilePenActive && this.hasActivePen()) return true;
-    return options.allowGeometryHeuristic === true
-      && Math.max(event.width || 0, event.height || 0) >= this.palmWidthThreshold
-      && event.pressure > 0.5;
   }
 
   /** True while at least one stylus tip is down (for scroll-lock / TouchEvent cancel). */

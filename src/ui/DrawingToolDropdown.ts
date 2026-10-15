@@ -139,7 +139,7 @@ export function drawingAdvanced(
   for (const [label, key] of [
     ["Pressure sensitivity", "pressureSensitivity"],
     ["Tilt sensitivity", "tiltSensitivity"],
-    ["Simulate mouse pressure", "simulateMousePressure"]
+    ["Simulate pressure for zero-pressure events", "simulateMousePressure"]
   ] as const) {
     if (tool === "highlighter" && key === "tiltSensitivity") continue;
     const wrapper = createDetachedEl(ownerDocument, 'label');

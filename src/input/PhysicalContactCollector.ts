@@ -78,7 +78,6 @@ export interface PhysicalContactCollectorEvent {
   ownerId: string;
   sessionId: string;
   viewerGeneration: number;
-  sessionGeneration: number;
   observerOwnerIds: readonly string[];
   alreadySeen: boolean;
   shouldLog: boolean;
@@ -86,7 +85,6 @@ export interface PhysicalContactCollectorEvent {
   pointerId: number | null;
   pointerContactId: string | null;
   touchIdentifiers: readonly number[];
-  stylusTouchAssociations: readonly { touchIdentifier: number; physicalContactId: string; pointerId: number | null }[];
   chosenPhysicalContactId: string | null;
   registrationScope: typeof REGISTRATION_SCOPE;
   registrationSource: typeof REGISTRATION_SOURCE;
@@ -99,7 +97,6 @@ export interface PhysicalContactDuplicateObserver {
   duplicateObserverOwnerIds: readonly string[];
   sessionId: string;
   viewerGeneration: number;
-  sessionGeneration: number;
   eventType: string;
   pointerId: number | null;
   touchIdentifiers: readonly number[];
@@ -116,6 +113,7 @@ export interface PhysicalContactCollectorOwner {
   ownerId: string;
   sessionId: string;
   viewerGeneration: number;
+  host: HTMLElement;
   isEnabled(): boolean;
   withinTarget(target: EventTarget | null): boolean;
   onPhysicalContactEvent(event: PhysicalContactCollectorEvent): void;
@@ -127,6 +125,7 @@ export interface PhysicalContactCollectorOwnerSnapshot {
   ownerId: string;
   sessionId: string;
   viewerGeneration: number;
+  hostDebugId: number | null;
 }
 
 export interface PhysicalContactCollectorSnapshot {
@@ -173,9 +172,11 @@ export function getPhysicalContactCollectorSnapshot(
 class PhysicalContactCollector {
   readonly collectorId = `physical-contact-collector-${nextCollectorId++}`;
   private readonly abort = new AbortController();
-  private readonly tracker = new PhysicalContactTracker(`physical-contact-${this.collectorId}`);
-  private readonly owners = new Map<string, PhysicalContactCollectorOwner>();
-  private readonly seenEvents = new WeakSet<Event>();
+  private readonly trackers = new Map<string, PhysicalContactTracker>();
+  private readonly owners = new Map<string, { owner: PhysicalContactCollectorOwner; token: object }>();
+  private readonly pointerOwners = new Map<number, string>();
+  private readonly touchOwners = new Map<number, string>();
+  private readonly seenEvents = new WeakMap<Event, Set<string>>();
   private readonly seenKeys = new Map<string, number>();
   private readonly duplicateAnomalies = new Map<string, number>();
   private lastSeenPruneAt = 0;
@@ -194,7 +195,8 @@ class PhysicalContactCollector {
   }
 
   acquire(owner: PhysicalContactCollectorOwner, onEmpty: () => void): PhysicalContactCollectorLease {
-    this.owners.set(owner.ownerId, owner);
+    const token = {};
+    this.owners.set(owner.ownerId, { owner, token });
     let released = false;
     return {
       collectorId: this.collectorId,
@@ -203,7 +205,15 @@ class PhysicalContactCollector {
       release: () => {
         if (released) return;
         released = true;
+        if (this.owners.get(owner.ownerId)?.token !== token) return;
         this.owners.delete(owner.ownerId);
+        this.trackers.delete(owner.ownerId);
+        for (const [pointerId, ownerId] of this.pointerOwners) {
+          if (ownerId === owner.ownerId) this.pointerOwners.delete(pointerId);
+        }
+        for (const [touchId, ownerId] of this.touchOwners) {
+          if (ownerId === owner.ownerId) this.touchOwners.delete(touchId);
+        }
         if (this.owners.size === 0) {
           this.abort.abort();
           onEmpty();
@@ -213,21 +223,31 @@ class PhysicalContactCollector {
   }
 
   snapshot(): PhysicalContactCollectorSnapshot {
-    const owners = [...this.owners.values()].map(({ ownerId, sessionId, viewerGeneration }) => ({
-      ownerId,
-      sessionId,
-      viewerGeneration
+    const owners = [...this.owners.values()].map(({ owner }) => ({
+      ownerId: owner.ownerId,
+      sessionId: owner.sessionId,
+      viewerGeneration: owner.viewerGeneration,
+      hostDebugId: getDebugNodeId(owner.host)
     }));
     return {
       collectorId: this.collectorId,
       listenerRegistered: !this.abort.signal.aborted,
       registrationScope: REGISTRATION_SCOPE,
       registrationSource: REGISTRATION_SOURCE,
-      activeContactCount: this.tracker.activeContactCount,
+      activeContactCount: [...this.trackers.values()].reduce((total, tracker) => total + tracker.activeContactCount, 0),
       activeOwnerCount: owners.length,
       ownerIds: owners.map(({ ownerId }) => ownerId),
       owners
     };
+  }
+
+  private trackerFor(ownerId: string): PhysicalContactTracker {
+    let tracker = this.trackers.get(ownerId);
+    if (!tracker) {
+      tracker = new PhysicalContactTracker(`physical-contact-${this.collectorId}-${ownerId}`);
+      this.trackers.set(ownerId, tracker);
+    }
+    return tracker;
   }
 
   private handlePointer(event: PointerEvent, eventType: PointerEventType): void {
@@ -235,23 +255,33 @@ class PhysicalContactCollector {
     const started = performance.now();
     const selectionStarted = started;
     const observers = this.activeObservers(event.target);
-    const selected = this.selectOwner(observers);
+    const selected = this.selectOwner(
+      observers,
+      eventType === "pointerdown" ? undefined : this.pointerOwners.get(event.pointerId)
+    );
     const ownerSelectionMs = performance.now() - selectionStarted;
-    if (!selected) return;
+    if (!selected) {
+      if (eventType === "pointerup" || eventType === "pointercancel") this.pointerOwners.delete(event.pointerId);
+      return;
+    }
+    const tracker = this.trackerFor(selected.ownerId);
     const deduplicationStarted = performance.now();
     const alreadySeen = this.markSeen(
       event,
-      this.pointerKey(event, eventType),
-      eventType === "pointerdown" && this.tracker.pointerContactId(event.pointerId) === null
+      `${selected.ownerId}|${this.pointerKey(event, eventType)}`,
+      eventType === "pointerdown" && tracker.pointerContactId(event.pointerId) === null
     );
     const deduplicationMs = performance.now() - deduplicationStarted;
     const now = Date.now();
     const trackingStarted = performance.now();
     const records = alreadySeen
       ? []
-      : this.processPointer(now, selected, event, eventType);
+      : this.processPointer(selected.ownerId, tracker, now, event, eventType);
     const trackingMs = performance.now() - trackingStarted;
-    const pointerContactId = this.tracker.pointerContactId(event.pointerId);
+    const pointerContactId = tracker.pointerContactId(event.pointerId);
+    if ((eventType === "pointerdown" || eventType === "pointermove") && pointerContactId !== null) {
+      this.pointerOwners.set(event.pointerId, selected.ownerId);
+    }
     const chosenPhysicalContactId = records.at(-1)?.contact.physicalContactId ?? pointerContactId;
     const dispatchStarted = performance.now();
     this.dispatch({
@@ -266,8 +296,9 @@ class PhysicalContactCollector {
       pointerContactId,
       touchIdentifiers: [],
       chosenPhysicalContactId,
-      eventTimeStamp: event.timeStamp
+      eventTimeStamp: event.timeStamp,
     });
+    if (eventType === "pointerup" || eventType === "pointercancel") this.pointerOwners.delete(event.pointerId);
     const dispatchMs = performance.now() - dispatchStarted;
     this.noteMoveCost(selected, eventType, event.pointerType || "", {
       "owner-selection": ownerSelectionMs,
@@ -280,51 +311,88 @@ class PhysicalContactCollector {
   private handleTouch(event: TouchEvent, eventType: TouchEventType): void {
     if (!this.hasEnabledOwner()) return;
     const started = performance.now();
-    const selectionStarted = started;
-    const observers = this.activeObservers(event.target);
-    const selected = this.selectOwner(observers);
-    const ownerSelectionMs = performance.now() - selectionStarted;
-    if (!selected) return;
-    const deduplicationStarted = performance.now();
-    const identifiers = [...event.changedTouches].map((touch) => touch.identifier);
-    const alreadySeen = this.markSeen(
-      event,
-      this.touchKey(event, eventType, identifiers),
-      eventType === "touchstart" && identifiers.every((identifier) => this.tracker.touchContactId(identifier) === null)
-    );
-    const deduplicationMs = performance.now() - deduplicationStarted;
-    const now = Date.now();
-    const trackingStarted = performance.now();
-    const records = alreadySeen
-      ? []
-      : this.processTouch(now, selected, event, eventType);
-    const trackingMs = performance.now() - trackingStarted;
-    const touchContactIds = identifiers
-      .map((identifier) => this.tracker.touchContactId(identifier))
-      .filter((id): id is string => id !== null);
-    const chosenPhysicalContactId = records.at(-1)?.contact.physicalContactId ?? touchContactIds[0] ?? null;
-    const dispatchStarted = performance.now();
-    this.dispatch({
-      kind: "touch",
-      event,
-      eventType,
-      selected,
-      observers,
-      alreadySeen,
-      records,
-      pointerId: null,
-      pointerContactId: null,
-      touchIdentifiers: identifiers,
-      chosenPhysicalContactId,
-      eventTimeStamp: event.timeStamp
-    });
-    const dispatchMs = performance.now() - dispatchStarted;
-    this.noteMoveCost(selected, eventType, "touch", {
-      "owner-selection": ownerSelectionMs,
-      deduplication: deduplicationMs,
-      tracking: trackingMs,
-      dispatch: dispatchMs
-    }, performance.now() - started);
+    const groups = new Map<string, {
+      selected: PhysicalContactCollectorOwner;
+      observers: Set<PhysicalContactCollectorOwner>;
+      changed: Touch[];
+      ownerSelectionMs: number;
+    }>();
+    for (const touch of [...event.changedTouches]) {
+      const selectionStarted = performance.now();
+      const target = touch.target ?? event.target;
+      const observers = this.activeObservers(target);
+      const selected = this.selectOwner(
+        observers,
+        eventType === "touchstart" ? undefined : this.touchOwners.get(touch.identifier)
+      );
+      const ownerSelectionMs = performance.now() - selectionStarted;
+      if (!selected) {
+        if (eventType === "touchend" || eventType === "touchcancel") this.touchOwners.delete(touch.identifier);
+        continue;
+      }
+      let group = groups.get(selected.ownerId);
+      if (!group) {
+        group = { selected, observers: new Set(), changed: [], ownerSelectionMs: 0 };
+        groups.set(selected.ownerId, group);
+      }
+      for (const observer of observers) group.observers.add(observer);
+      group.changed.push(touch);
+      group.ownerSelectionMs += ownerSelectionMs;
+    }
+
+    for (const group of groups.values()) {
+      const { selected, changed } = group;
+      const identifiers = changed.map((touch) => touch.identifier);
+      const changedIds = new Set(identifiers);
+      const active = [...event.touches].filter((touch) => {
+        const ownerId = this.touchOwners.get(touch.identifier);
+        return ownerId === selected.ownerId
+          || (ownerId === undefined && changedIds.has(touch.identifier));
+      });
+      const tracker = this.trackerFor(selected.ownerId);
+      const deduplicationStarted = performance.now();
+      const alreadySeen = this.markSeen(
+        event,
+        `${selected.ownerId}|${this.touchKey(event, eventType, identifiers)}`,
+        eventType === "touchstart" && identifiers.every((identifier) => tracker.touchContactId(identifier) === null)
+      );
+      const deduplicationMs = performance.now() - deduplicationStarted;
+      const now = Date.now();
+      const trackingStarted = performance.now();
+      const records = alreadySeen
+        ? []
+        : this.processTouch(selected.ownerId, tracker, now, event, eventType, changed, active);
+      const trackingMs = performance.now() - trackingStarted;
+      const touchContactIds = identifiers
+        .map((identifier) => tracker.touchContactId(identifier))
+        .filter((id): id is string => id !== null);
+      const chosenPhysicalContactId = records.at(-1)?.contact.physicalContactId ?? touchContactIds[0] ?? null;
+      const dispatchStarted = performance.now();
+      this.dispatch({
+        kind: "touch",
+        event,
+        eventType,
+        selected,
+        observers: [...group.observers],
+        alreadySeen,
+        records,
+        pointerId: null,
+        pointerContactId: null,
+        touchIdentifiers: identifiers,
+        chosenPhysicalContactId,
+        eventTimeStamp: event.timeStamp,
+      });
+      if (eventType === "touchend" || eventType === "touchcancel") {
+        for (const identifier of identifiers) this.touchOwners.delete(identifier);
+      }
+      const dispatchMs = performance.now() - dispatchStarted;
+      this.noteMoveCost(selected, eventType, "touch", {
+        "owner-selection": group.ownerSelectionMs,
+        deduplication: deduplicationMs,
+        tracking: trackingMs,
+        dispatch: dispatchMs
+      }, performance.now() - started);
+    }
   }
 
   private noteMoveCost(
@@ -370,38 +438,47 @@ class PhysicalContactCollector {
   }
 
   private processPointer(
+    ownerId: string,
+    tracker: PhysicalContactTracker,
     now: number,
-    owner: PhysicalContactCollectorOwner,
     event: PointerEvent,
     eventType: PointerEventType
   ): PhysicalContactRecord[] {
     const sample = rawPointerContactSample(event, eventType);
-    const expired = this.tracker.expire(now);
+    const expired = tracker.expire(now);
+    this.clearTerminalOwnerMaps(ownerId, expired);
     const current = eventType === "pointerdown"
-      ? this.tracker.pointerDown(now, sample)
+      ? tracker.pointerDown(now, sample)
       : eventType === "pointermove"
-        ? this.tracker.pointerMove(now, sample)
+        ? tracker.pointerMove(now, sample)
         : eventType === "lostpointercapture"
-          ? this.tracker.pointerLostCapture(now, sample)
-          : this.tracker.pointerEnd(now, sample);
-    void owner;
+          ? tracker.pointerLostCapture(now, sample)
+          : tracker.pointerEnd(now, sample);
+    this.clearTerminalOwnerMaps(ownerId, current);
     return [...expired, ...current];
   }
 
   private processTouch(
+    ownerId: string,
+    tracker: PhysicalContactTracker,
     now: number,
-    owner: PhysicalContactCollectorOwner,
     event: TouchEvent,
-    eventType: TouchEventType
+    eventType: TouchEventType,
+    changedTouches: readonly Touch[],
+    activeTouches: readonly Touch[]
   ): PhysicalContactRecord[] {
-    const raw = rawTouchContactEvent(event, eventType);
-    const expired = this.tracker.expire(now);
+    const expired = tracker.expire(now);
+    this.clearTerminalOwnerMaps(ownerId, expired);
+    if (eventType === "touchstart" || eventType === "touchmove") {
+      for (const touch of changedTouches) this.touchOwners.set(touch.identifier, ownerId);
+    }
+    const raw = rawTouchContactEvent(event, eventType, activeTouches, changedTouches);
     const current = eventType === "touchstart"
-      ? this.tracker.touchStart(now, raw)
+      ? tracker.touchStart(now, raw)
       : eventType === "touchmove"
-        ? this.tracker.touchMove(now, raw)
-        : this.tracker.touchEnd(now, raw);
-    void owner;
+        ? tracker.touchMove(now, raw)
+        : tracker.touchEnd(now, raw);
+    this.clearTerminalOwnerMaps(ownerId, current);
     return [...expired, ...current];
   }
 
@@ -419,7 +496,7 @@ class PhysicalContactCollector {
     chosenPhysicalContactId: string | null;
     eventTimeStamp: number;
   }): void {
-    const observerOwnerIds = [...this.owners.keys()];
+    const observerOwnerIds = [...new Set([...args.observers, args.selected].map(({ ownerId }) => ownerId))];
     const duplicateObserverOwnerIds = args.observers
       .filter((owner) => owner !== args.selected)
       .map(({ ownerId }) => ownerId);
@@ -436,7 +513,6 @@ class PhysicalContactCollector {
           duplicateObserverOwnerIds,
           sessionId: args.selected.sessionId,
           viewerGeneration: args.selected.viewerGeneration,
-          sessionGeneration: args.selected.viewerGeneration,
           eventType: args.eventType,
           pointerId: args.pointerId,
           touchIdentifiers: args.touchIdentifiers,
@@ -451,55 +527,83 @@ class PhysicalContactCollector {
       }
     }
 
-    for (const owner of this.owners.values()) {
-      owner.onPhysicalContactEvent({
-        kind: args.kind,
-        event: args.event,
-        eventType: args.eventType,
-        collectorId: this.collectorId,
-        ownerId: args.selected.ownerId,
-        sessionId: args.selected.sessionId,
-        viewerGeneration: args.selected.viewerGeneration,
-        sessionGeneration: args.selected.viewerGeneration,
-        observerOwnerIds,
-        alreadySeen: args.alreadySeen,
-        shouldLog: owner === args.selected && !args.alreadySeen,
-        records: args.records,
-        pointerId: args.pointerId,
-        pointerContactId: args.pointerContactId,
-        touchIdentifiers: args.touchIdentifiers,
-        stylusTouchAssociations: this.tracker.stylusTouchAssociations(),
-        chosenPhysicalContactId: args.chosenPhysicalContactId,
-        registrationScope: REGISTRATION_SCOPE,
-        registrationSource: REGISTRATION_SOURCE
-      });
-    }
+    args.selected.onPhysicalContactEvent({
+      kind: args.kind,
+      event: args.event,
+      eventType: args.eventType,
+      collectorId: this.collectorId,
+      ownerId: args.selected.ownerId,
+      sessionId: args.selected.sessionId,
+      viewerGeneration: args.selected.viewerGeneration,
+      observerOwnerIds,
+      alreadySeen: args.alreadySeen,
+      shouldLog: !args.alreadySeen,
+      records: args.records,
+      pointerId: args.pointerId,
+      pointerContactId: args.pointerContactId,
+      touchIdentifiers: args.touchIdentifiers,
+      chosenPhysicalContactId: args.chosenPhysicalContactId,
+      registrationScope: REGISTRATION_SCOPE,
+      registrationSource: REGISTRATION_SOURCE
+    });
   }
 
   private hasEnabledOwner(): boolean {
-    for (const owner of this.owners.values()) {
+    for (const { owner } of this.owners.values()) {
       if (owner.isEnabled()) return true;
     }
     return false;
   }
 
   private activeObservers(target: EventTarget | null): PhysicalContactCollectorOwner[] {
-    return [...this.owners.values()].filter((owner) => owner.isEnabled() && owner.withinTarget(target));
+    return [...this.owners.values()]
+      .map(({ owner }) => owner)
+      .filter((owner) => owner.isEnabled() && owner.withinTarget(target));
   }
 
-  private selectOwner(observers: readonly PhysicalContactCollectorOwner[]): PhysicalContactCollectorOwner | null {
-    return observers.at(-1) ?? [...this.owners.values()].reverse().find((owner) => owner.isEnabled()) ?? null;
+  private selectOwner(
+    observers: readonly PhysicalContactCollectorOwner[],
+    preferredOwnerId?: string
+  ): PhysicalContactCollectorOwner | null {
+    if (preferredOwnerId !== undefined) {
+      const preferred = this.owners.get(preferredOwnerId)?.owner;
+      return preferred?.isEnabled() ? preferred : null;
+    }
+    return observers.reduce<PhysicalContactCollectorOwner | null>((selected, candidate) => {
+      if (!selected) return candidate;
+      const selectedContainsCandidate = selected.host.contains(candidate.host);
+      const candidateContainsSelected = candidate.host.contains(selected.host);
+      if (selectedContainsCandidate && !candidateContainsSelected) return candidate;
+      if (candidateContainsSelected && !selectedContainsCandidate) return selected;
+      if (candidate.viewerGeneration > selected.viewerGeneration) return candidate;
+      if (candidate.viewerGeneration === selected.viewerGeneration && candidate.ownerId < selected.ownerId) return candidate;
+      return selected;
+    }, null);
   }
 
   private markSeen(event: Event, key: string, allowKeyReuse = false): boolean {
-    if (this.seenEvents.has(event)) return true;
+    const eventKeys = this.seenEvents.get(event) ?? new Set<string>();
+    if (eventKeys.has(key)) return true;
     const now = Date.now();
     this.pruneSeen(now);
     const alreadySeen = !allowKeyReuse && this.seenKeys.has(key);
-    this.seenEvents.add(event);
+    eventKeys.add(key);
+    this.seenEvents.set(event, eventKeys);
     this.seenKeys.set(key, now);
     this.trimMap(this.seenKeys, MAX_SEEN_EVENTS);
     return alreadySeen;
+  }
+
+  private clearTerminalOwnerMaps(ownerId: string, records: readonly PhysicalContactRecord[]): void {
+    for (const { phase, contact } of records) {
+      if (phase !== "terminal") continue;
+      for (const pointerId of contact.pointerIds) {
+        if (this.pointerOwners.get(pointerId) === ownerId) this.pointerOwners.delete(pointerId);
+      }
+      for (const touchIdentifier of contact.touchIdentifiers) {
+        if (this.touchOwners.get(touchIdentifier) === ownerId) this.touchOwners.delete(touchIdentifier);
+      }
+    }
   }
 
   private pruneSeen(now: number): void {
@@ -589,8 +693,13 @@ export function rawPointerContactSample(event: PointerEvent, eventType: PointerE
   };
 }
 
-export function rawTouchContactEvent(event: TouchEvent, eventType: TouchEventType): RawTouchContactEvent {
-  const changedCount = event.changedTouches.length;
+export function rawTouchContactEvent(
+  event: TouchEvent,
+  eventType: TouchEventType,
+  activeTouchList: readonly Touch[] = [...event.touches],
+  changedTouchList: readonly Touch[] = [...event.changedTouches]
+): RawTouchContactEvent {
+  const changedCount = changedTouchList.length;
   const toPoint = (touch: Touch): RawTouchPoint => ({
     identifier: touch.identifier,
     clientX: touch.clientX,
@@ -603,8 +712,8 @@ export function rawTouchContactEvent(event: TouchEvent, eventType: TouchEventTyp
     radiusY: touch.radiusY,
     force: touch.force
   });
-  const activeTouches = [...event.touches].slice(0, 8).map(toPoint);
-  const changedTouches = [...event.changedTouches].slice(0, 8).map(toPoint);
+  const activeTouches = activeTouchList.slice(0, 8).map(toPoint);
+  const changedTouches = changedTouchList.slice(0, 8).map(toPoint);
   const path = eventType === "touchmove" ? emptyPath() : pathSnapshot(event, eventType);
   const touches = changedTouches.map((touch) => ({
     eventType,
@@ -615,7 +724,7 @@ export function rawTouchContactEvent(event: TouchEvent, eventType: TouchEventTyp
     radiusX: touch.radiusX,
     radiusY: touch.radiusY,
     force: touch.force,
-    touchCount: event.touches.length,
+    touchCount: activeTouchList.length,
     changedCount,
     activeTouches,
     changedTouches,

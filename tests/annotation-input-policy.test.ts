@@ -1,24 +1,17 @@
 import { describe, expect, it } from "vitest";
-import {
-  canAnnotatePointer,
-  describeInputPolicies,
-  stylusAnnotationEnabled
-} from "../src/input/annotationInputPolicy";
+import { canAnnotatePointer, describeInputPolicies } from "../src/input/annotationInputPolicy";
 
 describe("annotationInputPolicy", () => {
-  it("routes pen and touch consistently and gates mouse inking by setting and page position", () => {
-    expect(stylusAnnotationEnabled()).toBe(true);
-    expect(canAnnotatePointer({ pointerType: "pen" }, { mouseInkingEnabled: false })).toBe(true);
-    expect(canAnnotatePointer({ pointerType: "touch" }, { mouseInkingEnabled: true })).toBe(false);
-    expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInkingEnabled: false, mouseOverPdfPage: true })).toBe(false);
-    expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInkingEnabled: true, mouseOverPdfPage: false })).toBe(false);
-    expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInkingEnabled: true, mouseOverPdfPage: true })).toBe(true);
-    expect(canAnnotatePointer({ pointerType: "mouse" }, { mouseInkingEnabled: true })).toBe(true);
-    expect(describeInputPolicies({ mouseInkingEnabled: false })).toEqual({
+  it("allows only pen and explicitly remapped stylus events", () => {
+    expect(canAnnotatePointer({ pointerType: "pen" })).toBe(true);
+    expect(canAnnotatePointer({ pointerType: "touch" }, { stylusRemapped: true })).toBe(false);
+    expect(canAnnotatePointer({ pointerType: "mouse" })).toBe(false);
+    expect(canAnnotatePointer({ pointerType: "mouse" }, { stylusRemapped: false })).toBe(false);
+    expect(canAnnotatePointer({ pointerType: "mouse" }, { stylusRemapped: true })).toBe(true);
+    expect(describeInputPolicies()).toEqual({
       stylusPolicy: "annotate",
       touchPolicy: "native",
       mousePolicy: "native"
     });
-    expect(describeInputPolicies({ mouseInkingEnabled: true }).mousePolicy).toBe("inking");
   });
 });

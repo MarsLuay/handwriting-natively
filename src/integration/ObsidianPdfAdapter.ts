@@ -4,7 +4,6 @@ import type { PageLifecycleCoordinator } from "../runtime/PageLifecycleCoordinat
 import type { PdfFindControllerLike, PdfIntegrationProfile, PdfJsEventBus } from "./PdfViewerCompatibility";
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 import type { PdfPageInfo } from "./PdfPageLocator";
-import type { MobilePdfZoomHandoff } from "./MobilePdfZoomHandoff";
 
 export type {
   PageLifecycleCoordinator,
@@ -84,8 +83,6 @@ export interface PdfSurfaceExtensions {
   setScaleAtViewportCenter?(scale: number): void;
   /** Run PDF-only actions from the shared annotation toolbar's More menu. */
   performToolbarAction?(action: PdfToolbarAction): boolean;
-  /** Keep adapter-owned Hand control chrome in sync with the session tool. */
-  setHandToolActive?(active: boolean): void;
   nativeTextLayer?(pageNumber: number): HTMLElement | null;
   findController?(): PdfFindControllerLike | null;
   eventBus?(): PdfJsEventBus | null;
@@ -98,8 +95,6 @@ export interface PdfSurfaceExtensions {
     profile?: PdfIntegrationProfile;
     platform?: PlatformCapabilityReport;
   };
-  /** Adapter-owned native handoff; private viewer objects stay behind this boundary. */
-  createMobilePdfZoomHandoff?(): MobilePdfZoomHandoff;
   consumeSidebarFollowZoomMetrics?(): {
     sidebarFollowActiveDuringZoom: boolean;
     sidebarFollowFramesDuringBurst: number;

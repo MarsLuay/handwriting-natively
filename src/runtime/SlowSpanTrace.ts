@@ -54,10 +54,7 @@ export interface SettleChurnSummary {
   inGestureResetCount: number;
   resetReasons: Record<string, number>;
   lastDeferralReason: string | null;
-  zoomGestureDurationMs: number | null;
-  pinchTerminalToSettleMs: number | null;
   lastScaleChangeToSettleMs: number | null;
-  liveInkWaitAfterPinchTerminalMs: number | null;
 }
 
 export interface FirstPenInteraction {
@@ -244,10 +241,7 @@ export class SlowSpanTrace {
     resetReasons: Record<string, number>;
     lastDeferralReason: string | null;
     zoomBurstId?: string | null;
-    zoomGestureDurationMs?: number | null;
-    pinchTerminalToSettleMs?: number | null;
     lastScaleChangeToSettleMs?: number | null;
-    liveInkWaitAfterPinchTerminalMs?: number | null;
     phaseDurations?: Record<string, number | null | undefined>;
   }): SettleChurnSummary | null {
     const phaseDurations = Object.fromEntries(
@@ -283,10 +277,7 @@ export class SlowSpanTrace {
       inGestureResetCount: input.inGestureResetCount ?? 0,
       resetReasons: { ...input.resetReasons },
       lastDeferralReason: input.lastDeferralReason,
-      zoomGestureDurationMs: roundNullable(input.zoomGestureDurationMs),
-      pinchTerminalToSettleMs: roundNullable(input.pinchTerminalToSettleMs),
       lastScaleChangeToSettleMs: roundNullable(input.lastScaleChangeToSettleMs),
-      liveInkWaitAfterPinchTerminalMs: roundNullable(input.liveInkWaitAfterPinchTerminalMs)
     };
     this.remember(record);
     return record;

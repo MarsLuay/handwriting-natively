@@ -24,11 +24,11 @@ Pointer Events are authoritative when available:
 
 - pen owns annotation only on an annotatable page and with an ink-capable tool;
 - touch stays native PDF navigation/pinch and cannot steal an active pen stroke;
-- mouse follows the explicit mouse input policy;
+- ordinary mouse stays with the host under every selected tool;
 - Touch Events are only lifecycle/compatibility observation and never a second drawing engine;
 - no global `touch-action: none` is used.
 
-`PointerRouter` generation cleanup, pointer capture loss, cancel, blur, hidden visibility, pagehide, and session destruction clear stale ownership. Blur/background cancellation releases plugin captures, cancels unfinished plugin routes, and clears pen/touch bookkeeping without synthesizing native navigation. This boundary is covered by deterministic DOM tests; it does not prove WebKit lifecycle delivery. This issue remains an architecture umbrella: further owner-state consolidation and Touch fallback removal require measured event ordering first. Real iPadOS/WKWebView traces are still required before removing any compatibility fallback or claiming Pencil/Scribble behavior.
+`PointerRouter` generation cleanup, pointer capture loss, cancel, blur, hidden visibility, pagehide, and session destruction clear stale ownership. Blur/background cancellation releases plugin captures, cancels unfinished plugin routes, and clears pen/touch bookkeeping without synthesizing native navigation. This boundary is covered by deterministic DOM tests; it does not prove WebKit lifecycle delivery. This issue remains an architecture umbrella for physical qualification of native mouse/touch behavior, confirmed-stylus annotation, and active-stylus companion-touch blocking. Real iPadOS/WKWebView traces are still required before claiming Pencil/Scribble behavior.
 
 The complete physical release gate is documented in
 [`docs/ipad-input-release-matrix.md`](ipad-input-release-matrix.md). It keeps
@@ -85,7 +85,7 @@ Record plugin/Obsidian/runtime metadata, compatibility strategy, and copied boun
 
 ## Toolbar and images (#30, #25)
 
-Pen, Pencil, and Highlighter are persistent first-class drawing tools with independent settings and direct toolbar selection. Their settings are stored through the existing plugin preferences, while stylus-first routing remains the default, mouse behavior remains explicit, and touch stays native.
+Pen, Pencil, and Highlighter are persistent first-class drawing tools with independent settings and direct toolbar selection. Their settings are stored through the existing plugin preferences. Only confirmed stylus input annotates; ordinary mouse and touch remain native for every tool.
 
 Image annotation is not implemented as a second renderer. `ImageViewAdapter` supplies the one-page `AnnotationSurface` implementation for static PNG and JPEG/JPG files and reuses page-local ink, input, tools, sidecar identity, recovery, and lifecycle without converting the image to a PDF. The source image is read-only during annotation; browser-native displayed orientation is not transformed a second time, and the shared backing-store budget bounds handwriting canvases. PDF export, PDF.js find, page insertion/deletion, scan actions, and flattened image export remain unavailable on that surface. WebP, HEIC/HEIF, GIF, SVG, and other unsupported image views remain unannotated.
 

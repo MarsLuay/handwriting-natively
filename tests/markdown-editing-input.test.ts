@@ -67,13 +67,12 @@ describe("Markdown editing input routing", () => {
     scroller.remove();
   });
 
-  it("keeps mouse selection native when mouse annotation is disabled", () => {
+  it("keeps ordinary mouse selection native", () => {
     const { scroller, content } = editorSurface();
     const onStart = vi.fn();
     const router = new PointerRouter(scroller, {
       activeTool: () => "pen",
       canAnnotatePointer: () => true,
-      mouseInkingEnabled: () => false,
       allowEditableAnnotationTarget: (event) => event.target instanceof Element
         && scroller.contains(event.target)
         && Boolean(event.target.closest(".cm-content[contenteditable='true']")),

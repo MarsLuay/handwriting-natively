@@ -1,5 +1,5 @@
 export type DrawingTool = "pen" | "pencil" | "highlighter";
-/** Annotation tools. Mouse inking is a separate input setting, not a tool. */
+/** Annotation tools. Only confirmed stylus input can activate their pointer routes. */
 export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser" | "drag";
 export type LassoType = "freeform" | "rectangle";
 export type ToolbarOrientation = "horizontal" | "vertical";
@@ -172,8 +172,6 @@ export interface ShapePreferences {
 
 export interface ToolPreferences {
   activeTool: ToolId;
-  /** Restore native mouse interaction when mouse inking is configured. */
-  mouseNavigationActive: boolean;
   pen: DrawingToolPreferences;
   pencil: DrawingToolPreferences;
   highlighter: DrawingToolPreferences;
@@ -205,19 +203,11 @@ export interface PluginSettings {
   sidecarFolder: string;
   /** Vault-relative PDF template; page one is used. Empty means blank US Letter paper. */
   pdfTemplatePath: string;
-  /** Left mouse drags use the selected annotation tool when enabled. */
-  mouseInkingEnabled: boolean;
-  /** Explicit touch-only/ambiguous-device fallback; never enabled by migration. */
-  touchDrawFallback: boolean;
-  /** Allow a finger double-tap on the page to switch to the eraser. */
-  touchDoubleTapEraser: boolean;
-  /** Auto uses stylus pressure when available; Pen/Mouse force that input model. */
+  /** Auto honors reported stylus pressure; Pen/Mouse select a pressure response. */
   pressureProfile: PressureProfile;
   /** Device-pressure tuning; captured when each stroke starts. */
   pressureCalibration: PressureCalibration;
   simplifyStrokes: boolean;
-  /** Experimental mobile-only replacement for the native two-finger PDF pinch; enabled by default with an explicit opt-out. */
-  customMobilePdfPinchZoom: boolean;
   /** Advanced accessibility opt-out; the page label remains visible by default. */
   hideStylusAnnotationLabel: boolean;
   /** Mobile-only opt-in to suppress swipe gestures that open sidebars or the command palette. */
@@ -273,7 +263,6 @@ export function createDefaultToolPreferences(): ToolPreferences {
   };
   return {
     activeTool: "pen",
-    mouseNavigationActive: false,
     pen,
     pencil,
     highlighter,
@@ -313,13 +302,9 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   textEscapeAction: "save",
   sidecarFolder: `${root}/plugins/${PLUGIN_ID}/annotations`,
   pdfTemplatePath: "",
-  mouseInkingEnabled: false,
-  touchDrawFallback: false,
-  touchDoubleTapEraser: true,
   pressureProfile: "auto",
   pressureCalibration: { initialFloor: 0.15, gain: 1.15, smoothing: 0.78 },
   simplifyStrokes: true,
-  customMobilePdfPinchZoom: true,
   hideStylusAnnotationLabel: false,
   disableSwipeNavigation: false,
   toolbarOrientation: "horizontal",
@@ -336,7 +321,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
 export const DEFAULT_SETTINGS: PluginSettings = createDefaultSettings("config");
 
 const LEGACY_SETTING_KEYS = [
-  // Draw mode is mouse/stylus ink; fingers keep native scroll (legacy fingerDraw removed).
+  // Legacy finger drawing settings are discarded; touch navigation stays native.
   "fingerDraw",
   "yoloMode",
   "yoloConfirmed",
@@ -374,12 +359,6 @@ export function mergeSettings(
   const legacyDisableSidebarSwipe = raw.disableSidebarSwipe === true;
   const legacyDisableCommandPaletteSwipeSetting = raw.disableCommandPaletteSwipe;
   const legacyDisableCommandPaletteSwipe = legacyDisableCommandPaletteSwipeSetting === true;
-  const legacyMouseInputMode = raw.mouseInputMode;
-  const legacyMouseLeftDragDraw = raw.mouseLeftDragDraw;
-  const savedMouseInkingEnabled = raw.mouseInkingEnabled;
-  const legacyMouseInkingEnabled = legacyMouseInputMode === "annotate"
-    ? legacyMouseLeftDragDraw !== false
-    : legacyMouseInputMode === undefined && legacyMouseLeftDragDraw === true;
   const disableSwipeNavigation = typeof savedDisableSwipeNavigation === "boolean"
     ? savedDisableSwipeNavigation
     : legacyDisableSidebarSwipe
@@ -392,6 +371,10 @@ export function mergeSettings(
   delete raw.mouseDragScroll;
   delete raw.mouseLeftDragDraw;
   delete raw.mouseRightDragErase;
+  delete raw.mouseInkingEnabled;
+  delete raw.touchDrawFallback;
+  delete raw.touchDoubleTapEraser;
+  delete raw.customMobilePdfPinchZoom;
   for (const key of LEGACY_SETTING_KEYS) delete raw[key];
   const cleaned = raw as Partial<PluginSettings>;
   const lassoRaw = { ...defaults.toolPreferences.lasso, ...cleaned.toolPreferences?.lasso } as {
@@ -409,12 +392,10 @@ export function mergeSettings(
     : defaults.pdfTemplatePath;
   const pressureProfile = cleaned.pressureProfile;
   const pressureCalibration = normalizePressureCalibration(cleaned.pressureCalibration, defaults.pressureCalibration);
-  const mouseInkingEnabled = typeof savedMouseInkingEnabled === "boolean"
-    ? savedMouseInkingEnabled
-    : legacyMouseInkingEnabled;
   const savedEnabledSurfaces = cleaned.enabledSurfaces as Partial<EnabledSurfaceSettings> | undefined;
   const savedToolPreferences = { ...(cleaned.toolPreferences ?? {}) } as Record<string, unknown>;
   delete savedToolPreferences.pan;
+  delete savedToolPreferences.mouseNavigationActive;
   // Presets were the old way to store a drawing style. Migrate their last known
   // values into the permanent per-tool settings, then discard the legacy keys so
   // they cannot leak back into the persisted schema.
@@ -445,15 +426,7 @@ export function mergeSettings(
         : defaults.toolbarOrientation,
     floatingToolbarPosition,
     pdfTemplatePath,
-    mouseInkingEnabled,
-    // Legacy `fingerDraw` is removed above; only the new explicit setting may
-    // opt into touch ink, and only with the literal boolean value true.
-    touchDrawFallback: cleaned.touchDrawFallback === true,
-    touchDoubleTapEraser: cleaned.touchDoubleTapEraser !== false,
     textEscapeAction: "save" as const,
-    customMobilePdfPinchZoom: typeof cleaned.customMobilePdfPinchZoom === "boolean"
-      ? cleaned.customMobilePdfPinchZoom
-      : defaults.customMobilePdfPinchZoom,
     hideStylusAnnotationLabel: cleaned.hideStylusAnnotationLabel === true,
     disableSwipeNavigation,
     pressureProfile: pressureProfile === "pen" || pressureProfile === "mouse" || pressureProfile === "auto"
@@ -464,7 +437,6 @@ export function mergeSettings(
       ...defaults.toolPreferences,
       ...savedToolPreferences,
       activeTool,
-      mouseNavigationActive: savedToolPreferences.mouseNavigationActive === true,
       pen: {
         ...migratedDrawingPreferences.pen,
         penType: isPenType(migratedDrawingPreferences.pen.penType)

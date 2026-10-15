@@ -267,7 +267,6 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   private findGeneration = 0;
   private findMatches: Array<{ pageNumber: number; offset: number }> = [];
   private findIndex = -1;
-  private handToolActive = false;
   private viewerCommands: PdfViewerCommandBridge | null = null;
 
   private constructor(
@@ -546,56 +545,6 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     };
     this.scroll.addEventListener("wheel", onWheel, { passive: false });
     this.cleanups.push(() => this.scroll.removeEventListener("wheel", onWheel));
-
-    let activePinch: { startDist: number; startScale: number; focalX: number; focalY: number } | null = null;
-    const touchDistance = (t1: Touch, t2: Touch): number => Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
-
-    const onTouchStart = (event: TouchEvent): void => {
-      if (event.touches.length === 2) {
-        const t1 = event.touches[0]!;
-        const t2 = event.touches[1]!;
-        activePinch = {
-          startDist: touchDistance(t1, t2),
-          startScale: this.scale,
-          focalX: (t1.clientX + t2.clientX) / 2,
-          focalY: (t1.clientY + t2.clientY) / 2
-        };
-      } else {
-        activePinch = null;
-      }
-    };
-
-    const onTouchMove = (event: TouchEvent): void => {
-      if (!activePinch || event.touches.length !== 2) return;
-      event.preventDefault();
-      const t1 = event.touches[0]!;
-      const t2 = event.touches[1]!;
-      const currentDist = touchDistance(t1, t2);
-      if (activePinch.startDist > 0) {
-        const ratio = currentDist / activePinch.startDist;
-        const nextScale = clampScale(activePinch.startScale * ratio);
-        const focalX = (t1.clientX + t2.clientX) / 2;
-        const focalY = (t1.clientY + t2.clientY) / 2;
-        this.setScaleAtFocalPoint(nextScale, focalX, focalY);
-      }
-    };
-
-    const onTouchEnd = (event: TouchEvent): void => {
-      if (activePinch && event.touches.length < 2) {
-        activePinch = null;
-      }
-    };
-
-    this.scroll.addEventListener("touchstart", onTouchStart, { passive: true });
-    this.scroll.addEventListener("touchmove", onTouchMove, { passive: false });
-    this.scroll.addEventListener("touchend", onTouchEnd, { passive: true });
-    this.scroll.addEventListener("touchcancel", onTouchEnd, { passive: true });
-    this.cleanups.push(
-      () => this.scroll.removeEventListener("touchstart", onTouchStart),
-      () => this.scroll.removeEventListener("touchmove", onTouchMove),
-      () => this.scroll.removeEventListener("touchend", onTouchEnd),
-      () => this.scroll.removeEventListener("touchcancel", onTouchEnd)
-    );
   }
 
   private installIntersectionObserver(): void {
@@ -1326,17 +1275,10 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   setViewerCommandBridge(commands: PdfViewerCommandBridge | null): void {
     this.viewerCommands = commands;
-    this.setHandToolActive(commands?.isHandMode() ?? false);
   }
 
   setScaleAtViewportCenter(scale: number): void {
     this.setScale(scale);
-  }
-
-  setHandToolActive(active: boolean): void {
-    this.handToolActive = active;
-    this.root.classList.toggle("is-hand-tool", this.handToolActive);
-    setElementCssProps(this.scroll, { cursor: this.handToolActive ? "grab" : "auto" });
   }
 
   performToolbarAction(action: PdfToolbarAction): boolean {

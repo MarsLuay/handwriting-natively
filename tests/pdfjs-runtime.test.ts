@@ -284,8 +284,6 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     adapter.root.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true, cancelable: true }));
 
     expect(commands.handleKeyDown).toHaveBeenCalledTimes(2);
-    adapter.setHandToolActive(true);
-    expect(adapter.root.classList.contains("is-hand-tool")).toBe(true);
 
     adapter.destroy();
     host.remove();

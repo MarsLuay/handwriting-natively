@@ -602,9 +602,10 @@ export default class NativePdfInkPlugin extends Plugin {
       const root = this.containerForLeaf(leaf);
       if (root) roots.add(root);
     }
-    const documentInputOwners = [...new Set([...roots].map((root) => root.ownerDocument))]
+    const documentInputCollectors = [...new Set([...roots].map((root) => root.ownerDocument))]
       .map((document) => documentInputOwnershipSnapshot(document))
       .filter((owner) => owner.active);
+    const documentInputOwners = documentInputCollectors.flatMap(({ owners }) => owners);
     const count = (selector: string): number => [...roots]
       .reduce((total, root) => total + root.querySelectorAll(selector).length, 0);
     return {
@@ -617,8 +618,8 @@ export default class NativePdfInkPlugin extends Plugin {
       viewerShellCount: count(".pdf-viewer, .pdfViewer"),
       handwritingToolbarCount: count(".native-pdf-handwriting-toolbar"),
       handwritingRailCount: count(".native-pdf-handwriting-rail"),
-      documentInputCollectorCount: documentInputOwners.length,
-      documentInputCollectorIds: documentInputOwners.map((owner) => owner.collectorId).filter((id): id is string => id !== null),
+      documentInputCollectorCount: documentInputCollectors.length,
+      documentInputCollectorIds: documentInputOwners.map(({ collectorId }) => collectorId),
       documentInputOwners: documentInputOwners.map((owner) => ({ ...owner }))
     };
   }
@@ -854,15 +855,11 @@ export default class NativePdfInkPlugin extends Plugin {
 
   async saveSettings(settings: PluginSettings): Promise<void> {
     const previousToolbarOrientation = this.inkSettings.toolbarOrientation;
-    const previousCustomMobilePdfPinchZoom = this.inkSettings.customMobilePdfPinchZoom;
     const previousPdfEnabled = this.inkSettings.enabledSurfaces.pdf;
     const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
     const previousMarkdownEnabled = this.inkSettings.enabledSurfaces.markdown;
     const previousAutomaticAnnotationRecovery = this.inkSettings.automaticAnnotationRecovery;
     const previousAnnotationBackupPath = this.inkSettings.annotationBackupPath;
-    const previousMouseInkingEnabled = this.inkSettings.mouseInkingEnabled;
-    const previousTouchDrawFallback = this.inkSettings.touchDrawFallback;
-    const previousTouchDoubleTapEraser = this.inkSettings.touchDoubleTapEraser;
     const previousDisableSwipeNavigation = this.inkSettings.disableSwipeNavigation;
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
@@ -901,10 +898,6 @@ export default class NativePdfInkPlugin extends Plugin {
     this.vaultDebugLog.write("info", "plugin settings saved", {
       changedKeys: [
         ...(previousToolbarOrientation !== settings.toolbarOrientation ? ["toolbarOrientation"] : []),
-        ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
-        ...(previousMouseInkingEnabled !== settings.mouseInkingEnabled ? ["mouseInkingEnabled"] : []),
-        ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : []),
-        ...(previousTouchDoubleTapEraser !== settings.touchDoubleTapEraser ? ["touchDoubleTapEraser"] : []),
         ...(previousDisableSwipeNavigation !== settings.disableSwipeNavigation ? ["disableSwipeNavigation"] : [])
       ],
       mobile: Platform.isMobile,
@@ -913,15 +906,6 @@ export default class NativePdfInkPlugin extends Plugin {
     });
     if (previousToolbarOrientation !== settings.toolbarOrientation) {
       for (const session of this.allSessions()) session.remountToolbar();
-    }
-    if (previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom) {
-      for (const session of this.allSessions()) session.setCustomMobilePdfPinchZoomEnabled(settings.customMobilePdfPinchZoom);
-    }
-    if (
-      previousMouseInkingEnabled !== settings.mouseInkingEnabled ||
-      previousTouchDrawFallback !== settings.touchDrawFallback
-    ) {
-      for (const session of this.allSessions()) session.updateMouseInputBindings();
     }
     if (
       previousAutomaticAnnotationRecovery !== settings.automaticAnnotationRecovery ||
@@ -1006,33 +990,6 @@ export default class NativePdfInkPlugin extends Plugin {
       : Platform.isMobileApp
         ? "Capacitor mobile"
         : "Obsidian WebView";
-    const mobilePdfZoom = [...this.sessions.values()]
-      .slice(0, 8)
-      .flatMap((session, index) => {
-        try {
-          const status = session.getMobilePdfZoomDiagnostics();
-          const trace = status.trace;
-          return [{
-            sessionNumber: index + 1,
-            settingEnabled: status.settingEnabled,
-            gateMode: status.mode,
-            fallbackReason: status.fallbackReasons[0] ?? trace.fallbackReason ?? null,
-            active: status.active,
-            activePhase: status.activePhase,
-            traceMode: trace.mode,
-            tracePhase: trace.phase,
-            observedCustomGesture: trace.mode === "custom-mobile" && trace.gesture.beginCount > 0,
-            gestureBeginCount: trace.gesture.beginCount,
-            transformFrameCount: trace.transform.frameCount,
-            transformTotalMs: trace.transform.totalMs,
-            transformMaxMs: trace.transform.maxMs,
-            nativeCommitWaitMs: trace.nativeCommitWaitMs,
-            releaseReason: trace.releaseReason
-          }];
-        } catch {
-          return [];
-        }
-      });
     const devicePixelRatio = typeof window !== "undefined" ? window.devicePixelRatio : undefined;
     return {
       pluginVersion: this.manifest.version,
@@ -1041,7 +998,6 @@ export default class NativePdfInkPlugin extends Plugin {
       appMode,
       runtime,
       profileSchemaVersion: PROFILE_SCHEMA_VERSION,
-      mobilePdfZoom,
       toolbarSessionCount: this.sessions.size,
       toolbarSnapshots,
       ...(typeof devicePixelRatio === "number" && Number.isFinite(devicePixelRatio) ? { devicePixelRatio } : {})
@@ -1870,9 +1826,6 @@ export default class NativePdfInkPlugin extends Plugin {
       } : {}),
       notice: suppressUserNotification,
       decideUnsaved: () => this.decideUnsaved(),
-      mouseInkingEnabled: () => this.inkSettings.mouseInkingEnabled,
-      touchDrawFallbackEnabled: () => this.inkSettings.touchDrawFallback,
-      touchDoubleTapEraserEnabled: () => this.inkSettings.touchDoubleTapEraser,
       pressureProfile: () => this.inkSettings.pressureProfile,
       pressureCalibration: () => this.inkSettings.pressureCalibration,
       simplifyStrokesEnabled: () => this.inkSettings.simplifyStrokes,
