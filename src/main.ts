@@ -860,6 +860,10 @@ export default class NativePdfInkPlugin extends Plugin {
     const previousMarkdownEnabled = this.inkSettings.enabledSurfaces.markdown;
     const previousAutomaticAnnotationRecovery = this.inkSettings.automaticAnnotationRecovery;
     const previousAnnotationBackupPath = this.inkSettings.annotationBackupPath;
+    const previousCustomMobilePdfPinchZoom = this.inkSettings.customMobilePdfPinchZoom;
+    const previousMouseInkingEnabled = this.inkSettings.mouseInkingEnabled;
+    const previousTouchDrawFallback = this.inkSettings.touchDrawFallback;
+    const previousTouchDoubleTapEraser = this.inkSettings.touchDoubleTapEraser;
     const previousDisableSwipeNavigation = this.inkSettings.disableSwipeNavigation;
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
@@ -898,6 +902,10 @@ export default class NativePdfInkPlugin extends Plugin {
     this.vaultDebugLog.write("info", "plugin settings saved", {
       changedKeys: [
         ...(previousToolbarOrientation !== settings.toolbarOrientation ? ["toolbarOrientation"] : []),
+        ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
+        ...(previousMouseInkingEnabled !== settings.mouseInkingEnabled ? ["mouseInkingEnabled"] : []),
+        ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : []),
+        ...(previousTouchDoubleTapEraser !== settings.touchDoubleTapEraser ? ["touchDoubleTapEraser"] : []),
         ...(previousDisableSwipeNavigation !== settings.disableSwipeNavigation ? ["disableSwipeNavigation"] : [])
       ],
       mobile: Platform.isMobile,
@@ -906,6 +914,15 @@ export default class NativePdfInkPlugin extends Plugin {
     });
     if (previousToolbarOrientation !== settings.toolbarOrientation) {
       for (const session of this.allSessions()) session.remountToolbar();
+    }
+    if (previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom) {
+      for (const session of this.allSessions()) {
+        session.setCustomMobilePdfPinchZoomEnabled(settings.customMobilePdfPinchZoom);
+      }
+    }
+    if (previousMouseInkingEnabled !== settings.mouseInkingEnabled
+      || previousTouchDrawFallback !== settings.touchDrawFallback) {
+      for (const session of this.allSessions()) session.updateMouseInputBindings();
     }
     if (
       previousAutomaticAnnotationRecovery !== settings.automaticAnnotationRecovery ||
@@ -1236,8 +1253,8 @@ export default class NativePdfInkPlugin extends Plugin {
           } = {
             pageWaitMs,
             platform: probePlatformCapabilities({
-              ...(Platform.isIosApp && !Platform.isPhone
-                ? { platform: "ipad" as const }
+              ...(Platform.isIosApp && typeof Platform.isPhone === "boolean"
+                ? { platform: Platform.isPhone ? "ios" as const : "ipad" as const }
                 : Platform.isAndroidApp
                   ? { platform: "android" as const }
                   : Platform.isDesktop
@@ -1829,6 +1846,10 @@ export default class NativePdfInkPlugin extends Plugin {
       pressureProfile: () => this.inkSettings.pressureProfile,
       pressureCalibration: () => this.inkSettings.pressureCalibration,
       simplifyStrokesEnabled: () => this.inkSettings.simplifyStrokes,
+      mouseInkingEnabled: () => this.inkSettings.mouseInkingEnabled,
+      touchDrawFallbackEnabled: () => this.inkSettings.touchDrawFallback,
+      touchDoubleTapEraserEnabled: () => this.inkSettings.touchDoubleTapEraser,
+      customMobilePdfPinchZoomEnabled: () => this.inkSettings.customMobilePdfPinchZoom,
       toolbarOrientation: () => this.inkSettings.toolbarOrientation,
       vaultLog: this.vaultDebugLog,
       debugEnabled: () => this.inkSettings.vaultDebugLog,

@@ -2,14 +2,14 @@
 
 ## What Handwriting Natively Does
 
-Handwrite on PDFs, supported static PNG/JPEG images, and Markdown Reading or editing views with a confirmed stylus in Obsidian. Ordinary mouse and touch input keep their native behavior for every selected tool. Markdown ink and text annotations use the same floating toolbar, tools, undo/redo, and vault sidecars as PDF and image annotations. Source and Live Preview keep native typing, selection, and scrolling. Explicit page insert/delete/import/scan actions update the open PDF and remap its sidecar atomically. Export PDFs as flattened or editable copies, or export an annotated image as a bounded flattened copy in its source PNG/JPEG format. Text boxes are sidecar-backed and editable in Text mode; physical eraser tips and optional whole-stroke erasing are supported.
+Handwrite on PDFs, supported static PNG/JPEG images, and Markdown Reading or editing views with a confirmed stylus in Obsidian. Mouse annotation and finger drawing are separate opt-in settings; committed text boxes retain touch editing when touch drawing is off. A completed one-finger double-tap can switch between the eraser and the previous tool. On compatibility-checked iOS, iPadOS, and Android PDF pages, one finger pans and two fingers pinch; unsupported and unsafe surfaces keep native viewer gestures. Markdown ink and text annotations use the same floating toolbar, tools, undo/redo, and vault sidecars as PDF and image annotations. Source and Live Preview keep native typing, selection, and scrolling. Explicit page insert/delete/import/scan actions update the open PDF and remap its sidecar atomically. Export PDFs as flattened or editable copies, or export an annotated image as a bounded flattened copy in its source PNG/JPEG format. Text boxes are sidecar-backed and editable in Text mode; physical eraser tips and optional whole-stroke erasing are supported.
 
 I made this plugin after realizing I use Obsidian a lot more than another nameless note taking app.. I hope you find it as useful as I do!
 
 ![Handwriting Natively drawing toolbar on a Lorem Ipsum PDF](docs/handwriting-natively.png)
 
 - Pen, graphite pencil, highlighter, laser pointer, eraser, and lasso tools and a nifty toolbar
-- Stylus annotation with native mouse and touch behavior
+- Stylus annotation by default, with optional mouse/touch drawing and mobile PDF pan/pinch
 - Autosaving, everyones favorite feature
 - Assignable Hotkeys commands to switch to Pen, Eraser, Laser Pointer, Lasso, or Text , plus undo and redo 
 

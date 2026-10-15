@@ -171,13 +171,25 @@ import { AddPageControl } from "../ui/AddPageControl";
 import { AddPageTiming } from "../ui/AddPageTiming";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, inkHotkeyCommand, type InkHotkeyCommand, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
+import { classifyInputTarget } from "../input/InputTargetClassification";
 import {
-  GestureNavigationController
+  GestureNavigationController,
+  type GestureNavigationEndReason,
+  type GestureNavigationFrame,
+  type GestureNavigationFocalPoint
 } from "../input/GestureNavigationController";
 import { HandwritingViewport, type HandwritingViewportState } from "../integration/HandwritingViewport";
 import { ViewerCommandController, type ViewerCommandHost } from "./ViewerCommandController";
 import { OpenInkStrokeGeometry, type InkStrokeGeometryRecord } from "../input/InkStrokeGeometry";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
+import {
+  consumeTouchDoubleTap,
+  TOUCH_DOUBLE_TAP_MAX_DELAY_MS,
+  TOUCH_TAP_MAX_MOVEMENT_PX,
+  type TouchDoubleTapPoint,
+  type TouchDoubleTapState
+} from "../input/TouchDoubleTap";
+import { planMobileCustomPdfZoom } from "../integration/MobileCustomPdfZoom";
 import { InkSession, type InkLifecycleEvent } from "../ink/InkSession";
 import { DamageLedger } from "../ink/DamageLedger";
 import { strokeBounds, type Bounds } from "../ink/StrokeHitTesting";
@@ -613,6 +625,10 @@ export interface ViewerInkSessionOptions {
   /** Reads the current calibration; it is captured when a new stroke starts. */
   pressureCalibration?(): PressureCalibration;
   simplifyStrokesEnabled?(): boolean;
+  mouseInkingEnabled?(): boolean;
+  touchDrawFallbackEnabled?(): boolean;
+  touchDoubleTapEraserEnabled?(): boolean;
+  customMobilePdfPinchZoomEnabled?(): boolean;
   toolbarOrientation?: () => ToolbarOrientation;
   vaultLog?: VaultLogSink;
   /** Enables diagnostics that would otherwise add avoidable input-path work. */
@@ -1323,6 +1339,18 @@ export class ViewerInkSession {
   private readonly findBridge: AnnotationFindBridge | null;
   /** Runtime promotion is session-scoped; it is never inferred from UA or persisted. */
   private stylusCapability: "unknown" | "confirmed" = "unknown";
+  private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
+  private activeMobilePinchSurface: PageSurface | null = null;
+  private touchDoubleTapState: TouchDoubleTapState | null = null;
+  private touchTapContact: {
+    identifier: number;
+    clientX: number;
+    clientY: number;
+    startedAt: number;
+    surface: PageSurface;
+  } | null = null;
+  private touchDoubleTapPreviousTool: ToolId | null = null;
+  private touchDoubleTapChangingTool = false;
   private readonly pointerProbeAbort = new AbortController();
   private readonly documentInputOwnerId = `session-${this.viewerGeneration}`;
   private readonly documentInputRegistrationSource = "ViewerInkSession.installPointerProbe";
@@ -1405,6 +1433,8 @@ export class ViewerInkSession {
       ownerDocument: options.adapter.host.ownerDocument,
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
+      mouseInkingEnabled: this.mouseInkingConfigured(),
+      mouseNavigationActive: options.settings.toolPreferences.mouseNavigationActive,
       supportedMoreActions: [
         ...(pdfExtensions && options.writeExport
           ? ["export", "export-editable"] as const
@@ -1424,6 +1454,11 @@ export class ViewerInkSession {
       ],
       callbacks: {
         onPreferencesChange: (preferences, reason = "general") => {
+          if (reason === "tool" && !this.touchDoubleTapChangingTool) {
+            this.touchDoubleTapPreviousTool = null;
+            this.touchDoubleTapState = null;
+            this.touchTapContact = null;
+          }
           const previousTool = this.lastObservedTool;
           if (preferences.activeTool !== previousTool) {
             const at = Date.now();
@@ -1517,6 +1552,7 @@ export class ViewerInkSession {
         onHandMode: () => this.commandController.toggleHandMode(),
         onSave: () => this.manualSave(),
         onMore: (action) => void this.handleMore(action),
+        onMouseModeChange: (nativeSelection) => this.setMouseNavigationActive(nativeSelection),
         toolbarOrientation: () => this.currentToolbarOrientation()
       }
     });
@@ -1709,7 +1745,13 @@ export class ViewerInkSession {
     this.commandController = new ViewerCommandController(this.createViewerCommandHost());
     pdfExtensions?.setViewerCommandBridge?.(this.commandController);
     this.gestureNavigation = new GestureNavigationController({
-      onPan: (deltaX, deltaY) => this.handwritingViewport.pan(deltaX, deltaY)
+      onPan: (deltaX, deltaY) => this.handwritingViewport.pan(deltaX, deltaY),
+      minScale: 0.1,
+      maxScale: 10,
+      getScale: () => this.handwritingViewport.getState().scale,
+      onPinchStart: (frame) => this.startMobilePdfPinch(frame),
+      onPinchPreview: (scale, focalPoint) => this.previewMobilePdfPinch(scale, focalPoint),
+      onPinchEnd: (scale, reason) => this.endMobilePdfPinch(scale, reason)
     });
     this.addPageControl = options.onInsertPage
       ? new AddPageControl({
@@ -4934,10 +4976,35 @@ export class ViewerInkSession {
 
   private canAnnotatePointerEvent(
     event: Pick<PointerEvent, "pointerType" | "type" | "button" | "buttons" | "pressure">,
-    context?: { stylusRemapped: boolean }
+    context?: { stylusRemapped?: boolean; allowTouchText?: boolean }
   ): boolean {
     const identity = resolvePointerIdentity(event, this.stylusCapability === "confirmed");
-    return canAnnotatePointer(event, { stylusRemapped: context?.stylusRemapped ?? identity.stylusRemapped });
+    if (event.pointerType === "touch" && context?.allowTouchText === true) return true;
+    return canAnnotatePointer(event, {
+      stylusRemapped: context?.stylusRemapped ?? identity.stylusRemapped,
+      mouseInkingEnabled: this.mouseInkingEnabled(),
+      mouseOverPdfPage: true,
+      touchDrawFallback: this.touchDrawFallbackEnabled(),
+      stylusConfirmed: this.stylusCapability === "confirmed"
+    });
+  }
+
+  private mouseInkingConfigured(): boolean {
+    return this.options.mouseInkingEnabled?.() ?? this.options.settings.mouseInkingEnabled;
+  }
+
+  private mouseInkingEnabled(): boolean {
+    return this.mouseInkingConfigured() && this.options.settings.toolPreferences.mouseNavigationActive !== true;
+  }
+
+  private touchDrawFallbackEnabled(): boolean {
+    return (this.options.touchDrawFallbackEnabled?.() ?? this.options.settings.touchDrawFallback) === true
+      && this.stylusCapability !== "confirmed"
+      && !this.gestureNavigation?.hasActivePen();
+  }
+
+  private touchAnnotationEnabled(): boolean {
+    return this.touchDrawFallbackEnabled();
   }
 
   private promoteStylusCapability(event: Pick<PointerEvent, "pointerType">): void {
@@ -4981,7 +5048,7 @@ export class ViewerInkSession {
   private canAnnotateSurface(
     surface: PageSurface,
     event: Pick<PointerEvent, "pointerType" | "type" | "button" | "buttons" | "pressure" | "clientX" | "clientY" | "target">,
-    context?: { stylusRemapped: boolean }
+    context?: { stylusRemapped?: boolean; allowTouchText?: boolean }
   ): boolean {
     if (this.destroyed || this.inputTeardownStarted || this.documentInputOwnershipRevoked) return false;
     if (!this.canAnnotatePointerEvent(event, context)) return false;
@@ -5005,7 +5072,7 @@ export class ViewerInkSession {
 
   private inputPolicyLogFields(): Record<string, unknown> {
     return {
-      ...describeInputPolicies(),
+      ...describeInputPolicies({ mouseInkingEnabled: this.mouseInkingEnabled(), touchDrawFallback: this.touchDrawFallbackEnabled() }),
       stylusCapability: this.stylusCapability,
       activeTool: this.activeTool()
     };
@@ -5016,8 +5083,129 @@ export class ViewerInkSession {
     identity?: PointerIdentityResolution
   ): string {
     const resolved = identity ?? resolvePointerIdentity(event, this.stylusCapability === "confirmed");
-    if (resolved.effectivePointerType !== "pen") return "native";
-    return resolved.stylusRemapped ? "annotate-remapped-stylus" : "annotate";
+    if (resolved.effectivePointerType === "pen") return resolved.stylusRemapped ? "annotate-remapped-stylus" : "annotate";
+    if (event.pointerType === "mouse" && this.mouseInkingEnabled()) return "annotate-mouse";
+    if (event.pointerType === "touch" && this.touchAnnotationEnabled()) return "annotate-touch-fallback";
+    return "native";
+  }
+
+  updateMouseInputBindings(): void {
+    this.toolbar.setMouseModeState(
+      this.mouseInkingConfigured(),
+      this.mouseInkingConfigured() && this.options.settings.toolPreferences.mouseNavigationActive === true
+    );
+    for (const surface of this.surfaces.values()) surface.router?.syncToolState();
+    this.refreshSurfaceCursors();
+    this.syncEffectiveDrawState("input-policy-change", "settings");
+  }
+
+  private setMouseNavigationActive(nativeSelection: boolean): void {
+    if (!this.mouseInkingConfigured()) return;
+    const preferences = this.options.settings.toolPreferences;
+    if (preferences.mouseNavigationActive === nativeSelection) return;
+    preferences.mouseNavigationActive = nativeSelection;
+    this.lastUiInputPointerType = "mouse";
+    this.updateMouseInputBindings();
+    void this.options.saveSettings(preferences).catch((error) => {
+      this.logger.inputLifecycleEvent("mouse-mode-save-failed", {
+        nativeSelection,
+        error: this.errorMessage(error)
+      });
+    });
+  }
+
+  setCustomMobilePdfPinchZoomEnabled(enabled: boolean): void {
+    this.customMobilePdfPinchZoomEnabledOverride = enabled;
+    for (const surface of this.surfaces.values()) {
+      if (!enabled) this.gestureNavigation.cancelForSurface(surface.page.element, "disabled");
+      surface.router?.syncToolState();
+    }
+  }
+
+  private customMobilePdfPinchZoomEnabled(surface: PageSurface): boolean {
+    try {
+      const enabled = this.customMobilePdfPinchZoomEnabledOverride
+        ?? this.options.customMobilePdfPinchZoomEnabled?.()
+        ?? this.options.settings.customMobilePdfPinchZoom;
+      const extensions = pdfSurfaceExtensions(this.options.adapter);
+      const report = extensions?.compatibilityReport?.();
+      if (!extensions || !report?.profile || !report.platform) return false;
+      return planMobileCustomPdfZoom({
+        enabled,
+        surfaceType: this.options.adapter.surfaceType ?? "image",
+        platform: report.platform,
+        profile: report.profile,
+        page: surface.page
+      }).mode === "custom-mobile";
+    } catch {
+      return false;
+    }
+  }
+
+  private mobilePinchSurfaceAt(clientX: number, clientY: number): PageSurface | null {
+    for (const surface of this.surfaces.values()) {
+      const rect = surface.page.element.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0
+        && clientX >= rect.left && clientX <= rect.right
+        && clientY >= rect.top && clientY <= rect.bottom) return surface;
+    }
+    let pageNumber: number | null = null;
+    try {
+      pageNumber = this.options.adapter.getViewState().pageNumber;
+    } catch {
+      // Keep native gestures if the viewer is between page generations.
+    }
+    return [...this.surfaces.values()].find((surface) => surface.page.pageNumber === pageNumber) ?? null;
+  }
+
+  private startMobilePdfPinch(frame: GestureNavigationFrame): { accepted: boolean; scale?: number } {
+    const focalPoint = frame.points.length >= 2
+      ? { x: (frame.points[0]!.clientX + frame.points[1]!.clientX) / 2, y: (frame.points[0]!.clientY + frame.points[1]!.clientY) / 2 }
+      : null;
+    const surface = focalPoint ? this.mobilePinchSurfaceAt(focalPoint.x, focalPoint.y) : null;
+    if (!surface || !this.customMobilePdfPinchZoomEnabled(surface)) return { accepted: false };
+    this.activeMobilePinchSurface = surface;
+    const scale = this.handwritingViewport.getState().scale;
+    this.logger.inputLifecycleEvent("mobile-pdf-pinch-start", {
+      page: surface.page.pageNumber,
+      scale,
+      viewerGeneration: this.currentAdapterViewerGeneration()
+    });
+    return { accepted: true, scale };
+  }
+
+  private previewMobilePdfPinch(scale: number, focalPoint: GestureNavigationFocalPoint): void {
+    if (!this.activeMobilePinchSurface || !this.customMobilePdfPinchZoomEnabled(this.activeMobilePinchSurface)) {
+      this.gestureNavigation.cancelForSurface(this.activeMobilePinchSurface?.page.element ?? this.options.adapter.root, "disabled");
+      return;
+    }
+    this.handwritingViewport.setScaleAtPoint(scale, focalPoint);
+    const viewport = this.handwritingViewport.getState();
+    this.canonicalViewerState = createViewerState({
+      ...this.canonicalViewerState,
+      viewport: { ...this.canonicalViewerState.viewport, scale: viewport.scale },
+      scale: viewport.scale,
+      scaleMode: "custom"
+    });
+  }
+
+  private endMobilePdfPinch(scale: number, reason: GestureNavigationEndReason): void {
+    const surface = this.activeMobilePinchSurface;
+    this.activeMobilePinchSurface = null;
+    if (!surface) return;
+    const viewport = this.handwritingViewport.getState();
+    this.canonicalViewerState = createViewerState({
+      ...this.canonicalViewerState,
+      viewport: { ...this.canonicalViewerState.viewport, scale: viewport.scale },
+      scale: Number.isFinite(viewport.scale) && viewport.scale > 0 ? viewport.scale : scale,
+      scaleMode: "custom"
+    });
+    this.logger.inputLifecycleEvent("mobile-pdf-pinch-end", {
+      page: surface.page.pageNumber,
+      scale: this.canonicalViewerState.scale,
+      reason,
+      viewerGeneration: this.currentAdapterViewerGeneration()
+    });
   }
 
   /** Live annotation gesture (ink/edit) or selection/text manipulation. */
@@ -9937,6 +10125,8 @@ export class ViewerInkSession {
       this.pdfLifecycleCoordinator()?.setInkOverlayStatus(surface.page.pageNumber, "unmounted");
     }
     this.surfaces.clear();
+    this.touchDoubleTapState = null;
+    this.touchTapContact = null;
     this.selectionToolbar.destroy();
     if (this.textContextMenuSuppressTimer !== null) window.clearTimeout(this.textContextMenuSuppressTimer);
     this.textContextMenuSuppressTimer = null;
@@ -10034,8 +10224,121 @@ export class ViewerInkSession {
 
   /** Text boxes are interactive while the selected annotation tool is Text or Lasso. */
   private textBoxesInteractable(): boolean {
+    if (this.options.settings.toolPreferences.mouseNavigationActive) return false;
     const tool = this.activeTool();
     return tool === "text" || tool === "lasso";
+  }
+
+  /** A finger may edit a committed text box without enabling touch drawing. */
+  private isTouchTextTarget(surface: PageSurface, event: PointerEvent): boolean {
+    if (!this.textBoxesInteractable() || event.pointerType !== "touch") return false;
+    if (!this.canAnnotateSurface(surface, event, { stylusRemapped: false, allowTouchText: true })) return false;
+    const target = event.target instanceof Element
+      ? event.target.closest<HTMLElement>(".native-pdf-handwriting-text-box")
+      : null;
+    if (target && surface.overlay.contains(target)) {
+      return target.dataset.annotationId !== undefined;
+    }
+    if (target) return false;
+    return this.textAt(surface.page.pageNumber, this.textPointerToPagePoint(surface, event)) !== null;
+  }
+
+  private handleTouchDoubleTap(
+    point: TouchDoubleTapPoint,
+    at = typeof performance !== "undefined" ? performance.now() : Date.now()
+  ): void {
+    const enabled = this.options.touchDoubleTapEraserEnabled?.()
+      ?? this.options.settings.touchDoubleTapEraser;
+    if (!enabled || this.hasAnyLiveInkInput() || this.temporaryStylusEraserPointers > 0) {
+      this.touchDoubleTapState = null;
+      return;
+    }
+    const result = consumeTouchDoubleTap(this.touchDoubleTapState, point, at);
+    this.touchDoubleTapState = result.next;
+    if (!result.doubleTap) return;
+    const active = this.activeTool();
+    const next = active === "eraser" ? this.touchDoubleTapPreviousTool ?? "pen" : "eraser";
+    this.touchDoubleTapPreviousTool = active === "eraser" ? null : active;
+    this.lastUiInputPointerType = "touch";
+    this.touchDoubleTapChangingTool = true;
+    try {
+      this.toolbar.selectTool(next);
+    } finally {
+      this.touchDoubleTapChangingTool = false;
+    }
+  }
+
+  /** Observe touchstart without preventing native tap, pan, or link behavior. */
+  private handleTouchDoubleTapStart(event: TouchEvent, surface: PageSurface): void {
+    const enabled = this.options.touchDoubleTapEraserEnabled?.()
+      ?? this.options.settings.touchDoubleTapEraser;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!enabled
+      || classifyInputTarget(event.target).targetClass !== "page"
+      || this.options.adapter.isHostOwnedInputTarget?.(target) === true
+      || event.touches.length !== 1
+      || this.gestureNavigation.hasActivePen()) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    const touch = event.changedTouches[0] ?? event.touches[0];
+    if (!touch || !(touch.target instanceof Node) || !surface.page.element.contains(touch.target)) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    this.touchTapContact = {
+      identifier: touch.identifier,
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      startedAt: typeof performance !== "undefined" ? performance.now() : Date.now(),
+      surface
+    };
+  }
+
+  private handleTouchDoubleTapMove(event: TouchEvent): void {
+    const contact = this.touchTapContact;
+    if (!contact) return;
+    if (event.touches.length !== 1
+      || this.gestureNavigation.hasActivePen()) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    const touch = Array.from(event.changedTouches).find((candidate) => candidate.identifier === contact.identifier);
+    if (!touch) return;
+    if (Math.hypot(touch.clientX - contact.clientX, touch.clientY - contact.clientY) >= TOUCH_TAP_MAX_MOVEMENT_PX) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+    }
+  }
+
+  private handleTouchDoubleTapTerminal(event: TouchEvent): void {
+    const contact = this.touchTapContact;
+    if (!contact) return;
+    if (event.type === "touchcancel"
+      || event.touches.length !== 0
+      || this.gestureNavigation.hasActivePen()) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    const touch = Array.from(event.changedTouches).find((candidate) => candidate.identifier === contact.identifier);
+    if (!touch || !(touch.target instanceof Node) || !contact.surface.page.element.contains(touch.target)) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    const at = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const moved = Math.hypot(touch.clientX - contact.clientX, touch.clientY - contact.clientY);
+    if (at - contact.startedAt > TOUCH_DOUBLE_TAP_MAX_DELAY_MS || moved >= TOUCH_TAP_MAX_MOVEMENT_PX) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    this.touchTapContact = null;
+    this.handleTouchDoubleTap(touch, at);
   }
 
   private refreshSurfaceCursors(surfaces: Iterable<PageSurface> = this.surfaces.values()): void {
@@ -10293,6 +10596,16 @@ export class ViewerInkSession {
         && event.target instanceof Element
         && surface.page.element.contains(event.target)
         && Boolean(event.target.closest(".cm-content[contenteditable='true']")),
+      touchAnnotationEnabled: () => this.touchAnnotationEnabled(),
+      mouseInkingEnabled: () => this.mouseInkingEnabled(),
+      customNavigationEnabled: () => this.customMobilePdfPinchZoomEnabled(surface),
+      touchTextTarget: (event) => this.isTouchTextTarget(surface, event),
+      cancelTouchPointer: (pointerId) => {
+        for (const candidate of this.surfaces.values()) {
+          if (candidate.router?.cancelTouchAnnotationPointer(pointerId)) return true;
+        }
+        return false;
+      },
       pointerInputCapabilities: () => detectPointerInputCapabilities(surface.page.element),
       onStylusEraserStart: () => {
         this.temporaryStylusEraserPointers += 1;
@@ -10443,7 +10756,10 @@ export class ViewerInkSession {
           page: surface.page.pageNumber,
           reason: "touchstart-capture"
         }));
+        this.handleTouchDoubleTapStart(event, surface);
       },
+      onTouchMove: (event) => this.handleTouchDoubleTapMove(event),
+      onTouchTerminal: (event) => this.handleTouchDoubleTapTerminal(event),
       onTouchPointerDown: (event) => {
         const editor = this.activeTextEditor;
         const target = event.target;
@@ -10458,6 +10774,12 @@ export class ViewerInkSession {
       },
       onRouterReceived: (event, generation) => {
         this.promoteStylusCapability(event);
+        const identity = resolvePointerIdentity(event, this.stylusCapability === "confirmed");
+        if (event.type === "pointerdown" && identity.effectivePointerType === "pen") {
+          this.touchDoubleTapState = null;
+          this.touchTapContact = null;
+          for (const candidate of this.surfaces.values()) candidate.router?.cancelTouchRoutes();
+        }
         this.postZoomRouterByPointer.set(event.pointerId, {
           received: true,
           rejected: false,

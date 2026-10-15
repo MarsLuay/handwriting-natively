@@ -12,7 +12,7 @@ import {
   type PointerInputCapabilities
 } from "./PointerInputCapabilities";
 
-export type PointerRoute = "draw" | "edit" | "text" | "drag" | "native" | "ignored";
+export type PointerRoute = "draw" | "edit" | "text" | "drag" | "touch-pan" | "touch-custom-pinch" | "native" | "ignored";
 
 export type PointerRejectionReason = "annotation-chrome" | "already-handled" | "inactive-owner" | "stale-generation";
 export interface PointerRouterHandoff {
@@ -159,6 +159,13 @@ export interface PointerRouterCallbacks {
   onHostOwnedInput?(event: Event, phase: string): void;
   /** Permit annotation over a surface-owned editor only when that surface opts in. */
   allowEditableAnnotationTarget?(event: PointerEvent): boolean;
+  /** Explicit fallback policies for mouse/touch annotation. */
+  touchAnnotationEnabled?(): boolean;
+  mouseInkingEnabled?(): boolean;
+  /** Qualified PDF mobile navigation; false leaves gestures to the host. */
+  customNavigationEnabled?(): boolean;
+  /** A finger may claim a committed text box even when touch drawing is off. */
+  touchTextTarget?(event: PointerEvent): boolean;
   /** Surface policy for the plugin's hand-tool pan gesture. */
   customHandPanEnabled?(): boolean;
   /** Session-wide pen contacts keep shared companion-touch blocking in sync across pages. */
@@ -191,8 +198,12 @@ export interface PointerRouterCallbacks {
   onRouterReceived?(event: PointerEvent, generation: number): void;
   /** Page touchstart, before pen scroll-blocking. Raw TouchEvent, not a pointer type. */
   onTouchStart?(event: TouchEvent): void;
+  onTouchMove?(event: TouchEvent): void;
+  onTouchTerminal?(event: TouchEvent): void;
   /** Primary touch pointerdown, before native PDF routing. */
   onTouchPointerDown?(event: PointerEvent): void;
+  /** Cancel an annotation contact across page routers sharing one session. */
+  cancelTouchPointer?(pointerId: number): boolean;
   /** True when document fallback / another router already owns this pointerId. */
   isPointerHandled?(pointerId: number, generation: number): boolean;
   /** Mark pointerId so document fallback does not start a duplicate stroke. */
@@ -267,7 +278,7 @@ export class PointerRouter {
       getScrollRoot: () => callbacks.scrollRoot?.() ?? null
     });
     this.resetOwnershipOnDestroy = resetOwnershipOnDestroy;
-    this.navigationController.attachSurface(element);
+    this.navigationController.attachSurface(element, this.customNavigationAllowed());
     this.palmPolicy.setResetListener((reason, resetPenIds) => {
       this.emitPenStateReset(reason, resetPenIds);
     });
@@ -302,13 +313,14 @@ export class PointerRouter {
     }
     if (this.inputCapabilities.touchEvents) {
       if (this.inputCapabilities.pointerEvents) {
-        // iPad Pencil emits companion TouchEvents after pen pointerdown. Without
-        // a non-passive cancel, WebKit still pans the PDF scroll root (touch-action
-        // stays auto so fingers can scroll when no pen is down).
+        // TouchEvents observe tap and lifecycle state. Pointer Events own opt-in
+        // touch annotation and qualified mobile PDF navigation. iPad Pencil also
+        // emits companion TouchEvents; without this non-passive cancel, WebKit
+        // still pans the PDF scroll root beneath an active stylus stroke.
         element.addEventListener("touchstart", this.blockTouchScrollWhilePen, { ...options, passive: false });
         element.addEventListener("touchmove", this.blockTouchScrollWhilePen, { ...options, passive: false });
-        // Touch remains native. Observe terminals only to clear stale stylus
-        // state when a page transition suppresses pointerup.
+        // Observe terminals to clear stale stylus state when a page transition
+        // suppresses pointerup.
         element.ownerDocument.addEventListener("touchend", this.handleTouchTerminal, { ...options, passive: true });
         element.ownerDocument.addEventListener("touchcancel", this.handleTouchTerminal, { ...options, passive: true });
       } else {
@@ -321,8 +333,8 @@ export class PointerRouter {
       }
     }
     // Blur/background can suppress pointerup and leave a captured pen alive.
-    // Cancel plugin-owned input at this lifecycle boundary; native touch remains
-    // untouched when no plugin ownership exists.
+    // Cancel plugin-owned routes at this lifecycle boundary; native touch stays
+    // untouched when no route claimed it.
     element.ownerDocument.addEventListener("visibilitychange", this.handleLifecycleCancellation, {
       ...passiveOptions
     });
@@ -355,11 +367,27 @@ export class PointerRouter {
     const tool = this.callbacks.activeTool();
     const identity = this.pointerIdentity(event);
     if (event.pointerType === "touch") {
+      if (event.isPrimary !== false && this.callbacks.touchTextTarget?.(event)) {
+        return { route: "text", reason: "text-box-touch", identity };
+      }
+      if (event.isPrimary !== false
+        && this.callbacks.touchAnnotationEnabled?.() === true
+        && this.callbacks.canAnnotatePointer(event, { stylusRemapped: false })) {
+        if (tool === "text") return { route: "text", reason: "touch-fallback-text", identity };
+        if (tool === "eraser" || tool === "lasso") return { route: "edit", reason: "touch-fallback-edit", identity };
+        if (isInkDrawTool(tool)) return { route: "draw", reason: "touch-fallback-draw", identity };
+      }
       return { route: "native", reason: "native-touch", identity };
     }
     const stylusRemapped = identity.stylusRemapped;
     const penLike = event.pointerType === "pen" || stylusRemapped;
-    if (!penLike) return { route: "native", reason: "non-stylus-native", identity };
+    const mouse = event.pointerType === "mouse" && !stylusRemapped;
+    if (mouse && event.button !== 0) {
+      return { route: "native", reason: "mouse-primary-button-only", identity };
+    }
+    if (!penLike && !(mouse && this.callbacks.mouseInkingEnabled?.() === true)) {
+      return { route: "native", reason: "non-stylus-native", identity };
+    }
     if (!this.callbacks.canAnnotatePointer(event, { stylusRemapped })) {
       return { route: "native", reason: "annotation-policy", identity };
     }
@@ -371,10 +399,18 @@ export class PointerRouter {
       return { route: "drag", reason: "hand-tool", identity };
     }
     if (isStylusEraserInput(event, stylusRemapped)) return { route: "edit", reason: "stylus-eraser", identity };
-    if (this.isTextToolRoute(tool, penLike)) return { route: "text", reason: "text-tool", identity };
+    if (this.isTextToolRoute(tool, penLike || mouse)) return { route: "text", reason: "text-tool", identity };
     const editing = tool === "eraser" || tool === "lasso";
-    if (penLike) return { route: editing ? "edit" : "draw", reason: editing ? "stylus-edit" : "stylus-draw", identity };
+    if (penLike || mouse) {
+      return { route: editing ? "edit" : "draw", reason: mouse ? (editing ? "mouse-edit" : "mouse-draw") : (editing ? "stylus-edit" : "stylus-draw"), identity };
+    }
     return { route: "native", reason: "unsupported-pointer", identity };
+  }
+
+  private customNavigationAllowed(): boolean {
+    return this.callbacks.customNavigationEnabled?.() === true
+      && this.inputCapabilities.pointerEvents
+      && this.inputCapabilities.touchEvents;
   }
 
   private leaveHostOwnedInputNative(event: Event, phase: string, terminal = false): boolean {
@@ -402,8 +438,8 @@ export class PointerRouter {
       || this.callbacks.allowEditableAnnotationTarget?.(event) === true;
   }
 
-  private isTextToolRoute(tool: ToolId, penLike: boolean): boolean {
-    return tool === "text" && penLike;
+  private isTextToolRoute(tool: ToolId, annotationPointer: boolean): boolean {
+    return tool === "text" && annotationPointer;
   }
 
   /** Document fallback / sync repair entry — same path as the page capture listener. */
@@ -493,8 +529,9 @@ export class PointerRouter {
       surface: this.element,
       route,
       pointerType: routeDecision.identity.effectivePointerType,
+      customNavigationEnabled: this.customNavigationAllowed(),
       customHandPanEnabled: this.customHandPanAllowed()
-    });
+    }, this.generation);
     if (navigationDecision.handled) {
       route = (navigationDecision.route as PointerRoute | undefined) ?? route;
       this.callbacks.onRouteDecision?.(route, navigationDecision.reason ?? routeDecision.reason, event, routeDecision.identity);
@@ -506,6 +543,16 @@ export class PointerRouter {
           touchCount: 0
         });
       }
+      for (const pointerId of navigationDecision.cancelledTouchIds ?? []) {
+        const cancelled = this.callbacks.cancelTouchPointer?.(pointerId) === true;
+        if (!cancelled) {
+          const routed = this.routed.get(pointerId);
+          if (routed && this.routedPointerTypes.get(pointerId) === "touch") {
+            this.finishRoutedPointer(this.syntheticPointerEvent(pointerId, "pointercancel", "touch"), "pointercancel");
+          }
+        }
+        this.navigationController.recaptureNavigationPointer(pointerId);
+      }
       return route;
     }
 
@@ -514,10 +561,13 @@ export class PointerRouter {
       ? this.ownership.pointerDown({
         pointerId: event.pointerId,
         pointerType: this.gesturePointerType(event),
+        button: event.button,
+        buttons: event.buttons,
         target: this.callbacks.canAnnotatePointer(event, {
           stylusRemapped: this.isStylusRemapped(event)
         }) ? "page" : "ui",
-        inkToolSelected: true
+        inkToolSelected: true,
+        inkIntent: event.pointerType === "mouse"
       })
       : { state: this.ownership.snapshot() };
 
@@ -526,12 +576,14 @@ export class PointerRouter {
     }
     let routeReason = routeDecision.reason;
     const gesturePointerType = this.gesturePointerType(event);
-    if (inkRoute && gesturePointerType !== "pen") {
-      route = "native";
-      routeReason = "gesture-ownership";
-    } else if (inkRoute
+    if (inkRoute && gesturePointerType === "pen"
       && (ownershipDecision.state.owner !== "pen-ink" || ownershipDecision.state.activePenId !== event.pointerId)) {
       route = "ignored";
+      routeReason = "gesture-ownership";
+    } else if (inkRoute && gesturePointerType === "mouse"
+      && (ownershipDecision.state.owner !== "mouse-ink"
+        || ownershipDecision.state.activeMousePointerId !== event.pointerId)) {
+      route = "native";
       routeReason = "gesture-ownership";
     }
 
@@ -665,8 +717,9 @@ export class PointerRouter {
 
   /** Cancel companion TouchEvents while stylus is down (iPad WebKit scroll path). */
   private readonly blockTouchScrollWhilePen = (event: TouchEvent): void => {
-    if (this.leaveHostOwnedInputNative(event, event.type)) return;
     if (event.type === "touchstart") this.callbacks.onTouchStart?.(event);
+    else if (event.type === "touchmove") this.callbacks.onTouchMove?.(event);
+    if (this.leaveHostOwnedInputNative(event, event.type)) return;
     // Touchstart can arrive without the Pencil pointerup after a page transition.
     this.reconcileUnownedPenOnTouch();
     this.syncNavigationPenContacts();
@@ -683,12 +736,16 @@ export class PointerRouter {
 
   /** Pointer-less hosts keep Touch Events passive and native-only. */
   private readonly observeTouchFallback = (event: TouchEvent): void => {
-    if (this.leaveHostOwnedInputNative(event, event.type)) return;
     if (event.type === "touchstart") this.callbacks.onTouchStart?.(event);
+    else if (event.type === "touchmove") this.callbacks.onTouchMove?.(event);
+    else this.callbacks.onTouchTerminal?.(event);
+    if (this.leaveHostOwnedInputNative(event, event.type)) return;
   };
 
   /** Clear stale stylus state when touch terminals arrive without pointerup. */
   private readonly handleTouchTerminal = (event: TouchEvent): void => {
+    this.callbacks.onTouchTerminal?.(event);
+    this.navigationController.handleTouchTerminal(event);
     if (this.leaveHostOwnedInputNative(event, event.type)) return;
     const hadActivePen = this.palmPolicy.hasActivePen();
     const stalePenCleared = this.reconcileUnownedPenOnTouch();
@@ -796,9 +853,10 @@ export class PointerRouter {
   }
 
   private gesturePointerType(event: PointerEvent): "pen" | "touch" | "mouse" {
-    return this.ownership.snapshot().activePenId === event.pointerId
-      ? "pen"
-      : this.pointerIdentity(event).effectivePointerType;
+    const state = this.ownership.snapshot();
+    if (state.activePenId === event.pointerId) return "pen";
+    if (state.activeMousePointerId === event.pointerId) return "mouse";
+    return this.pointerIdentity(event).effectivePointerType;
   }
 
   private releaseGestureOwnership(
@@ -808,7 +866,9 @@ export class PointerRouter {
     if (event.pointerType === "touch") return;
     const contact = {
       pointerId: event.pointerId,
-      pointerType: this.gesturePointerType(event)
+      pointerType: this.gesturePointerType(event),
+      button: event.button,
+      buttons: event.buttons
     } as const;
     const decision = phase === "pointercancel"
       ? this.ownership.pointerCancel(contact)
@@ -847,6 +907,7 @@ export class PointerRouter {
     const owned = this.routed.size > 0
       || this.stylusErasers.size > 0
       || this.navigationController.activePointerIds().length > 0
+      || this.navigationController.hasNativeFallbackTouches()
       || this.palmPolicy.hasActivePen();
     if (!owned) return;
 
@@ -856,6 +917,7 @@ export class PointerRouter {
     }
     if (this.stylusErasers.size > 0) this.callbacks.onStylusEraserEnd?.();
     this.stylusErasers.clear();
+    this.navigationController.clearNativeFallbackTouches();
     this.navigationController.cancelForSurface(this.element, "lifecycle");
     this.palmPolicy.clearAll("pointercancel");
     this.syncNavigationPenContacts();
@@ -1044,7 +1106,7 @@ export class PointerRouter {
 
   syncToolState(): void {
     this.cancelScheduledCursorUpdate();
-    this.navigationController.attachSurface(this.element);
+    this.navigationController.attachSurface(this.element, this.customNavigationAllowed());
     const tool = this.callbacks.activeTool();
     if (tool !== "eraser") this.hideEraserCursor();
     if (!isInkDrawTool(tool)) this.hideDrawCursor();
@@ -1091,6 +1153,18 @@ export class PointerRouter {
 
   activePenIds(): number[] {
     return this.palmPolicy.activePenIds();
+  }
+
+  cancelTouchAnnotationPointer(pointerId: number): boolean {
+    if (this.routedPointerTypes.get(pointerId) !== "touch" || !this.routed.has(pointerId)) return false;
+    this.finishRoutedPointer(this.syntheticPointerEvent(pointerId, "pointercancel", "touch"), "pointercancel");
+    return true;
+  }
+
+  cancelTouchRoutes(): void {
+    for (const [pointerId, pointerType] of [...this.routedPointerTypes]) {
+      if (pointerType === "touch") this.cancelTouchAnnotationPointer(pointerId);
+    }
   }
 
   activeRoutedPointerIds(): number[] {

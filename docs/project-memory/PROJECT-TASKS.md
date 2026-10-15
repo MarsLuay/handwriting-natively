@@ -30,11 +30,11 @@ Checks: profile dense pages; profile lasso resize and clipboard behavior.
 
 ## unified-gesture-navigation — pending
 
-Physically qualify native mouse/touch behavior, confirmed-stylus annotation, stylus hand-pan, and retained native zoom handoff paths.
+Physically qualify opt-in mouse/touch annotation, confirmed-stylus ownership, stylus hand-pan, and capability-gated iOS/iPadOS/Android PDF pan/pinch.
 
-Paths: `src/input/GestureNavigationController.ts`, `src/input/PointerRouter.ts`, `src/integration/HandwritingViewport.ts`, `src/integration/ImageViewAdapter.ts`, `src/integration/PdfJsViewAdapter.ts`, `src/runtime/ViewerInkSession.ts`, `styles.css`, `tests/`, `docs/input-gesture-architecture.md`
+Paths: `src/input/GestureNavigationController.ts`, `src/input/PointerRouter.ts`, `src/integration/PlatformCapabilities.ts`, `src/integration/MobileCustomPdfZoom.ts`, `src/integration/HandwritingViewport.ts`, `src/integration/ImageViewAdapter.ts`, `src/integration/PdfJsViewAdapter.ts`, `src/runtime/ViewerInkSession.ts`, `styles.css`, `tests/`, `docs/input-gesture-architecture.md`, `docs/mobile-pdf-zoom-contract.md`
 
-Checks: run the physical iPadOS and Android input matrix for stylus, companion touch, native mouse/touch navigation, PDF native pinch/wheel zoom, and image zoom; confirm stylus hand-pan and first post-zoom contacts; keep status pending until named-device traces are captured. `npm test`; `npm run lint`; `npm run build`.
+Checks: run the physical iOS, iPadOS, and Android input matrix for stylus, companion touch, opt-in mouse/touch annotation, native fallback, qualified PDF pan/pinch/wheel zoom, and image zoom; confirm stylus hand-pan and first post-zoom contacts; keep status pending until named-device traces are captured. `npm test`; `npm run lint`; `npm run build`.
 
 ## unified-developer-logs — done
 

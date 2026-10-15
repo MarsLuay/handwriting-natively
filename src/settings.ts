@@ -300,6 +300,17 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         heading: "PDF navigation",
         items: [
           ...(Platform.isMobile ? [{
+            name: "Custom mobile PDF pinch zoom",
+            desc: "Use the plugin's focal-point pan and pinch path on qualified iOS, iPadOS, and Android PDF pages. Unknown or unsafe viewers keep native gestures.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.customMobilePdfPinchZoom).onChange(async (value) => {
+                  await this.persistPatch({ customMobilePdfPinchZoom: value });
+                })
+              );
+            }
+          }] : []),
+          ...(Platform.isMobile ? [{
             name: "Disable swipe-activated sidebars",
             desc: "Prevent one-finger swipe gestures from opening Obsidian’s left sidebar, right sidebar, or command palette on mobile/iPad. Buttons and normal commands still work.",
             render: (setting: Setting) => {
@@ -317,8 +328,41 @@ export class NativePdfInkSettingTab extends PluginSettingTab {
         heading: "Drawing",
         items: [
           {
+            name: "Mouse annotation",
+            desc: "Allow the primary mouse button to draw or edit with the selected tool on annotated pages. The toolbar mouse button temporarily returns mouse input to the viewer.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.mouseInkingEnabled).onChange(async (value) => {
+                  await this.persistPatch({ mouseInkingEnabled: value });
+                })
+              );
+            }
+          },
+          {
+            name: "Touch annotation fallback",
+            desc: "Allow one-finger touch to use the selected annotation tool when no confirmed stylus is available. Off keeps touch navigation native.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.touchDrawFallback).onChange(async (value) => {
+                  await this.persistPatch({ touchDrawFallback: value });
+                })
+              );
+            }
+          },
+          {
+            name: "Touch double-tap eraser switch",
+            desc: "Double-tap a page with one finger to switch between the eraser and the previous tool.",
+            render: (setting: Setting) => {
+              setting.addToggle((toggle) =>
+                toggle.setValue(this.host.inkSettings.touchDoubleTapEraser).onChange(async (value) => {
+                  await this.persistPatch({ touchDoubleTapEraser: value });
+                })
+              );
+            }
+          },
+          {
             name: "Stylus-first input",
-            desc: "Only confirmed stylus input annotates. Ordinary mouse and touch keep native behavior for every selected tool."
+            desc: "Stylus annotation remains the primary input. Mouse annotation and touch fallback are separate opt-in choices."
           },
           {
             name: "Input pressure profile",

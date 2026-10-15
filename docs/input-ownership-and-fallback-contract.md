@@ -24,8 +24,9 @@ Related evidence boundaries:
    pressure, radius, or viewport guess.
 3. A confirmed pen on a safe page may annotate with the selected ink tool. A
    separate global Draw checkbox is not required for pen input.
-4. Ordinary mouse and touch remain native for every selected tool. There is no
-   setting that enables mouse or touch annotation.
+4. Primary mouse annotation and finger drawing are separate opt-in settings.
+   Mouse native-selection mode temporarily returns mouse input to the viewer.
+   Touch drawing is unavailable after a confirmed stylus is observed.
 5. UI targets are excluded before stylus annotation ownership is claimed.
 6. Active pen ownership blocks companion touch from scrolling beneath the
    stroke; touch cannot steal pen ownership.
@@ -34,16 +35,18 @@ Related evidence boundaries:
 
 ## Ownership states and transitions
 
-`GestureOwnership` is the authoritative contact owner. It tracks the owner,
-active pen ID, active touch IDs, mouse pointer/buttons, and a generation
-counter.
+`GestureOwnership` is the authoritative annotation contact owner. It tracks
+pen and opted-in mouse pointer/button state with a generation counter.
+`GestureNavigationController` owns custom touch navigation contacts.
 
 | Contact and context | Ownership | Default action |
 | --- | --- | --- |
 | Pen on a safe page with an ink-capable tool | `pen-ink` | Begin/append/finalize ink |
-| Touch without an active pen | `native-touch-navigation` | Preserve native scroll/pinch |
+| Touch drawing enabled, no confirmed stylus, safe page | page router | Use selected annotation tool |
+| Touch without a drawing route | gesture controller or host | Qualified mobile PDF pan/pinch; otherwise native navigation |
 | Touch while a pen owns ink | `pen-ink` remains authoritative | Block companion scroll; never ink |
-| Mouse input | `idle` | Preserve native PDF behavior |
+| Primary mouse with annotation enabled and native-selection mode off | `mouse-ink` | Use the selected annotation tool |
+| Other mouse input | `idle` | Preserve native PDF behavior |
 | Pen or mouse on UI/chrome before a claim | `idle` or existing owner | Leave the UI event available |
 | Blur, pagehide, hidden visibility, cancel, destroy, or generation replacement | `idle` for the new generation | Release captures and clear IDs |
 
@@ -67,17 +70,20 @@ capabilities do not disable a page whose identity and geometry are safe.
 
 ### Pointer Events available
 
-`PointerRouter` classifies stylus input and emits annotation actions. Touch
-listeners only block companion scrolling during active stylus contact, track
-lifecycle state, and collect diagnostics. They are not a drawing or navigation
-engine.
+`PointerRouter` classifies stylus input and opted-in mouse/touch annotation.
+Touch listeners observe start, movement, and terminal events to confirm taps
+before double-tap switching; they block companion scrolling only during active
+stylus contact. They do not cancel ordinary touch events.
 
 ### Pointer Events unavailable
 
-The router does not synthesize pointer contacts from Touch Events. Touch and
-mouse remain native. Stylus annotation is available only when the host exposes
-a supported stylus event path; the plugin does not guess from pressure,
-contact geometry, or platform labels.
+The router does not synthesize annotation pointer contacts from Touch Events.
+Mouse and touch annotation, plus custom PDF navigation, require Pointer Events.
+Without them, touch drawing and mouse annotation remain native; passive touch
+observation can still recognize a completed one-finger double-tap. Stylus
+annotation is available only when the host exposes a supported stylus event
+path; the plugin does not guess from pressure, contact geometry, or platform
+labels.
 
 ## Pointer and sample guarantees
 
@@ -110,7 +116,8 @@ predictions must not change persisted geometry.
 ## Touch-action and palm policy
 
 The plugin does not apply `touch-action: none` globally to a PDF or ink
-surface. Native one-finger scrolling and two-finger pinch remain available.
+surface. Native one-finger scrolling and two-finger pinch remain available
+outside qualified mobile PDF pages and active stylus companion-touch blocking.
 
 While a pen is actively owned, the page may receive a transient scoped guard
 to prevent companion touch from scrolling the document underneath the stroke.
@@ -125,8 +132,9 @@ gesture.
 
 ## Mouse and tool behavior
 
-Mouse input never starts annotation and remains available to the host PDF
-viewer regardless of selected tool or legacy settings.
+Primary-button mouse input remains native by default. When mouse annotation is
+enabled and toolbar native-selection mode is off, it uses the selected
+annotation tool; secondary buttons and other mouse input remain with the host.
 
 The selected tool controls the semantic route for confirmed stylus input:
 
@@ -141,11 +149,12 @@ detection is not permission to change native touch behavior.
 
 | Runtime | Preferred contract | Safe fallback/default | Physical qualification required |
 | --- | --- | --- | --- |
-| iPadOS + Apple Pencil | Pointer Events; confirmed pen annotates, finger stays native | Native touch and mouse | Pencil hover/pressure/tilt, Scribble, Pointer/Touch ordering, page boundaries, native pinch, background/reload |
-| Android + active stylus | Pointer Events with `pointerType === "pen"` when exposed | Native touch and mouse | Host WebView delivery, stylus fields, pinch, replacement, resume |
+| iOS/iPhone app | Explicit phone platform signal; custom PDF gestures require the same live viewer/page gate | Native gestures on ineligible surfaces | Pointer/Touch ordering, custom pinch, stylus coexistence, page replacement, background/resume |
+| iPadOS + Apple Pencil | Confirmed pen annotates; finger drawing remains opt-in; qualified PDF pages use custom pan/pinch | Native gestures on ineligible surfaces | Pencil hover/pressure/tilt, Scribble, Pointer/Touch ordering, page boundaries, custom pinch, background/reload |
+| Android + active stylus | Pointer Events with `pointerType === "pen"` when exposed; custom navigation requires a passing gate | Native gestures on ineligible surfaces | Host WebView delivery, stylus fields, custom pinch, replacement, resume |
 | Windows/Surface pen | Pointer Events pen ownership | Native touch and mouse | Real pen pressure/tilt, capture, page boundary, host viewer lifecycle |
-| Touch-only mobile | Native one-/two-finger navigation | Native touch and mouse; annotation unavailable without confirmed stylus | Touch navigation, `touch-action` placement, background/resume |
-| Desktop mouse/trackpad | Native mouse and trackpad behavior | Native mouse and trackpad behavior | Host PDF page hit behavior and trackpad gesture interaction |
+| Touch-only mobile | Opt-in finger drawing; qualified PDF one-finger pan/two-finger pinch | Native gestures for unknown or unsafe surfaces | Touch navigation, `touch-action` placement, background/resume |
+| Desktop mouse/trackpad | Native by default; primary mouse annotation is opt-in | Native mouse selection and trackpad behavior | Host PDF page hit behavior and trackpad gesture interaction |
 | Unknown or ambiguous host | Do not guess; preserve native behavior and fail closed on unsafe page evidence | No implicit pen promotion | A named host/device run before making a support claim |
 
 The table describes policy, not a hardware qualification result. Supported
