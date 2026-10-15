@@ -5563,3 +5563,48 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 });
+
+  it("does not set native-pdf-handwriting-draw-hit-page when drag tool is active", async () => {
+    const files = new MemoryFiles();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolPreferences.activeTool = "drag";
+    const adapter = new FakeAdapter();
+
+    // Mock HTMLCanvasElement.getContext for jsdom
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue({
+      scale: vi.fn(),
+      clearRect: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+      fill: vi.fn(),
+      save: vi.fn(),
+      restore: vi.fn(),
+      clip: vi.fn(),
+      drawImage: vi.fn(),
+      putImageData: vi.fn(),
+      createImageData: vi.fn().mockReturnValue({ data: new Uint8ClampedArray(4) }),
+      setTransform: vi.fn()
+    }) as any;
+
+    try {
+      const session = await ViewerInkSession.create({
+        adapter,
+        documentPath: "Notes/example.pdf",
+        settings,
+        sidecars: new SidecarRepository(files, "annotations"),
+        recovery: new RecoveryRepository(files, "recovery"),
+        saveSettings: async () => undefined,
+        readSourcePdf: async () => new Uint8Array(),
+        writeExport: async () => undefined,
+        notice: () => undefined
+      });
+
+      expect(adapter.pageElement.classList.contains("native-pdf-handwriting-draw-hit-page")).toBe(false);
+      await session.destroy();
+    } finally {
+      HTMLCanvasElement.prototype.getContext = originalGetContext;
+    }
+  });

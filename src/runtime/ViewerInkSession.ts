@@ -10577,11 +10577,9 @@ export class ViewerInkSession {
 
   /** Apply transient pen hit policy; never permanently disable PDF.js text/annotation layers. */
   private syncTouchDrawPolicy(reason: string): void {
-    const tool = this.activeTool();
     const penHit = this.hasActivePenCapability();
     const fallbackHit = this.touchAnnotationEnabled();
-    const isDrag = tool === "drag";
-    const annotationHit = penHit || fallbackHit || isDrag;
+    const annotationHit = penHit || fallbackHit;
     for (const surface of this.surfaces.values()) {
       this.applyTouchDrawPolicy(surface.page.element, annotationHit);
       this.ensurePageRouter(surface);
