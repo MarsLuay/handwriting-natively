@@ -316,16 +316,23 @@ describe("zoom ink compositing", () => {
     const internal = session as unknown as {
       scheduleZoomRepaint(reason: string, scale?: number): void;
       zoomSettleTimer: number | null;
+      zoomTickCount: number;
+      zoomProfile: { coalescedVisualUpdates: number } | null;
       settleTimerResetCount: number;
     };
     vi.useFakeTimers();
 
+    const coalescedBefore = internal.zoomProfile?.coalescedVisualUpdates ?? 0;
     internal.scheduleZoomRepaint("scalechanging", 1.5);
     const timer = internal.zoomSettleTimer;
+    const tickCount = internal.zoomTickCount;
+    internal.scheduleZoomRepaint("scalechanging", 1.5);
     internal.scheduleZoomRepaint("data-scale", 1.5);
     internal.scheduleZoomRepaint("view-scroll-mobile", 1.5);
 
     expect(internal.zoomSettleTimer).toBe(timer);
+    expect(internal.zoomTickCount).toBe(tickCount);
+    expect(internal.zoomProfile?.coalescedVisualUpdates).toBeGreaterThanOrEqual(coalescedBefore + 3);
     expect(internal.settleTimerResetCount).toBe(0);
     await session.destroy();
   });

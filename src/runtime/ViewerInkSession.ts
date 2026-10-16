@@ -4680,10 +4680,11 @@ export class ViewerInkSession {
     if (!this.zoomProfile || this.zoomSettleTimer === null) return false;
     if (scale === undefined || this.zoomBurstScaleEnd === null) return false;
     const sameScale = Math.abs(scale - this.zoomBurstScaleEnd) < 1e-4;
-    // PDF.js can publish the same data-scale attribute once per replaced page.
-    // It is a structural observation, not a new scale gesture, so do not reset
-    // the quiet timer for every page in a multi-page document.
-    if (reason.includes("data-scale") && sameScale) return true;
+    // PDF.js can publish the same scale from its event bus, data-scale
+    // mutation observer, and replaced-page callbacks. Once the canonical scale
+    // is unchanged, none of those signals needs another overlay/layout pass or
+    // a new quiet-window deadline—even when the source is scalechanging.
+    if (sameScale && !reason.includes("rotation")) return true;
     if (reason.includes("scale") || reason.includes("rotation")) return false;
     // Some mobile PDF hosts report a stale scale on the scroll notification
     // that follows a scale tick. Do not let that one-frame notification end a

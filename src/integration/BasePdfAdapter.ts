@@ -89,6 +89,9 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   /** Coalesced `.page` structure mutations (can fire hundreds/sec on attach). */
   private pageStructureMutations = 0;
   private lastPageStructureLogAt = 0;
+  /** Sampled annotation-link drag cancellations prove the PDF.js guard is active. */
+  private annotationLinkDragBlocks = 0;
+  private lastAnnotationLinkDragLogAt = 0;
   /**
    * Live pinch/zoom burst gate from ViewerInkSession. While set, non-authoritative
    * sidebar follow (style/resize/inner-content noise) is deferred so the rail
@@ -109,6 +112,7 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   /** Keep observer diagnostics useful without writing one entry for every PDF.js paint frame. */
   private static readonly PAGE_CONTENT_MUTATION_LOG_INTERVAL_MS = 250;
   private static readonly PAGE_STRUCTURE_LOG_INTERVAL_MS = 250;
+  private static readonly ANNOTATION_LINK_DRAG_LOG_INTERVAL_MS = 1_000;
   private static readonly RESIZE_DELTA_GATE_PX = 0.5;
   private pageContentMutationFrame: number | null = null;
   private pendingPageContentMutationRecords = 0;
@@ -1077,7 +1081,10 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
       // AnnotationEditorUIManager.dragOver when native link dragging starts.
       // Cancelling only the annotation-link drag default prevents that broken
       // lifecycle while preserving normal link clicks and all unrelated drags.
-      if (event.target.closest(".annotationLayer a")) event.preventDefault();
+      if (event.target.closest(".annotationLayer a")) {
+        event.preventDefault();
+        this.logAnnotationLinkDragBlocked();
+      }
     };
     this.host.addEventListener("dragstart", onDragStart, true);
     this.registerCleanup(() => this.host.removeEventListener("dragstart", onDragStart, true));
@@ -1281,6 +1288,21 @@ export abstract class BasePdfAdapter implements ObsidianPdfAdapter {
   private reportLayoutResult(result: LayoutOperationResult | null): void {
     if (!result?.slowEvent) return;
     this.callbacks.onDebugLog?.("warn", "pdf layout slow", result.slowEvent as unknown as Record<string, unknown>);
+  }
+
+  private logAnnotationLinkDragBlocked(): void {
+    this.annotationLinkDragBlocks += 1;
+    const now = this.now();
+    const shouldLog = this.annotationLinkDragBlocks === 1
+      || this.annotationLinkDragBlocks % 10 === 0
+      || now - this.lastAnnotationLinkDragLogAt >= BasePdfAdapter.ANNOTATION_LINK_DRAG_LOG_INTERVAL_MS;
+    if (!shouldLog) return;
+    this.lastAnnotationLinkDragLogAt = now;
+    this.logAdapterEvent("info", "pdf annotation link drag blocked", {
+      viewerGeneration: this.currentViewerGeneration,
+      blockedCount: this.annotationLinkDragBlocks,
+      guard: "capture-dragstart"
+    });
   }
 
   private logAdapterEvent(level: "info" | "warn", event: string, payload: Record<string, unknown>): void {

@@ -75,7 +75,8 @@ describe("PDF adapters", () => {
     ordinaryLink.href = "https://example.com/ordinary";
     page.append(annotationLayer, ordinaryLink);
 
-    const adapter = await NativePdfViewAdapter.attach(host);
+    const debug = vi.fn();
+    const adapter = await NativePdfViewAdapter.attach(host, { onDebugLog: debug });
     const click = new MouseEvent("click", { bubbles: true, cancelable: true });
     const annotationDrag = new Event("dragstart", { bubbles: true, cancelable: true });
     const ordinaryDrag = new Event("dragstart", { bubbles: true, cancelable: true });
@@ -86,6 +87,11 @@ describe("PDF adapters", () => {
     expect(click.defaultPrevented).toBe(false);
     expect(annotationDrag.defaultPrevented).toBe(true);
     expect(ordinaryDrag.defaultPrevented).toBe(false);
+    expect(debug).toHaveBeenCalledWith(
+      "info",
+      "pdf annotation link drag blocked",
+      expect.objectContaining({ blockedCount: 1, guard: "capture-dragstart" })
+    );
 
     adapter.destroy();
     const dragAfterDestroy = new Event("dragstart", { bubbles: true, cancelable: true });
