@@ -290,6 +290,143 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     getContext.mockRestore();
   });
 
+  it("reloads page shells from vault bytes after a source-PDF mutation", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const page = {
+      getViewport: ({ scale, rotation }: { scale: number; rotation?: number }) => ({
+        width: 600 * scale,
+        height: 800 * scale,
+        scale,
+        rotation: rotation ?? 0,
+        viewBox: [0, 0, 600, 800],
+        transform: [1, 0, 0, -1, 0, 800],
+        convertToViewportPoint: (x: number, y: number) => [x * scale, (800 - y) * scale] as [number, number]
+      }),
+      render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+      getTextContent: async () => ({ items: [] }),
+      getAnnotations: async () => []
+    };
+    const documentFor = (numPages: number) => ({
+      numPages,
+      getPage: async () => page,
+      getOutline: async () => [],
+      cleanup: vi.fn(),
+      destroy: vi.fn()
+    });
+    let loads = 0;
+    const runtime: PdfJsRuntime = {
+      module: {
+        getDocument: () => {
+          loads += 1;
+          return { promise: Promise.resolve(documentFor(loads === 1 ? 1 : 2)), destroy: vi.fn() };
+        }
+      },
+      assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const adapter = await PdfJsViewAdapter.create({
+      app: testApp(),
+      file: { name: "mutate.pdf" } as never,
+      pluginDir: "pdfjs",
+      host,
+      runtime
+    });
+    expect(adapter.pages()).toHaveLength(1);
+    await adapter.reloadFromVault();
+    expect(adapter.pages()).toHaveLength(2);
+    expect(host.querySelectorAll(".hn-owned-pdf-page")).toHaveLength(2);
+    adapter.destroy();
+    host.remove();
+  });
+
+  it("clamps the focused page when reloadFromVault shrinks the document", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const page = {
+      getViewport: ({ scale, rotation }: { scale: number; rotation?: number }) => ({
+        width: 600 * scale,
+        height: 800 * scale,
+        scale,
+        rotation: rotation ?? 0,
+        viewBox: [0, 0, 600, 800],
+        transform: [1, 0, 0, -1, 0, 800],
+        convertToViewportPoint: (x: number, y: number) => [x * scale, (800 - y) * scale] as [number, number]
+      }),
+      render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+      getTextContent: async () => ({ items: [] }),
+      getAnnotations: async () => []
+    };
+    const documentFor = (numPages: number) => ({
+      numPages,
+      getPage: async () => page,
+      getOutline: async () => [],
+      cleanup: vi.fn(),
+      destroy: vi.fn()
+    });
+    let loads = 0;
+    const runtime: PdfJsRuntime = {
+      module: {
+        getDocument: () => {
+          loads += 1;
+          return { promise: Promise.resolve(documentFor(loads === 1 ? 2 : 1)), destroy: vi.fn() };
+        }
+      },
+      assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const adapter = await PdfJsViewAdapter.create({
+      app: testApp(),
+      file: { name: "shrink.pdf" } as never,
+      pluginDir: "pdfjs",
+      host,
+      runtime
+    });
+    expect(adapter.pages()).toHaveLength(2);
+    expect(adapter.focusPage(2)).toBe(true);
+    expect(adapter.getViewState().pageNumber).toBe(2);
+    await adapter.reloadFromVault();
+    expect(adapter.pages()).toHaveLength(1);
+    expect(adapter.getViewState().pageNumber).toBe(1);
+    adapter.destroy();
+    host.remove();
+  });
+
+  it("finishes adapter create when the first page raster never settles", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const page = {
+      getViewport: ({ scale, rotation }: { scale: number; rotation?: number }) => ({
+        width: 600 * scale,
+        height: 800 * scale,
+        scale,
+        rotation: rotation ?? 0,
+        viewBox: [0, 0, 600, 800],
+        transform: [1, 0, 0, -1, 0, 800],
+        convertToViewportPoint: (x: number, y: number) => [x * scale, (800 - y) * scale] as [number, number]
+      }),
+      render: () => ({ promise: new Promise<void>(() => undefined), cancel: vi.fn() }),
+      getTextContent: async () => ({ items: [] }),
+      getAnnotations: async () => []
+    };
+    const runtime: PdfJsRuntime = {
+      module: { getDocument: () => ({ promise: Promise.resolve({ numPages: 1, getPage: async () => page, getOutline: async () => [] }) }) },
+      assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const adapter = await PdfJsViewAdapter.create({
+      app: testApp(),
+      file: { name: "stuck.pdf" } as never,
+      pluginDir: "pdfjs",
+      host,
+      runtime
+    });
+    expect(host.querySelector(".hn-owned-pdf-page")).not.toBeNull();
+    expect(adapter.pages()).toHaveLength(1);
+    adapter.destroy();
+    host.remove();
+  });
+
   it("destroys the loading task when document initialization fails", async () => {
     const destroy = vi.fn();
     const runtime: PdfJsRuntime = {

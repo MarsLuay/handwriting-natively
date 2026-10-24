@@ -75,6 +75,8 @@ const MAX_TEXT_ITEMS = 4_000;
 const MAX_ANNOTATIONS = 1_000;
 const MAX_TEXT_CONTENT_CACHE_PAGES = 32;
 const THUMBNAIL_FALLBACK_PRELOAD = 12;
+const FIRST_PAINT_BUDGET_MS = 1_500;
+const PAGE_RENDER_TIMEOUT_MS = 8_000;
 
 function clampScale(value: number): number {
   return Number.isFinite(value) ? Math.max(MIN_SCALE, Math.min(MAX_SCALE, value)) : DEFAULT_SCALE;
@@ -224,9 +226,12 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
 
   private readonly callbacks: AnnotationSurfaceCallbacks;
   private readonly fileName: string;
-  private readonly pdfDocument: PdfJsDocumentProxy;
-  private readonly sourceData: Uint8Array;
-  private readonly loadingTask: { destroy?(): Promise<void> | void };
+  private readonly vaultApp: App;
+  private readonly file: TFile;
+  private readonly runtime: PdfJsRuntime | undefined;
+  private pdfDocument: PdfJsDocumentProxy;
+  private sourceData: Uint8Array;
+  private loadingTask: { destroy?(): Promise<void> | void };
   readonly lifecycleCoordinator: PageLifecycleCoordinator;
   readonly renderScheduler: RenderScheduler;
   private readonly pagesByNumber = new Map<number, OwnedPage>();
@@ -277,6 +282,9 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
   ) {
     this.host = options.host;
     this.fileName = options.file.name;
+    this.vaultApp = options.app;
+    this.file = options.file;
+    this.runtime = options.runtime;
     this.callbacks = options.callbacks ?? {};
     this.loadingTask = loadingTask;
     this.pdfDocument = pdfDocument;
@@ -343,7 +351,7 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     let pdfDocument: PdfJsDocumentProxy | undefined;
     try {
       pdfDocument = await loadingTask.promise;
-      adapter = new PdfJsViewAdapter(options, loadingTask, pdfDocument, data);
+      adapter = new PdfJsViewAdapter({ ...options, runtime }, loadingTask, pdfDocument, data);
       await adapter.initialize();
       return adapter;
     } catch (error) {
@@ -367,16 +375,71 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     }
     const firstOwnedPage = this.pagesByNumber.get(1);
     if (firstOwnedPage) firstOwnedPage.page = first;
-    this.renderScheduler.setDocumentGeometry(this.pdfDocument.numPages, this.scale, this.rotation, 1);
-    await this.renderScheduler.requestPage(1, "immediate");
+    const focused = Math.max(1, Math.min(this.pdfDocument.numPages, this.currentPageNumber || 1));
+    this.currentPageNumber = focused;
+    this.lifecycleCoordinator.setActivePage(focused);
+    this.renderScheduler.setDocumentGeometry(this.pdfDocument.numPages, this.scale, this.rotation, focused);
+    const firstPaint = this.renderScheduler.requestPage(focused, "immediate").catch((error: unknown) => {
+      if (this.destroyed || (error instanceof Error && /cancel/i.test(error.message))) return;
+      this.callbacks.onDebugLog?.("warn", "pdfjs-page-render-failed", {
+        pageNumber: focused,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
     const preloadPages = typeof IntersectionObserver === "function"
-      ? [2, 3].filter((value) => value <= this.pdfDocument.numPages)
+      ? [focused - 1, focused + 1, focused + 2].filter((value) => value >= 1 && value <= this.pdfDocument.numPages && value !== focused)
       : Array.from({ length: Math.min(8, this.pdfDocument.numPages) }, (_, index) => index + 1);
     for (const pageNumber of preloadPages) this.queuePageRender(pageNumber, "high");
     await this.loadOutline();
+    await Promise.race([firstPaint, this.delay(FIRST_PAINT_BUDGET_MS)]);
     if (!this.initialScaleResolved) this.fitWidth();
     this.callbacks.onPagesChanged?.("pdfjs-document-ready");
     this.emitViewState("pages-dom");
+  }
+
+  async reloadFromVault(): Promise<void> {
+    if (this.destroyed) return;
+    const runtime = this.runtime;
+    if (!runtime) throw new Error("PDF.js runtime unavailable");
+    const data = new Uint8Array(await this.vaultApp.vault.readBinary(this.file));
+    const loadingTask = runtime.module.getDocument(pdfJsDocumentOptions(runtime.assets, data));
+    let pdfDocument: PdfJsDocumentProxy | undefined;
+    try {
+      pdfDocument = await loadingTask.promise;
+      if (this.destroyed) {
+        await Promise.resolve(pdfDocument.destroy?.()).catch(() => undefined);
+        await Promise.resolve(loadingTask.destroy?.()).catch(() => undefined);
+        return;
+      }
+      this.lifecycleGeneration += 1;
+      for (const page of this.pagesByNumber.values()) {
+        page.renderTask?.cancel?.();
+        page.page?.cleanup?.();
+      }
+      this.pagesByNumber.clear();
+      this.textContentByPage.clear();
+      this.outlineInkCanvases.clear();
+      this.thumbnailQueued.clear();
+      this.thumbnailRendered.clear();
+      this.thumbnailInkCanvases.clear();
+      this.pageContainer.replaceChildren();
+      this.outlinePanel.replaceChildren();
+      this.thumbnailPanel.replaceChildren();
+      const previousDocument = this.pdfDocument;
+      const previousTask = this.loadingTask;
+      this.pdfDocument = pdfDocument;
+      this.sourceData = data;
+      this.loadingTask = loadingTask;
+      this.lifecycleCoordinator.setTotalPages(pdfDocument.numPages);
+      void previousDocument.cleanup?.();
+      void previousDocument.destroy?.();
+      void previousTask.destroy?.();
+      await this.initialize();
+    } catch (error) {
+      await Promise.resolve(loadingTask.destroy?.()).catch(() => undefined);
+      await Promise.resolve(pdfDocument?.destroy?.()).catch(() => undefined);
+      throw error;
+    }
   }
 
   private createPageShell(pageNumber: number, naturalWidth: number, naturalHeight: number): OwnedPage {
@@ -651,6 +714,13 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
     page.canvas.height = 1;
   }
 
+  private delay(ms: number): Promise<void> {
+    const view = this.root.ownerDocument.defaultView;
+    return new Promise((resolve) => {
+      (view ?? window).setTimeout(resolve, ms);
+    });
+  }
+
   private queuePageRender(pageNumber: number, priority?: RenderPriority): void {
     void this.renderScheduler.requestPage(pageNumber, priority).catch((error: unknown) => {
       if (this.destroyed || (error instanceof Error && /cancel/i.test(error.message))) return;
@@ -718,7 +788,20 @@ export class PdfJsViewAdapter implements PdfSurfaceExtensions {
         cancelTask();
       }
 
-      await task.promise;
+      void task.promise.catch(() => undefined);
+      const timedOut = await Promise.race([
+        task.promise.then(() => false),
+        this.delay(PAGE_RENDER_TIMEOUT_MS).then(() => true)
+      ]);
+      if (timedOut) {
+        cancelTask();
+        this.lifecycleCoordinator.finishPdfRaster(job.pageNumber, false);
+        this.callbacks.onDebugLog?.("warn", "pdfjs-page-render-timeout", {
+          pageNumber: job.pageNumber,
+          timeoutMs: PAGE_RENDER_TIMEOUT_MS
+        });
+        return;
+      }
       if (!this.isAlive(lifecycleGeneration) || signal.aborted || generation !== page.generation || page.viewport !== viewport) {
         this.lifecycleCoordinator.finishPdfRaster(job.pageNumber, false);
         return;

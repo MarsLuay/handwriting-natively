@@ -8522,6 +8522,11 @@ export class ViewerInkSession {
     return snapshot;
   }
 
+  /** Plugin-owned PDF.js keeps its document until we re-read the vault file. */
+  private async reloadOwnedPdfFromVault(): Promise<void> {
+    await pdfSurfaceExtensions(this.options.adapter)?.reloadFromVault?.();
+  }
+
   /**
    * Obsidian has no in-place PDF.js document replacement API: modifyBinary
    * destroys its page DOM before the replacement document is ready. Preserve
@@ -8894,6 +8899,7 @@ export class ViewerInkSession {
       };
       await this.armPageMutationShield("insert", mutation.pageNumber);
       await this.options.writeSourcePdf(mutation.bytes);
+      await this.reloadOwnedPdfFromVault();
       const remapped = this.applyImportedPagesToSession(before, mutation.pageNumber, mutation.pageCount);
       try {
         await this.persist(remapped, "page-import");
@@ -9070,6 +9076,7 @@ export class ViewerInkSession {
       await this.armPageMutationShield("insert", requestedPageNumber);
       const report = (stage: string): void => this.noteAddPageStage(stage);
       const insertedPage = await this.options.onInsertPage(requestedPageNumber, report);
+      await pdfSurfaceExtensions(this.options.adapter)?.reloadFromVault?.();
       if (this.pendingInsertedPageFocus) this.pendingInsertedPageFocus.pageNumber = insertedPage;
       this.applyInsertedPageToSession(before, insertedPage);
       this.completePendingAddPageMutation("insert-complete", this.options.adapter.pages());
@@ -9122,6 +9129,7 @@ export class ViewerInkSession {
       };
       await this.armPageMutationShield("insert", requestedPageNumber);
       const insertedPage = await this.options.onInsertScannedPages(requestedPageNumber, pages);
+      await this.reloadOwnedPdfFromVault();
       if (this.pendingInsertedPageFocus) this.pendingInsertedPageFocus.pageNumber = insertedPage;
       this.applyInsertedPagesToSession(before, insertedPage, pages.length);
       this.focusInsertedPageIfReady("scan-complete", this.options.adapter.pages());
@@ -9242,6 +9250,7 @@ export class ViewerInkSession {
       const metrics = new Map(this.pageMetrics);
       await this.armPageMutationShield("reorder", fromPage);
       await this.options.onReorderPage(fromPage, toPage);
+      await this.reloadOwnedPdfFromVault();
       this.applyReorderedPageToSession(before, fromPage, toPage, metrics);
       this.logger.pdfPageAction("reorder-complete", { fromPage, toPage });
       this.options.notice(`Moved page ${fromPage} to position ${toPage}.`);
@@ -9271,9 +9280,11 @@ export class ViewerInkSession {
       // PDF and its page-numbered sidecar/recovery data.
       if (this.isDirty()) await this.manualSave();
       const before = this.snapshot();
+      const focusedPage = this.options.adapter.getViewState().pageNumber;
       await this.armPageMutationShield("delete", pageNumber);
       await this.options.onDeletePage(pageNumber);
-      this.applyDeletedPageToSession(before, pageNumber);
+      await this.reloadOwnedPdfFromVault();
+      this.applyDeletedPageToSession(before, pageNumber, focusedPage);
       this.logger.pdfPageAction("delete-complete", { pageNumber });
       this.options.notice(`Deleted page ${pageNumber}.`);
     } catch (error) {
@@ -9316,9 +9327,11 @@ export class ViewerInkSession {
     try {
       if (this.isDirty()) await this.manualSave();
       const before = this.snapshot();
+      const focusedPage = this.options.adapter.getViewState().pageNumber;
       await this.armPageMutationShield("delete", lastPage);
       await this.options.onDeletePages(pageNumbers);
-      this.applyDeletedPagesToSession(before, pageNumbers);
+      await this.reloadOwnedPdfFromVault();
+      this.applyDeletedPagesToSession(before, pageNumbers, focusedPage);
       this.logger.pdfPageAction("delete-range-complete", {
         pageNumbers,
         firstPage,
@@ -9365,12 +9378,16 @@ export class ViewerInkSession {
   }
 
   /** Keep live ink/text state synchronized with the remapped on-disk sidecar. */
-  private applyDeletedPageToSession(before: SidecarSchemaV1, deletedPage: number): void {
-    this.applyDeletedPagesToSession(before, [deletedPage]);
+  private applyDeletedPageToSession(before: SidecarSchemaV1, deletedPage: number, focusedPage?: number): void {
+    this.applyDeletedPagesToSession(before, [deletedPage], focusedPage);
   }
 
   /** Applies a descending original-page deletion plan once to the live session. */
-  private applyDeletedPagesToSession(before: SidecarSchemaV1, deletedPageNumbers: readonly number[]): void {
+  private applyDeletedPagesToSession(
+    before: SidecarSchemaV1,
+    deletedPageNumbers: readonly number[],
+    focusedPage?: number
+  ): void {
     this.commitActiveTextEditor("page-delete");
     this.cancelTextBoxTransform("page-delete", false);
     const deletedPages = [...new Set(deletedPageNumbers)].sort((left, right) => right - left);
@@ -9404,6 +9421,16 @@ export class ViewerInkSession {
     this.autosave.markClean(this.identity.id);
     this.saveCoordinator.markSaved();
     this.toolbar.setSaveStatus("saved", new Date());
+    const recordedFocus = focusedPage;
+    const current = typeof recordedFocus === "number" && Number.isInteger(recordedFocus) && recordedFocus > 0
+      ? recordedFocus
+      : this.options.adapter.getViewState().pageNumber;
+    let next = Number.isInteger(current) && current > 0 ? current : 1;
+    for (const pageNumber of [...deletedSet].sort((left, right) => left - right)) {
+      if (next > pageNumber) next -= 1;
+    }
+    const pageCount = Math.max(1, this.options.adapter.pages().length);
+    this.commandController.goToPage(Math.max(1, Math.min(pageCount, next)));
     this.scheduleRefresh("page-delete", true);
   }
 

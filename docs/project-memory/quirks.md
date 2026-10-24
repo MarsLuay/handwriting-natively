@@ -1,6 +1,8 @@
 # Quirks
 
 - Laser pointer trails fade and are never saved. Pen, pencil, highlighter, and typed text are sidecar-backed; typed text is searchable through the viewer-only bridge, while freehand ink is not searchable.
+- Opening a plugin-owned PDF attaches the ink session after page shells exist. The first PDF.js raster is budgeted (~1.5s) and individual page renders time out (~8s) so a stuck fake-worker paint cannot block tab open or a second document.
+- Explicit page insert/delete/import/scan/reorder rewrites the vault PDF, then the plugin-owned viewer re-reads those bytes and remaps the focused page onto the new page count. Obsidian's native PDF.js leaf is not used for that reload.
 - The adapter checks known viewer/page selectors and falls back to DOM page bounds. A missing viewer root or page is a hard compatibility error; a missing embedded host toolbar is a warning because the shared toolbar can mount beside the viewer.
 - Direct PDFs, PNG/JPEG images, and Markdown Reading/editing views use the same draggable floating `AnnotationToolbar`; More rotates its persisted horizontal/vertical orientation. Markdown editing mounts outside CodeMirror's contenteditable subtree and follows the full scrollable note. Markdown wheel, touch, and hand-tool scrolling stay native; the plugin does not pan or rubber-band Markdown surfaces. Direct PDF mounting does not depend on Obsidian's private `PDFToolbar` constructor or a host `.pdf-toolbar` element.
 - Markdown keeps one full-note canvas. Its edge allowance is 16,384 pixels on desktop and 8,192 on mobile while retaining each platform's existing pixel-area budget, so note height alone does not downscale strokes as early as on paginated surfaces.

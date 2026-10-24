@@ -1,3 +1,8 @@
+## 0.1.58 — 2026-10-24
+
+- Budget the first PDF.js raster and time out stuck page renders so opening a second plugin-owned PDF cannot hang forever.
+- Re-read vault PDF bytes after insert/scan/import/reorder/delete so the owned viewer matches the rewritten document, and remap the focused page onto the new page count.
+
 ## 0.1.53 — 2026-09-21
 
 - Recover long-lived handwriting after router teardown with generation-aware pointer ownership and inactive-session rejection.
