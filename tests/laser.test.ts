@@ -143,4 +143,44 @@ describe("LaserTool", () => {
     expect(dense[0]).toEqual({ x: 0, y: 0, time: 0 });
     expect(dense.at(-1)).toEqual({ x: 40, y: 0, time: 1 });
   });
+
+  it("handles points that are nearly identical without throwing TypeError", () => {
+    const dense = densifyLaserPath(
+      [
+        { x: 10, y: 10, time: 0 },
+        { x: 10.05, y: 10.05, time: 1 }
+      ],
+      4
+    );
+    expect(dense.length).toBeGreaterThanOrEqual(2);
+
+    const context = {
+      save: vi.fn(),
+      restore: vi.fn(),
+      beginPath: vi.fn(),
+      closePath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      arc: vi.fn(),
+      fill: vi.fn(),
+      stroke: vi.fn(),
+      fillStyle: "",
+      globalAlpha: 1,
+      lineWidth: 1,
+      lineCap: "butt",
+      lineJoin: "miter",
+      miterLimit: 10
+    } as unknown as CanvasRenderingContext2D;
+
+    expect(() => {
+      drawLaserStroke(
+        context,
+        [
+          { x: 10, y: 10, time: 100 },
+          { x: 10.05, y: 10.05, time: 150 }
+        ],
+        { color: "#ff0000", width: 2, opacity: 1, nowMs: 150, holdMs: 900, fadeMs: 1400 }
+      );
+    }).not.toThrow();
+  });
 });

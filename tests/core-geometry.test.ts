@@ -38,6 +38,35 @@ describe("coordinates and geometry", () => {
     expect(mapper.toPdf(viewport)).toEqual(source);
   });
 
+  it.each([0, 90, 180, 270] as PageRotation[])("round-trips nonzero origin CropBox at rotation %i", (rotation) => {
+    const mapper = new PdfCoordinateMapper({
+      width: 100,
+      height: 200,
+      minX: 50,
+      minY: 75,
+      scale: 1.5,
+      rotation,
+      offsetX: 10,
+      offsetY: 20
+    });
+    const source = { x: 75, y: 125 };
+    const viewport = mapper.toViewport(source);
+    expect(mapper.toPdf(viewport)).toEqual(source);
+  });
+
+  it.each([0, 90, 180, 270] as PageRotation[])("round-trips userUnit scaling at rotation %i", (rotation) => {
+    const mapper = new PdfCoordinateMapper({
+      width: 100,
+      height: 200,
+      userUnit: 2.5,
+      scale: 1.2,
+      rotation
+    });
+    const source = { x: 40, y: 80 };
+    const viewport = mapper.toViewport(source);
+    expect(mapper.toPdf(viewport)).toEqual(source);
+  });
+
   it("uses expected rotated viewport axes", () => {
     expect(new PdfCoordinateMapper({ width: 100, height: 200, scale: 1, rotation: 90 }).toViewport({ x: 20, y: 30 })).toEqual({ x: 30, y: 20 });
     expect(new PdfCoordinateMapper({ width: 100, height: 200, scale: 1, rotation: 270 }).toViewport({ x: 20, y: 30 })).toEqual({ x: 170, y: 80 });

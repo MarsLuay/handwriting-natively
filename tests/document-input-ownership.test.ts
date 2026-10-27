@@ -4,8 +4,15 @@ import {
   documentInputOwnershipSnapshot
 } from "../src/input/DocumentInputOwnership";
 
-function owner(ownerId: string, sessionGeneration: number, onReplaced: (reason: "replacement" | "released") => void) {
-  return { ownerId, sessionGeneration, registrationSource: "test", onReplaced };
+const testHost = document.createElement("div");
+
+function owner(
+  ownerId: string,
+  sessionGeneration: number,
+  onReplaced: (reason: "replacement" | "released") => void,
+  host: HTMLElement = testHost
+) {
+  return { host, ownerId, sessionGeneration, registrationSource: "test", onReplaced };
 }
 
 describe("document input ownership", () => {
@@ -47,7 +54,8 @@ describe("document input ownership", () => {
       ownerId: null,
       sessionGeneration: null,
       registrationSource: null,
-      acquiredAt: null
+      acquiredAt: null,
+      owners: []
     });
   });
 
@@ -59,6 +67,27 @@ describe("document input ownership", () => {
     expect(firstRevoked).toHaveBeenCalledWith("replacement");
     expect(first.isOwner()).toBe(false);
     expect(second.isOwner()).toBe(true);
+    second.release();
+  });
+
+  it("keeps separate viewer hosts independent in one document", () => {
+    const firstHost = document.createElement("div");
+    const secondHost = document.createElement("div");
+    const firstRevoked = vi.fn();
+    const secondRevoked = vi.fn();
+    const first = acquireDocumentInputOwnership(document, owner("session-a", 1, firstRevoked, firstHost));
+    const second = acquireDocumentInputOwnership(document, owner("session-b", 1, secondRevoked, secondHost));
+
+    expect(first.isOwner()).toBe(true);
+    expect(second.isOwner()).toBe(true);
+    expect(firstRevoked).not.toHaveBeenCalled();
+    expect(documentInputOwnershipSnapshot(document).owners).toHaveLength(2);
+    expect(documentInputOwnershipSnapshot(document, firstHost).ownerId).toBe("session-a");
+
+    first.release();
+    expect(first.isOwner()).toBe(false);
+    expect(second.isOwner()).toBe(true);
+    expect(documentInputOwnershipSnapshot(document).owners.map(({ ownerId }) => ownerId)).toEqual(["session-b"]);
     second.release();
   });
 });

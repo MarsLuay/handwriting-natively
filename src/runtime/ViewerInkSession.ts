@@ -1,5 +1,8 @@
-import type { DrawingTool, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarPlacement, ToolPreferences } from "../model";
+import type { DrawingTool, FloatingToolbarPosition, InkStroke, PagePoint, TextAnnotation, TextRun, PluginSettings, PressureCalibration, PressureProfile, TextStyle, ToolId, ToolbarOrientation, ToolPreferences } from "../model";
 import { isDrawingTool, isInkDrawTool, resolveDrawingTool } from "../model";
+import { FloatingToolbarController } from "./FloatingToolbarController";
+import { LaserOverlayController } from "./LaserOverlayController";
+import { SelectionChromeRenderer } from "./SelectionChromeRenderer";
 import {
   annotationPageMountMatches,
   annotationPageSafetyReason,
@@ -9,14 +12,14 @@ import {
   type AnnotationPageInfo,
   type AnnotationZoomChange
 } from "./AnnotationSurface";
-import { imageSurfaceExtensions, pdfSurfaceExtensions, type PageLifecycleCoordinator } from "../integration/ObsidianPdfAdapter";
+import { imageSurfaceExtensions, pdfSurfaceExtensions } from "../integration/ObsidianPdfAdapter";
+import type { PageLifecycleCoordinator, PageVisibilityChangeEvent } from "./PageLifecycleCoordinator";
 import { describeTarget } from "../dom/describeElement";
 import { PointerTypeOriginLog, pointerTypeOrigin, type PointerTypeListenerPhase } from "../input/PointerTypeOrigin";
 import { AnnotationFindBridge, type AnnotationFindPageLayout } from "../integration/AnnotationFindBridge";
 import { loadPdfThumbnailRuntime } from "../integration/PdfThumbnailRuntime";
 import type { PdfThumbnailSidebarActions } from "../integration/PdfThumbnailDeleteMenu";
 import { captureNativePdfMutationScreenshot } from "../integration/NativePdfMutationScreenshot";
-import { resolveToolbarPlacement } from "./resolveToolbarPlacement";
 import { documentMountPolicy, mountWorkSuperseded, workingSetPageNumbers } from "./documentBudgetPolicy";
 type PdfThumbnailRuntimeModule = Awaited<ReturnType<typeof loadPdfThumbnailRuntime>>;
 let pdfThumbnailRuntime: PdfThumbnailRuntimeModule | undefined;
@@ -32,7 +35,6 @@ function requirePdfThumbnailRuntime(): PdfThumbnailRuntimeModule {
 }
 
 import {
-  PINCH_CLEANUP_MAX_WAIT_MS,
   ZOOM_BURST_STUCK_MS,
   decideZoomBurstWatchdog,
   type PostZoomContactObservation,
@@ -53,22 +55,75 @@ function requirePostZoomInputRuntime(): PostZoomInputRuntimeModule {
   return postZoomInputRuntime;
 }
 
-function mountedToolbarRail(toolbar: HTMLElement): HTMLElement | null {
-  return toolbar.closest<HTMLElement>(".native-pdf-handwriting-rail, .hn-owned-pdf-ink-rail");
-}
-
 function elementPresentationSnapshot(element: HTMLElement | null): Record<string, unknown> | null {
   if (!element) return null;
-  const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+  const document = element.ownerDocument;
+  const view = document.defaultView;
+  const style = view?.getComputedStyle(element);
   const rect = element.getBoundingClientRect();
   const rounded = (value: number): number => Math.round(value * 10) / 10;
+  const hasLayoutBox = element.getClientRects().length > 0 && rect.width > 0 && rect.height > 0;
+  let effectiveOpacity = 1;
+  for (let ancestor: HTMLElement | null = element; ancestor; ancestor = ancestor.parentElement) {
+    const ancestorOpacity = Number.parseFloat(view?.getComputedStyle(ancestor).opacity ?? "");
+    if (Number.isFinite(ancestorOpacity)) effectiveOpacity *= ancestorOpacity;
+  }
+  const viewport = {
+    width: typeof view?.innerWidth === "number" && Number.isFinite(view.innerWidth) ? view.innerWidth : null,
+    height: typeof view?.innerHeight === "number" && Number.isFinite(view.innerHeight) ? view.innerHeight : null
+  };
+  const hasViewport = typeof viewport.width === "number" && typeof viewport.height === "number";
+  const outsideViewport = hasLayoutBox && hasViewport
+    ? rect.left < 0 || rect.top < 0 || rect.right > viewport.width! || rect.bottom > viewport.height!
+    : null;
+  const fullyOutsideViewport = hasLayoutBox && hasViewport
+    ? rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewport.width! || rect.top >= viewport.height!
+    : null;
+  let centerHitInsideToolbar: boolean | null = null;
+  if (hasLayoutBox && hasViewport && typeof document.elementFromPoint === "function") {
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    if (centerX >= 0 && centerY >= 0 && centerX < viewport.width! && centerY < viewport.height!) {
+      const centerHit = document.elementFromPoint(centerX, centerY);
+      centerHitInsideToolbar = centerHit !== null && (centerHit === element || element.contains(centerHit));
+    }
+  }
+  const hiddenAttribute = element.closest("[hidden]") !== null;
+  const ariaHidden = element.closest("[aria-hidden='true']") !== null;
+  const visibleByStyle = hasLayoutBox
+    && style?.display !== "none"
+    && style?.visibility !== "hidden"
+    && style?.visibility !== "collapse"
+    && !hiddenAttribute
+    && !ariaHidden
+    && effectiveOpacity > 0;
+  const visualState = !visibleByStyle
+    ? "hidden"
+    : fullyOutsideViewport === true
+      ? "offscreen"
+      : outsideViewport === true
+        ? "partially-offscreen"
+        : outsideViewport === false
+          ? "visible"
+          : "unknown";
   return {
     connected: element.isConnected,
-    hasLayoutBox: element.getClientRects().length > 0 && rect.width > 0 && rect.height > 0,
+    hasLayoutBox,
+    visibleByStyle,
+    visualState,
+    hiddenAttribute,
+    ariaHidden,
     display: style?.display ?? null,
     visibility: style?.visibility ?? null,
     opacity: style?.opacity ?? null,
+    effectiveOpacity: rounded(effectiveOpacity),
+    position: style?.position ?? null,
+    zIndex: style?.zIndex ?? null,
     pointerEvents: style?.pointerEvents ?? null,
+    centerHitInsideToolbar,
+    outsideViewport,
+    fullyOutsideViewport,
+    viewport,
     bounds: {
       x: rounded(rect.x),
       y: rounded(rect.y),
@@ -95,17 +150,15 @@ import {
 } from "./renderCachePolicy";
 import { isAnnotationChromeTarget, PointerRouter, type PointerRoute, type PointerRouterHandoff } from "../input/PointerRouter";
 import { isObsidianSidebarOpen } from "../input/MobileSidebarSwipeBlocker";
-import { classifyInputTarget } from "../input/InputTargetClassification";
 import { detectPointerInputCapabilities } from "../input/PointerInputCapabilities";
+import { resolvePointerIdentity, type PointerIdentityResolution } from "../input/PenPresence";
 import { GestureOwnership } from "../input/GestureOwnership";
 import { PostUiInputProbe, POST_UI_INPUT_PHASE_THRESHOLD_MS, type PostUiProbeArmContext, type PostUiProbeOutcome, type PostUiProbeStage, type PostUiProbeResult } from "../input/PostUiInputProbe";
 import { acquireDocumentInputOwnership, documentInputOwnershipSnapshot, type DocumentInputOwnershipHandle } from "../input/DocumentInputOwnership";
-import { PhysicalContactTracker, type RawPointerContactSample, type RawTouchContactEvent, type RawTouchPoint, type PhysicalContactRecord } from "../input/PhysicalContactTracker";
+import type { PhysicalContactRecord } from "../input/PhysicalContactTracker";
 import {
   acquirePhysicalContactCollector,
   physicalContactHotPathStats,
-  rawPointerContactSample,
-  rawTouchContactEvent,
   type PhysicalContactCollectorEvent,
   type PhysicalContactCollectorLease,
   type PhysicalContactDuplicateObserver
@@ -118,26 +171,25 @@ import { AddPageControl } from "../ui/AddPageControl";
 import { AddPageTiming } from "../ui/AddPageTiming";
 import { shouldIgnoreSelectionShortcut, parseSelectionShortcut, parseHistoryShortcut, inkHotkeyCommand, type InkHotkeyCommand, type SelectionShortcutAction } from "../input/SelectionShortcuts";
 import type { PointerSample } from "../input/PointerCapabilities";
+import { classifyInputTarget } from "../input/InputTargetClassification";
 import {
   GestureNavigationController,
   type GestureNavigationEndReason,
-  type GestureNavigationFocalPoint,
-  type GestureNavigationFrame
+  type GestureNavigationFrame,
+  type GestureNavigationFocalPoint
 } from "../input/GestureNavigationController";
 import { HandwritingViewport, type HandwritingViewportState } from "../integration/HandwritingViewport";
 import { ViewerCommandController, type ViewerCommandHost } from "./ViewerCommandController";
-import type {
-  MobilePdfZoomHandoffCancelReason,
-  MobilePdfZoomHandoffSignal
-} from "../integration/MobilePdfZoomHandoff";
-import {
-  planMobileCustomPdfZoom,
-  type MobileCustomPdfZoomFallbackReason,
-  type MobileCustomPdfZoomMode
-} from "../integration/MobileCustomPdfZoom";
 import { OpenInkStrokeGeometry, type InkStrokeGeometryRecord } from "../input/InkStrokeGeometry";
-import { consumeTouchDoubleTap, type TouchDoubleTapPoint, type TouchDoubleTapState } from "../input/TouchDoubleTap";
 import { PressureConditioner, pressureConditionerOptionsForCalibration } from "../input/PressureProfile";
+import {
+  consumeTouchDoubleTap,
+  TOUCH_DOUBLE_TAP_MAX_DELAY_MS,
+  TOUCH_TAP_MAX_MOVEMENT_PX,
+  type TouchDoubleTapPoint,
+  type TouchDoubleTapState
+} from "../input/TouchDoubleTap";
+import { planMobileCustomPdfZoom } from "../integration/MobileCustomPdfZoom";
 import { InkSession, type InkLifecycleEvent } from "../ink/InkSession";
 import { DamageLedger } from "../ink/DamageLedger";
 import { strokeBounds, type Bounds } from "../ink/StrokeHitTesting";
@@ -145,7 +197,7 @@ import { StrokeBuilder } from "../ink/StrokeBuilder";
 import { StrokeClipboard } from "../ink/StrokeClipboard";
 import { simplifyPoints } from "../ink/StrokeStabilizer";
 import { WetInkRenderer } from "../ink/WetInkRenderer";
-import { PageCoordinateMapper, type PageRotation } from "./PageCoordinateMapper";
+import { PageCoordinateMapper, PageCoordinateSpace, type PageRotation } from "./PageCoordinateMapper";
 import { normalizeRotation, pdfRenderCanvas, resolvePageCoordinateLayout, type PageCoordinateLayout } from "../pdf/PageCoordinateLayout";
 import { createDetachedDiv, createDetachedEl } from "../vendor/createDetached";
 import { getDebugNodeId } from "../dom/debugNodeId";
@@ -160,11 +212,6 @@ import { eraseStrokes, eraseWholeStrokes } from "../tools/EraserTool";
 import { recognizeHeldShape, resizeShapePoints, shapeResizeAnchor, shapeResizeHandle, SHAPE_RECOGNITION_HOLD_MS, type ShapeRecognition } from "../tools/ShapeRecognizer";
 import { boundingShapeFromSelection, filterSelectableStrokes, selectStrokes, selectionShapeArea, shapeBounds, shapeContainsPoint, translateShape, visibleStrokeSegments, type SelectionShape } from "../tools/LassoTool";
 import { drawHighlighterStroke, drawHighlighterStrokeWithMasks } from "../tools/HighlighterTool";
-import {
-  drawLaserStroke,
-  laserTrailStillVisible,
-  mapLaserPoints
-} from "../tools/LaserTool";
 import { drawGraphiteStroke, seedFromId } from "../tools/PencilTool";
 import { drawPenStroke } from "../tools/PenTool";
 import { AutosaveQueue } from "../storage/AutosaveQueue";
@@ -172,31 +219,29 @@ import { createDocumentIdentity, hashDocumentContent, type DocumentIdentityInput
 import { RecoveryRepository } from "../storage/RecoveryRepository";
 import { SaveCoordinator, type CloseChoice } from "../storage/SaveCoordinator";
 import { SidecarRepository } from "../storage/SidecarRepository";
-import { insertPageIntoSidecar, insertPagesIntoSidecar, removePageFromSidecar, reorderPageInSidecar, reorderPageNumber } from "../storage/SidecarPageRemoval";
+import { insertPagesIntoSidecar, removePageFromSidecar, reorderPageInSidecar, reorderPageNumber } from "../storage/SidecarPageRemoval";
 import { pickNewerSidecar, serializeSidecar, countSidecarStrokes, countSidecarTexts, type SidecarSchemaV1 } from "../storage/SidecarSchema";
 import type { VaultSyncWriter } from "../storage/VaultFs";
 import { AnnotationToolbar, type MoreAction } from "../ui/AnnotationToolbar";
-import { inkBackingBudget, inkBackingSize } from "./inkBackingSize";
+import { inkBackingBudget, inkBackingSize, markdownInkBackingBudget } from "./inkBackingSize";
 import type { DebugState } from "../ui/DebugPanel";
 import { SelectionToolbar, type ViewportPoint } from "../ui/SelectionToolbar";
-import { DropdownController } from "../ui/DropdownController";
 import { SessionLogger, type DrawPositionLog, type ViewStateSource } from "../logging/SessionLogger";
 import { BoundedTiming, EffectiveFrameBudget, type RuntimeFrameProfile, buildScaleDeltaHistogram, roundMetric } from "../logging/PerformanceMetrics";
 import { ZoomFrameDiagnostics, type FrameAttributionSummary } from "./ZoomFrameDiagnostics";
 import { ZoomPipelineTrace, type ZoomPipelineSummary } from "./ZoomPipelineTrace";
-import { MobilePdfZoomDiagnosticsTrace, type MobilePdfZoomTraceSummary } from "./MobilePdfZoomDiagnostics";
 import {
   ZoomNativeHandoffTrace,
   type NativeHandoffPhase,
   type ZoomNativeHandoffSummary
 } from "./ZoomNativeHandoffTrace";
 import type { VaultLogSink } from "../logging/VaultLogSink";
-import type { AnnotationViewState, ViewerState, ViewerViewportState, ViewerScaleMode } from "./AnnotationSurface";
-import { normalizeScaleMode } from "./ViewerState";
+import type { AnnotationViewState, ViewerState, ViewerViewportState } from "./AnnotationSurface";
+import { cloneViewerState, createViewerState, type ViewerScaleMode } from "./ViewerState";
 import { describeScrollElement } from "../integration/PdfScrollRoot";
 import { TextAnnotationSession } from "../text/TextAnnotationSession";
 import { AddTextAnnotationCommand, DeleteTextAnnotationsCommand, ReplaceTextAnnotationCommand } from "../text/TextAnnotationCommands";
-import { textMenu, type TextStyleChange } from "../ui/TextDropdown";
+import type { TextStyleChange } from "../ui/TextDropdown";
 import { insertStyledText, readTextRuns, renderTextRuns, rescaleTextRuns, restoreSelection, selectionOffsets, type TextSelectionOffsets } from "../text/RichTextDom";
 import { normalizeTextRuns, patchTextRunRange, plainTextFromRuns, plainTextToRuns, styleAtTextOffset } from "../text/RichTextRuns";
 import {
@@ -479,7 +524,6 @@ function settleResetBucket(reason: string | null): string {
   if (reason.includes("live-ink")) return "live-ink";
   if (reason.includes("page-render")) return "pages-page-render";
   if (reason.includes("scale")) return "scale-change";
-  if (reason.includes("pinch")) return "pinch-cleanup";
   if (reason.includes("remount")) return "viewer-remount";
   if (reason.includes("mutation")) return "mutation";
   if (reason.includes("timer-reset")) return "timer-reset";
@@ -502,19 +546,9 @@ function inputOwners(pageElement: HTMLElement): WeakMap<HTMLElement, ViewerInkSe
   return root[INPUT_OWNER_REGISTRY_KEY];
 }
 
-export interface MobilePdfZoomDiagnostics {
-  settingEnabled: boolean;
-  mode: MobileCustomPdfZoomMode;
-  fallbackReasons: readonly MobileCustomPdfZoomFallbackReason[];
-  active: boolean;
-  activePhase: string | null;
-  trace: MobilePdfZoomTraceSummary;
-}
-
 export interface SessionDiagnostics {
   documentPath: string;
   compatibility: ReturnType<AnnotationSurface["compatibilityReport"]>;
-  mobilePdfZoom: MobilePdfZoomDiagnostics;
   debug: DebugState;
 }
 
@@ -522,7 +556,7 @@ export interface AddPageMutationRestoreState {
   operationId: string;
   startedAt: number;
   capturedAt: number;
-  viewState: AnnotationViewState;
+  viewState: ViewerState;
   pageCountBefore: number;
   currentPageBefore: number;
   mountedPageNumbers: number[];
@@ -585,18 +619,16 @@ export interface ViewerInkSessionOptions {
   onReorderPage?(fromPage: number, toPage: number): Promise<void>;
   notice(message: string): void;
   decideUnsaved?(): Promise<CloseChoice>;
-  /** Reads whether left-button mouse input is enabled for annotation. */
-  mouseInkingEnabled?(): boolean;
-  /** Reads the live explicit touch-only/ambiguous-device fallback. */
-  touchDrawFallbackEnabled?(): boolean;
-  /** Reads whether a finger double-tap should switch to the eraser. */
-  touchDoubleTapEraserEnabled?(): boolean;
   /** Reads the current pressure profile; it is captured when a new stroke starts. */
   pressureProfile?(): PressureProfile;
   /** Reads the current calibration; it is captured when a new stroke starts. */
   pressureCalibration?(): PressureCalibration;
   simplifyStrokesEnabled?(): boolean;
-  toolbarPlacement?: () => ToolbarPlacement;
+  mouseInkingEnabled?(): boolean;
+  touchDrawFallbackEnabled?(): boolean;
+  touchDoubleTapEraserEnabled?(): boolean;
+  customMobilePdfPinchZoomEnabled?(): boolean;
+  toolbarOrientation?: () => ToolbarOrientation;
   vaultLog?: VaultLogSink;
   /** Enables diagnostics that would otherwise add avoidable input-path work. */
   debugEnabled?: () => boolean;
@@ -609,17 +641,6 @@ export interface ViewerInkSessionOptions {
   livePersistEpoch?: (documentId: string) => number;
   /** Host runtime flags — avoid importing `obsidian` here so unit tests stay portable. */
   runtimePlatform?: () => { mobile: boolean; phone: boolean; ipad?: boolean };
-}
-
-interface LaserTrail {
-  id: string;
-  page: number;
-  points: PagePoint[];
-  color: string;
-  width: number;
-  opacity: number;
-  holdMs: number;
-  fadeMs: number;
 }
 
 interface RectSnapshot {
@@ -964,8 +985,7 @@ interface NativeHandoffMutationResult {
 }
 
 interface ZoomReleaseGate {
-  inputTerminalsReady: boolean;
-  inputTerminalTimedOut: boolean;
+  liveInkInputReady: boolean;
   nativeRenderSignalReady: boolean;
   nativeRenderSignalCount: number;
   nativeRenderSignalAt: number | null;
@@ -1045,21 +1065,18 @@ export class ViewerInkSession {
   private toolbarUiGeneration = 0;
   private lastToolbarMountReason = "not-mounted";
   private lastToolbarUnmountReason: string | null = null;
-  private floatingToolbarPlacement: ToolbarPlacement | null = null;
-  private floatingToolbarHandle: HTMLButtonElement | null = null;
-  private floatingToolbarAbort: AbortController | null = null;
-  private toolbarRailRecoveryObserver: MutationObserver | null = null;
+  private readonly floatingToolbar: FloatingToolbarController;
   private lastHandwritingUiMissingKey = "";
   private uiIntegrityTimer: number | null = null;
   private readonly previousViewerElementDebugId: number | null;
   private lastAddPageOperationId: string | null;
   private readonly selectionToolbar: SelectionToolbar;
-  private readonly textContextMenu: DropdownController;
-  private textContextMenuTargetId: string | null = null;
-  private textContextMenuSuppressTimer: number | null = null;
+  private readonly selectionChromeRenderer: SelectionChromeRenderer<PageSurface>;
   private readonly history: CommandHistory;
   /** Pages dirtied by the next history.execute — avoids full multi-page refresh. */
   private readonly historyDirtyPages = new Set<number>();
+  /** Retain each command's affected pages so undo/redo can repaint the same surfaces. */
+  private readonly historyPagesByCommand = new WeakMap<Command, readonly number[]>();
   /** Pages already painted by the history callback in this turn. */
   private readonly historyPaintedPages = new Set<number>();
   private readonly wetRenderer = new WetInkRenderer();
@@ -1076,16 +1093,17 @@ export class ViewerInkSession {
   private moveTextPreview: TextAnnotation[] | null = null;
   private moveShapePreview: SelectionShape | null = null;
   private activeTextEditor: ActiveTextEditor | null = null;
+  /** Markdown's native editor owns Ctrl+Z after a text edit; annotation edits reclaim it. */
+  private markdownInkHistoryPreferred = false;
   private textMoveDrag: TextMoveDrag | null = null;
   private textBoxTransformDrag: TextBoxTransformDrag | null = null;
   private textToolActive = false;
-  /** Session-local toolbar mode: mouse stays native while stylus tools remain available. */
-  private mouseNavigationActive = false;
   private temporaryStylusEraserPointers = 0;
   private debugState: DebugState = {};
-  private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
-  /** Authoritative persistent handwriting viewport state (scale, x, y). */
+  /** Live visual transform and native-scroll projection for handwriting interactions. */
   readonly handwritingViewport: HandwritingViewport;
+  /** Canonical viewer state; adapters report rendered state into this session-owned snapshot. */
+  private canonicalViewerState: ViewerState = createViewerState();
   /** Authoritative command controller for zoom, pan, hand mode, search, navigation, and rotation. */
   readonly commandController: ViewerCommandController;
   private destroyed = false;
@@ -1110,12 +1128,8 @@ export class ViewerInkSession {
   private readonly penScrollEvidence = new Map<number, PenScrollEvidence>();
   private postUiProbeTimer: number | null = null;
   private lastUiInputPointerType = "programmatic";
-  private touchDoubleTapState: TouchDoubleTapState | null = null;
-  private touchDoubleTapPreviousTool: ToolId | null = null;
-  private touchDoubleTapChangingTool = false;
   private lastUiSurfaceCloseAt: number | null = null;
   private lastZoomSettleAt: number | null = null;
-  private lastTouchPanAt: number | null = null;
   private lastRouterBindAt: number | null = null;
   private lastPageReplacementAt: number | null = null;
   private lastToolChange: ToolChangeMarker | null = null;
@@ -1137,12 +1151,21 @@ export class ViewerInkSession {
   /** Bumped when an ink layer cache entry is invalidated. Deferred HQ from an older epoch cancels. */
   private renderEpoch = 0;
   private pendingScheduledRefresh: { reason: string; repaintOnly: boolean } | null = null;
-  /** One display-frame refresh for mobile scroll/pagechanging signals. */
+  /** Coordinator-driven ink residency reconciliation, coalesced to one display frame. */
+  private lifecycleInkReconcileFrame: number | null = null;
+  private pendingLifecycleInkReconcile = false;
+  private lifecycleVisibilityUnsubscribe: (() => void) | null = null;
+  /** Compatibility path for annotation surfaces without PageLifecycleCoordinator. */
   private mobileScrollRefreshFrame: number | null = null;
   /** Remount after zoom/handoff if scroll/pagechanging arrived while compositing. */
   private pendingMobileScrollRemount = false;
   private mountBurst = 0;
   private zoomSettleTimer: number | null = null;
+  /** Debounced backing refresh for CSS-projected image zoom. */
+  private viewportProjectionRepaintTimer: number | null = null;
+  private viewportProjectionRepaintGeneration = 0;
+  private pendingViewportProjectionRepaint = false;
+  private devicePixelRatioResizeCleanup: (() => void) | null = null;
   /** Live ink blocks HQ settle until the tip lifts. One pause, not a poll. */
   private zoomSettlePausedForLiveInk = false;
   private zoomSettlePausedAt: number | null = null;
@@ -1171,7 +1194,7 @@ export class ViewerInkSession {
   private lastKnownViewScale: number | null = null;
   private zoomBurstReason = "view-scalechanging";
   private zoomCorrelationId: string | null = null;
-  /** Last few finished pinches, for Copy Logs. One record per zoom, not per frame. */
+  /** Last few finished zoom gestures, for Copy Logs. One record per zoom, not per frame. */
   private readonly recentZoomGesturePerformance: Array<Record<string, unknown>> = [];
   private zoomSequence = 0;
   private readonly postZoomTrace = new (requirePostZoomInputRuntime().PostZoomInputTrace)();
@@ -1181,7 +1204,6 @@ export class ViewerInkSession {
   private readonly zoomFrameDiagnostics: ZoomFrameDiagnostics;
   private readonly zoomPipelineTrace: ZoomPipelineTrace;
   private readonly zoomNativeHandoffTrace: ZoomNativeHandoffTrace;
-  private readonly mobilePdfZoomTrace = new MobilePdfZoomDiagnosticsTrace();
   private frameProfileRaf: number | null = null;
   private frameProfileTimer: number | null = null;
   private static readonly FRAME_PROFILE_IDLE_SAMPLE_COUNT = 24;
@@ -1191,19 +1213,11 @@ export class ViewerInkSession {
   private lastZoomNativeHandoffSummary: ZoomNativeHandoffSummary | null = null;
   private readonly openInkStrokeGeometry = new Map<number, OpenInkStrokeGeometry>();
   private readonly recentInkStrokeGeometry: InkStrokeGeometryRecord[] = [];
-  private settleWaitStartedAt = 0;
-  private zoomGestureStartedAt = 0;
-  private pinchTerminalAt = 0;
-  private pinchSawContact = false;
   private lastScaleChangeAt = 0;
-  private liveInkOverlapStartedAt = 0;
-  private liveInkWaitAfterPinchTerminalMs = 0;
   private penLiftedForSettleAt = 0;
   private inGestureResetCount = 0;
   private settleResetReasons: Record<string, number> = {};
   private readonly pointerTypeOrigins = new PointerTypeOriginLog();
-  private readonly pinchCleanup = new (requirePostZoomInputRuntime().PinchGestureCleanup)();
-  private pinchCleanupFrame: number | null = null;
   private readonly postZoomStrokePointers = new Set<number>();
   private readonly postZoomRouterByPointer = new Map<number, {
     received: boolean;
@@ -1237,18 +1251,12 @@ export class ViewerInkSession {
   private lastObservedTool: ToolId = "pen";
   private lastDrawOwner = "idle";
   private lastActivePenIds: number[] = [];
-  private laserTrails: LaserTrail[] = [];
-  private laserFadeFrame: number | null = null;
-  private lastLaserPaintAt = 0;
-  /** Laser fade loop caps ~30fps — full page repaint every frame is too heavy. */
-  private static readonly LASER_FADE_MIN_MS = 32;
-  /** Bound CPU, allocations, and canvas commands for high-rate stylus input. */
-  private static readonly MAX_LASER_DRAFT_POINTS = 1024;
+  private readonly laserOverlay: LaserOverlayController<PageSurface>;
   private lastZoomSignalAt = 0;
   private zoomCompositing = false;
   /** Number of pages admitted to the active pinch working set. */
   private zoomActivePageCount = 0;
-  /** Page numbers touched by the most recent active-pinch layout pass. */
+  /** Page numbers touched by the most recent active zoom layout pass. */
   private zoomWorkingPageNumbers = new Set<number>();
   /** Visible pages still needing settle paint (one page per rAF). */
   private zoomSettleQueue: Array<{ page: number; tier: "focus" | "neighbor" }> = [];
@@ -1278,7 +1286,7 @@ export class ViewerInkSession {
    * mid-gesture and paid 300–800ms full paints repeatedly (canvasesResized×pages).
    */
   private static readonly ZOOM_SETTLE_MS = 560;
-  /** Tiny pinch/nudge only — still above the old mid-gesture thrash floor. */
+  /** Small scale nudge only — still above the old mid-gesture thrash floor. */
   private static readonly ZOOM_SETTLE_TINY_MS = 120;
   /**
    * Same-scale resize and finger-up settle. One effective frame budget, not the
@@ -1312,11 +1320,8 @@ export class ViewerInkSession {
   private readonly resizeObserver: ResizeObserver | null;
   private readonly logger: SessionLogger;
   private readonly ipadInputTrace: IpadPointerTouchTrace | null;
-  /** One navigation owner for page touch, hand-tool, and wheel gestures. */
+  /** Shared stylus hand-pan and companion-touch policy across page routers. */
   private readonly gestureNavigation: GestureNavigationController;
-  private activeMobilePinchSurface: PageSurface | null = null;
-  private mobilePinchIndicator: HTMLElement | null = null;
-  private mobilePinchIndicatorFadeTimer: number | null = null;
   /** Shared contact owner for document pan and every page router. */
   private readonly gestureOwnership = new GestureOwnership();
   private readonly addPageControl: AddPageControl | null;
@@ -1328,10 +1333,20 @@ export class ViewerInkSession {
   private addPageMutationViewRestored = false;
   /** PDF find integration is an optional surface extension. */
   private readonly findBridge: AnnotationFindBridge | null;
-  /** Last applied browser direct-manipulation policy for mounted PDF pages. */
-  private touchDrawPolicyEnabled: boolean | null = null;
   /** Runtime promotion is session-scoped; it is never inferred from UA or persisted. */
   private stylusCapability: "unknown" | "confirmed" = "unknown";
+  private customMobilePdfPinchZoomEnabledOverride: boolean | null = null;
+  private activeMobilePinchSurface: PageSurface | null = null;
+  private touchDoubleTapState: TouchDoubleTapState | null = null;
+  private touchTapContact: {
+    identifier: number;
+    clientX: number;
+    clientY: number;
+    startedAt: number;
+    surface: PageSurface;
+  } | null = null;
+  private touchDoubleTapPreviousTool: ToolId | null = null;
+  private touchDoubleTapChangingTool = false;
   private readonly pointerProbeAbort = new AbortController();
   private readonly documentInputOwnerId = `session-${this.viewerGeneration}`;
   private readonly documentInputRegistrationSource = "ViewerInkSession.installPointerProbe";
@@ -1339,15 +1354,15 @@ export class ViewerInkSession {
   private documentInputOwnershipRevoked = false;
   private physicalContactCollectorLease: PhysicalContactCollectorLease | null = null;
   private inputTeardownStarted = false;
-  /** Bounded raw browser contact correlation; observation only, never routing ownership. */
-  private readonly physicalContactTracker = new PhysicalContactTracker(`physical-contact-${this.documentInputOwnerId}`);
-  /** A browser event object must never be processed twice by one collector. */
-  private readonly seenPhysicalPointerEvents = new WeakSet<PointerEvent>();
-  private readonly seenPhysicalTouchEvents = new WeakSet<TouchEvent>();
   /** Capture-phase collectors and the document probe inspect the same down. */
   private readonly pointerHitTestCache = new WeakMap<PointerEvent, PointerHitTest>();
+  /** Native PDF embed contacts never enter Markdown fallback ink routing. */
+  private readonly nativeEmbeddedPdfPointerIds = new Set<number>();
+  private readonly nativeEmbeddedPdfInputEvents = new WeakSet<Event>();
+  private readonly nativeEmbeddedPdfMoveLogAt = new Map<string, { loggedAt: number; suppressed: number }>();
   /** Links a live PointerEvent id to the bounded physical-contact trace. */
   private readonly physicalContactIdsByPointer = new Map<number, string>();
+  private readonly documentObservedPointerIds = new Set<number>();
   /** Pointer-down timestamps let completed stroke profiles separate startup from user draw time. */
   private readonly pointerDownPerformanceAt = new Map<number, number>();
   /** Input/routing timestamps are diagnostic-only and bounded to active pointers. */
@@ -1389,7 +1404,12 @@ export class ViewerInkSession {
       : null;
     this.ipadInputTrace?.start(options.debugEnabled?.() === true);
     this.frameBudget = new EffectiveFrameBudget(this.frameTimingEnvironment());
-    this.zoomFrameDiagnostics = new ZoomFrameDiagnostics(undefined, this.frameBudget);
+    const diagnosticWindow = options.adapter.host.ownerDocument.defaultView ?? window;
+    this.zoomFrameDiagnostics = new ZoomFrameDiagnostics({
+      now: () => diagnosticWindow.performance.now(),
+      setTimeout: (callback, delayMs) => diagnosticWindow.setTimeout(callback, delayMs) as unknown as ReturnType<typeof setTimeout>,
+      clearTimeout: (timer) => diagnosticWindow.clearTimeout(timer as unknown as number)
+    }, this.frameBudget);
     this.zoomPipelineTrace = new ZoomPipelineTrace({ enabled: () => this.logger.isEnabled() });
     this.zoomNativeHandoffTrace = new ZoomNativeHandoffTrace();
     this.ink = new InkSession([], (event) => this.recordInkLifecycle(event));
@@ -1397,7 +1417,7 @@ export class ViewerInkSession {
     this.lastObservedTool = options.settings.toolPreferences.activeTool;
     this.logger.textTool("tool-initial", {
       active: this.textToolActive,
-      ...describeInputPolicies(options.settings),
+      ...describeInputPolicies(),
       activeTool: options.settings.toolPreferences.activeTool,
       fontSize: options.settings.toolPreferences.text.fontSize,
       fontFamily: options.settings.toolPreferences.text.fontFamily
@@ -1410,7 +1430,7 @@ export class ViewerInkSession {
       preferences: options.settings.toolPreferences,
       autosave: options.settings.autosave,
       mouseInkingEnabled: this.mouseInkingConfigured(),
-      mouseNavigationActive: this.mouseNavigationActive,
+      mouseNavigationActive: options.settings.toolPreferences.mouseNavigationActive,
       supportedMoreActions: [
         ...(pdfExtensions && options.writeExport
           ? ["export", "export-editable"] as const
@@ -1422,16 +1442,18 @@ export class ViewerInkSession {
         ...(options.openScanDocument && options.onInsertScannedPages && (options.runtimePlatform?.().mobile ?? false)
           ? ["scan-document" as const]
           : []),
-        ...(["zoom-in", "zoom-out", "fit-width", "rotate-cw", "rotate-ccw", "search"] as const),
-        // Keep the PDF-bar action available on mobile too. `main` is an
-        // explicit placement now; hiding it here made the setting impossible
-        // to select from the live PDF toolbar on mobile.
-        ...(["toolbar-main", "toolbar-left", "toolbar-right"] as const)
+        ...(pdfExtensions ? ["previous-page", "next-page", "go-to-page", "set-zoom"] as const : []),
+        ...(pdfExtensions?.performToolbarAction
+          ? ["fit-height", "fit-page", "show-thumbnails", "show-outline", "presentation", "print", "download"] as const
+          : []),
+        ...(["zoom-in", "zoom-out", "fit-width", "rotate-cw", "rotate-ccw", "search", "rotate-toolbar"] as const)
       ],
       callbacks: {
         onPreferencesChange: (preferences, reason = "general") => {
           if (reason === "tool" && !this.touchDoubleTapChangingTool) {
             this.touchDoubleTapPreviousTool = null;
+            this.touchDoubleTapState = null;
+            this.touchTapContact = null;
           }
           const previousTool = this.lastObservedTool;
           if (preferences.activeTool !== previousTool) {
@@ -1518,15 +1540,6 @@ export class ViewerInkSession {
           this.selectAllOnCurrentPage();
           this.copySelection();
         },
-        onMouseModeChange: (nativeSelection) => {
-          this.mouseNavigationActive = nativeSelection;
-          if (nativeSelection) {
-            this.commitActiveTextEditor("mouse-navigation-mode");
-            this.clearSelection({ refresh: false });
-          }
-          this.updateMouseInputBindings();
-          this.refreshToolChrome("mouse-mode");
-        },
         onTextStyleChange: (change) => this.applyTextStyleToActiveEditor(change),
         onTextFormatPointerDown: () => this.captureActiveTextSelection("toolbar-pointerdown"),
         activeTextStyle: () => this.activeTextStyle(),
@@ -1535,7 +1548,8 @@ export class ViewerInkSession {
         onHandMode: () => this.commandController.toggleHandMode(),
         onSave: () => this.manualSave(),
         onMore: (action) => void this.handleMore(action),
-        toolbarPlacement: () => this.currentToolbarPlacement()
+        onMouseModeChange: (nativeSelection) => this.setMouseNavigationActive(nativeSelection),
+        toolbarOrientation: () => this.currentToolbarOrientation()
       }
     });
     this.selectionToolbar = new SelectionToolbar({
@@ -1545,7 +1559,43 @@ export class ViewerInkSession {
       onClear: () => this.clearSelection()
     }, options.adapter.host.ownerDocument);
     this.selectionToolbar.bindViewport(options.adapter.root);
-    this.textContextMenu = new DropdownController(options.adapter.host.ownerDocument);
+    this.selectionChromeRenderer = new SelectionChromeRenderer<PageSurface>({
+      pageLayout: (surface) => this.pageLayout(surface),
+      displayScale: (surface) => this.displayScale(surface),
+      toViewport: (surface, point) => this.mapper(surface).toViewport(point)
+    });
+    this.floatingToolbar = new FloatingToolbarController({
+      host: options.adapter.host,
+      toolbar: this.toolbar.element,
+      initialPosition: options.settings.floatingToolbarPosition,
+      getOrientation: () => this.currentToolbarOrientation(),
+      onPositionPersist: (position) => {
+        const save = this.options.savePluginSettings?.({ floatingToolbarPosition: position });
+        if (!save) return;
+        void save.catch((error) => {
+          this.options.vaultLog?.write("error", "floating-toolbar-position-save-failed", {
+            error: this.errorMessage(error)
+          });
+        });
+      }
+    });
+    this.laserOverlay = new LaserOverlayController<PageSurface>({
+      getSurface: (pageNumber) => this.surfaces.get(pageNumber),
+      getAllSurfaces: () => this.surfaces.values(),
+      toViewport: (surface, point) => this.mapper(surface).toViewport(point),
+      displayScale: (surface) => this.displayScale(surface),
+      pageLayout: (surface) => this.pageLayout(surface),
+      resolveInkBacking: (width, height) => this.resolveInkBacking(width, height),
+      blitInkLayerToCanvas: (surface, pixelWidth, pixelHeight, backingScale) =>
+        this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale),
+      renderPage: (pageNumber) => this.renderPage(pageNumber),
+      getLaserPreferences: () => this.options.settings.toolPreferences.laser,
+      onSlowRepaint: (pageNumber, durationMs, draftPointCount, trailCount) => {
+        this.logger.laserRepaintSlow(pageNumber, durationMs, draftPointCount, trailCount);
+      },
+      isDestroyed: () => this.destroyed,
+      defaultView: () => this.options.adapter.host.ownerDocument.defaultView
+    });
     this.autosave = new AutosaveQueue<SidecarSchemaV1>({
       delayMs: options.settings.autosaveDelayMs,
       delayMsForSnapshot: (snapshot) => {
@@ -1614,6 +1664,12 @@ export class ViewerInkSession {
       });
     this.resizeObserver?.observe(options.adapter.root);
     const adapter = options.adapter;
+    const initialViewState = adapter.getViewState();
+    this.canonicalViewerState = createViewerState(initialViewState);
+    const initialScroll = adapter.scrollElement();
+    // HandwritingViewport starts with its rendered scale, so its initial
+    // projection is 1. Seed this value to ensure the first CSS zoom is observed.
+    let previousViewportProjectionScale = 1;
     this.handwritingViewport = new HandwritingViewport({
       getContainerRect: () => {
         try {
@@ -1628,46 +1684,69 @@ export class ViewerInkSession {
       },
       getContentSize: () => {
         try {
+          const scrollEl = adapter.scrollElement();
           const root = adapter.root;
-          const width = root.offsetWidth || root.scrollWidth || 0;
-          const height = root.offsetHeight || root.scrollHeight || 0;
+          const width = scrollEl.scrollWidth || root.offsetWidth || root.scrollWidth || 0;
+          const height = scrollEl.scrollHeight || root.offsetHeight || root.scrollHeight || 0;
           return width > 0 && height > 0 ? { width, height } : null;
         } catch {
           return null;
         }
       },
+      getScrollElement: () => adapter.scrollElement(),
       minScale: 0.1,
-      maxScale: 10
+      maxScale: 10,
+      initialRenderedScale: initialViewState.viewport?.scale ?? initialViewState.scale ?? 1,
+      initialState: {
+        scale: initialViewState.viewport?.scale ?? initialViewState.scale ?? 1,
+        x: -(Number.isFinite(initialScroll.scrollLeft) ? initialScroll.scrollLeft : 0),
+        y: -(Number.isFinite(initialScroll.scrollTop) ? initialScroll.scrollTop : 0)
+      },
+      onStateChange: (viewport) => {
+        this.updateViewerStateFromViewport(viewport);
+        const renderedScale = this.handwritingViewport.getRenderedScale();
+        const projectionScale = viewport.scale / Math.max(0.1, renderedScale);
+        const previousProjectionScale = previousViewportProjectionScale;
+        previousViewportProjectionScale = projectionScale;
+        // Image zoom is a CSS projection and does not produce the PDF.js render
+        // signal used by the native handoff. Refresh retained ink after it settles.
+        if (Math.abs(projectionScale - previousProjectionScale) > 0.001) {
+          this.scheduleViewportProjectionRepaint();
+        }
+      }
     });
-    this.handwritingViewport.setTarget(adapter.root);
+    this.handwritingViewport.setTarget(
+      pdfSurfaceExtensions(adapter)?.viewportContentElement?.() ?? adapter.root
+    );
+    const ownerWindow = adapter.host.ownerDocument.defaultView;
+    if (ownerWindow) {
+      let lastDevicePixelRatio = ownerWindow.devicePixelRatio || 1;
+      const refreshBackingAfterDisplayChange = (): void => {
+        const nextDevicePixelRatio = ownerWindow.devicePixelRatio || 1;
+        if (Math.abs(nextDevicePixelRatio - lastDevicePixelRatio) < 0.001) return;
+        lastDevicePixelRatio = nextDevicePixelRatio;
+        for (const surface of this.surfaces.values()) {
+          this.renderPage(surface.page.pageNumber, undefined, "device-pixel-ratio-change");
+        }
+      };
+      ownerWindow.addEventListener("resize", refreshBackingAfterDisplayChange);
+      this.devicePixelRatioResizeCleanup = () => {
+        ownerWindow.removeEventListener("resize", refreshBackingAfterDisplayChange);
+      };
+    }
+    this.lifecycleVisibilityUnsubscribe = pdfExtensions?.lifecycleCoordinator?.onVisibilityChange(
+      (event) => this.onLifecycleVisibilityChange(event)
+    ) ?? null;
     this.commandController = new ViewerCommandController(this.createViewerCommandHost());
+    pdfExtensions?.setViewerCommandBridge?.(this.commandController);
     this.gestureNavigation = new GestureNavigationController({
+      onPan: (deltaX, deltaY) => this.handwritingViewport.pan(deltaX, deltaY),
       minScale: 0.1,
       maxScale: 10,
       getScale: () => this.handwritingViewport.getState().scale,
-      getScrollRoot: () => this.options.adapter.scrollElement(),
-      getViewportCenter: () => {
-        const rect = adapter.root.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0
-          ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-          : null;
-      },
-      isHandMode: () => this.activeTool() === "drag",
-      onStart: (frame) => this.startActiveMobilePinch(frame),
-      onPreview: (scale, focalPoint) => this.previewActiveMobilePinch(scale, focalPoint),
-      onEnd: (scale, reason) => this.endActiveMobilePinch(scale, reason),
-      onCancel: (reason) => this.cancelActiveMobilePinch(reason),
-      onSettled: (scale) => this.persistMobilePinchScale(scale),
-      onEligibility: (target) => this.mobilePinchWheelEligible(target, adapter),
-      onIndicator: (scale, reset) => this.updateMobilePinchIndicator(scale, reset, adapter.host.ownerDocument),
-      onPan: (deltaX, deltaY) => {
-        const scrollRoot = this.options.adapter.scrollElement();
-        const beforeLeft = scrollRoot.scrollLeft;
-        const beforeTop = scrollRoot.scrollTop;
-        scrollRoot.scrollLeft -= deltaX;
-        scrollRoot.scrollTop -= deltaY;
-        return scrollRoot.scrollLeft !== beforeLeft || scrollRoot.scrollTop !== beforeTop;
-      }
+      onPinchStart: (frame) => this.startMobilePdfPinch(frame),
+      onPinchPreview: (scale, focalPoint) => this.previewMobilePdfPinch(scale, focalPoint),
+      onPinchEnd: (scale, reason) => this.endMobilePdfPinch(scale, reason)
     });
     this.addPageControl = options.onInsertPage
       ? new AddPageControl({
@@ -1713,8 +1792,8 @@ export class ViewerInkSession {
       },
       layoutForAnnotation: (pageNumber, annotation) => this.findLayoutForAnnotation(pageNumber, annotation),
       onWarning: (message) => {
-        console.warn(`[Handwriting Natively] ${message}`);
-        this.options.vaultLog?.write("warn", message);
+        if (this.options.vaultLog) this.options.vaultLog.write("warn", message);
+        else console.warn(`[Handwriting Natively] ${message}`);
       },
       onDebug: (phase, details) => {
         if (!(this.options.debugEnabled?.() ?? false)) return;
@@ -1730,21 +1809,7 @@ export class ViewerInkSession {
   }
 
   getViewerState(): ViewerState {
-    const adapterState = this.options.adapter.getViewState();
-    const vp = this.handwritingViewport.getState();
-    const scale = vp.scale || adapterState.viewport?.scale || adapterState.scale || 1;
-    return {
-      viewport: {
-        scale,
-        x: vp.x ?? adapterState.viewport?.x ?? 0,
-        y: vp.y ?? adapterState.viewport?.y ?? 0
-      },
-      pageNumber: adapterState.pageNumber || 1,
-      rotation: normalizeRotation(adapterState.rotation || 0),
-      scaleMode: normalizeScaleMode(adapterState.scaleMode),
-      ...(adapterState.scrollFraction !== undefined ? { scrollFraction: adapterState.scrollFraction } : {}),
-      scale
-    };
+    return cloneViewerState(this.canonicalViewerState);
   }
 
   viewerState(): ViewerState {
@@ -1752,57 +1817,189 @@ export class ViewerInkSession {
   }
 
   setViewerState(patch: Partial<ViewerState> | ViewerState | AnnotationViewState): void {
-    const nextScale = patch.viewport?.scale ?? patch.scale;
-    const nextX = patch.viewport?.x;
-    const nextY = patch.viewport?.y;
-    const currentVp = this.handwritingViewport.getState();
-    const vpChanged = (nextScale !== undefined && Math.abs(nextScale - currentVp.scale) > 0.0001)
-      || (nextX !== undefined && Math.abs(nextX - currentVp.x) > 0.5)
-      || (nextY !== undefined && Math.abs(nextY - currentVp.y) > 0.5);
+    this.applyViewerState(patch, false);
+  }
 
-    if (vpChanged) {
-      this.handwritingViewport.setState({
-        ...(nextScale !== undefined ? { scale: nextScale } : {}),
-        ...(nextX !== undefined ? { x: nextX } : {}),
-        ...(nextY !== undefined ? { y: nextY } : {})
-      });
+  private applyViewerState(
+    patch: Partial<ViewerState> | ViewerState | AnnotationViewState,
+    forceRestore: boolean
+  ): void {
+    const current = this.canonicalViewerState;
+    const patchViewport: Partial<ViewerViewportState> = patch.viewport ?? {};
+    const nextScale = patchViewport.scale ?? patch.scale ?? current.viewport.scale;
+    const nextX = patchViewport.x ?? current.viewport.x;
+    const nextY = patchViewport.y ?? current.viewport.y;
+    const nextAdapterState = createViewerState({
+      ...current,
+      ...patch,
+      viewport: {
+        ...current.viewport,
+        ...patchViewport,
+        scale: nextScale,
+        x: Number.isFinite(nextX) ? nextX : 0,
+        y: Number.isFinite(nextY) ? nextY : 0
+      },
+      scale: nextScale
+    });
+    const pageOnlyChange = nextAdapterState.pageNumber !== current.pageNumber
+      && patch.pageNumber !== undefined
+      && patchViewport.scale === undefined
+      && patchViewport.x === undefined
+      && patchViewport.y === undefined
+      && patch.scale === undefined
+      && patch.rotation === undefined
+      && patch.scaleMode === undefined
+      && patch.scrollFraction === undefined;
+    const stateChanged = nextAdapterState.pageNumber !== current.pageNumber
+      || nextAdapterState.rotation !== current.rotation
+      || nextAdapterState.scaleMode !== current.scaleMode
+      || nextAdapterState.viewport.scale !== current.viewport.scale
+      || nextAdapterState.viewport.x !== current.viewport.x
+      || nextAdapterState.viewport.y !== current.viewport.y
+      || nextAdapterState.scrollFraction !== current.scrollFraction;
+    if (!stateChanged && !forceRestore) return;
+
+    // Publish the canonical command result first. The adapter is a rendering
+    // projection; its callback reconciles this snapshot with what it applied.
+    this.canonicalViewerState = cloneViewerState(nextAdapterState);
+    if (pageOnlyChange && !forceRestore) {
+      try {
+        this.options.adapter.focusPage(nextAdapterState.pageNumber);
+      } catch {
+        // The adapter may be detaching while the page-only command is applied.
+      }
+      this.updateViewerStateFromAdapter();
+      return;
     }
-
-    const currentAdapterState = this.options.adapter.getViewState();
-    const nextAdapterState: ViewerState = {
-      viewport: this.handwritingViewport.getState(),
-      pageNumber: patch.pageNumber ?? currentAdapterState.pageNumber ?? 1,
-      rotation: patch.rotation !== undefined ? normalizeRotation(patch.rotation) : currentAdapterState.rotation,
-      scaleMode: patch.scaleMode !== undefined ? normalizeScaleMode(patch.scaleMode) : normalizeScaleMode(currentAdapterState.scaleMode),
-      ...(patch.scrollFraction !== undefined ? { scrollFraction: patch.scrollFraction } : currentAdapterState.scrollFraction !== undefined ? { scrollFraction: currentAdapterState.scrollFraction } : {}),
-      scale: nextScale ?? currentAdapterState.scale
-    };
 
     try {
       this.options.adapter.restoreViewState(nextAdapterState);
-    } catch {}
-
-    if (patch.pageNumber !== undefined && patch.pageNumber !== currentAdapterState.pageNumber) {
-      try {
-        this.options.adapter.focusPage(patch.pageNumber);
-      } catch {}
+    } catch {
+      // A replaced PDF adapter can reject a best-effort viewer-state restore.
     }
+
+    const renderedState = this.options.adapter.getViewState();
+    const renderedScroll = this.options.adapter.scrollElement();
+    this.handwritingViewport.syncRenderedState(
+      renderedState.viewport?.scale ?? renderedState.scale ?? nextScale,
+      renderedScroll.scrollLeft,
+      renderedScroll.scrollTop
+    );
+
+    // ViewerState x/y are native-scroll projection coordinates. Convert them
+    // back into HandwritingViewport's canonical visual translation only when
+    // the caller explicitly supplied a viewport position. Otherwise reconcile
+    // whatever scroll/page navigation the adapter actually produced.
+    if (patch.viewport?.x !== undefined || patch.viewport?.y !== undefined) {
+      this.handwritingViewport.setState({
+        scale: nextScale,
+        x: -nextAdapterState.viewport.x,
+        y: -nextAdapterState.viewport.y
+      });
+    } else {
+      this.handwritingViewport.setState({ scale: nextScale }, false);
+      const projectedScroll = this.options.adapter.scrollElement();
+      this.handwritingViewport.syncFromScroll(
+        projectedScroll.scrollLeft,
+        projectedScroll.scrollTop,
+        true
+      );
+    }
+    this.updateViewerStateFromAdapter();
+  }
+
+  private updateViewerStateFromAdapter(state: AnnotationViewState = this.options.adapter.getViewState()): void {
+    const scroll = this.options.adapter.scrollElement();
+    const viewport = this.handwritingViewport?.getState();
+    const renderedScale = this.handwritingViewport?.getRenderedScale();
+    const viewportOwnsZoom = viewport !== undefined
+      && typeof renderedScale === "number"
+      && Number.isFinite(viewport.scale)
+      && Number.isFinite(renderedScale)
+      && Math.abs(viewport.scale - renderedScale) > 0.001;
+    this.canonicalViewerState = createViewerState({
+      viewport: {
+        // Keep a live compositor scale in the canonical view snapshot while
+        // taking position and page metadata from the platform adapter.
+        scale: viewport?.scale ?? state.viewport?.scale ?? state.scale ?? this.canonicalViewerState.viewport.scale,
+        x: state.viewport?.x ?? scroll.scrollLeft ?? this.canonicalViewerState.viewport.x,
+        y: state.viewport?.y ?? scroll.scrollTop ?? this.canonicalViewerState.viewport.y
+      },
+      pageNumber: state.pageNumber ?? this.canonicalViewerState.pageNumber,
+      rotation: state.rotation ?? this.canonicalViewerState.rotation,
+      // Preserve a CSS-projected image zoom mode until the renderer state is
+      // reconciled with the viewport projection.
+      scaleMode: viewportOwnsZoom ? "custom" : state.scaleMode ?? this.canonicalViewerState.scaleMode,
+      ...(state.scrollFraction !== undefined
+        ? { scrollFraction: state.scrollFraction }
+        : this.canonicalViewerState.scrollFraction !== undefined
+          ? { scrollFraction: this.canonicalViewerState.scrollFraction }
+          : {})
+    });
+  }
+
+  private updateViewerStateFromViewport(viewport: HandwritingViewportState): void {
+    let adapterState: AnnotationViewState | ViewerState;
+    try {
+      adapterState = this.options.adapter.getViewState();
+    } catch {
+      adapterState = this.canonicalViewerState;
+    }
+    const scroll = this.options.adapter.scrollElement();
+    this.canonicalViewerState = createViewerState({
+      ...this.canonicalViewerState,
+      viewport: {
+        scale: viewport.scale,
+        x: adapterState.viewport?.x ?? scroll.scrollLeft ?? this.canonicalViewerState.viewport.x,
+        y: adapterState.viewport?.y ?? scroll.scrollTop ?? this.canonicalViewerState.viewport.y
+      },
+      scale: viewport.scale
+    });
   }
 
   restoreViewerState(state: Partial<ViewerState> | ViewerState | AnnotationViewState): void {
-    this.setViewerState(state);
+    this.applyViewerState(state, true);
+  }
+
+  private applyZoomAtViewportCenter(
+    scale: number,
+    scaleMode: ViewerScaleMode = "custom"
+  ): boolean {
+    const extensions = pdfSurfaceExtensions(this.options.adapter);
+    if (extensions?.setScaleAtViewportCenter) {
+      extensions.setScaleAtViewportCenter(scale);
+      this.canonicalViewerState = createViewerState({
+        ...this.canonicalViewerState,
+        viewport: { ...this.canonicalViewerState.viewport, scale },
+        scale,
+        scaleMode
+      });
+      return true;
+    }
+    if (this.options.adapter.surfaceType !== "image"
+      && this.options.adapter.surfaceType !== "markdown") return false;
+
+    const center = this.handwritingViewport.getContainerCenter();
+    if (!center) return false;
+    this.handwritingViewport.setScaleAtPoint(scale, center);
+    this.canonicalViewerState = createViewerState({
+      ...this.canonicalViewerState,
+      scaleMode
+    });
+    return true;
   }
 
   private createViewerCommandHost(): ViewerCommandHost {
     return {
       getViewerState: () => this.getViewerState(),
       setViewerState: (patch) => this.setViewerState(patch),
+      setZoomAtViewportCenter: (scale) => this.applyZoomAtViewportCenter(scale),
 
       getScale: () => this.getViewerState().viewport.scale,
       setScale: (scale: number) => {
-        const vp = this.handwritingViewport.getState();
+        const viewer = this.getViewerState();
         this.setViewerState({
-          viewport: { ...vp, scale },
+          viewport: { ...viewer.viewport, scale },
           scale,
           scaleMode: "custom"
         });
@@ -1811,19 +2008,24 @@ export class ViewerInkSession {
         try {
           const scrollEl = this.options.adapter.scrollElement?.();
           const containerWidth = scrollEl?.clientWidth || this.options.adapter.root?.clientWidth || 0;
-          const pageNum = this.getViewerState().pageNumber;
+          const viewer = this.getViewerState();
+          const pageNum = viewer.pageNumber;
           const page = this.options.adapter.page(pageNum);
-          const pageWidth = page?.width || 612;
+          const rotated = viewer.rotation % 180 !== 0;
+          const pageWidth = page ? (rotated ? page.height : page.width) : 612;
           if (containerWidth > 0 && pageWidth > 0) {
-            const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
-            const vp = this.handwritingViewport.getState();
+          const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
+          if (!this.applyZoomAtViewportCenter(targetScale, "fit-width")) {
             this.setViewerState({
-              viewport: { scale: targetScale, x: 0, y: vp.y },
+              viewport: { scale: targetScale, x: 0, y: viewer.viewport.y },
               scale: targetScale,
               scaleMode: "fit-width"
             });
           }
-        } catch {}
+          }
+        } catch {
+          // Fit commands are optional while PDF page geometry is being replaced.
+        }
       },
       fitPage: () => {
         try {
@@ -1845,7 +2047,9 @@ export class ViewerInkSession {
               scaleMode: "fit-page"
             });
           }
-        } catch {}
+        } catch {
+          // Fit commands are optional while PDF page geometry is being replaced.
+        }
       },
       getContainerWidth: () => {
         try {
@@ -1872,11 +2076,9 @@ export class ViewerInkSession {
       },
       focusPage: (pageNumber: number) => {
         try {
-          const ok = this.options.adapter.focusPage(pageNumber);
-          if (ok) {
-            this.setViewerState({ pageNumber });
-          }
-          return ok;
+          const focused = this.options.adapter.focusPage(pageNumber);
+          if (focused) this.updateViewerStateFromAdapter();
+          return focused;
         } catch {
           return false;
         }
@@ -2051,7 +2253,13 @@ export class ViewerInkSession {
 
   private installPointerProbe(adapter: ViewerInkSessionOptions["adapter"]): void {
     const doc = adapter.host.ownerDocument;
+    if (adapter.surfaceType === "markdown") {
+      adapter.root.addEventListener("input", () => {
+        this.markdownInkHistoryPreferred = false;
+      }, { capture: true, signal: this.pointerProbeAbort.signal });
+    }
     this.documentInputOwnership = acquireDocumentInputOwnership(doc, {
+      host: adapter.host,
       ownerId: this.documentInputOwnerId,
       sessionGeneration: this.viewerGeneration,
       registrationSource: this.documentInputRegistrationSource,
@@ -2060,15 +2268,18 @@ export class ViewerInkSession {
     const options = { capture: true, signal: this.pointerProbeAbort.signal };
 
     const within = (target: EventTarget | null): boolean => {
-      if (!(target instanceof Element)) return false;
-      return adapter.host.contains(target) || adapter.root.contains(target);
+      if (!target || typeof (target as Node).nodeType !== "number") return false;
+      const node = target as Node;
+      return adapter.host.contains(node) || adapter.root.contains(node);
     };
 
     this.physicalContactCollectorLease = acquirePhysicalContactCollector(doc, {
       ownerId: `viewer-session-${this.viewerGeneration}-${this.identity.id}`,
       sessionId: this.identity.id,
       viewerGeneration: this.viewerGeneration,
-      isEnabled: () => this.options.debugEnabled?.() ?? false,
+      host: adapter.host,
+      isEnabled: () => this.documentInputOwnership?.isOwner() === true
+        && (this.options.debugEnabled?.() ?? false),
       withinTarget: within,
       onPhysicalContactEvent: (event) => {
         if (this.documentInputOwnershipRevoked || this.documentInputOwnership?.isOwner() !== true) return;
@@ -2082,11 +2293,18 @@ export class ViewerInkSession {
     });
 
     this.installPointerDownProbes(doc, options, within);
-    this.installPointerUpCancelProbes(doc, options);
+    this.installPointerUpCancelProbes(doc, options, within);
     doc.addEventListener("pointermove", (event: PointerEvent) => {
+      const startedInNativeEmbed = this.nativeEmbeddedPdfPointerIds.has(event.pointerId);
+      const targetedNativeEmbed = this.recordNativeEmbeddedPdfInput(event, "pointermove", "document-capture");
+      if (startedInNativeEmbed || targetedNativeEmbed) return;
+      if (!within(event.target) && !this.documentObservedPointerIds.has(event.pointerId)) return;
       this.continueOpenPenStroke(event);
     }, { capture: true, passive: false, signal: this.pointerProbeAbort.signal });
-    adapter.scrollElement().addEventListener("scroll", () => this.updatePenScrollEvidence(), options);
+    adapter.scrollElement().addEventListener("scroll", () => {
+      if (adapter.surfaceType === "markdown") this.handwritingViewport.syncFromScroll();
+      this.updatePenScrollEvidence();
+    }, options);
     this.installWheelProbes(doc, options, within);
     this.installGestureProbes(doc, options, within);
     this.installUiShellMutationWatch(doc);
@@ -2102,11 +2320,12 @@ export class ViewerInkSession {
       reason,
       registrationSource: this.documentInputRegistrationSource
     });
+    this.physicalContactCollectorLease?.release();
+    this.physicalContactCollectorLease = null;
     this.pointerProbeAbort.abort();
     for (const surface of this.surfaces.values()) {
       surface.router?.destroy();
       surface.router = null;
-      this.clearTouchDrawPolicy(surface.page.element);
       this.releaseInputOwner(surface.page.element);
     }
     this.gestureOwnership.replaceGeneration();
@@ -2114,6 +2333,7 @@ export class ViewerInkSession {
     this.uiShellMutationObserver?.disconnect();
     this.uiShellMutationObserver = null;
     this.physicalContactIdsByPointer.clear();
+    this.documentObservedPointerIds.clear();
     this.pointerDownPerformanceAt.clear();
     this.pointerInputAt.clear();
     this.pointerRouteReceivedAt.clear();
@@ -2336,7 +2556,6 @@ export class ViewerInkSession {
         ? Date.parse(String(this.logger.lastSuccessfulStroke().lastEndAt))
         : null,
       lastZoomSettleAt: this.lastZoomSettleAt,
-      lastTouchPanAt: this.lastTouchPanAt,
       lastRouterBindAt: this.lastRouterBindAt,
       lastPageReplacementAt: this.lastPageReplacementAt
     };
@@ -2540,7 +2759,6 @@ export class ViewerInkSession {
       msSinceRouterBind: this.lastRouterBindAt === null ? null : Math.max(0, Date.now() - this.lastRouterBindAt),
       msSincePageReplacement: this.lastPageReplacementAt === null ? null : Math.max(0, Date.now() - this.lastPageReplacementAt),
       msSinceLastZoomSettle: this.lastZoomSettleAt === null ? null : Math.max(0, Date.now() - this.lastZoomSettleAt),
-      msSinceLastTouchZoomPan: this.lastTouchPanAt === null ? null : Math.max(0, Date.now() - this.lastTouchPanAt),
       toolChangeId: this.lastToolChange?.id ?? null,
       selectedToolAtPointerDown: this.activeTool(),
       fallbackConsidered: this.shouldFallbackRoutePointer(event),
@@ -2599,7 +2817,6 @@ export class ViewerInkSession {
       msSinceLastSuccessfulStroke: this.logger.timeSinceLastSuccessfulStrokeMs(),
       msSinceUiClose: this.lastUiSurfaceCloseAt === null ? null : Math.max(0, Date.now() - this.lastUiSurfaceCloseAt),
       msSinceZoomSettle: this.lastZoomSettleAt === null ? null : Math.max(0, Date.now() - this.lastZoomSettleAt),
-      msSinceLastTouchZoomPan: this.lastTouchPanAt === null ? null : Math.max(0, Date.now() - this.lastTouchPanAt),
       msSinceRouterBind: this.lastRouterBindAt === null ? null : Math.max(0, Date.now() - this.lastRouterBindAt),
       msSincePageReplacement: this.lastPageReplacementAt === null ? null : Math.max(0, Date.now() - this.lastPageReplacementAt),
       lastToolChange: this.lastToolChange,
@@ -3123,41 +3340,6 @@ export class ViewerInkSession {
   }
 
   private handlePhysicalContactEvent(event: PhysicalContactCollectorEvent): void {
-    this.pinchCleanup.noteLivePens(
-      [...this.surfaces.values()].flatMap((surface) => surface.router?.activePenIds() ?? [])
-    );
-    for (const record of event.records) {
-      const pointers = record.contact.pointerIds;
-      const touches = record.contact.touchIdentifiers;
-      for (const pointerId of pointers) {
-        if (touches.includes(pointerId)) this.pinchCleanup.associate(pointerId, pointerId);
-      }
-      const pointerId = pointers[0];
-      const touchId = touches[0];
-      if (pointers.length === 1 && touches.length === 1 && pointerId !== undefined && touchId !== undefined) {
-        this.pinchCleanup.associate(pointerId, touchId);
-      }
-    }
-    if (event.kind === "pointer" && event.pointerId !== null) {
-      const pointer = event.event as PointerEvent;
-      this.pinchCleanup.observePointer(event.pointerId, event.eventType, pointer.pointerType || "");
-    } else if (event.event instanceof TouchEvent || "touches" in event.event) {
-      const touch = event.event as TouchEvent;
-      const changed = [...touch.changedTouches].map((point) => point.identifier);
-      const active = [...touch.touches].map((point) => point.identifier);
-      for (const prune of this.pinchCleanup.reconcileTouches(event.eventType, changed, active)) {
-        this.logger.stalePinchContact({ ...prune });
-      }
-    } else {
-      for (const identifier of event.touchIdentifiers) {
-        this.pinchCleanup.observeTouch(identifier, event.eventType);
-      }
-    }
-    this.notePinchTerminalIfQuiet();
-    for (const reconciled of this.pinchCleanup.consumePointerReconciliations()) {
-      this.logger.stalePinchPointerReconciled({ ...reconciled });
-    }
-    this.syncStylusPinchExclusion(event.stylusTouchAssociations ?? []);
     this.updatePhysicalContactMappings(event);
     if (event.kind === "pointer" && event.eventType === "pointerdown") {
       this.notePointerTypeOrigin(event.event, "document-physical-contact-collector", "capture");
@@ -3230,28 +3412,6 @@ export class ViewerInkSession {
     this.logger.physicalContactDuplicateObserver({ ...details });
   }
 
-  private syncStylusPinchExclusion(associations: readonly { touchIdentifier: number; physicalContactId: string; pointerId: number | null }[]): void {
-    const live = new Set(associations.map((association) => association.touchIdentifier));
-    for (const association of associations) {
-      if (!this.pinchCleanup.excludeStylusTouch(association.touchIdentifier)) continue;
-      this.logger.pinchTouchExcludedAsStylus({
-        touchIdentifier: association.touchIdentifier,
-        physicalContactId: association.physicalContactId,
-        pointerId: association.pointerId,
-        pointerType: "pen"
-      });
-    }
-    for (const id of this.pinchCleanup.associationState().stylusAssociatedTouchIdentifiers) {
-      if (live.has(id)) continue;
-      this.pinchCleanup.releaseStylusTouch(id);
-      this.postZoomTrace.noteBurstActivity({ stylusAssociationReleasedAt: Date.now() });
-    }
-    this.postZoomTrace.noteBurstActivity({
-      ...this.pinchCleanup.associationState(),
-      stylusAssociationSourcePhysicalContactId: associations[0]?.physicalContactId ?? null
-    });
-  }
-
   private updatePhysicalContactMappings(event: PhysicalContactCollectorEvent): void {
     for (const record of event.records) {
       const contact = record.contact;
@@ -3275,7 +3435,6 @@ export class ViewerInkSession {
       sessionId: event.sessionId,
       ownerCollectorId: event.ownerId,
       viewerGeneration: event.viewerGeneration,
-      sessionGeneration: event.sessionGeneration,
       observerOwnerIds: event.observerOwnerIds,
       listenerRegistrationScope: event.registrationScope,
       registrationSource: event.registrationSource,
@@ -3289,13 +3448,13 @@ export class ViewerInkSession {
 
   private logPhysicalContactRecords(
     records: PhysicalContactCollectorEvent["records"],
-    _event?: PhysicalContactCollectorEvent
+    event: PhysicalContactCollectorEvent
   ): void {
     for (const record of records) {
       const contact = record.contact;
       this.logger.pointerSeen({
         source: "physical-contact",
-        collectorId: this.documentInputOwnership?.collectorId ?? null,
+        collectorId: event.collectorId,
         ownerId: this.documentInputOwnerId,
         sessionGeneration: this.viewerGeneration,
         registrationScope: "document",
@@ -3331,45 +3490,60 @@ export class ViewerInkSession {
     }
   }
 
-  private recordPhysicalPointerEvent(
-    event: PointerEvent,
-    eventType: RawPointerContactSample["eventType"]
-  ): void {
-    if (!(this.options.debugEnabled?.() ?? false)) return;
-    if (this.seenPhysicalPointerEvents.has(event)) return;
-    this.seenPhysicalPointerEvents.add(event);
-    const now = Date.now();
-    const sample = rawPointerContactSample(event, eventType);
-    const records = this.physicalContactTracker.expire(now);
-    const current = eventType === "pointerdown"
-      ? this.physicalContactTracker.pointerDown(now, sample)
-      : eventType === "pointermove"
-        ? this.physicalContactTracker.pointerMove(now, sample)
-        : this.physicalContactTracker.pointerEnd(now, sample);
-    this.logPhysicalContactRecords([...records, ...current]);
-  }
-
-  private recordPhysicalTouchEvent(
-    event: TouchEvent,
-    eventType: RawTouchContactEvent["eventType"]
-  ): void {
-    if (!(this.options.debugEnabled?.() ?? false)) return;
-    if (this.seenPhysicalTouchEvents.has(event)) return;
-    this.seenPhysicalTouchEvents.add(event);
-    const now = Date.now();
-    const raw = rawTouchContactEvent(event, eventType);
-    const records = this.physicalContactTracker.expire(now);
-    const current = eventType === "touchstart"
-      ? this.physicalContactTracker.touchStart(now, raw)
-      : eventType === "touchmove"
-        ? this.physicalContactTracker.touchMove(now, raw)
-        : this.physicalContactTracker.touchEnd(now, raw);
-    this.logPhysicalContactRecords([...records, ...current]);
-  }
-
   private notePointerTypeOrigin(event: Event, listener: string, listenerPhase: PointerTypeListenerPhase): void {
     const origin = this.pointerTypeOrigins.note(pointerTypeOrigin(event, listener, listenerPhase));
     this.logger.pointerTypeOrigin({ ...origin });
+  }
+
+  private recordNativeEmbeddedPdfInput(event: Event, phase: string, source: string): boolean {
+    if (this.options.adapter.isHostOwnedInputTarget?.(event.target) !== true) return false;
+
+    const pointer = event as PointerEvent;
+    if (event.type === "pointerdown" && Number.isFinite(pointer.pointerId)) {
+      this.nativeEmbeddedPdfPointerIds.add(pointer.pointerId);
+      while (this.nativeEmbeddedPdfPointerIds.size > 32) {
+        const oldest = this.nativeEmbeddedPdfPointerIds.values().next().value;
+        if (oldest === undefined) break;
+        this.nativeEmbeddedPdfPointerIds.delete(oldest);
+      }
+    }
+    if (this.nativeEmbeddedPdfInputEvents.has(event)) return true;
+    this.nativeEmbeddedPdfInputEvents.add(event);
+
+    const isMove = phase === "pointermove" || phase === "touchmove" || phase === "gesturechange";
+    const pointerId = Number.isFinite(pointer.pointerId) ? pointer.pointerId : null;
+    let suppressedMoves = 0;
+    if (isMove) {
+      const key = `${event.type}:${pointerId ?? "touch"}`;
+      const now = performance.now();
+      const previous = this.nativeEmbeddedPdfMoveLogAt.get(key);
+      if (previous && now - previous.loggedAt < 120) {
+        previous.suppressed += 1;
+        return true;
+      }
+      suppressedMoves = previous?.suppressed ?? 0;
+      this.nativeEmbeddedPdfMoveLogAt.set(key, { loggedAt: now, suppressed: 0 });
+      while (this.nativeEmbeddedPdfMoveLogAt.size > 16) {
+        const oldest = this.nativeEmbeddedPdfMoveLogAt.keys().next().value;
+        if (oldest === undefined) break;
+        this.nativeEmbeddedPdfMoveLogAt.delete(oldest);
+      }
+    }
+
+    this.logger.pointerSeen({
+      source: "native-embedded-pdf-input",
+      owner: "obsidian",
+      phase,
+      eventType: event.type,
+      observer: source,
+      pointerType: pointer.pointerType || null,
+      pointerId,
+      buttons: Number.isFinite(pointer.buttons) ? pointer.buttons : null,
+      target: describeTarget(event.target),
+      defaultPrevented: event.defaultPrevented,
+      suppressedMoves
+    });
+    return true;
   }
 
   private installPointerDownProbes(
@@ -3378,14 +3552,20 @@ export class ViewerInkSession {
     within: (target: EventTarget | null) => boolean
   ): void {
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
+      if (this.recordNativeEmbeddedPdfInput(e, "pointerdown", "document-capture")) return;
+      const targetWithin = within(e.target);
+      const fallbackCandidate = this.shouldFallbackRoutePointer(e);
+      if (!targetWithin && !fallbackCandidate) return;
       this.notePointerTypeOrigin(e, "document-pointer-probe", "capture");
       this.noteUiInput(e);
       const hitPage = this.closestPdfPageElement(e.target);
       const capturedAt = Date.now();
       const hitTestStartedAt = performance.now();
-      const hitTest = this.shouldFallbackRoutePointer(e)
-        ? this.inspectPointerHitOnce(e, hitPage, within(e.target))
+      const hitTest = fallbackCandidate
+        ? this.inspectPointerHitOnce(e, hitPage, targetWithin)
         : emptyPointerHitTest(hitPage);
+      if (!targetWithin && !hitTest.geometricPage) return;
+      this.documentObservedPointerIds.add(e.pointerId);
       this.recordDocumentHandoff(e, hitTest, {
         capturedAt,
         hitTestMs: performance.now() - hitTestStartedAt
@@ -3395,7 +3575,6 @@ export class ViewerInkSession {
       const documentActivePenIds = [...new Set(
         [...this.surfaces.values()].flatMap((surface) => surface.router?.activePenIds() ?? [])
       )];
-      const documentActiveTouchIds = this.pluginTouchPointerIds();
       const documentPhysicalContactId = this.physicalContactIdsByPointer.get(e.pointerId) ?? null;
       const duplicateLookingContactIds = documentPhysicalContactId === null
         ? []
@@ -3407,8 +3586,9 @@ export class ViewerInkSession {
       let documentPredictedCount = 0;
       try {
         documentCoalescedCount = e.getCoalescedEvents?.().length ?? 0;
-        const predicted = (e as PointerEvent & { getPredictedEvents?: () => PointerEvent[] }).getPredictedEvents;
-        documentPredictedCount = predicted ? predicted.call(e).length : 0;
+        documentPredictedCount = (e as PointerEvent & {
+          getPredictedEvents?: () => PointerEvent[];
+        }).getPredictedEvents?.().length ?? 0;
       } catch {
         // Browser diagnostic APIs can disappear while a viewer page is recycled.
       }
@@ -3446,8 +3626,6 @@ export class ViewerInkSession {
           : "none",
         activePenCount: documentActivePenIds.length,
         activePenIds: documentActivePenIds.slice(0, 8),
-        activeTouchCount: documentActiveTouchIds.length,
-        activeTouchPointerIds: documentActiveTouchIds.slice(0, 8),
         captureSet: false,
         captureLost: false,
         generation: hitTest.geometricPage ? this.surfaces.get(hitTest.geometricPage.pageNumber)?.router?.generation ?? null : null,
@@ -3457,7 +3635,7 @@ export class ViewerInkSession {
         duplicateLookingContactIds,
         reason: "document-capture"
       });
-      // Capture: own pen/mouse draw sync here. Page capture can stay deaf after
+      // Capture owns pen and confirmed MockTab stylus tips. Page capture can stay deaf after
       // zoom while binds/alive still look healthy; bubble never runs if something
       // stops the event mid-descent. Microtask is too late for preventDefault.
       this.captureDrawPointerFallback(e, within, hitTest);
@@ -3483,10 +3661,13 @@ export class ViewerInkSession {
 
     // Bubble: if the page router never marked the pointer, own the stroke here.
     doc.addEventListener("pointerdown", (e: PointerEvent) => {
+      if (this.recordNativeEmbeddedPdfInput(e, "pointerdown", "document-bubble")) return;
+      const targetWithin = within(e.target);
+      if (!targetWithin && !this.shouldFallbackRoutePointer(e)) return;
       this.notePointerTypeOrigin(e, "document-pointer-fallback", "bubble");
       const hitPage = this.closestPdfPageElement(e.target);
       const hitTest = this.shouldFallbackRoutePointer(e)
-        ? this.inspectPointerHit(e, hitPage, within(e.target))
+        ? this.inspectPointerHit(e, hitPage, targetWithin)
         : emptyPointerHitTest(hitPage);
       this.bubbleDrawPointerFallback(e, within, hitTest);
     }, { capture: false, signal: this.pointerProbeAbort.signal, passive: false });
@@ -3494,9 +3675,18 @@ export class ViewerInkSession {
 
   private installPointerUpCancelProbes(
     doc: Document,
-    options: AddEventListenerOptions
+    options: AddEventListenerOptions,
+    within: (target: EventTarget | null) => boolean
   ): void {
     const clearHandled = (e: PointerEvent): void => {
+      const nativeEmbedPointer = this.nativeEmbeddedPdfPointerIds.delete(e.pointerId);
+      const nativeEmbedTarget = this.recordNativeEmbeddedPdfInput(e, e.type, "document-terminal");
+      if (nativeEmbedPointer || nativeEmbedTarget) {
+        this.handledDrawPointers.delete(e.pointerId);
+        return;
+      }
+      const observedHere = this.documentObservedPointerIds.delete(e.pointerId);
+      if (!observedHere && !within(e.target)) return;
       this.finishDocumentHandoff(e, e.type === "pointercancel" ? "pointercancel" : "pointerup", undefined, {
         terminalObservedByDocument: true,
         eventType: e.type
@@ -3546,6 +3736,8 @@ export class ViewerInkSession {
     let lastWheelLogAt = 0;
     let wheelPanCount = 0;
     let lastWheelPanLogAt = 0;
+    let nativeEmbedWheelCount = 0;
+    let lastNativeEmbedWheelLogAt = 0;
 
     const withinNativePdfSidebar = (target: EventTarget | null): boolean => {
       if (!(target instanceof Element)) return false;
@@ -3557,7 +3749,8 @@ export class ViewerInkSession {
     const logWheelPan = (
       event: WheelEvent,
       phase: "in-view" | "sidebar" | "outside-viewer",
-      details: Record<string, unknown>
+      details: Record<string, unknown>,
+      source = "wheel-pan"
     ): void => {
       const now = performance.now();
       wheelPanCount += 1;
@@ -3565,7 +3758,7 @@ export class ViewerInkSession {
       lastWheelPanLogAt = now;
       this.notePointerTypeOrigin(event, "document-wheel", "capture");
       this.logger.pointerSeen({
-        source: "wheel-pan",
+        source,
         pointerType: "wheel",
         phase,
         ...details,
@@ -3573,15 +3766,48 @@ export class ViewerInkSession {
       });
     };
 
-    // Mac trackpad pinch = wheel+ctrl in Chromium/Electron — not pointerType "touch".
-    // Plain wheel and trackpad navigation stay browser-owned. This listener
-    // observes them only; the unified controller owns explicit pinch zoom.
+    // Keep wheel handling scoped to this viewer host. PDF modifier-wheel zoom
+    // belongs to PdfJsViewAdapter; images use the shared viewport controller.
     doc.addEventListener("wheel", (e: WheelEvent) => {
+      if (this.options.adapter.isHostOwnedInputTarget?.(e.target)) {
+        if (e.deltaX === 0 && e.deltaY === 0) return;
+        const now = performance.now();
+        nativeEmbedWheelCount += 1;
+        if (nativeEmbedWheelCount > 1 && now - lastNativeEmbedWheelLogAt < 80) return;
+        lastNativeEmbedWheelLogAt = now;
+        this.notePointerTypeOrigin(e, "document-wheel", "capture");
+        this.logger.pointerSeen({
+          source: "native-embedded-pdf-input",
+          phase: "preserved",
+          pointerType: "wheel",
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          target: describeTarget(e.target),
+          preventDefault: false,
+          burstIndex: nativeEmbedWheelCount
+        });
+        return;
+      }
+      if (!within(e.target)) return;
+      if (this.options.adapter.surfaceType === "markdown") {
+        if (e.deltaX === 0 && e.deltaY === 0 && e.deltaZ === 0) return;
+        const inMarkdown = within(e.target);
+        logWheelPan(e, inMarkdown ? "in-view" : "outside-viewer", {
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          deltaZ: e.deltaZ,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          within: inMarkdown,
+          target: describeTarget(e.target),
+          navigation: "native-markdown-scroll",
+          preventDefault: false
+        }, "markdown-native-scroll");
+        return;
+      }
       if (e.ctrlKey || e.metaKey) {
-        if (this.gestureNavigation.handleWheel(e)) {
-          e.preventDefault();
-          return;
-        }
         const now = performance.now();
         wheelPinchCount += 1;
         if (wheelPinchCount > 1 && now - lastWheelLogAt < 80) return;
@@ -3607,20 +3833,20 @@ export class ViewerInkSession {
       if (e.deltaX === 0 && e.deltaY === 0) return;
       if (e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return;
 
-      const inViewer = within(e.target);
       const target = describeTarget(e.target);
 
       if (withinNativePdfSidebar(e.target)) {
-        logWheelPan(e, "sidebar", { deltaX: e.deltaX, deltaY: e.deltaY, within: inViewer, target });
+        logWheelPan(e, "sidebar", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target });
         return;
       }
-      if (!inViewer) {
-        logWheelPan(e, "outside-viewer", { deltaX: e.deltaX, deltaY: e.deltaY, within: false, target });
-        return;
-      }
-      const changed = this.gestureNavigation.handleWheelPan(e);
-      if (changed) e.preventDefault();
-      logWheelPan(e, "in-view", { deltaX: e.deltaX, deltaY: e.deltaY, within: true, target, changed });
+      logWheelPan(e, "in-view", {
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        within: true,
+        target,
+        navigation: "native-viewer-scroll",
+        preventDefault: false
+      });
     }, { ...options, passive: false });
   }
 
@@ -3633,6 +3859,7 @@ export class ViewerInkSession {
     for (const name of ["gesturestart", "gesturechange", "gestureend"] as const) {
       doc.addEventListener(name, (event) => {
         const e = event as Event & { scale?: number; rotation?: number };
+        if (!within(e.target)) return;
         if (name === "gesturestart") this.notePointerTypeOrigin(e, "document-gesture", "capture");
         this.logger.pointerSeen({
           source: name,
@@ -4357,13 +4584,6 @@ export class ViewerInkSession {
     this.lastZoomPipelineSummary = zoomPipelineSummary;
     const frameAttributionSummary = this.zoomFrameDiagnostics.summary();
     this.lastZoomFrameAttributionSummary = frameAttributionSummary;
-    const mobilePdfZoom = (() => {
-      try {
-        return this.mobilePdfZoomDiagnostics();
-      } catch {
-        return null;
-      }
-    })();
     const scaleIntervals = profile.scaleIntervals.summary();
     const scaleDeltas = profile.scaleDeltas.summary();
     const frameIntervals = profile.frameIntervals.summary();
@@ -4467,7 +4687,6 @@ export class ViewerInkSession {
       sidebarFollowSuppressedTriggers: profile.sidebarFollowSuppressedTriggers,
       frameTiming: this.frameTimingProfile(),
       nativeContentMutations: this.zoomNativeContentMutations,
-      mobilePdfZoom: mobilePdfZoom?.trace ?? this.mobilePdfZoomTrace.summary(),
       frameAttributionSummary,
       zoomPipelineSummary,
       zoomNativeHandoffSummary: this.zoomNativeHandoffTrace.summary()
@@ -4531,7 +4750,6 @@ export class ViewerInkSession {
       maxPdfInkMismatchPx: metrics.maxPdfInkMismatchPx,
       frameIntervalHistogram: metrics.frameIntervalHistogram,
       frameTiming: metrics.frameTiming,
-      mobilePdfZoom: this.mobilePdfZoomTrace.summary()
     };
     this.recentZoomGesturePerformance.push(summary);
     if (this.recentZoomGesturePerformance.length > 3) this.recentZoomGesturePerformance.shift();
@@ -4565,7 +4783,7 @@ export class ViewerInkSession {
     this.lastZoomSignalAt = now;
     this.lastZoomSignalReason = reason;
     this.lastZoomSignalScale = scale ?? this.lastZoomSignalScale;
-    // Keep one burst for the full gesture. A long, healthy pinch can last well
+    // Keep one burst for the full zoom gesture. A long, healthy gesture can last well
     // beyond ZOOM_ACTIVE_MS while still delivering scale ticks every frame;
     // the settle timer is the actual quiet-window boundary.
     if (!this.zoomProfile) {
@@ -4576,23 +4794,9 @@ export class ViewerInkSession {
         this.zoomFrameDiagnostics.begin(this.zoomCorrelationId);
       }
       this.postZoomDurability.onZoomBegin(this.zoomCorrelationId);
-      const seed = this.pinchCleanup.beginBurst();
-      for (const prune of seed.pruned) this.logger.stalePinchContact({ ...prune });
-      this.postZoomTrace.noteBurstActivity({
-        seededPinchPointerIds: seed.seededPinchPointerIds,
-        seededPinchTouchIdentifiers: seed.seededPinchTouchIdentifiers,
-        prunedBeforeBurstPointerIds: seed.prunedBeforeBurstPointerIds,
-        prunedBeforeBurstTouchIdentifiers: seed.prunedBeforeBurstTouchIdentifiers
-      });
       this.settleTimerResetCount = 0;
       this.inGestureResetCount = 0;
-      this.settleWaitStartedAt = 0;
-      this.zoomGestureStartedAt = now;
-      this.pinchTerminalAt = 0;
-      this.pinchSawContact = false;
       this.lastScaleChangeAt = 0;
-      this.liveInkOverlapStartedAt = 0;
-      this.liveInkWaitAfterPinchTerminalMs = 0;
       this.penLiftedForSettleAt = 0;
       this.settleResetReasons = {};
       this.runZoomSettlePaintCallCount = 0;
@@ -4666,8 +4870,42 @@ export class ViewerInkSession {
       ...(scale !== undefined ? { scale: Number(scale.toFixed(4)) } : {})
     });
     if (this.zoomSettleTimer !== null && this.zoomProfile) this.zoomProfile.settleTimerResets += 1;
-    this.cancelPinchCleanupFrame();
     this.armZoomSettleTimer(settleMs, reason);
+  }
+
+  /**
+   * CSS-projected zoom changes the ink canvas's required pixel density without
+   * changing renderer geometry. Debounce until projection input pauses, then
+   * restamp retained strokes at the settled backing size. PDF.js native zoom
+   * continues through its separate render-signal handoff.
+   */
+  private scheduleViewportProjectionRepaint(): void {
+    if (this.destroyed) return;
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) return;
+    if (this.viewportProjectionRepaintTimer !== null) {
+      view.clearTimeout(this.viewportProjectionRepaintTimer);
+    }
+    const generation = ++this.viewportProjectionRepaintGeneration;
+    this.viewportProjectionRepaintTimer = view.setTimeout(() => {
+      this.viewportProjectionRepaintTimer = null;
+      if (this.destroyed || generation !== this.viewportProjectionRepaintGeneration) return;
+      if (this.zoomCompositing) {
+        // Keep the request until the native PDF compositor has released its
+        // mask; renderPage intentionally refuses canonical paint mid-handoff.
+        this.pendingViewportProjectionRepaint = true;
+        return;
+      }
+      for (const surface of this.surfaces.values()) {
+        this.renderPage(surface.page.pageNumber, undefined, "viewport-projection-settle");
+      }
+    }, 120);
+  }
+
+  private flushPendingViewportProjectionRepaint(): void {
+    if (!this.pendingViewportProjectionRepaint || this.zoomCompositing || this.destroyed) return;
+    this.pendingViewportProjectionRepaint = false;
+    this.scheduleViewportProjectionRepaint();
   }
 
   /**
@@ -4732,49 +4970,37 @@ export class ViewerInkSession {
   }
 
 
+  private canAnnotatePointerEvent(
+    event: Pick<PointerEvent, "pointerType" | "type" | "button" | "buttons" | "pressure">,
+    context?: { stylusRemapped?: boolean; allowTouchText?: boolean }
+  ): boolean {
+    const identity = resolvePointerIdentity(event, this.stylusCapability === "confirmed");
+    if (event.pointerType === "touch" && context?.allowTouchText === true) return true;
+    return canAnnotatePointer(event, {
+      stylusRemapped: context?.stylusRemapped ?? identity.stylusRemapped,
+      mouseInkingEnabled: this.mouseInkingEnabled(),
+      mouseOverPdfPage: true,
+      touchDrawFallback: this.touchDrawFallbackEnabled(),
+      stylusConfirmed: this.stylusCapability === "confirmed"
+    });
+  }
+
   private mouseInkingConfigured(): boolean {
     return this.options.mouseInkingEnabled?.() ?? this.options.settings.mouseInkingEnabled;
   }
 
   private mouseInkingEnabled(): boolean {
-    return this.mouseInkingConfigured() && !this.mouseNavigationActive;
+    return this.mouseInkingConfigured() && this.options.settings.toolPreferences.mouseNavigationActive !== true;
   }
 
-  private isDesktopPdfPageEvent(
-    event: Pick<PointerEvent, "clientX" | "clientY" | "target">
-  ): boolean {
-    if (this.runtimePlatform().mobile) return false;
-    const page = this.options.adapter.pages().find(({ element }) =>
-      containsClientPoint(element, event.clientX, event.clientY)
-    );
-    if (!page || !(event.target instanceof Element)) return false;
-    if (page.element.contains(event.target)) return true;
-    // A stale/retargeted event may still be visibly over the page. Recover it
-    // only when the topmost hit confirms the page, never from geometry alone.
-    if (!this.options.adapter.root.contains(event.target)) return false;
-    const topHit = this.options.adapter.host.ownerDocument.elementFromPoint?.(event.clientX, event.clientY);
-    return topHit instanceof Element && page.element.contains(topHit);
-  }
-
-
-  private canAnnotatePointerEvent(
-    event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
-  ): boolean {
-    const context = {
-      mouseInkingEnabled: this.mouseInkingEnabled(),
-      stylusConfirmed: this.stylusCapability === "confirmed",
-      touchDrawFallback: this.touchAnnotationEnabled(),
-      ...(event.pointerType === "mouse"
-        ? { mouseOverPdfPage: this.isDesktopPdfPageEvent(event) }
-        : {})
-    };
-    return canAnnotatePointer(event, context);
+  private touchDrawFallbackEnabled(): boolean {
+    return (this.options.touchDrawFallbackEnabled?.() ?? this.options.settings.touchDrawFallback) === true
+      && this.stylusCapability !== "confirmed"
+      && !this.gestureNavigation?.hasActivePen();
   }
 
   private touchAnnotationEnabled(): boolean {
-    const enabled = this.options.touchDrawFallbackEnabled?.() ?? this.options.settings.touchDrawFallback;
-    return enabled === true
-      && this.stylusCapability !== "confirmed";
+    return this.touchDrawFallbackEnabled();
   }
 
   private promoteStylusCapability(event: Pick<PointerEvent, "pointerType">): void {
@@ -4785,7 +5011,6 @@ export class ViewerInkSession {
       reason: "observed-pointerType-pen",
       ...this.inputPolicyLogFields()
     });
-    this.syncTouchDrawPolicy("stylus-capability-promoted");
   }
 
   private pageEvidenceReason(page: AnnotationPageInfo): string | null {
@@ -4818,10 +5043,11 @@ export class ViewerInkSession {
 
   private canAnnotateSurface(
     surface: PageSurface,
-    event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
+    event: Pick<PointerEvent, "pointerType" | "type" | "button" | "buttons" | "pressure" | "clientX" | "clientY" | "target">,
+    context?: { stylusRemapped?: boolean; allowTouchText?: boolean }
   ): boolean {
     if (this.destroyed || this.inputTeardownStarted || this.documentInputOwnershipRevoked) return false;
-    if (!this.canAnnotatePointerEvent(event)) return false;
+    if (!this.canAnnotatePointerEvent(event, context)) return false;
     const current = this.options.adapter.page(surface.page.pageNumber);
     let reason = this.pageEvidenceReason(surface.page);
     if (surface.page.mountGeneration !== undefined) {
@@ -4842,24 +5068,140 @@ export class ViewerInkSession {
 
   private inputPolicyLogFields(): Record<string, unknown> {
     return {
-      ...describeInputPolicies({
-        mouseInkingEnabled: this.mouseInkingEnabled()
-      }),
+      ...describeInputPolicies({ mouseInkingEnabled: this.mouseInkingEnabled(), touchDrawFallback: this.touchDrawFallbackEnabled() }),
       stylusCapability: this.stylusCapability,
-      touchDrawFallback: this.touchAnnotationEnabled(),
       activeTool: this.activeTool()
     };
   }
 
   private resolvedPolicyForPointer(
-    event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY" | "target">
+    event: Pick<PointerEvent, "pointerType" | "type" | "button" | "buttons" | "pressure" | "clientX" | "clientY" | "target">,
+    identity?: PointerIdentityResolution
   ): string {
-    if (event.pointerType === "pen") return "annotate";
-    if (event.pointerType === "touch") return this.touchAnnotationEnabled() ? "annotate-touch-fallback" : "native";
-    if (event.pointerType === "mouse" && this.isDesktopPdfPageEvent(event)) {
-      return this.mouseInkingEnabled() ? "annotate-page" : "native";
-    }
+    const resolved = identity ?? resolvePointerIdentity(event, this.stylusCapability === "confirmed");
+    if (resolved.effectivePointerType === "pen") return resolved.stylusRemapped ? "annotate-remapped-stylus" : "annotate";
+    if (event.pointerType === "mouse" && this.mouseInkingEnabled()) return "annotate-mouse";
+    if (event.pointerType === "touch" && this.touchAnnotationEnabled()) return "annotate-touch-fallback";
     return "native";
+  }
+
+  updateMouseInputBindings(): void {
+    this.toolbar.setMouseModeState(
+      this.mouseInkingConfigured(),
+      this.mouseInkingConfigured() && this.options.settings.toolPreferences.mouseNavigationActive === true
+    );
+    for (const surface of this.surfaces.values()) surface.router?.syncToolState();
+    this.refreshSurfaceCursors();
+    this.syncEffectiveDrawState("input-policy-change", "settings");
+  }
+
+  private setMouseNavigationActive(nativeSelection: boolean): void {
+    if (!this.mouseInkingConfigured()) return;
+    const preferences = this.options.settings.toolPreferences;
+    if (preferences.mouseNavigationActive === nativeSelection) return;
+    preferences.mouseNavigationActive = nativeSelection;
+    this.lastUiInputPointerType = "mouse";
+    this.updateMouseInputBindings();
+    void this.options.saveSettings(preferences).catch((error) => {
+      this.logger.inputLifecycleEvent("mouse-mode-save-failed", {
+        nativeSelection,
+        error: this.errorMessage(error)
+      });
+    });
+  }
+
+  setCustomMobilePdfPinchZoomEnabled(enabled: boolean): void {
+    this.customMobilePdfPinchZoomEnabledOverride = enabled;
+    for (const surface of this.surfaces.values()) {
+      if (!enabled) this.gestureNavigation.cancelForSurface(surface.page.element, "disabled");
+      surface.router?.syncToolState();
+    }
+  }
+
+  private customMobilePdfPinchZoomEnabled(surface: PageSurface): boolean {
+    try {
+      const enabled = this.customMobilePdfPinchZoomEnabledOverride
+        ?? this.options.customMobilePdfPinchZoomEnabled?.()
+        ?? this.options.settings.customMobilePdfPinchZoom;
+      const extensions = pdfSurfaceExtensions(this.options.adapter);
+      const report = extensions?.compatibilityReport?.();
+      if (!extensions || !report?.profile || !report.platform) return false;
+      return planMobileCustomPdfZoom({
+        enabled,
+        surfaceType: this.options.adapter.surfaceType ?? "image",
+        platform: report.platform,
+        profile: report.profile,
+        page: surface.page
+      }).mode === "custom-mobile";
+    } catch {
+      return false;
+    }
+  }
+
+  private mobilePinchSurfaceAt(clientX: number, clientY: number): PageSurface | null {
+    for (const surface of this.surfaces.values()) {
+      const rect = surface.page.element.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0
+        && clientX >= rect.left && clientX <= rect.right
+        && clientY >= rect.top && clientY <= rect.bottom) return surface;
+    }
+    let pageNumber: number | null = null;
+    try {
+      pageNumber = this.options.adapter.getViewState().pageNumber;
+    } catch {
+      // Keep native gestures if the viewer is between page generations.
+    }
+    return [...this.surfaces.values()].find((surface) => surface.page.pageNumber === pageNumber) ?? null;
+  }
+
+  private startMobilePdfPinch(frame: GestureNavigationFrame): { accepted: boolean; scale?: number } {
+    const focalPoint = frame.points.length >= 2
+      ? { x: (frame.points[0]!.clientX + frame.points[1]!.clientX) / 2, y: (frame.points[0]!.clientY + frame.points[1]!.clientY) / 2 }
+      : null;
+    const surface = focalPoint ? this.mobilePinchSurfaceAt(focalPoint.x, focalPoint.y) : null;
+    if (!surface || !this.customMobilePdfPinchZoomEnabled(surface)) return { accepted: false };
+    this.activeMobilePinchSurface = surface;
+    const scale = this.handwritingViewport.getState().scale;
+    this.logger.inputLifecycleEvent("mobile-pdf-pinch-start", {
+      page: surface.page.pageNumber,
+      scale,
+      viewerGeneration: this.currentAdapterViewerGeneration()
+    });
+    return { accepted: true, scale };
+  }
+
+  private previewMobilePdfPinch(scale: number, focalPoint: GestureNavigationFocalPoint): void {
+    if (!this.activeMobilePinchSurface || !this.customMobilePdfPinchZoomEnabled(this.activeMobilePinchSurface)) {
+      this.gestureNavigation.cancelForSurface(this.activeMobilePinchSurface?.page.element ?? this.options.adapter.root, "disabled");
+      return;
+    }
+    this.handwritingViewport.setScaleAtPoint(scale, focalPoint);
+    const viewport = this.handwritingViewport.getState();
+    this.canonicalViewerState = createViewerState({
+      ...this.canonicalViewerState,
+      viewport: { ...this.canonicalViewerState.viewport, scale: viewport.scale },
+      scale: viewport.scale,
+      scaleMode: "custom"
+    });
+  }
+
+  private endMobilePdfPinch(scale: number, reason: GestureNavigationEndReason): void {
+    const surface = this.activeMobilePinchSurface;
+    this.activeMobilePinchSurface = null;
+    if (!surface) return;
+    const viewport = this.handwritingViewport.getState();
+    this.canonicalViewerState = createViewerState({
+      ...this.canonicalViewerState,
+      viewport: { ...this.canonicalViewerState.viewport, scale: viewport.scale },
+      scale: Number.isFinite(viewport.scale) && viewport.scale > 0 ? viewport.scale : scale,
+      scaleMode: "custom"
+    });
+    this.logger.inputLifecycleEvent("mobile-pdf-pinch-end", {
+      page: surface.page.pageNumber,
+      scale: this.canonicalViewerState.scale,
+      reason,
+      viewerGeneration: this.currentAdapterViewerGeneration()
+    });
   }
 
   /** Live annotation gesture (ink/edit) or selection/text manipulation. */
@@ -4870,25 +5212,12 @@ export class ViewerInkSession {
     return false;
   }
 
-  private zoomInputState(): {
-    inputPending: boolean;
-    activeAnnotationGesture: boolean;
-    activePinchPointers: number;
-    activePinchTouches: number;
-    activeTouchPointerCount: number;
-  } {
+  private zoomInputState(): { inputPending: boolean; activeAnnotationGesture: boolean } {
     const activeAnnotationGesture = this.hasActiveAnnotationGesture();
-    const pinch = this.pinchCleanup.activePinchCount();
-    const activeTouchPointerCount = this.pluginTouchPointerIds().length;
+    const activeStylusNavigation = this.gestureNavigation.hasActivePen();
     return {
-      inputPending: activeAnnotationGesture
-        || pinch.pointers > 0
-        || pinch.touches > 0
-        || activeTouchPointerCount > 0,
-      activeAnnotationGesture,
-      activePinchPointers: pinch.pointers,
-      activePinchTouches: pinch.touches,
-      activeTouchPointerCount
+      inputPending: activeAnnotationGesture || activeStylusNavigation,
+      activeAnnotationGesture
     };
   }
 
@@ -4923,19 +5252,6 @@ export class ViewerInkSession {
     }
   }
 
-  /** Transient pen hit-page class only while a stylus tip is actively routed. */
-  private hasActivePenCapability(): boolean {
-    for (const surface of this.surfaces.values()) {
-      if ((surface.router?.activePenIds().length ?? 0) > 0) return true;
-      if (surface.builder && surface.router) {
-        // Prefer pen-owned drafts; mouse annotate still uses routers without hit-page lock.
-        const pens = surface.router.activePenIds();
-        if (pens.length > 0) return true;
-      }
-    }
-    return false;
-  }
-
   /** Annotation shortcuts must not hijack native PDF/editor selection. */
   private annotationShortcutContext(): boolean {
     if (!this.isAttached()) return false;
@@ -4954,86 +5270,18 @@ export class ViewerInkSession {
     return false;
   }
 
-  private cancelPinchCleanupFrame(): void {
-    if (this.pinchCleanupFrame === null) return;
-    window.cancelAnimationFrame(this.pinchCleanupFrame);
-    this.pinchCleanupFrame = null;
-  }
-
-  /** Plugin touch ids still held by page routers. Logged, not cleared. */
-  private pluginTouchPointerIds(): number[] {
-    const ids = new Set<number>();
-    for (const surface of this.surfaces.values()) {
-      for (const pointerId of surface.router?.activeTouchPointerIds() ?? []) ids.add(pointerId);
-    }
-    return [...ids];
-  }
-
-  /**
-   * Experiment: do not open the post-zoom window until pinch pointer and touch
-   * terminals have arrived, then one animation frame. Capture release is not repeated.
-   */
-  private awaitPinchGestureCleanup(): boolean {
-    const pluginTouchPointerIds = this.pluginTouchPointerIds();
-    const report = this.pinchCleanup.evaluate(performance.now(), PINCH_CLEANUP_MAX_WAIT_MS);
-    if (!report.quiescent) {
-      this.lastSettleDeferralReason = "pinch-cleanup";
-      this.armZoomSettleTimer(32);
-      return true;
-    }
-    if (this.pinchCleanup.needsAnimationFrame()) {
-      // Finger release already ran on this turn. That is the one post-terminal
-      // frame; waiting for another rAF was the 50ms flag.
-      if (report.quiescent && (this.pinchTerminalAt !== 0 || report.gestureCleanupTimedOut)) {
-        if (this.pinchTerminalAt === 0) {
-          this.pinchTerminalAt = performance.now();
-        }
-        this.pinchCleanup.noteAnimationFrame();
-      } else {
-        this.lastSettleDeferralReason = "pinch-cleanup-frame";
-        this.cancelPinchCleanupFrame();
-        this.pinchCleanupFrame = window.requestAnimationFrame(() => {
-          this.pinchCleanupFrame = null;
-          this.pinchCleanup.noteAnimationFrame();
-          this.runZoomSettlePaint();
-        });
-        this.refreshZoomBurstActivity();
-        return true;
-      }
-    }
-    this.postZoomTrace.noteGestureCleanup({
-      ...report,
-      pluginTouchPointerIds
-    });
-    const cleanupSpan = this.slowSpans.record({
-      kind: "async",
-      category: "zoom",
-      stage: "gesture-cleanup-wait",
-      durationMs: report.gestureCleanupWaitMs,
-      activeWorkMs: 0,
-      waitMs: report.gestureCleanupWaitMs,
-      reason: this.lastSettleDeferralReason,
-      zoomBurstId: this.zoomCorrelationId
-    });
-    if (cleanupSpan) this.logger.perfSlowSpan({ ...cleanupSpan });
-    return false;
-  }
-
   private armZoomSettleTimer(delayMs: number, reason = this.lastSettleDeferralReason ?? "timer-reset"): void {
-    const pinch = this.pinchCleanup.activePinchCount();
-    const pinchStillActive = pinch.pointers > 0 || pinch.touches > 0;
     if (this.zoomSettleTimer !== null) {
       window.clearTimeout(this.zoomSettleTimer);
-      if (pinchStillActive && (reason.includes("scale") || reason.includes("rotation"))) {
+      if (reason.includes("scale") || reason.includes("rotation")) {
         this.inGestureResetCount += 1;
-      } else if (reason !== "pinch-terminal") {
+      } else {
         this.settleTimerResetCount += 1;
         const bucket = settleResetBucket(reason);
         this.settleResetReasons[bucket] = (this.settleResetReasons[bucket] ?? 0) + 1;
       }
     }
     this.lastSettleDeferralReason = reason;
-    if (this.settleWaitStartedAt === 0) this.settleWaitStartedAt = performance.now();
     this.zoomSettleTimerGeneration += 1;
     const generation = this.zoomSettleTimerGeneration;
     this.zoomSettleTimerDueAt = performance.now() + delayMs;
@@ -5052,7 +5300,6 @@ export class ViewerInkSession {
    */
   private pauseZoomSettleForLiveInk(reason: "live-ink" | "live-ink-slice"): void {
     this.lastSettleDeferralReason = reason;
-    if (this.liveInkOverlapStartedAt === 0) this.liveInkOverlapStartedAt = performance.now();
     if (this.zoomSettlePausedForLiveInk) return;
     this.zoomSettlePausedForLiveInk = true;
     this.zoomSettlePausedAt = performance.now();
@@ -5075,42 +5322,11 @@ export class ViewerInkSession {
   private scheduleZoomSettleResume(): void {
     this.resumeZoomMaintenanceAfterInput();
     if (!this.zoomSettlePausedForLiveInk || this.zoomSettleResumeTimer !== null) return;
-    this.closeLiveInkOverlap(performance.now());
     this.penLiftedForSettleAt = performance.now();
     this.zoomSettleResumeTimer = window.setTimeout(() => {
       this.zoomSettleResumeTimer = null;
       this.resumeZoomSettleAfterLiveInk();
     }, 0);
-  }
-
-  /** Pencil overlap after the fingers are already up. The stroke itself is not a settle stall. */
-  private closeLiveInkOverlap(at: number): void {
-    if (this.liveInkOverlapStartedAt === 0 || this.pinchTerminalAt === 0) return;
-    const start = Math.max(this.liveInkOverlapStartedAt, this.pinchTerminalAt);
-    this.liveInkWaitAfterPinchTerminalMs += Math.max(0, at - start);
-    this.liveInkOverlapStartedAt = 0;
-  }
-
-  /**
-   * Fingers-up ends the gesture. The 560ms window is only for scale ticks that
-   * can still arrive while the pinch is held. A resize that does not change
-   * scale uses the same short delay.
-   */
-  private notePinchTerminalIfQuiet(): void {
-    if (!this.zoomProfile) return;
-    const pinch = this.pinchCleanup.activePinchCount();
-    if (pinch.pointers > 0 || pinch.touches > 0) {
-      this.pinchSawContact = true;
-      return;
-    }
-    if (!this.pinchSawContact || this.pinchTerminalAt !== 0) return;
-    this.pinchTerminalAt = performance.now();
-    if (this.hasAnyLiveInkInput()) {
-      this.pauseZoomSettleForLiveInk("live-ink");
-      return;
-    }
-    this.armZoomSettleTimer(this.frameTimingProfile().frameBudgetMs, "pinch-terminal");
-    this.resumeZoomMaintenanceAfterInput();
   }
 
   private resumeZoomSettleAfterLiveInk(): void {
@@ -5160,18 +5376,12 @@ export class ViewerInkSession {
   private considerZoomBurstWatchdog(): void {
     if (this.destroyed || !this.postZoomTrace.isBurstOpen()) return;
     this.refreshZoomBurstActivity();
-    const pinch = this.pinchCleanup.activePinchCount();
-    const pinchWatch = this.pinchCleanup.watchState();
     const decision = decideZoomBurstWatchdog({
       now: performance.now(),
       lastZoomSignalAt: this.lastZoomSignalAt,
       zoomSettleTimerArmed: this.zoomSettleTimer !== null,
       zoomSettleTimerDueAt: this.zoomSettleTimerDueAt,
-      pinchCleanupFrameArmed: this.pinchCleanupFrame !== null,
-      activePinchPointers: pinch.pointers,
-      activePinchTouches: pinch.touches,
-      liveInk: this.hasAnyLiveInkInput(),
-      gestureCleanupTimedOut: pinchWatch.timedOut
+      liveInk: this.hasAnyLiveInkInput()
     });
     this.postZoomTrace.noteBurstActivity({ lastWatchdogReason: decision.reason, lastWatchdogAction: decision.action });
     if (decision.action === "wait") {
@@ -5201,9 +5411,6 @@ export class ViewerInkSession {
     if (!this.postZoomTrace.isBurstOpen()) return;
     const beganAt = this.postZoomTrace.diagnosis().beganAt;
     const beganMs = beganAt ? Date.parse(beganAt) : Date.now();
-    const pinch = this.pinchCleanup.activePinchCount();
-    const pinchDiag = this.pinchCleanup.diagnostics();
-    const pinchWatch = this.pinchCleanup.watchState();
     const liveInkPages = [...this.surfaces.entries()]
       .filter(([, surface]) => this.surfaceHasLiveInkInput(surface))
       .map(([page]) => page);
@@ -5220,20 +5427,9 @@ export class ViewerInkSession {
       runZoomSettlePaintCallCount: this.runZoomSettlePaintCallCount,
       lastRunZoomSettlePaintAt: this.lastRunZoomSettlePaintAt,
       lastSettleDeferralReason: this.lastSettleDeferralReason,
-      pinchCleanupEvaluateCount: pinchDiag.evaluateCount,
-      pinchCleanupQuiescent: (pinch.pointers === 0 && pinch.touches === 0) || pinchWatch.timedOut,
-      gestureCleanupTimedOut: pinchWatch.timedOut,
-      lastPinchEventAgeMs: pinchWatch.lastPinchEventAgeMs,
-      stalePinchPointerIds: pinchWatch.stalePointerIds,
-      stalePinchTouchIdentifiers: pinchWatch.staleTouchIds,
-      pinchCleanupNeedsAnimationFrame: pinchDiag.needsAnimationFrame,
-      pinchCleanupFrameArmed: this.pinchCleanupFrame !== null,
       liveInkAtLastSettleAttempt: liveInkPages.length > 0,
       liveInkPages,
       activePenIds: [...this.surfaces.values()].flatMap((surface) => surface.router?.activePenIds() ?? []),
-      ...this.pinchCleanup.associationState(),
-      ...this.pinchCleanup.reconciliationState(),
-      activeTouchPointerIds: this.pluginTouchPointerIds(),
       zoomProfileActive: this.zoomProfile !== null,
       zoomCompositing: this.zoomCompositing,
       zoomHandoffActive: this.isZoomHandoffActive(),
@@ -5245,14 +5441,10 @@ export class ViewerInkSession {
     if (this.destroyed) return;
     this.runZoomSettlePaintCallCount += 1;
     this.lastRunZoomSettlePaintAt = performance.now();
-    if (this.awaitPinchGestureCleanup()) {
-      this.zoomFrameDiagnostics.setPhase("post-pinch-live-ink");
-      return;
-    }
     // Keep CSS compositing + draft canvas intact until the tip lifts. Mid-drag
     // settle was clearing the live draft and force-rebinding routers (log proof).
     if (this.hasAnyLiveInkInput()) {
-      this.zoomFrameDiagnostics.setPhase("post-pinch-live-ink");
+      this.zoomFrameDiagnostics.setPhase("post-zoom-live-ink");
       this.pauseZoomSettleForLiveInk("live-ink");
       return;
     }
@@ -5279,7 +5471,6 @@ export class ViewerInkSession {
     this.lastZoomHandoffSettledAt = this.zoomCompositeSettledAt;
     this.lastZoomSettleAt = Date.now();
     this.zoomSettleSliceStartedAt = this.zoomCompositeSettledAt;
-    this.pinchCleanup.endBurst();
     this.rebindStaleZoomRouters("zoom-settle");
     // Refresh the retained diagnosis after any live-ink pause has ended. The
     // first deferred attempt may have recorded a pen that lifted before settle.
@@ -5308,61 +5499,29 @@ export class ViewerInkSession {
     });
     if (settleSpan) this.logger.perfSlowSpan({ ...settleSpan });
     const nowPerf = performance.now();
-    const zoomGestureDurationMs = this.pinchTerminalAt !== 0 && this.zoomGestureStartedAt !== 0
-      ? this.pinchTerminalAt - this.zoomGestureStartedAt
-      : null;
-    const pinchTerminalToSettleMs = this.pinchTerminalAt !== 0 ? nowPerf - this.pinchTerminalAt : null;
+    const settleTimerLatenessMs = Math.max(0, nowPerf - this.zoomSettleTimerDueAt);
     const lastScaleChangeToSettleMs = this.lastScaleChangeAt !== 0 ? nowPerf - this.lastScaleChangeAt : null;
-    const liveInkWaitAfterPinchTerminalMs = this.pinchTerminalAt !== 0 ? this.liveInkWaitAfterPinchTerminalMs : null;
-    const postGestureMs = pinchTerminalToSettleMs
-      ?? (this.zoomGestureStartedAt !== 0 ? nowPerf - this.zoomGestureStartedAt : 0);
-    const perceivedPostGestureMs = Math.max(0, postGestureMs - (liveInkWaitAfterPinchTerminalMs ?? 0));
-    const layoutWait = this.lastSettleDeferralReason === "resize"
-      || this.lastSettleDeferralReason === "pages-page-render"
-      || this.lastSettleDeferralReason === "pinch-cleanup-frame"
-      || this.lastSettleDeferralReason === "pinch-terminal";
-    const unexpectedWaitMs = layoutWait
-      ? Math.max(0, perceivedPostGestureMs - this.frameTimingProfile().frameBudgetMs)
-      : perceivedPostGestureMs;
-    const gestureCleanup = this.postZoomTrace.diagnosis().gestureCleanup;
-    const gestureCleanupWaitMs = typeof gestureCleanup?.gestureCleanupWaitMs === "number"
-      ? gestureCleanup.gestureCleanupWaitMs
-      : null;
     const settlePhaseDurations = {
-      "settle-timer-wait": this.settleWaitStartedAt === 0
-        ? null
-        : Math.max(0, nowPerf - this.settleWaitStartedAt),
-      "pinch-terminal-to-settle": pinchTerminalToSettleMs,
-      "gesture-cleanup": gestureCleanupWaitMs,
-      "live-ink": liveInkWaitAfterPinchTerminalMs,
+      "settle-timer-lateness": settleTimerLatenessMs,
       "last-scale-change-to-settle": lastScaleChangeToSettleMs,
-      "unattributed-post-gesture": unexpectedWaitMs
     };
     this.postZoomTrace.noteBurstActivity({
-      zoomGestureDurationMs: zoomGestureDurationMs === null ? null : Math.round(zoomGestureDurationMs * 10) / 10,
-      pinchTerminalToSettleMs: pinchTerminalToSettleMs === null ? null : Math.round(pinchTerminalToSettleMs * 10) / 10,
       lastScaleChangeToSettleMs: lastScaleChangeToSettleMs === null ? null : Math.round(lastScaleChangeToSettleMs * 10) / 10,
-      liveInkWaitAfterPinchTerminalMs: liveInkWaitAfterPinchTerminalMs === null ? null : Math.round(liveInkWaitAfterPinchTerminalMs * 10) / 10,
       inGestureResetCount: this.inGestureResetCount,
       postGestureResetCount: this.settleTimerResetCount
     });
     const churn = this.slowSpans.recordSettleChurn({
-      settleDelayMs: unexpectedWaitMs,
+      settleDelayMs: settleTimerLatenessMs,
       settleTimerResetCount: this.settleTimerResetCount,
       inGestureResetCount: this.inGestureResetCount,
       resetReasons: this.settleResetReasons,
       lastDeferralReason: this.lastSettleDeferralReason,
       zoomBurstId: settledBurstId,
-      zoomGestureDurationMs,
-      pinchTerminalToSettleMs,
       lastScaleChangeToSettleMs,
-      liveInkWaitAfterPinchTerminalMs,
       phaseDurations: settlePhaseDurations
     });
     if (churn) this.logger.perfSlowSpan({ ...churn });
-    this.settleWaitStartedAt = 0;
     this.inGestureResetCount = 0;
-    this.liveInkWaitAfterPinchTerminalMs = 0;
     this.settleResetReasons = {};
     this.logger.zoomLifecycle("zoom-burst-settle", {
       zoomBurstId: this.zoomCorrelationId,
@@ -5372,7 +5531,6 @@ export class ViewerInkSession {
       scaleEnd,
       routerGenerations: this.currentRouterGenerations(),
       ...settleSnapshot,
-      ...(this.postZoomTrace.diagnosis().gestureCleanup ?? {})
     });
     this.zoomSettleBurst = {
       reason: this.zoomBurstReason,
@@ -5773,7 +5931,7 @@ export class ViewerInkSession {
   }
 
   private nativeHandoffPhase(): NativeHandoffPhase {
-    if (this.zoomCompositing) return "active-pinch";
+    if (this.zoomCompositing) return "active-zoom";
     if (this.isZoomHandoffActive()) return "handoff";
     return "settled";
   }
@@ -5792,7 +5950,6 @@ export class ViewerInkSession {
    * are all satisfied. A bounded retry remains the fallback for missing signals.
    */
   private zoomReleaseGate(now: number, stableRafReady = false): ZoomReleaseGate {
-    const cleanup = this.pinchCleanup.evaluate(now, PINCH_CLEANUP_MAX_WAIT_MS);
     const handoff = this.zoomNativeHandoffTrace.summary();
     const renderSignals = [
       handoff?.signals.canvasReplacement,
@@ -5814,10 +5971,9 @@ export class ViewerInkSession {
     const nativeContentQuiet = this.lastZoomNativeContentAt === 0
       || now - this.lastZoomNativeContentAt >= ViewerInkSession.ZOOM_NATIVE_RENDER_QUIET_MS;
     const replacementReady = this.replacementInkReady();
-    const inputTerminalsReady = cleanup.quiescent;
+    const liveInkInputReady = !this.hasAnyLiveInkInput();
     return {
-      inputTerminalsReady,
-      inputTerminalTimedOut: cleanup.gestureCleanupTimedOut,
+      liveInkInputReady,
       nativeRenderSignalReady,
       nativeRenderSignalCount,
       nativeRenderSignalAt,
@@ -5826,7 +5982,7 @@ export class ViewerInkSession {
       stableRafReady,
       timeoutReached,
       absoluteTimeoutReached,
-      ready: inputTerminalsReady
+      ready: liveInkInputReady
         && nativeRenderSignalReady
         && nativeContentQuiet
         && replacementReady
@@ -5854,8 +6010,7 @@ export class ViewerInkSession {
 
   private logZoomReleaseGate(now: number, gate: ZoomReleaseGate, delayMs: number, stage: "timer" | "stable-raf"): void {
     const signature = [
-      gate.inputTerminalsReady,
-      gate.inputTerminalTimedOut,
+      gate.liveInkInputReady,
       gate.nativeRenderSignalReady,
       gate.nativeRenderSignalCount,
       gate.nativeContentQuiet,
@@ -5875,8 +6030,7 @@ export class ViewerInkSession {
       delayMs: roundMs(delayMs),
       nativeContentMutations: this.zoomNativeContentMutations,
       sinceSettleMs: this.zoomCompositeSettledAt > 0 ? roundMs(now - this.zoomCompositeSettledAt) : null,
-      inputTerminalsReady: gate.inputTerminalsReady,
-      inputTerminalTimedOut: gate.inputTerminalTimedOut,
+      liveInkInputReady: gate.liveInkInputReady,
       nativeRenderSignalReady: gate.nativeRenderSignalReady,
       nativeRenderSignalCount: gate.nativeRenderSignalCount,
       nativeRenderSignalAt: gate.nativeRenderSignalAt,
@@ -5942,7 +6096,7 @@ export class ViewerInkSession {
       if (fallbackGate.ready) this.releaseZoomCompositeLayers();
       else if (
         fallbackGate.absoluteTimeoutReached
-        && fallbackGate.inputTerminalsReady
+        && fallbackGate.liveInkInputReady
         && fallbackGate.nativeContentQuiet
       ) this.releaseZoomCompositeLayers(true);
       return;
@@ -5969,14 +6123,14 @@ export class ViewerInkSession {
         if (!stableGate.ready) {
           if (
             stableGate.absoluteTimeoutReached
-            && stableGate.inputTerminalsReady
+            && stableGate.liveInkInputReady
             && stableGate.nativeContentQuiet
           ) {
             this.logger.zoomFlashProxy("release-gate-absolute-timeout", {
               pages: this.surfaces.size,
               replacementInkReady: stableGate.replacementInkReady,
               nativeContentQuiet: stableGate.nativeContentQuiet,
-              inputTerminalsReady: stableGate.inputTerminalsReady
+              liveInkInputReady: stableGate.liveInkInputReady
             });
             this.releaseZoomCompositeLayers(true);
             return;
@@ -6360,6 +6514,7 @@ export class ViewerInkSession {
     // the handoff is still masked. Reconcile only when the mobile mount set
     // actually changed, and do that work under the compositor so it cannot
     // become a second visible refresh after the overlay is removed.
+    this.flushPendingLifecycleInkReconcile();
     this.flushPendingMobileScrollRemount();
     this.recordInkVisibility("after-final-canonical");
     if (!this.replacementInkReady(true) && !forceAfterTimeout && !this.destroyed) {
@@ -6433,6 +6588,7 @@ export class ViewerInkSession {
     this.lastZoomFrameAttributionSummary = this.zoomFrameDiagnostics.finish();
     // Strict settle may have deferred off-screen pages; idle-margin prefetch once handoff ends.
     this.scheduleViewportPaint();
+    this.flushPendingViewportProjectionRepaint();
   }
 
   /**
@@ -6997,9 +7153,7 @@ export class ViewerInkSession {
       mobile: platform.mobile,
       phone: platform.phone,
       domPageCount,
-      toolbarPlacement: resolveToolbarPlacement(
-        options.toolbarPlacement?.() ?? options.settings.toolbarPlacement
-      )
+      toolbarOrientation: options.toolbarOrientation?.() ?? options.settings.toolbarOrientation
     });
     let contentHash: string | undefined;
     try {
@@ -7160,15 +7314,15 @@ export class ViewerInkSession {
     session.reconcileToolbarMount("session-create");
     await urgent("session create toolbar ok", {
       document: options.documentPath,
-      toolbarPlacement: session.currentToolbarPlacement(),
+      toolbarOrientation: session.currentToolbarOrientation(),
       ...session.toolbarPresentationSnapshot()
     });
     session.logger.sessionAttach({
       scrollRoot: describeScrollElement(options.adapter.scrollElement()),
-      ...describeInputPolicies(options.settings),
+      ...describeInputPolicies(),
       activeTool: options.settings.toolPreferences.activeTool,
       runtimePlatform: session.runtimePlatform().mobile ? "mobile" : "desktop",
-      toolbarPlacement: session.currentToolbarPlacement(),
+      toolbarOrientation: session.currentToolbarOrientation(),
       loadedStrokes,
       loadedTexts,
       sidecarStrokes,
@@ -7187,14 +7341,14 @@ export class ViewerInkSession {
       currentPage: options.adapter.getViewState().pageNumber,
       mountPageCount: mountPages.length,
       mountPages: mountPages.map((page) => page.pageNumber),
-      toolbarPlacement: session.currentToolbarPlacement()
+      toolbarOrientation: session.currentToolbarOrientation()
     });
     session.refresh("create");
     await urgent("session create refresh ok", {
       document: options.documentPath,
       surfaces: session.surfaces.size,
       mountPages: [...session.surfaces.keys()].sort((a, b) => a - b),
-      toolbarPlacement: session.currentToolbarPlacement(),
+      toolbarOrientation: session.currentToolbarOrientation(),
       mobile: platform.mobile
     });
     session.lastKnownViewScale = options.adapter.getViewState().scale;
@@ -7218,6 +7372,58 @@ export class ViewerInkSession {
 
   private pdfLifecycleCoordinator(): PageLifecycleCoordinator | undefined {
     return pdfSurfaceExtensions(this.options.adapter)?.lifecycleCoordinator;
+  }
+
+  private onLifecycleVisibilityChange(event: PageVisibilityChangeEvent): void {
+    if (this.destroyed) return;
+    this.scheduleLifecycleInkReconcile(
+      `lifecycle-${event.pageNumber}-${event.previousVisibility}-to-${event.currentVisibility}`
+    );
+  }
+
+  private scheduleLifecycleInkReconcile(reason: string): void {
+    const coordinator = this.pdfLifecycleCoordinator();
+    if (!coordinator || this.destroyed) return;
+    if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
+      this.pendingLifecycleInkReconcile = true;
+      this.postZoomTrace.remember("pending-lifecycle-ink-reconcile", {
+        reason,
+        mountPages: coordinator.getInkMountPages()
+      });
+      return;
+    }
+    const view = this.options.adapter.host.ownerDocument.defaultView;
+    if (!view) {
+      this.refresh(reason);
+      return;
+    }
+    if (this.lifecycleInkReconcileFrame !== null) return;
+    this.lifecycleInkReconcileFrame = view.requestAnimationFrame(() => {
+      this.lifecycleInkReconcileFrame = null;
+      if (this.destroyed) return;
+      if (this.isZoomGestureActive() || this.isZoomHandoffActive()) {
+        this.pendingLifecycleInkReconcile = true;
+        return;
+      }
+      this.refresh(reason);
+    });
+  }
+
+  private flushPendingLifecycleInkReconcile(): void {
+    if (!this.pendingLifecycleInkReconcile || this.destroyed || !this.pdfLifecycleCoordinator()) return;
+    this.pendingLifecycleInkReconcile = false;
+    this.refresh("post-zoom-lifecycle");
+    this.syncZoomOverlayLayouts("native-content");
+  }
+
+  private unmountInkSurface(pageNumber: number, surface: PageSurface, reason: string): void {
+    this.commitActiveDrawBeforeSurfaceLoss(surface, reason);
+    surface.router?.destroy();
+    this.releaseInputOwner(surface.page.element);
+    this.releaseSurfaceBuffers(surface);
+    surface.overlay.remove();
+    this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
+    this.surfaces.delete(pageNumber);
   }
 
   refresh(reason = "manual"): void {
@@ -7254,87 +7460,55 @@ export class ViewerInkSession {
     });
     try {
       const live = new Set(pages.map((page) => page.pageNumber));
-      for (const [pageNumber, surface] of this.surfaces) {
+      const coordinator = this.pdfLifecycleCoordinator();
+      for (const [pageNumber, surface] of [...this.surfaces]) {
         const current = pages.find((page) => page.pageNumber === pageNumber)
           ?? this.options.adapter.page(pageNumber);
         if (!current || !live.has(pageNumber)) {
-          this.commitActiveDrawBeforeSurfaceLoss(surface, "page-outside-mobile-mount");
-          surface.router?.destroy();
-          this.clearTouchDrawPolicy(surface.page.element);
-          this.releaseInputOwner(surface.page.element);
-          this.releaseSurfaceBuffers(surface);
-          surface.overlay.remove();
-          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
-          this.surfaces.delete(pageNumber);
+          this.unmountInkSurface(
+            pageNumber,
+            surface,
+            coordinator ? "page-lifecycle-cold" : "page-outside-compatibility-mount"
+          );
           continue;
         }
         if (current.element !== surface.page.element) {
-          this.commitActiveDrawBeforeSurfaceLoss(surface, "page-element-replaced");
-          surface.router?.destroy();
-          this.clearTouchDrawPolicy(surface.page.element);
-          this.releaseInputOwner(surface.page.element);
-          this.releaseSurfaceBuffers(surface);
-          surface.overlay.remove();
-          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
-          this.surfaces.delete(pageNumber);
+          this.unmountInkSurface(pageNumber, surface, "page-element-replaced");
           continue;
         }
         if (!this.reattachSurface(surface, current)) {
-          this.commitActiveDrawBeforeSurfaceLoss(surface, "page-overlay-disconnected");
-          surface.router?.destroy();
-          this.clearTouchDrawPolicy(surface.page.element);
-          this.releaseInputOwner(surface.page.element);
-          this.releaseSurfaceBuffers(surface);
-          surface.overlay.remove();
-          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
-          this.surfaces.delete(pageNumber);
+          this.unmountInkSurface(pageNumber, surface, "page-overlay-disconnected");
           continue;
         }
+        coordinator?.setInkOverlayStatus(pageNumber, "mounted");
       }
       for (const page of pages) {
-        if (!this.surfaces.has(page.pageNumber)) this.surfaces.set(page.pageNumber, this.mountPage(page));
+        if (coordinator && !coordinator.shouldMountInkOverlay(page.pageNumber)) continue;
+        if (!this.surfaces.has(page.pageNumber)) {
+          this.surfaces.set(page.pageNumber, this.mountPage(page));
+        }
         this.surfaces.get(page.pageNumber)?.router?.syncToolState();
         this.renderPage(page.pageNumber);
       }
-      for (const pageNumber of [...this.surfaces.keys()]) {
-        if (!live.has(pageNumber)) {
-          const surface = this.surfaces.get(pageNumber);
-          if (surface) this.commitActiveDrawBeforeSurfaceLoss(surface, "post-refresh-page-unmounted");
-          surface?.router?.destroy();
-          if (surface) {
-            this.clearTouchDrawPolicy(surface.page.element);
-            this.releaseInputOwner(surface.page.element);
-            this.releaseSurfaceBuffers(surface);
-          }
-          surface?.overlay.remove();
-          this.pdfLifecycleCoordinator()?.setInkOverlayStatus(pageNumber, "unmounted");
-          this.surfaces.delete(pageNumber);
-        }
-      }
-      this.syncTouchDrawPolicy(reason);
       this.ensureSelectionToolbar();
-      this.syncAnnotationCursorMode();
     } finally {
       this.refreshDepth -= 1;
     }
   }
 
   /**
-   * Desktop: PDF.js already exposes the mounted page shells. Mobile: the
-   * measured working set is the current page plus the policy preload radius,
-   * which stays zero until a device trace promotes one.
+   * PageLifecycleCoordinator is the sole PDF ink-residency authority.
+   * The compatibility policy below exists only for annotation surfaces that do
+   * not expose the coordinator.
    */
   private pagesForInkMount(): AnnotationPageInfo[] {
     const coordinator = this.pdfLifecycleCoordinator();
     if (coordinator) {
-      const workingSet = coordinator.getWorkingSet();
-      const fromCoordinator: AnnotationPageInfo[] = [];
-      for (const pageNumber of workingSet) {
-        const page = this.options.adapter.page(pageNumber);
-        if (page) fromCoordinator.push(page);
-      }
-      if (fromCoordinator.length > 0) return fromCoordinator;
+      return coordinator.getInkMountPages()
+        .map((pageNumber) => this.options.adapter.page(pageNumber))
+        .filter((page): page is AnnotationPageInfo => Boolean(page));
     }
+
     const candidates: AnnotationPageInfo[] = [];
     const mobile = this.runtimePlatform().mobile;
     const policy = documentMountPolicy([], mobile ? "constrained" : "desktop");
@@ -7351,15 +7525,7 @@ export class ViewerInkSession {
         if (fallback) candidates.push(fallback);
       }
     }
-    const pad = 1;
-    const currentPage = this.options.adapter.getViewState().pageNumber;
-    const resolved: AnnotationPageInfo[] = [];
-    for (let pageNumber = currentPage - pad; pageNumber <= currentPage + pad; pageNumber += 1) {
-      if (pageNumber < 1) continue;
-      const page = this.options.adapter.page(pageNumber);
-      if (page) resolved.push(page);
-    }
-    if (resolved.length > 0) return resolved;
+    if (candidates.length > 0) return candidates;
     const fallback = this.options.adapter.page(1) ?? this.options.adapter.pages()[0];
     return fallback ? [fallback] : [];
   }
@@ -7382,8 +7548,6 @@ export class ViewerInkSession {
       if (this.activeTool() === "lasso") this.renderSelectionChrome(surface);
       else this.clearSelectionChrome(surface);
     }
-    this.syncTouchDrawPolicy(reason);
-    this.syncAnnotationCursorMode();
     this.refreshSurfaceCursors();
     this.ensureSelectionToolbar();
   }
@@ -7395,6 +7559,9 @@ export class ViewerInkSession {
         if (Number.isFinite(page)) this.historyDirtyPages.add(page);
       }
     }
+    const affectedPages = [...this.historyDirtyPages];
+    if (affectedPages.length > 0) this.historyPagesByCommand.set(command, affectedPages);
+    if (this.options.adapter.surfaceType === "markdown") this.markdownInkHistoryPreferred = true;
     this.history.execute(command);
   }
 
@@ -7831,7 +7998,14 @@ export class ViewerInkSession {
   }
 
   private paintAfterHistory(command?: Command, action?: HistoryChangeAction): void {
+    if (this.historyDirtyPages.size === 0 && command) {
+      for (const page of this.historyPagesByCommand.get(command) ?? []) {
+        this.historyDirtyPages.add(page);
+      }
+    }
     if (this.historyDirtyPages.size === 0) {
+      this.historyPaintedPages.clear();
+      this.invalidateInkLayers();
       this.refresh("history");
       return;
     }
@@ -7898,9 +8072,10 @@ export class ViewerInkSession {
     if (!surface || !this.selectionShape) return defaultAnchor;
 
     const bounds = shapeBounds(this.selectionShape);
-    const mapper = this.mapper(surface);
-    const topCenterView = mapper.toViewport({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.maxY });
-    const clientPoint = this.overlayClientFromViewport(surface, topCenterView);
+    const clientPoint = this.coordinates(surface).pageToClient({
+      x: (bounds.minX + bounds.maxX) / 2,
+      y: bounds.maxY
+    });
     const clientCenterX = clientPoint.x;
     const clientTopY = clientPoint.y;
     const visible = clientCenterX >= rootRect.left && clientCenterX <= rootRect.right
@@ -7913,15 +8088,15 @@ export class ViewerInkSession {
     };
   }
 
-  private cancelNavigationGestures(reason: "lifecycle" | "disabled" = "lifecycle"): void {
+  private cancelStylusHandPan(): void {
     for (const surface of this.surfaces.values()) {
-      surface.router?.cancelNavigation(reason);
+      surface.router?.cancelHandPan();
     }
   }
 
   onPageLifecycleChange(change: AnnotationPageLifecycleChange): void {
     if (change.kind === "reload" || change.kind === "viewer-replaced" || change.kind === "unmount") {
-      this.cancelNavigationGestures("lifecycle");
+      this.cancelStylusHandPan();
     }
     const adapterGeneration = "viewerGeneration" in this.options.adapter
       ? this.options.adapter.viewerGeneration
@@ -7948,6 +8123,19 @@ export class ViewerInkSession {
   }
 
   onViewStateChange(state: AnnotationViewState, source: ViewStateSource): void {
+    this.updateViewerStateFromAdapter(state);
+    if (source === "scalechanging" || source === "data-scale") {
+      try {
+        const scrollRoot = this.options.adapter.scrollElement();
+        this.handwritingViewport.syncRenderedState(
+          state.viewport?.scale ?? state.scale,
+          scrollRoot.scrollLeft,
+          scrollRoot.scrollTop
+        );
+      } catch {
+        // The active PDF view can disappear between its event and scroll read.
+      }
+    }
     this.zoomPipelineTrace.noteEvent(`view-state-${source}`);
     this.zoomPipelineTrace.noteStage("view-state", 0, 1, `view-state-${source}`);
     if (source === "scalechanging") {
@@ -7961,9 +8149,17 @@ export class ViewerInkSession {
       if (source === "pagechanging") this.zoomProfile.pageChangingEvents += 1;
     }
     if (source === "scroll") {
+      try {
+        const scrollRoot = this.options.adapter.scrollElement();
+        this.handwritingViewport.syncFromScroll(scrollRoot.scrollLeft, scrollRoot.scrollTop);
+      } catch {
+        // The active PDF view can disappear between its event and scroll read.
+      }
       if (this.selected.length) this.selectionToolbar.relayout();
-      // Mobile only mounts current±pad — debounce remount; never full-refresh mid-zoom.
-      if (this.runtimePlatform().mobile) this.scheduleMobileScrollRefresh();
+      // PDF ink residency follows PageLifecycleCoordinator visibility. Scroll
+      // only repaints existing surfaces; the coordinator emits mount changes.
+      if (this.pdfLifecycleCoordinator()) this.scheduleViewportPaint();
+      else if (this.runtimePlatform().mobile) this.scheduleMobileScrollRefresh();
       else this.scheduleViewportPaint();
       this.lastKnownViewScale = state.scale;
       return;
@@ -7973,7 +8169,13 @@ export class ViewerInkSession {
       this.scheduleZoomRepaint(`view-${source}`, state.scale);
       return;
     }
-    // Pinch fires unstable pagechanging — coalesce with scroll remount path on mobile.
+    if (source === "pagechanging" && this.pdfLifecycleCoordinator()) {
+      if (this.selected.length) this.selectionToolbar.relayout();
+      this.scheduleLifecycleInkReconcile("view-pagechanging");
+      this.lastKnownViewScale = state.scale;
+      return;
+    }
+    // Compatibility path for surfaces without lifecycle coordination.
     if (source === "pagechanging" && this.runtimePlatform().mobile) {
       if (this.selected.length) this.selectionToolbar.relayout();
       this.scheduleMobileScrollRefresh();
@@ -7993,7 +8195,7 @@ export class ViewerInkSession {
     const state = this.pendingAddPageMutation;
     if (!state || this.destroyed || pages.length < state.pageCountBefore + 1) return false;
     if (!this.addPageMutationViewRestored) {
-      this.options.adapter.restoreViewState(state.viewState);
+      this.restoreViewerState(state.viewState);
       this.addPageMutationViewRestored = true;
     }
     const details = this.addPageLifecycleDetails(state);
@@ -8138,190 +8340,27 @@ export class ViewerInkSession {
 
   private reconcileToolbarMount(reason: string): void {
     if (this.destroyed || !this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) return;
-    const placement = this.currentToolbarPlacement();
     const toolbar = this.toolbar.element;
-    const rail = mountedToolbarRail(toolbar);
-    const floatingFallbackActive = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback");
-    const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
-    const sidebarExpected = placement !== "main";
-    const sidebarConnected = sidebarExpected
-      && toolbarConnected
-      && Boolean(rail)
-      && this.options.adapter.host.contains(rail)
-      && rail!.classList.contains(`is-${placement}`);
-    const placementMatches = sidebarExpected
-      ? sidebarConnected
-      : toolbarConnected && !rail;
-    if (placementMatches && !floatingFallbackActive) return;
-    if (floatingFallbackActive && this.floatingToolbarPlacement === placement && reason !== "rail-reappeared") return;
+    const portal = this.floatingToolbar.getPortal();
+    const toolbarConnected = toolbar.isConnected && portal?.contains(toolbar) === true;
+    const floating = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback");
+    const orientationChanged = this.floatingToolbar.applyOrientation(toolbar);
+    if (toolbarConnected && floating && !orientationChanged) return;
 
     this.lastToolbarUnmountReason = toolbar.isConnected ? `reconcile:${reason}` : reason;
     this.toolbarUiGeneration = Math.min(999, this.toolbarUiGeneration + 1);
-    let mountError: unknown;
     try {
-      this.options.adapter.mountToolbar(toolbar, placement);
+      this.options.adapter.mountToolbar(toolbar);
       this.lastToolbarMountReason = reason;
-    } catch (error) {
-      mountError = error;
+    } catch {
+      // The floating toolbar can attach directly to the host if adapter mounting fails.
     }
-
-    const mountedRail = mountedToolbarRail(toolbar);
-    const mountedInSidebar = sidebarExpected
-      && toolbar.isConnected
-      && this.options.adapter.host.contains(toolbar)
-      && mountedRail !== null
-      && this.options.adapter.host.contains(mountedRail)
-      && mountedRail.classList.contains(`is-${placement}`);
-    const mountedInMainToolbar = placement === "main"
-      && toolbar.isConnected
-      && this.options.adapter.host.contains(toolbar)
-      && !mountedRail;
-
-    if (mountedInSidebar || mountedInMainToolbar) {
-      this.clearFloatingToolbarFallback();
-      return;
-    }
-
-    if (sidebarExpected) {
-      this.mountFloatingToolbarFallback(toolbar, placement);
-      this.lastToolbarMountReason = `${reason}:floating-fallback`;
-      return;
-    }
-
-    this.clearFloatingToolbarFallback();
-    if (mountError !== undefined && reason === "session-create") {
-      if (mountError instanceof Error) throw mountError;
-      const message = typeof mountError === "string" ? mountError : "Toolbar mount failed";
-      throw new Error(message);
-    }
-  }
-
-  private mountFloatingToolbarFallback(toolbar: HTMLElement, placement: ToolbarPlacement): void {
-    const alreadyFloating = toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")
-      && this.floatingToolbarPlacement === placement;
-    if (!alreadyFloating) {
-      try {
-        this.options.adapter.mountToolbar(toolbar, "main");
-      } catch {
-        // The fallback attaches directly to the view host if the adapter mount also fails.
-      }
-    }
-
-    toolbar.classList.add("native-pdf-handwriting-toolbar-floating-fallback");
-    toolbar.classList.toggle("is-sidebar-left", placement === "left");
-    toolbar.classList.toggle("is-sidebar-right", placement === "right");
-    this.options.adapter.host.append(toolbar);
-    this.floatingToolbarPlacement = placement;
-
-    if (!this.floatingToolbarHandle) {
-      const handle = createDetachedEl(toolbar.ownerDocument, "button");
-      handle.type = "button";
-      handle.className = "native-pdf-handwriting-toolbar-drag-handle";
-      handle.textContent = "⠿";
-      handle.title = "Move handwriting toolbar";
-      handle.setAttribute("aria-label", "Move handwriting toolbar");
-      toolbar.prepend(handle);
-      this.floatingToolbarHandle = handle;
-      this.installFloatingToolbarDrag(toolbar, handle);
-    }
-
-    if (!alreadyFloating) {
-      const rect = toolbar.getBoundingClientRect();
-      const hostRect = this.options.adapter.host.getBoundingClientRect();
-      const view = toolbar.ownerDocument.defaultView;
-      const maxLeft = Math.max(0, (view?.innerWidth ?? hostRect.right) - rect.width);
-      const maxTop = Math.max(0, (view?.innerHeight ?? hostRect.bottom) - rect.height);
-      setElementCssProps(toolbar, {
-        left: `${Math.min(Math.max(hostRect.left + 12, 0), maxLeft)}px`,
-        top: `${Math.min(Math.max(hostRect.top + 12, 0), maxTop)}px`,
-        right: "auto",
-        bottom: "auto"
-      });
-    }
-
-    this.observeToolbarRailRecovery(toolbar, placement);
-  }
-
-  private installFloatingToolbarDrag(toolbar: HTMLElement, handle: HTMLButtonElement): void {
-    const abort = new AbortController();
-    this.floatingToolbarAbort = abort;
-    let drag: { pointerId: number; startX: number; startY: number; left: number; top: number } | null = null;
-    const finish = (event: PointerEvent): void => {
-      if (!drag || event.pointerId !== drag.pointerId) return;
-      drag = null;
-      if (handle.hasPointerCapture(event.pointerId)) {
-        try { handle.releasePointerCapture(event.pointerId); } catch { /* already released */ }
-      }
-      if (event.cancelable) event.preventDefault();
-      event.stopImmediatePropagation();
-    };
-    handle.addEventListener("pointerdown", (event: PointerEvent) => {
-      if (event.button !== 0 || event.isPrimary === false) return;
-      const rect = toolbar.getBoundingClientRect();
-      drag = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        left: Number.parseFloat(toolbar.style.left) || rect.left,
-        top: Number.parseFloat(toolbar.style.top) || rect.top
-      };
-      try { handle.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
-      if (event.cancelable) event.preventDefault();
-      event.stopImmediatePropagation();
-    }, { capture: true, passive: false, signal: abort.signal });
-    handle.addEventListener("pointermove", (event: PointerEvent) => {
-      if (!drag || event.pointerId !== drag.pointerId) return;
-      const rect = toolbar.getBoundingClientRect();
-      const view = toolbar.ownerDocument.defaultView;
-      const maxLeft = Math.max(0, (view?.innerWidth ?? rect.right) - rect.width);
-      const maxTop = Math.max(0, (view?.innerHeight ?? rect.bottom) - rect.height);
-      const left = Math.min(Math.max(drag.left + event.clientX - drag.startX, 0), maxLeft);
-      const top = Math.min(Math.max(drag.top + event.clientY - drag.startY, 0), maxTop);
-      setElementCssProps(toolbar, { left: `${left}px`, top: `${top}px` });
-      if (event.cancelable) event.preventDefault();
-      event.stopImmediatePropagation();
-    }, { capture: true, passive: false, signal: abort.signal });
-    for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
-      handle.addEventListener(type, finish, { capture: true, passive: false, signal: abort.signal });
-    }
-  }
-
-  private observeToolbarRailRecovery(toolbar: HTMLElement, placement: ToolbarPlacement): void {
-    if (this.toolbarRailRecoveryObserver) return;
-    const MutationObserverConstructor = toolbar.ownerDocument.defaultView?.MutationObserver;
-    if (!MutationObserverConstructor) return;
-    const host = this.options.adapter.host;
-    const selector = `.native-pdf-handwriting-rail.is-${placement}, .hn-owned-pdf-ink-rail.is-${placement}`;
-    this.toolbarRailRecoveryObserver = new MutationObserverConstructor((records) => {
-      const railAppeared = records.some((record) => {
-        if (record.type === "attributes" && record.target instanceof Element) {
-          return record.target.matches(selector);
-        }
-        return Array.from(record.addedNodes).some((node) => {
-          if (node.nodeType !== Node.ELEMENT_NODE) return false;
-          const element = node as Element;
-          return element.matches(selector) || Boolean(element.querySelector(selector));
-        });
-      });
-      if (railAppeared && !this.destroyed) this.reconcileToolbarMount("rail-reappeared");
-    });
-    this.toolbarRailRecoveryObserver.observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    this.floatingToolbar.mount(toolbar);
+    this.lastToolbarMountReason = `${reason}:floating`;
   }
 
   private clearFloatingToolbarFallback(): void {
-    this.toolbarRailRecoveryObserver?.disconnect();
-    this.toolbarRailRecoveryObserver = null;
-    this.floatingToolbarAbort?.abort();
-    this.floatingToolbarAbort = null;
-    this.floatingToolbarHandle?.remove();
-    this.floatingToolbarHandle = null;
-    const toolbar = this.toolbar.element;
-    toolbar.classList.remove("native-pdf-handwriting-toolbar-floating-fallback");
-    toolbar.style.removeProperty("left");
-    toolbar.style.removeProperty("top");
-    toolbar.style.removeProperty("right");
-    toolbar.style.removeProperty("bottom");
-    this.floatingToolbarPlacement = null;
+    this.floatingToolbar.destroy();
   }
 
   private scheduleUiIntegrityCheck(reason: string): void {
@@ -8336,9 +8375,7 @@ export class ViewerInkSession {
   private verifyHandwritingUi(reason: string): void {
     if (this.destroyed || !this.options.adapter.host.isConnected || !this.options.adapter.root.isConnected) return;
     const state = this.handwritingUiState(reason);
-    const sidebarAvailable = state.sidebarConnected === true || state.floatingToolbarFallback === true;
-    const missing = state.toolbarExpected === true
-      && (!state.toolbarConnected || (state.sidebarExpected === true && !sidebarAvailable));
+    const missing = state.toolbarExpected === true && (!state.toolbarConnected || state.floatingToolbar !== true);
     if (!missing) return;
     const key = JSON.stringify([
       state.viewerGeneration,
@@ -8346,7 +8383,7 @@ export class ViewerInkSession {
       state.pageCount,
       state.currentPage,
       state.toolbarConnected,
-      state.sidebarConnected
+      state.toolbarOrientation
     ]);
     if (key === this.lastHandwritingUiMissingKey) return;
     this.lastHandwritingUiMissingKey = key;
@@ -8354,16 +8391,8 @@ export class ViewerInkSession {
   }
 
   private handwritingUiState(reason: string, details: Record<string, unknown> = {}): Record<string, unknown> {
-    const placement = this.currentToolbarPlacement();
     const toolbar = this.toolbar.element;
-    const rail = mountedToolbarRail(toolbar);
-    const toolbarConnected = toolbar.isConnected && this.options.adapter.host.contains(toolbar);
-    const sidebarExpected = placement !== "main";
-    const sidebarConnected = sidebarExpected
-      && toolbarConnected
-      && Boolean(rail)
-      && this.options.adapter.host.contains(rail)
-      && rail!.classList.contains(`is-${placement}`);
+    const toolbarInPortal = toolbar.isConnected && this.floatingToolbar.getPortal()?.contains(toolbar) === true;
     let currentPage: number | null = null;
     try {
       currentPage = this.options.adapter.getViewState().pageNumber;
@@ -8384,19 +8413,20 @@ export class ViewerInkSession {
         host: this.options.adapter.host.isConnected,
         viewer: this.options.adapter.root.isConnected,
         toolbar: toolbar.isConnected,
-        toolbarInHost: toolbarConnected,
-        sidebar: Boolean(rail?.isConnected)
+        toolbarInHost: this.options.adapter.host.contains(toolbar),
+        toolbarInPortal
       },
       viewerConnected: this.options.adapter.root.isConnected,
       toolbarExpected: true,
-      toolbarConnected,
-      sidebarExpected,
-      sidebarConnected,
-      floatingToolbarFallback: toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback"),
-      toolbarPlacement: placement,
+      toolbarConnected: toolbarInPortal,
+      floatingToolbar: toolbar.classList.contains("native-pdf-handwriting-toolbar-floating-fallback"),
+      toolbarOrientation: this.currentToolbarOrientation(),
       pageCount: Math.min(999, this.options.adapter.pages().length),
       currentPage,
-      documentInputOwnership: documentInputOwnershipSnapshot(this.options.adapter.host.ownerDocument),
+      documentInputOwnership: documentInputOwnershipSnapshot(
+        this.options.adapter.host.ownerDocument,
+        this.options.adapter.host
+      ),
       ...(this.lastAddPageOperationId ? { addPageOperationId: this.lastAddPageOperationId } : {}),
       ...details
     };
@@ -8410,8 +8440,7 @@ export class ViewerInkSession {
         left: isObsidianSidebarOpen(document, "left"),
         right: isObsidianSidebarOpen(document, "right")
       },
-      toolbarPresentation: elementPresentationSnapshot(toolbar),
-      sidebarRailPresentation: elementPresentationSnapshot(mountedToolbarRail(toolbar))
+      toolbarPresentation: elementPresentationSnapshot(toolbar)
     };
   }
 
@@ -8446,7 +8475,7 @@ export class ViewerInkSession {
       ...this.toolbarPresentationSnapshot(),
       rootConnected: root.isConnected,
       hostConnected: host.isConnected,
-      customToolbarCount: host.querySelectorAll(".native-pdf-handwriting-toolbar").length,
+      customToolbarCount: this.floatingToolbar.getPortal()?.querySelectorAll(".native-pdf-handwriting-toolbar").length ?? 0,
       toolbarControls,
       eraserControlConnected: Boolean(toolbar.querySelector("[data-control='eraser']")),
       addPageControlCount: root.querySelectorAll(".native-pdf-handwriting-add-page").length,
@@ -8469,7 +8498,6 @@ export class ViewerInkSession {
       });
     }
     this.logger.zoomDiagnosis({
-      mobilePdfZoom: this.mobilePdfZoomDiagnostics(),
       lastZoomTrace,
       lastPostZoomDurabilityTrace: this.postZoomDurability.snapshot(Date.now()),
       lastPointerTypeOrigins: this.pointerTypeOrigins.snapshot(),
@@ -8488,6 +8516,11 @@ export class ViewerInkSession {
     });
     this.logger.handwritingUiSnapshot(snapshot);
     return snapshot;
+  }
+
+  /** Plugin-owned PDF.js keeps its document until we re-read the vault file. */
+  private async reloadOwnedPdfFromVault(): Promise<void> {
+    await pdfSurfaceExtensions(this.options.adapter)?.reloadFromVault?.();
   }
 
   /**
@@ -8741,7 +8774,6 @@ export class ViewerInkSession {
     if (surface.overlay.isConnected) {
       if (!page.element.contains(surface.overlay)) return false;
       this.rememberPageMetrics(page);
-      this.applyTouchDrawPolicy(page.element, this.touchDrawPolicyEnabled ?? false);
       if (syncLayout) this.syncOverlayLayout(surface);
       if (maintainRouter) this.ensurePageRouter(surface);
       return true;
@@ -8749,7 +8781,6 @@ export class ViewerInkSession {
     this.ensurePagePositioning(page.element);
     page.element.append(surface.overlay);
     this.rememberPageMetrics(page);
-    this.applyTouchDrawPolicy(page.element, this.touchDrawPolicyEnabled ?? false);
     if (syncLayout) this.syncOverlayLayout(surface);
     if (maintainRouter) this.ensurePageRouter(surface);
     return true;
@@ -8768,14 +8799,12 @@ export class ViewerInkSession {
     this.commitActiveDrawBeforeSurfaceLoss(surface, "pdf-page-replaced");
     surface.router?.destroy();
     surface.router = null;
-    this.clearTouchDrawPolicy(previousPage);
     this.releaseInputOwner(previousPage);
     this.ensurePagePositioning(page.element);
     page.element.append(surface.overlay);
     surface.page = page;
     this.claimInputOwner(page.element, page.pageNumber);
     this.rememberPageMetrics(page);
-    this.applyTouchDrawPolicy(page.element, this.touchDrawPolicyEnabled ?? false);
     if (syncLayout) this.syncOverlayLayout(surface);
     surface.router = this.createPageRouter(surface);
   }
@@ -8866,6 +8895,7 @@ export class ViewerInkSession {
       };
       await this.armPageMutationShield("insert", mutation.pageNumber);
       await this.options.writeSourcePdf(mutation.bytes);
+      await this.reloadOwnedPdfFromVault();
       const remapped = this.applyImportedPagesToSession(before, mutation.pageNumber, mutation.pageCount);
       try {
         await this.persist(remapped, "page-import");
@@ -8910,7 +8940,8 @@ export class ViewerInkSession {
   }
 
   private captureAddPageMutationState(operationId: string, startedAt: number): AddPageMutationRestoreState {
-    const viewState = this.options.adapter.getViewState();
+    this.updateViewerStateFromAdapter();
+    const viewState = this.getViewerState();
     const pages = this.options.adapter.pages().slice(0, 64);
     const mounted = [...this.surfaces.entries()].slice(0, 64);
     const scroll = this.options.adapter.scrollElement();
@@ -8966,11 +8997,11 @@ export class ViewerInkSession {
       expectedPageCountDelta: 1,
       currentPageBefore: state.currentPageBefore,
       currentPageAfter: viewState.pageNumber,
-      beforeScale: Number(state.viewState.scale.toFixed(4)),
+      beforeScale: Number(state.viewState.viewport.scale.toFixed(4)),
       afterScale: Number(viewState.scale.toFixed(4)),
       beforeScaleMode: state.viewState.scaleMode ?? null,
       afterScaleMode: viewState.scaleMode ?? null,
-      beforeScrollFraction: Number(state.viewState.scrollFraction.toFixed(4)),
+      beforeScrollFraction: Number((state.viewState.scrollFraction ?? 0).toFixed(4)),
       afterScrollFraction: Number(viewState.scrollFraction.toFixed(4)),
       mountedPageNumbersBefore: state.mountedPageNumbers,
       mountedPageNumbersAfter: mounted.map(([pageNumber]) => pageNumber),
@@ -9041,6 +9072,7 @@ export class ViewerInkSession {
       await this.armPageMutationShield("insert", requestedPageNumber);
       const report = (stage: string): void => this.noteAddPageStage(stage);
       const insertedPage = await this.options.onInsertPage(requestedPageNumber, report);
+      await pdfSurfaceExtensions(this.options.adapter)?.reloadFromVault?.();
       if (this.pendingInsertedPageFocus) this.pendingInsertedPageFocus.pageNumber = insertedPage;
       this.applyInsertedPageToSession(before, insertedPage);
       this.completePendingAddPageMutation("insert-complete", this.options.adapter.pages());
@@ -9093,6 +9125,7 @@ export class ViewerInkSession {
       };
       await this.armPageMutationShield("insert", requestedPageNumber);
       const insertedPage = await this.options.onInsertScannedPages(requestedPageNumber, pages);
+      await this.reloadOwnedPdfFromVault();
       if (this.pendingInsertedPageFocus) this.pendingInsertedPageFocus.pageNumber = insertedPage;
       this.applyInsertedPagesToSession(before, insertedPage, pages.length);
       this.focusInsertedPageIfReady("scan-complete", this.options.adapter.pages());
@@ -9213,6 +9246,7 @@ export class ViewerInkSession {
       const metrics = new Map(this.pageMetrics);
       await this.armPageMutationShield("reorder", fromPage);
       await this.options.onReorderPage(fromPage, toPage);
+      await this.reloadOwnedPdfFromVault();
       this.applyReorderedPageToSession(before, fromPage, toPage, metrics);
       this.logger.pdfPageAction("reorder-complete", { fromPage, toPage });
       this.options.notice(`Moved page ${fromPage} to position ${toPage}.`);
@@ -9242,9 +9276,11 @@ export class ViewerInkSession {
       // PDF and its page-numbered sidecar/recovery data.
       if (this.isDirty()) await this.manualSave();
       const before = this.snapshot();
+      const focusedPage = this.options.adapter.getViewState().pageNumber;
       await this.armPageMutationShield("delete", pageNumber);
       await this.options.onDeletePage(pageNumber);
-      this.applyDeletedPageToSession(before, pageNumber);
+      await this.reloadOwnedPdfFromVault();
+      this.applyDeletedPageToSession(before, pageNumber, focusedPage);
       this.logger.pdfPageAction("delete-complete", { pageNumber });
       this.options.notice(`Deleted page ${pageNumber}.`);
     } catch (error) {
@@ -9287,9 +9323,11 @@ export class ViewerInkSession {
     try {
       if (this.isDirty()) await this.manualSave();
       const before = this.snapshot();
+      const focusedPage = this.options.adapter.getViewState().pageNumber;
       await this.armPageMutationShield("delete", lastPage);
       await this.options.onDeletePages(pageNumbers);
-      this.applyDeletedPagesToSession(before, pageNumbers);
+      await this.reloadOwnedPdfFromVault();
+      this.applyDeletedPagesToSession(before, pageNumbers, focusedPage);
       this.logger.pdfPageAction("delete-range-complete", {
         pageNumbers,
         firstPage,
@@ -9336,12 +9374,16 @@ export class ViewerInkSession {
   }
 
   /** Keep live ink/text state synchronized with the remapped on-disk sidecar. */
-  private applyDeletedPageToSession(before: SidecarSchemaV1, deletedPage: number): void {
-    this.applyDeletedPagesToSession(before, [deletedPage]);
+  private applyDeletedPageToSession(before: SidecarSchemaV1, deletedPage: number, focusedPage?: number): void {
+    this.applyDeletedPagesToSession(before, [deletedPage], focusedPage);
   }
 
   /** Applies a descending original-page deletion plan once to the live session. */
-  private applyDeletedPagesToSession(before: SidecarSchemaV1, deletedPageNumbers: readonly number[]): void {
+  private applyDeletedPagesToSession(
+    before: SidecarSchemaV1,
+    deletedPageNumbers: readonly number[],
+    focusedPage?: number
+  ): void {
     this.commitActiveTextEditor("page-delete");
     this.cancelTextBoxTransform("page-delete", false);
     const deletedPages = [...new Set(deletedPageNumbers)].sort((left, right) => right - left);
@@ -9375,6 +9417,16 @@ export class ViewerInkSession {
     this.autosave.markClean(this.identity.id);
     this.saveCoordinator.markSaved();
     this.toolbar.setSaveStatus("saved", new Date());
+    const recordedFocus = focusedPage;
+    const current = typeof recordedFocus === "number" && Number.isInteger(recordedFocus) && recordedFocus > 0
+      ? recordedFocus
+      : this.options.adapter.getViewState().pageNumber;
+    let next = Number.isInteger(current) && current > 0 ? current : 1;
+    for (const pageNumber of [...deletedSet].sort((left, right) => left - right)) {
+      if (next > pageNumber) next -= 1;
+    }
+    const pageCount = Math.max(1, this.options.adapter.pages().length);
+    this.commandController.goToPage(Math.max(1, Math.min(pageCount, next)));
     this.scheduleRefresh("page-delete", true);
   }
 
@@ -9479,61 +9531,10 @@ export class ViewerInkSession {
     }
   }
 
-  private mobilePdfZoomDiagnostics(): MobilePdfZoomDiagnostics {
-    const settingEnabled = this.customMobilePdfPinchZoomEnabledOverride
-      ?? this.options.settings.customMobilePdfPinchZoom === true;
-    const extensions = pdfSurfaceExtensions(this.options.adapter);
-    const report = extensions?.compatibilityReport?.();
-    const surfaceType = this.options.adapter.surfaceType ?? "image";
-    let mode: MobileCustomPdfZoomMode = "native-fallback";
-    let fallbackReasons: MobileCustomPdfZoomFallbackReason[] = [];
-    if (surfaceType !== "pdf") {
-      fallbackReasons = ["non-pdf-surface"];
-    } else if (!report?.platform) {
-      fallbackReasons = [
-        ...(!settingEnabled ? ["setting-disabled" as const] : []),
-        "platform-unknown"
-      ];
-    } else if (!report.profile) {
-      fallbackReasons = [
-        ...(!settingEnabled ? ["setting-disabled" as const] : []),
-        "viewer-root-unavailable"
-      ];
-    } else {
-      const page = this.options.adapter.page(this.options.adapter.getViewState().pageNumber) ?? null;
-      const plan = planMobileCustomPdfZoom({
-        enabled: settingEnabled,
-        surfaceType,
-        platform: report.platform,
-        profile: report.profile,
-        page
-      });
-      mode = plan.mode;
-      fallbackReasons = [...plan.fallbackReasons];
-    }
-    if (mode === "native-fallback") {
-      this.mobilePdfZoomTrace.setFallbackReason(fallbackReasons[0] ?? "unsupported");
-    }
-    const active = Boolean(this.activeMobilePinchSurface);
-    return {
-      settingEnabled,
-      mode,
-      fallbackReasons,
-      active,
-      activePhase: active ? "preview" : null,
-      trace: this.mobilePdfZoomTrace.summary()
-    };
-  }
-
-  getMobilePdfZoomDiagnostics(): MobilePdfZoomDiagnostics {
-    return this.mobilePdfZoomDiagnostics();
-  }
-
   getDiagnostics(): SessionDiagnostics {
     return {
       documentPath: this.options.documentPath,
       compatibility: this.options.adapter.compatibilityReport(),
-      mobilePdfZoom: this.mobilePdfZoomDiagnostics(),
       debug: this.debugState
     };
   }
@@ -9547,7 +9548,7 @@ export class ViewerInkSession {
       pageRouters,
       ownedInputPages: this.ownedInputPages.size,
       physicalContactPointers: this.physicalContactIdsByPointer.size,
-      physicalContactCollector: this.physicalContactCollectorLease?.snapshot().listenerRegistered ? 1 : 0
+      physicalContactCollectorLease: this.physicalContactCollectorLease?.snapshot().listenerRegistered ? 1 : 0
     };
     const base = (() => {
       try {
@@ -9568,7 +9569,6 @@ export class ViewerInkSession {
         total: Object.values(activeInputCollectors).reduce((sum, count) => sum + count, 0)
       },
       physicalContactCollector: this.physicalContactCollectorLease?.snapshot() ?? null,
-      mobilePdfZoom: this.mobilePdfZoomDiagnostics(),
       activeRouterGenerations: [...this.surfaces.values()]
         .map((surface) => surface.router?.generation ?? null)
         .filter((generation): generation is number => generation !== null)
@@ -9582,6 +9582,7 @@ export class ViewerInkSession {
   private beginInputTeardown(): void {
     if (this.inputTeardownStarted) return;
     this.inputTeardownStarted = true;
+    pdfSurfaceExtensions(this.options.adapter)?.setViewerCommandBridge?.(null);
     this.physicalContactCollectorLease?.release();
     this.physicalContactCollectorLease = null;
     this.pointerProbeAbort.abort();
@@ -9591,6 +9592,7 @@ export class ViewerInkSession {
     }
     this.gestureOwnership.replaceGeneration();
     this.handledDrawPointers.clear();
+    this.documentObservedPointerIds.clear();
     this.physicalContactIdsByPointer.clear();
     this.pointerDownPerformanceAt.clear();
     this.pointerInputAt.clear();
@@ -9614,16 +9616,25 @@ export class ViewerInkSession {
       return true;
     }
     const textFocused = Boolean(this.activeTextEditor) || shouldIgnoreSelectionShortcut(event.target);
-    const plainModifierForInk = this.mouseInkingEnabled();
-    const historyAction = parseHistoryShortcut(event, plainModifierForInk);
-    const action = parseSelectionShortcut(event, plainModifierForInk);
-    if (textFocused && !event.altKey) {
+    const markdownEditorFocused = this.isMarkdownEditorTarget(event);
+    const historyAction = parseHistoryShortcut(event);
+    const preferMarkdownInkHistory = historyAction !== null
+      && markdownEditorFocused
+      && !this.activeTextEditor
+      && this.markdownInkHistoryPreferred;
+    if (historyAction && markdownEditorFocused && !preferMarkdownInkHistory) {
+      this.logKeyboardShortcut(event, "native-text", null, false);
+      return false;
+    }
+    const action = parseSelectionShortcut(event);
+    if (textFocused && !event.altKey && !preferMarkdownInkHistory) {
       this.logKeyboardShortcut(event, "native-text", null, false);
       return false;
     }
     if (historyAction) {
       const ok = historyAction === "undo" ? this.history.undo() : this.history.redo();
       if (!ok) {
+        if (markdownEditorFocused) this.markdownInkHistoryPreferred = false;
         this.logKeyboardShortcut(event, "ignored", historyAction === "undo" ? "undo-ink" : "redo-ink", false);
         return false;
       }
@@ -9653,15 +9664,26 @@ export class ViewerInkSession {
       return true;
     }
     if (!action || !this.canSelectionShortcut(action)) {
-      const command = inkHotkeyCommand(event, plainModifierForInk);
+      const command = inkHotkeyCommand(event);
       if (command) this.logKeyboardShortcut(event, "ignored", command, false);
       return false;
     }
     this.applySelectionShortcut(action);
     event.preventDefault();
     event.stopPropagation();
-    this.logKeyboardShortcut(event, "ink-command", inkHotkeyCommand(event, plainModifierForInk), true);
+        this.logKeyboardShortcut(event, "ink-command", inkHotkeyCommand(event), true);
     return true;
+  }
+
+  private isMarkdownEditorTarget(event: KeyboardEvent): boolean {
+    if (this.options.adapter.surfaceType !== "markdown") return false;
+    const root = this.options.adapter.root;
+    const target = event.target;
+    if (target instanceof Node && root.contains(target) && shouldIgnoreSelectionShortcut(target)) return true;
+    const activeElement = root.ownerDocument.activeElement;
+    return activeElement instanceof Node
+      && root.contains(activeElement)
+      && shouldIgnoreSelectionShortcut(activeElement);
   }
 
   private logKeyboardShortcut(
@@ -9986,10 +10008,18 @@ export class ViewerInkSession {
     if (this.destroyed) return true;
     this.ipadInputTrace?.release();
     this.stopFrameProfileSampling();
+    // Stop coordinator-driven mount work before any persistence/close await.
+    this.lifecycleVisibilityUnsubscribe?.();
+    this.lifecycleVisibilityUnsubscribe = null;
+    if (this.lifecycleInkReconcileFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.lifecycleInkReconcileFrame);
+      this.lifecycleInkReconcileFrame = null;
+    }
+    this.pendingLifecycleInkReconcile = false;
     // Remove document-level probes before any persistence/close await so a
     // registry removal cannot leave a stale session observing the next event.
     this.revokeDocumentInputOwnership("released");
-      this.cancelNavigationGestures("lifecycle");
+    this.cancelStylusHandPan();
     this.physicalContactCollectorLease?.release();
     this.physicalContactCollectorLease = null;
     this.syncEffectiveDrawState(options.silent ? "session-destroy" : "plugin-unload", "lifecycle");
@@ -10046,11 +10076,7 @@ export class ViewerInkSession {
     }
     this.beginInputTeardown();
     this.destroyed = true;
-    if (this.laserFadeFrame !== null) {
-      window.cancelAnimationFrame(this.laserFadeFrame);
-      this.laserFadeFrame = null;
-    }
-    this.laserTrails = [];
+    this.laserOverlay.clearTrails();
     if (this.resizeFrame !== null) {
       window.cancelAnimationFrame(this.resizeFrame);
       this.resizeFrame = null;
@@ -10065,11 +10091,22 @@ export class ViewerInkSession {
       this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.viewportPaintFrame);
       this.viewportPaintFrame = null;
     }
+    if (this.lifecycleInkReconcileFrame !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.lifecycleInkReconcileFrame);
+      this.lifecycleInkReconcileFrame = null;
+    }
+    this.pendingLifecycleInkReconcile = false;
     if (this.mobileScrollRefreshFrame !== null) {
       this.options.adapter.host.ownerDocument.defaultView?.cancelAnimationFrame(this.mobileScrollRefreshFrame);
       this.mobileScrollRefreshFrame = null;
     }
     this.pendingMobileScrollRemount = false;
+    if (this.viewportProjectionRepaintTimer !== null) {
+      this.options.adapter.host.ownerDocument.defaultView?.clearTimeout(this.viewportProjectionRepaintTimer);
+      this.viewportProjectionRepaintTimer = null;
+    }
+    this.viewportProjectionRepaintGeneration += 1;
+    this.pendingViewportProjectionRepaint = false;
     this.clearZoomBurstWatchdog();
     this.zoomSettlePausedForLiveInk = false;
     this.zoomSettlePausedAt = null;
@@ -10094,8 +10131,9 @@ export class ViewerInkSession {
     this.setAdapterInkZoomBurstActive(false);
     this.finishZoomProfile();
     this.finishZoomNativeHandoffTrace();
-    this.syncAnnotationCursorMode(true);
     this.resizeObserver?.disconnect();
+    this.devicePixelRatioResizeCleanup?.();
+    this.devicePixelRatioResizeCleanup = null;
     for (const surface of this.surfaces.values()) {
       if (surface.textIntent) this.clearTextIntentTimer(surface.textIntent);
       this.logger.inputLifecycleEvent("surface-unmount", {
@@ -10105,26 +10143,16 @@ export class ViewerInkSession {
         reason: "session-destroy"
       });
       surface.router?.destroy();
-      this.clearTouchDrawPolicy(surface.page.element);
       this.releaseInputOwner(surface.page.element);
       this.releaseSurfaceBuffers(surface);
       this.pdfLifecycleCoordinator()?.setInkOverlayStatus(surface.page.pageNumber, "unmounted");
     }
     this.surfaces.clear();
+    this.touchDoubleTapState = null;
+    this.touchTapContact = null;
     this.selectionToolbar.destroy();
-    if (this.textContextMenuSuppressTimer !== null) window.clearTimeout(this.textContextMenuSuppressTimer);
-    this.textContextMenuSuppressTimer = null;
-    this.textContextMenuTargetId = null;
-    this.textContextMenu.destroy();
     this.gestureNavigation.destroy();
     this.handwritingViewport.destroy();
-    if (this.mobilePinchIndicatorFadeTimer !== null) {
-      const view = this.options.adapter.host.ownerDocument.defaultView;
-      (view?.clearTimeout ?? window.clearTimeout)(this.mobilePinchIndicatorFadeTimer);
-      this.mobilePinchIndicatorFadeTimer = null;
-    }
-    this.mobilePinchIndicator?.remove();
-    this.mobilePinchIndicator = null;
     this.addPageControl?.destroy();
     this.thumbnailSidebarActions?.destroy();
     this.findBridge?.destroy();
@@ -10141,6 +10169,7 @@ export class ViewerInkSession {
     this.documentInputOwnership = null;
     this.pointerProbeAbort.abort();
     this.clearFloatingToolbarFallback();
+    this.laserOverlay.destroy();
     this.toolbar.destroy();
     pdfSurfaceExtensions(this.options.adapter)?.setInkPreviewProvider?.(null);
     this.options.adapter.destroy();
@@ -10157,32 +10186,6 @@ export class ViewerInkSession {
       automaticRecovery: options.automaticAnnotationRecovery,
       backupFolder: options.annotationBackupPath
     });
-  }
-
-  setCustomMobilePdfPinchZoomEnabled(enabled: boolean): void {
-    this.customMobilePdfPinchZoomEnabledOverride = enabled;
-    if (!enabled) this.cancelNavigationGestures("disabled");
-    for (const surface of this.surfaces.values()) surface.router?.syncToolState();
-  }
-
-  /** Apply live mouse-button setting or toolbar mode changes without recreating the viewer. */
-  updateMouseInputBindings(): void {
-    const configured = this.mouseInkingConfigured();
-    if (!configured) this.mouseNavigationActive = false;
-    this.toolbar.setMouseModeState(configured, this.mouseNavigationActive);
-    this.syncAnnotationCursorMode();
-    this.syncTouchDrawPolicy("input-settings");
-    this.refreshSurfaceCursors();
-  }
-
-  private syncAnnotationCursorMode(forceOff = false): void {
-    const tool = this.activeTool();
-    // A primary-button drawing binding hides the native cursor for ink/eraser.
-    const hideNativeCursor = !forceOff
-      && this.mouseInkingEnabled()
-      && (isInkDrawTool(tool) || tool === "eraser");
-    this.options.adapter.root.classList.toggle("native-pdf-handwriting-hide-native-cursor", hideNativeCursor);
-    this.options.adapter.root.classList.toggle("native-pdf-handwriting-drag-tool", !forceOff && tool === "drag");
   }
 
   private isEffectiveDrawTool(tool: ToolId): boolean {
@@ -10231,59 +10234,6 @@ export class ViewerInkSession {
     this.effectiveDrawEnabledState = next;
   }
 
-  /** Apply transient pen hit policy; never permanently disable PDF.js text/annotation layers. */
-  private syncTouchDrawPolicy(reason: string): void {
-    const tool = this.activeTool();
-    const penHit = this.hasActivePenCapability();
-    const fallbackHit = this.touchAnnotationEnabled();
-    const isDrag = tool === "drag";
-    const annotationHit = penHit || fallbackHit || isDrag;
-    for (const surface of this.surfaces.values()) {
-      this.applyTouchDrawPolicy(surface.page.element, annotationHit);
-      this.ensurePageRouter(surface);
-      surface.router?.syncToolState();
-    }
-    if (this.touchDrawPolicyEnabled === annotationHit) return;
-    this.touchDrawPolicyEnabled = annotationHit;
-    this.logger.touchInput("policy", {
-      enabled: annotationHit,
-      reason,
-      penHit,
-      fallbackHit,
-      surfaces: this.surfaces.size,
-      ...this.inputPolicyLogFields()
-    });
-  }
-
-  private applyTouchDrawPolicy(pageElement: HTMLElement, enabled = false): void {
-    // Transient pen capability only — never a permanent Draw-mode lock.
-    pageElement.classList.toggle("native-pdf-handwriting-draw-hit-page", enabled);
-    pageElement.classList.remove("native-pdf-handwriting-touch-draw-page");
-    const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
-    for (const layer of layers) {
-      setElementCssProps(layer, { pointerEvents: enabled ? "none" : "" });
-    }
-  }
-
-  private clearTouchDrawPolicy(pageElement: HTMLElement): void {
-    // A newly attached session may claim the page while an old one is still
-    // tearing down. Only the active owner may remove its touch policy.
-    if (inputOwners(pageElement).get(pageElement) !== this) return;
-    pageElement.classList.remove(
-      "native-pdf-handwriting-draw-hit-page",
-      "native-pdf-handwriting-touch-draw-page",
-      "native-pdf-handwriting-touch-none",
-      "native-pdf-handwriting-touch-pan-xy",
-      "native-pdf-handwriting-touch-custom-pinch",
-      "native-pdf-handwriting-pen-capturing",
-      "native-pdf-handwriting-panning"
-    );
-    const layers = pageElement.querySelectorAll<HTMLElement>(":scope > .textLayer, :scope > .annotationLayer");
-    for (const layer of layers) {
-      setElementCssProps(layer, { pointerEvents: "" });
-    }
-  }
-
   /** Physical eraser tips temporarily route as Eraser without changing saved tool choice. */
   private activeTool(): ToolPreferences["activeTool"] {
     return this.temporaryStylusEraserPointers > 0
@@ -10291,32 +10241,123 @@ export class ViewerInkSession {
       : this.options.settings.toolPreferences.activeTool;
   }
 
-  /** Text boxes steal hits only in Text/lasso, never in native mouse navigation mode. */
+  /** Text boxes are interactive while the selected annotation tool is Text or Lasso. */
   private textBoxesInteractable(): boolean {
-    if (this.mouseNavigationActive) return false;
+    if (this.options.settings.toolPreferences.mouseNavigationActive) return false;
     const tool = this.activeTool();
     return tool === "text" || tool === "lasso";
   }
 
-  /** A finger may claim only a committed text box; every other touch stays native. */
+  /** A finger may edit a committed text box without enabling touch drawing. */
   private isTouchTextTarget(surface: PageSurface, event: PointerEvent): boolean {
     if (!this.textBoxesInteractable() || event.pointerType !== "touch") return false;
+    if (!this.canAnnotateSurface(surface, event, { stylusRemapped: false, allowTouchText: true })) return false;
     const target = event.target instanceof Element
       ? event.target.closest<HTMLElement>(".native-pdf-handwriting-text-box")
       : null;
     if (target && surface.overlay.contains(target)) {
-      // The rendered text layer is the authoritative committed-text surface;
-      // avoid a second store lookup here because a just-loaded annotation may
-      // already be painted while its index is still settling.
       return target.dataset.annotationId !== undefined;
     }
-    // A long-press selection can replace the text-layer node while the native
-    // touch lifecycle is still active. WebKit may then retarget the next tap
-    // to the page/overlay instead of the replacement box. Recover by geometry
-    // so a second tap on the selected words still enters the editor.
     if (target) return false;
-    const point = this.textPointerToPagePoint(surface, event);
-    return this.textAt(surface.page.pageNumber, point) !== null;
+    return this.textAt(surface.page.pageNumber, this.textPointerToPagePoint(surface, event)) !== null;
+  }
+
+  private handleTouchDoubleTap(
+    point: TouchDoubleTapPoint,
+    at = typeof performance !== "undefined" ? performance.now() : Date.now()
+  ): void {
+    const enabled = this.options.touchDoubleTapEraserEnabled?.()
+      ?? this.options.settings.touchDoubleTapEraser;
+    if (!enabled || this.hasAnyLiveInkInput() || this.temporaryStylusEraserPointers > 0) {
+      this.touchDoubleTapState = null;
+      return;
+    }
+    const result = consumeTouchDoubleTap(this.touchDoubleTapState, point, at);
+    this.touchDoubleTapState = result.next;
+    if (!result.doubleTap) return;
+    const active = this.activeTool();
+    const next = active === "eraser" ? this.touchDoubleTapPreviousTool ?? "pen" : "eraser";
+    this.touchDoubleTapPreviousTool = active === "eraser" ? null : active;
+    this.lastUiInputPointerType = "touch";
+    this.touchDoubleTapChangingTool = true;
+    try {
+      this.toolbar.selectTool(next);
+    } finally {
+      this.touchDoubleTapChangingTool = false;
+    }
+  }
+
+  /** Observe touchstart without preventing native tap, pan, or link behavior. */
+  private handleTouchDoubleTapStart(event: TouchEvent, surface: PageSurface): void {
+    const enabled = this.options.touchDoubleTapEraserEnabled?.()
+      ?? this.options.settings.touchDoubleTapEraser;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!enabled
+      || classifyInputTarget(event.target).targetClass !== "page"
+      || this.options.adapter.isHostOwnedInputTarget?.(target) === true
+      || event.touches.length !== 1
+      || this.gestureNavigation.hasActivePen()) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    const touch = event.changedTouches[0] ?? event.touches[0];
+    if (!touch || !(touch.target instanceof Node) || !surface.page.element.contains(touch.target)) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    this.touchTapContact = {
+      identifier: touch.identifier,
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      startedAt: typeof performance !== "undefined" ? performance.now() : Date.now(),
+      surface
+    };
+  }
+
+  private handleTouchDoubleTapMove(event: TouchEvent): void {
+    const contact = this.touchTapContact;
+    if (!contact) return;
+    if (event.touches.length !== 1
+      || this.gestureNavigation.hasActivePen()) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    const touch = Array.from(event.changedTouches).find((candidate) => candidate.identifier === contact.identifier);
+    if (!touch) return;
+    if (Math.hypot(touch.clientX - contact.clientX, touch.clientY - contact.clientY) >= TOUCH_TAP_MAX_MOVEMENT_PX) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+    }
+  }
+
+  private handleTouchDoubleTapTerminal(event: TouchEvent): void {
+    const contact = this.touchTapContact;
+    if (!contact) return;
+    if (event.type === "touchcancel"
+      || event.touches.length !== 0
+      || this.gestureNavigation.hasActivePen()) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    const touch = Array.from(event.changedTouches).find((candidate) => candidate.identifier === contact.identifier);
+    if (!touch || !(touch.target instanceof Node) || !contact.surface.page.element.contains(touch.target)) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    const at = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const moved = Math.hypot(touch.clientX - contact.clientX, touch.clientY - contact.clientY);
+    if (at - contact.startedAt > TOUCH_DOUBLE_TAP_MAX_DELAY_MS || moved >= TOUCH_TAP_MAX_MOVEMENT_PX) {
+      this.touchDoubleTapState = null;
+      this.touchTapContact = null;
+      return;
+    }
+    this.touchTapContact = null;
+    this.handleTouchDoubleTap(touch, at);
   }
 
   private refreshSurfaceCursors(surfaces: Iterable<PageSurface> = this.surfaces.values()): void {
@@ -10336,7 +10377,7 @@ export class ViewerInkSession {
     const canvas = createDetachedEl(overlay.ownerDocument, 'canvas');
     canvas.className = "native-pdf-handwriting-canvas";
     if (this.options.settings.hideStylusAnnotationLabel) canvas.setAttribute("aria-hidden", "true");
-    else canvas.setAttribute("aria-label", `Annotations for PDF page ${page.pageNumber}`);
+    else canvas.setAttribute("aria-label", `Annotations for page ${page.pageNumber}`);
     overlay.append(canvas);
     const draftCanvas = createDetachedEl(overlay.ownerDocument, 'canvas');
     draftCanvas.className = "native-pdf-handwriting-draft-canvas";
@@ -10426,7 +10467,6 @@ export class ViewerInkSession {
     };
     surface.router = this.createPageRouter(surface);
     this.ensurePagePositioning(page.element);
-    this.applyTouchDrawPolicy(page.element, this.touchDrawPolicyEnabled ?? false);
     this.syncOverlayLayout(surface);
     this.logger.inputLifecycleEvent("surface-mount", {
       page: page.pageNumber,
@@ -10466,7 +10506,6 @@ export class ViewerInkSession {
       ownerBefore: previous ? "other-session" : "none",
       ownerAfter: "this-session",
       activePenCount: this.surfaces.get(page)?.router?.activePenIds().length ?? 0,
-      activeTouchCount: this.pluginTouchPointerIds().length,
       reason: "page-router-bind"
     });
   }
@@ -10484,7 +10523,6 @@ export class ViewerInkSession {
       ownerBefore: "this-session",
       ownerAfter: "none",
       activePenCount: this.surfaces.get(Number(pageElement.dataset.pageNumber))?.router?.activePenIds().length ?? 0,
-      activeTouchCount: this.pluginTouchPointerIds().length,
       reason: "page-router-unbind"
     });
   }
@@ -10500,7 +10538,6 @@ export class ViewerInkSession {
     const activePenIds = [...new Set(
       [...this.surfaces.values()].flatMap((candidate) => candidate.router?.activePenIds() ?? [])
     )];
-    const activeTouchPointerIds = this.pluginTouchPointerIds();
     const owner = inputOwners(surface.page.element).get(surface.page.element);
     const ownerState = owner === this ? "this-session" : owner ? "other-session" : "none";
     const duplicateLookingContactIds = pointer
@@ -10515,10 +10552,9 @@ export class ViewerInkSession {
     if (pointer) {
       try {
         coalescedCount = pointer.getCoalescedEvents?.().length ?? 0;
-        const predicted = (pointer as PointerEvent & {
+        predictedCount = (pointer as PointerEvent & {
           getPredictedEvents?: () => PointerEvent[];
-        }).getPredictedEvents;
-        predictedCount = predicted ? predicted.call(pointer).length : 0;
+        }).getPredictedEvents?.().length ?? 0;
       } catch {
         // Browser diagnostic APIs can disappear during page recycling.
       }
@@ -10553,8 +10589,6 @@ export class ViewerInkSession {
       ownerAfter: ownerState,
       activePenCount: activePenIds.length,
       activePenIds: activePenIds.slice(0, 8),
-      activeTouchCount: activeTouchPointerIds.length,
-      activeTouchPointerIds: activeTouchPointerIds.slice(0, 8),
       captureSet: pointer ? Boolean(surface.router?.hasPointerCapture(pointer.pointerId)) : false,
       captureLost: event?.type === "lostpointercapture"
         || (typeof details.reason === "string" && details.reason.includes("lost")),
@@ -10568,240 +10602,30 @@ export class ViewerInkSession {
     };
   }
 
-  private customMobilePdfPinchZoomEnabled(surface: PageSurface): boolean {
-    try {
-      const enabled = this.customMobilePdfPinchZoomEnabledOverride
-        ?? this.options.settings.customMobilePdfPinchZoom === true;
-      const extensions = pdfSurfaceExtensions(this.options.adapter);
-      const report = extensions?.compatibilityReport?.();
-      if (!extensions || !report?.profile || !report.platform) return false;
-      return planMobileCustomPdfZoom({
-        enabled,
-        surfaceType: this.options.adapter.surfaceType ?? "image",
-        platform: report.platform,
-        profile: report.profile,
-        page: surface.page
-      }).mode === "custom-mobile";
-    } catch {
-      return false;
-    }
-  }
-
-  private startActiveMobilePinch(frame: GestureNavigationFrame): { accepted: boolean; scale?: number } {
-    let surface = this.activeMobilePinchSurface;
-    if (!surface) {
-      const first = frame.points[0];
-      const second = frame.points[1];
-      const clientX = first && second ? (first.clientX + second.clientX) / 2 : null;
-      const clientY = first && second ? (first.clientY + second.clientY) / 2 : null;
-      surface = this.mobilePinchSurfaceAt(clientX, clientY);
-    }
-    if (!surface || !this.customMobilePdfPinchZoomEnabled(surface)) return { accepted: false };
-    this.activeMobilePinchSurface = surface;
-    const first = frame.points[0];
-    const second = frame.points[1];
-    if (first && second) {
-      this.handwritingViewport.startPinch({
-        x: (first.clientX + second.clientX) / 2,
-        y: (first.clientY + second.clientY) / 2
-      });
-      this.mobilePdfZoomTrace.begin({
-        mode: "custom-mobile",
-        at: typeof performance === "undefined" ? Date.now() : performance.now(),
-        pageCount: this.options.adapter.pages().length,
-        initialScale: this.handwritingViewport.getState().scale,
-        midpoint: {
-          x: (first.clientX + second.clientX) / 2,
-          y: (first.clientY + second.clientY) / 2
-        }
-      });
-      this.mobilePdfZoomTrace.notePromote();
-    }
-    return { accepted: true, scale: this.handwritingViewport.getState().scale };
-  }
-
-  private previewActiveMobilePinch(scale: number, focalPoint: GestureNavigationFocalPoint): void {
-    const surface = this.activeMobilePinchSurface;
-    if (!surface) return;
-    this.handwritingViewport.pinch(scale, focalPoint);
-    this.mobilePdfZoomTrace.noteSample(focalPoint, scale);
-  }
-
-  private endActiveMobilePinch(
-    scale: number,
-    reason: GestureNavigationEndReason
-  ): void {
-    const surface = this.activeMobilePinchSurface;
-    if (!surface) return;
-    this.handwritingViewport.endPinch();
-    if (reason === "pointerup") {
-      this.mobilePdfZoomTrace.release({
-        at: typeof performance === "undefined" ? Date.now() : performance.now(),
-        focalAnchorErrorPx: 0,
-        canonicalRenderWork: false
-      });
-    } else {
-      this.mobilePdfZoomTrace.cancel(reason);
-    }
-    this.activeMobilePinchSurface = null;
-  }
-
-  private cancelActiveMobilePinch(reason: string): void {
-    this.handwritingViewport.settle();
-    this.mobilePdfZoomTrace.cancel(reason);
-    this.activeMobilePinchSurface = null;
-    this.logger.inputLifecycleEvent("mobile-pinch-cancel", { reason });
-  }
-
-  private persistMobilePinchScale(_scale: number): void {
-    // CSS/container zoom is already retained by the compositor. Do not mirror
-    // it into PDF.js currentScale or the handwriting sidecar.
-  }
-
-  private mobilePinchSurfaceAt(clientX: number | null, clientY: number | null): PageSurface | null {
-    const candidates = [...this.surfaces.values()];
-    if (clientX !== null && clientY !== null) {
-      for (const surface of candidates) {
-        const rect = surface.page.element.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0
-          && clientX >= rect.left && clientX <= rect.right
-          && clientY >= rect.top && clientY <= rect.bottom) return surface;
-      }
-    }
-    let currentPage: number | null = null;
-    try {
-      currentPage = this.options.adapter.getViewState().pageNumber;
-    } catch {
-      // Native viewer may be between page generations.
-    }
-    return candidates.find((surface) => surface.page.pageNumber === currentPage)
-      ?? candidates[0]
-      ?? null;
-  }
-
-  private mobilePinchWheelEligible(target: EventTarget | null, adapter: ViewerInkSessionOptions["adapter"]): boolean {
-    if (adapter.surfaceType !== "pdf") return false;
-    if (!(target instanceof Element) || !adapter.root.contains(target)) return false;
-    if (target.closest(
-      ".pdf-sidebar-container, .pdf-sidebar, .pdf-thumbnail-view, .pdf-outline-view, "
-      + ".canvas-wrapper, .excalidraw, .excalidraw-wrapper, "
-      + ".native-pdf-handwriting-toolbar, .native-pdf-handwriting-dropdown, "
-      + ".native-pdf-handwriting-selection-toolbar"
-    )) return false;
-    return Boolean(this.mobilePinchSurfaceAt(null, null));
-  }
-
-  private updateMobilePinchIndicator(
-    scale: number,
-    reset: () => void,
-    ownerDocument: Document
-  ): void {
-    if (!this.mobilePinchIndicator) {
-      const indicator = createDetachedEl(ownerDocument, "button");
-      indicator.type = "button";
-      indicator.className = "native-pdf-handwriting-mobile-zoom-indicator";
-      indicator.setAttribute("aria-label", "Tap to reset PDF zoom to 100%");
-      indicator.addEventListener("click", () => reset(), { signal: this.pointerProbeAbort.signal });
-      ownerDocument.body?.append(indicator);
-      this.mobilePinchIndicator = indicator;
-    }
-    const percent = Math.round(scale * 100);
-    this.mobilePinchIndicator.textContent = `🔍 ${percent}%`;
-    this.mobilePinchIndicator.classList.toggle("is-faded", percent === 100);
-    if (this.mobilePinchIndicatorFadeTimer !== null) {
-      const view = ownerDocument.defaultView;
-      (view?.clearTimeout ?? window.clearTimeout)(this.mobilePinchIndicatorFadeTimer);
-      this.mobilePinchIndicatorFadeTimer = null;
-    }
-    if (percent === 100) {
-      const view = ownerDocument.defaultView;
-      this.mobilePinchIndicatorFadeTimer = (view?.setTimeout ?? window.setTimeout)(() => {
-        this.mobilePinchIndicator?.classList.add("is-faded");
-      }, 1500);
-    }
-  }
-
-  private overlayViewportFromClient(
-    surface: PageSurface,
-    clientX: number,
-    clientY: number,
-    rect = surface.overlay.getBoundingClientRect()
-  ): { x: number; y: number } {
-    const scale = this.handwritingViewport?.getState().scale ?? 1;
-    const factor = scale > 0 ? scale : 1;
-    return {
-      x: (clientX - rect.left) / factor,
-      y: (clientY - rect.top) / factor
-    };
-  }
-
-  private overlayClientFromViewport(
-    surface: PageSurface,
-    viewport: { x: number; y: number },
-    rect = surface.overlay.getBoundingClientRect()
-  ): { x: number; y: number } {
-    const scale = this.handwritingViewport?.getState().scale ?? 1;
-    const factor = scale > 0 ? scale : 1;
-    return {
-      x: rect.left + viewport.x * factor,
-      y: rect.top + viewport.y * factor
-    };
-  }
-
-  private handleTouchDoubleTap(point: TouchDoubleTapPoint): void {
-    const enabled = this.options.touchDoubleTapEraserEnabled?.()
-      ?? this.options.settings.touchDoubleTapEraser;
-    if (!enabled || this.hasAnyLiveInkInput() || this.temporaryStylusEraserPointers > 0) {
-      this.touchDoubleTapState = null;
-      return;
-    }
-    const at = typeof performance !== "undefined" ? performance.now() : Date.now();
-    const result = consumeTouchDoubleTap(this.touchDoubleTapState, point, at);
-    this.touchDoubleTapState = result.next;
-    if (!result.doubleTap) return;
-
-    const active = this.activeTool();
-    const next = active === "eraser"
-      ? (this.touchDoubleTapPreviousTool ?? "pen")
-      : "eraser";
-    this.touchDoubleTapPreviousTool = active === "eraser" ? null : active;
-    this.lastUiInputPointerType = "touch";
-    this.touchDoubleTapChangingTool = true;
-    try {
-      this.toolbar.activateTool(next);
-    } finally {
-      this.touchDoubleTapChangingTool = false;
-    }
-  }
-
-  /**
-   * WebKit's PDF text layer can publish the TouchEvent stream while its
-   * promoting PointerEvents are retargeted/reused. Recognize the gesture from
-   * the native touchstart stream so the feature does not depend on a
-   * pointerdown reaching the same page router twice.
-   */
-  private handleTouchDoubleTapStart(event: TouchEvent, surface: PageSurface): void {
-    if (classifyInputTarget(event.target).targetClass !== "page"
-      || event.touches.length !== 1
-      || this.hasActivePenCapability()) {
-      this.touchDoubleTapState = null;
-      return;
-    }
-    const touch = event.changedTouches[0] ?? event.touches[0];
-    if (!touch || !(touch.target instanceof Node) || !surface.page.element.contains(touch.target)) {
-      this.touchDoubleTapState = null;
-      return;
-    }
-    this.handleTouchDoubleTap(touch);
-  }
-
   private createPageRouter(surface: PageSurface): PointerRouter {
     const router = new PointerRouter(surface.page.element, {
       activeTool: () => this.activeTool(),
-      canAnnotatePointer: (event) => this.canAnnotateSurface(surface, event),
+      canAnnotatePointer: (event, context) => this.canAnnotateSurface(surface, event, context),
+      stylusPresenceConfirmed: () => this.stylusCapability === "confirmed",
+      isHostOwnedInputTarget: (target) => this.options.adapter.isHostOwnedInputTarget?.(target) === true,
+      onHostOwnedInput: (event, phase) => {
+        this.recordNativeEmbeddedPdfInput(event, phase, "page-router");
+      },
+      allowEditableAnnotationTarget: (event) => this.options.adapter.surfaceType === "markdown"
+        && event.target instanceof Element
+        && surface.page.element.contains(event.target)
+        && Boolean(event.target.closest(".cm-content[contenteditable='true']")),
       touchAnnotationEnabled: () => this.touchAnnotationEnabled(),
-      pointerInputCapabilities: () => detectPointerInputCapabilities(surface.page.element),
       mouseInkingEnabled: () => this.mouseInkingEnabled(),
+      customNavigationEnabled: () => this.customMobilePdfPinchZoomEnabled(surface),
+      touchTextTarget: (event) => this.isTouchTextTarget(surface, event),
+      cancelTouchPointer: (pointerId) => {
+        for (const candidate of this.surfaces.values()) {
+          if (candidate.router?.cancelTouchAnnotationPointer(pointerId)) return true;
+        }
+        return false;
+      },
+      pointerInputCapabilities: () => detectPointerInputCapabilities(surface.page.element),
       onStylusEraserStart: () => {
         this.temporaryStylusEraserPointers += 1;
         this.refreshSurfaceCursors();
@@ -10812,7 +10636,13 @@ export class ViewerInkSession {
       },
       scrollRoot: () => this.options.adapter.scrollElement(),
       navigationController: this.gestureNavigation,
-      cursorParent: () => surface.overlay,
+      navigationPenIds: () => [...new Set(
+        [...this.surfaces.values()].flatMap((candidate) => candidate.router?.activePenIds() ?? [])
+      )],
+      // These cursors are positioned in viewport client coordinates. Keep them
+      // outside the page tree so PDF pinch transforms cannot change their fixed
+      // positioning containing block.
+      cursorParent: () => surface.overlay.ownerDocument.body ?? surface.overlay,
       eraserCursorDiameter: () => this.options.settings.toolPreferences.eraser.size * this.displayScale(surface),
       drawCursorColor: () => {
         const prefs = this.options.settings.toolPreferences;
@@ -10841,7 +10671,6 @@ export class ViewerInkSession {
             ...this.pointerEventPropagationDetails(event, surface.page.element, surface.overlay)
           });
         }
-        if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-start");
         this.logger.inputLifecycleEvent("route-decision", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           route,
@@ -10907,7 +10736,6 @@ export class ViewerInkSession {
           reason: "pointerup"
         }));
         this.pointerEnd(surface, samples, route, event);
-        if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-end");
         if (hadPenStroke) {
           this.logger.inputStroke("end", {
             page: surface.page.pageNumber,
@@ -10939,20 +10767,18 @@ export class ViewerInkSession {
           routerGeneration: surface.router?.generation ?? null
         });
         this.clearPointerPerformanceTiming(event.pointerId);
-        if (event.pointerType === "pen") this.syncTouchDrawPolicy("pen-cancel");
       },
-      customNavigationEnabled: () => this.customMobilePdfPinchZoomEnabled(surface),
+      customHandPanEnabled: () => this.options.adapter.surfaceType !== "markdown",
       onTouchStart: (event) => {
         this.notePointerTypeOrigin(event, "page-touch-router", "capture");
         this.logger.inputLifecycleEvent("touchstart", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           reason: "touchstart-capture"
         }));
-        // Touch fallback is an annotation route, so recognize before its
-        // pointerdown can create a live stroke. Native finger navigation uses
-        // the TouchEvent path below instead.
-        if (!this.touchAnnotationEnabled()) this.handleTouchDoubleTapStart(event, surface);
+        this.handleTouchDoubleTapStart(event, surface);
       },
+      onTouchMove: (event) => this.handleTouchDoubleTapMove(event),
+      onTouchTerminal: (event) => this.handleTouchDoubleTapTerminal(event),
       onTouchPointerDown: (event) => {
         const editor = this.activeTextEditor;
         const target = event.target;
@@ -10964,15 +10790,15 @@ export class ViewerInkSession {
           });
           this.commitActiveTextEditor("outside-touch");
         }
-        // With the explicit touch-drawing fallback, pointerdown is the only
-        // safe pre-stroke point to switch tools; TouchEvent recognition is
-        // intentionally skipped for that route to avoid counting one tap
-        // twice.
-        if (this.touchAnnotationEnabled()) this.handleTouchDoubleTap(event);
       },
-      touchTextTarget: (event) => this.isTouchTextTarget(surface, event),
       onRouterReceived: (event, generation) => {
         this.promoteStylusCapability(event);
+        const identity = resolvePointerIdentity(event, this.stylusCapability === "confirmed");
+        if (event.type === "pointerdown" && identity.effectivePointerType === "pen") {
+          this.touchDoubleTapState = null;
+          this.touchTapContact = null;
+          for (const candidate of this.surfaces.values()) candidate.router?.cancelTouchRoutes();
+        }
         this.postZoomRouterByPointer.set(event.pointerId, {
           received: true,
           rejected: false,
@@ -11078,7 +10904,7 @@ export class ViewerInkSession {
           activeTool: this.activeTool()
         });
       },
-      onRoute: (route, event) => {
+      onRoute: (route, event, identity) => {
         this.logger.inputLifecycleEvent("pointer-route", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           route,
@@ -11096,19 +10922,19 @@ export class ViewerInkSession {
           height: event.height,
           pressure: event.pressure,
           ...this.inputPolicyLogFields(),
-          touchDrawPolicyEnabled: this.touchDrawPolicyEnabled,
-          resolvedPolicy: this.resolvedPolicyForPointer(event),
+          resolvedPolicy: this.resolvedPolicyForPointer(event, identity),
           route,
           ...(route === "draw" ? { pressureProfile: this.pressureProfile() } : {}),
           clientX: Math.round(event.clientX),
           clientY: Math.round(event.clientY)
         });
       },
-      onRouteDecision: (route, reason, event) => {
+      onRouteDecision: (route, reason, event, identity) => {
         this.logger.inputLifecycleEvent("route-decision", this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           route,
           routeReason: reason,
+          resolvedPolicy: this.resolvedPolicyForPointer(event, identity),
           reason: "classifier"
         }));
         const existing = this.postZoomRouterByPointer.get(event.pointerId);
@@ -11154,12 +10980,6 @@ export class ViewerInkSession {
         });
       },
       onTouchLifecycle: (phase, event, details) => {
-        const reason = typeof details.reason === "string" ? details.reason : "";
-        if (reason === "touchend-all-clear" || reason === "touchcancel-all-clear") {
-          for (const prune of this.pinchCleanup.clearActiveTouches("touch-list-all-clear")) {
-            this.logger.stalePinchContact({ ...prune });
-          }
-        }
         this.logger.inputLifecycleEvent(`touch-${phase}`, this.inputLifecycleDetails(surface, event, {
           page: surface.page.pageNumber,
           reason: details.reason ?? `touch-${phase}`,
@@ -11558,7 +11378,7 @@ export class ViewerInkSession {
   }
 
   /**
-   * Document capture: route pen/mouse draw here. Do not trust binds/alive alone —
+   * Document capture routes pen and confirmed MockTab stylus tips. Do not trust binds/alive alone —
    * page capture can stay silent after zoom while health checks still pass.
    */
   private captureDrawPointerFallback(
@@ -11566,6 +11386,7 @@ export class ViewerInkSession {
     within: (target: EventTarget | null) => boolean,
     hitTest = this.inspectPointerHit(event, this.closestPdfPageElement(event.target), within(event.target))
   ): void {
+    if (this.recordNativeEmbeddedPdfInput(event, "pointerdown", "document-capture-fallback")) return;
     if (!this.shouldFallbackRoutePointer(event)) return;
     const targetWithin = within(event.target);
     if (isInputChromeTarget(event.target)) {
@@ -11686,6 +11507,7 @@ export class ViewerInkSession {
     within: (target: EventTarget | null) => boolean,
     hitTest = this.inspectPointerHit(event, this.closestPdfPageElement(event.target), within(event.target))
   ): void {
+    if (this.recordNativeEmbeddedPdfInput(event, "pointerdown", "document-bubble-fallback")) return;
     if (!this.shouldFallbackRoutePointer(event)) return;
     const fallbackPage = this.closestPdfPageElement(event.target);
     const fallbackSurface = fallbackPage
@@ -11823,7 +11645,6 @@ export class ViewerInkSession {
         binds,
         alive,
         activePenCount: surface.router.activePenIds().length,
-        activeTouchCount: surface.router.activeTouchPointerIds().length,
         captureLost: true,
         cleanupReason: reason
       });
@@ -13392,16 +13213,14 @@ export class ViewerInkSession {
       this.beginTextIntent(surface, samples[0]!, event);
       return;
     }
-    // Content clicks always edit text. Moving a selected text box is reserved
-    // for its NPDE-style frame edge, so a click on the selected words cannot
-    // be mistaken for a zero-distance selection drag. On touch, the native host
-    // can retarget a follow-up tap to the page after a long-press rerender;
-    // resolve that case by the same committed-text geometry hit test.
+    // Content clicks edit existing text. Resolve a stylus hit by geometry too,
+    // because a native PDF layer can sit above the annotation text overlay.
     if (
       route === "text"
       && (
         (event.target instanceof Element && event.target.closest(".native-pdf-handwriting-text-box"))
-        || (event.pointerType === "touch" && this.isTouchTextTarget(surface, event))
+        || (samples[0]?.pointerType === "pen"
+          && this.textAt(surface.page.pageNumber, this.toPagePoint(surface, samples[0], true)) !== null)
       )
     ) {
       this.beginTextIntent(surface, samples[0]!, event);
@@ -13682,7 +13501,7 @@ export class ViewerInkSession {
     }
     if (laserDraft) {
       const laser = this.options.settings.toolPreferences.laser;
-      this.laserTrails.push({
+      this.laserOverlay.addTrail({
         id: stroke.id,
         page: stroke.page,
         points: stroke.points,
@@ -13702,7 +13521,7 @@ export class ViewerInkSession {
         ? { x: stroke.points.at(-1)!.x, y: stroke.points.at(-1)!.y }
         : this.lastPointerPdf;
       this.logDraw(surface, "end", "laser", stroke.points, terminal);
-      this.ensureLaserFadeLoop();
+      this.laserOverlay.ensureFadeLoop();
     } else {
       const tool = resolveDrawingTool(this.activeTool());
       const penContactId = this.strokePenContactIds.get(stroke.id) ?? null;
@@ -13794,10 +13613,6 @@ export class ViewerInkSession {
     surface.eraserWholeStrokes = undefined;
     if (surface.textIntent) this.clearTextIntentTimer(surface.textIntent);
     surface.textIntent = null;
-    if (event.pointerType === "touch" && this.textContextMenu.isOpen("text-context")) {
-      this.textContextMenu.close(false);
-      this.textContextMenuTargetId = null;
-    }
     this.textMoveDrag = null;
     this.updateDebug(surface, event);
     this.renderPage(surface.page.pageNumber);
@@ -14028,7 +13843,6 @@ export class ViewerInkSession {
           holdMs: TEXT_TOUCH_HOLD_MS,
           pointerId: intent.pointerId
         });
-        this.openTextContextMenu(surface, intent);
       }, TEXT_TOUCH_HOLD_MS);
     }
   }
@@ -14055,11 +13869,7 @@ export class ViewerInkSession {
     const intent = surface.textIntent;
     if (!intent) return;
     if (intent.pointerType === "touch") {
-      if (intent.longPressTriggered) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        return;
-      }
+      if (intent.longPressTriggered) return;
       const threshold = Math.max(TEXT_TOUCH_MOVE_THRESHOLD_PX / Math.max(this.displayScale(surface), 0.1), 6);
       if (Math.hypot(point.x - intent.start.x, point.y - intent.start.y) < threshold) return;
       this.clearTextIntentTimer(intent);
@@ -14117,8 +13927,6 @@ export class ViewerInkSession {
     if (!intent) return;
     this.clearTextIntentTimer(intent);
     if (intent.longPressTriggered) {
-      _event.preventDefault();
-      _event.stopImmediatePropagation();
       this.logText(surface, "touch-long-press-end", {
         annotationId: intent.hit?.id ?? null,
         pointerId: intent.pointerId
@@ -14139,54 +13947,6 @@ export class ViewerInkSession {
     if (intent.longPressTimer === null) return;
     window.clearTimeout(intent.longPressTimer);
     intent.longPressTimer = null;
-  }
-
-  private openTextContextMenu(surface: PageSurface, intent: NonNullable<PageSurface["textIntent"]>): void {
-    const annotation = intent.hit;
-    if (!annotation) return;
-    this.clearSelection({ refresh: false });
-    this.selected = [];
-    this.selectedTexts = [annotation];
-    this.selectionShape = boundingShapeFromSelection([], this.selectedTexts);
-    this.selectionPage = surface.page.pageNumber;
-    this.selectionToolbar.hide();
-    this.renderTextAnnotations(surface);
-    const target = [...surface.textLayer.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")]
-      .find((box) => box.dataset.annotationId === annotation.id);
-    if (!target) return;
-    this.textContextMenuTargetId = annotation.id;
-    if (this.textContextMenuSuppressTimer !== null) window.clearTimeout(this.textContextMenuSuppressTimer);
-    this.textContextMenuSuppressTimer = window.setTimeout(() => {
-      this.textContextMenuSuppressTimer = null;
-      this.textContextMenuTargetId = null;
-    }, TEXT_TOUCH_HOLD_MS * 3);
-    const content = textMenu(
-      target.ownerDocument,
-      this.textStyle(annotation),
-      (change) => this.applyTextStyleToSelection(change),
-      this.pointerProbeAbort.signal
-    );
-    this.textContextMenu.open("text-context", target, {
-      label: "Text box actions",
-      options: [
-        { id: "delete", label: "Delete", onSelect: () => this.deleteSelection() },
-        { id: "copy", label: "Copy", onSelect: () => this.copySelection() },
-        { id: "cut", label: "Cut", onSelect: () => this.cutSelection() }
-      ],
-      content,
-      focusFirst: false
-    });
-    this.logText(surface, "touch-context-menu", {
-      annotationId: annotation.id,
-      options: ["delete", "copy", "cut", "size"]
-    });
-  }
-
-  private handleTextBoxContextMenu(event: MouseEvent, annotationId: string): void {
-    if (this.textContextMenuTargetId !== annotationId && !this.textContextMenu.isOpen()) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    this.logger.textTool("context-menu-suppressed", { annotationId });
   }
 
   private textAt(page: number, point: Pick<PagePoint, "x" | "y">): TextAnnotation | null {
@@ -14728,9 +14488,6 @@ export class ViewerInkSession {
       box.className = "native-pdf-handwriting-text-box";
       box.dataset.annotationId = annotation.id;
       box.dataset.annotationSignature = this.textBoxRenderSignature(annotation, selected.has(annotation.id));
-      box.addEventListener("contextmenu", (event) => this.handleTextBoxContextMenu(event, annotation.id), {
-        signal: this.pointerProbeAbort.signal
-      });
       if (this.textBoxesInteractable()) box.classList.add("is-editable");
       if (selected.has(annotation.id)) box.classList.add("is-selected");
       this.positionTextBox(surface, box, annotation);
@@ -15000,8 +14757,7 @@ export class ViewerInkSession {
   }
 
   private textPointerToPagePoint(surface: PageSurface, event: PointerEvent): Pick<PagePoint, "x" | "y"> {
-    const viewport = this.overlayViewportFromClient(surface, event.clientX, event.clientY);
-    return this.mapper(surface).toPage(viewport);
+    return this.coordinates(surface).clientToPage({ x: event.clientX, y: event.clientY });
   }
 
   private resizeTextAnnotation(before: TextAnnotation, handle: TextBoxHandle, point: Pick<PagePoint, "x" | "y">): TextAnnotation {
@@ -15306,7 +15062,6 @@ export class ViewerInkSession {
         this.renderTextAnnotations(surface);
       }
     }
-    this.syncAnnotationCursorMode();
     this.refreshSurfaceCursors();
   }
 
@@ -16086,7 +15841,7 @@ export class ViewerInkSession {
     if (includeActivePreview && surface.builder?.preview().length) {
       if (surface.laserDraft) {
         const laser = this.options.settings.toolPreferences.laser;
-        this.paintLaserPoints(
+        this.laserOverlay.paintPoints(
           surface,
           surface.builder.preview(true),
           laser.color,
@@ -16225,135 +15980,20 @@ export class ViewerInkSession {
       && page.bottom >= root.top - margin && page.top <= root.bottom + margin;
   }
 
-  private paintLaserPoints(
-    surface: PageSurface,
-    points: readonly PagePoint[],
-    color: string,
-    width: number,
-    opacity: number,
-    holdMs: number,
-    fadeMs: number
-  ): void {
-    if (!points.length) return;
-    const mapper = this.mapper(surface);
-    const scale = this.displayScale(surface);
-    drawLaserStroke(surface.context, mapLaserPoints(points, (point) => mapper.toViewport(point)), {
-      color,
-      width: Math.max(1, width * scale),
-      opacity,
-      nowMs: performance.now(),
-      holdMs,
-      fadeMs
-    });
-    this.lastLaserPaintAt = performance.now();
-  }
-
   private trimLaserDraft(surface: PageSurface, now: number): void {
-    if (!surface.laserDraft || !surface.builder) return;
-    const laser = this.options.settings.toolPreferences.laser;
-    const retentionMs = Math.max(0, laser.holdMs) + Math.max(1, laser.fadeMs);
-    surface.laserDiscardedPoints += surface.builder.discardBefore(now - retentionMs);
-    surface.laserDiscardedPoints += surface.builder.discardToMaxPoints(ViewerInkSession.MAX_LASER_DRAFT_POINTS);
+    this.laserOverlay.trimDraft(surface, now);
   }
 
   private paintLaserTrails(surface: PageSurface, pageNumber: number): void {
-    for (const trail of this.laserTrails) {
-      if (trail.page !== pageNumber) continue;
-      this.paintLaserPoints(
-        surface,
-        trail.points,
-        trail.color,
-        trail.width,
-        trail.opacity,
-        trail.holdMs,
-        trail.fadeMs
-      );
-    }
+    this.laserOverlay.paintTrails(surface, pageNumber);
   }
 
-  /** Blit cached ink + lasers only — avoids full committed-stroke rebuild every fade tick. */
   private repaintLaserOverlay(pageNumber: number): void {
-    const surface = this.surfaces.get(pageNumber);
-    if (!surface) return;
-    const rect = surface.overlay.getBoundingClientRect();
-    const layout = this.pageLayout(surface);
-    const width = Math.max(1, rect.width >= 8 ? rect.width : layout.contentWidth || 1);
-    const height = Math.max(1, rect.height >= 8 ? rect.height : layout.contentHeight || 1);
-    const { pixelWidth, pixelHeight, backingScale } = this.resolveInkBacking(width, height);
-    const deferredRaster = !surface.inkLayerValid
-      && Boolean(surface.inkLayer)
-      && (surface.inkLayerBurstCapture || surface.rasterFallbackReady)
-      && surface.settleUpgradePending
-      && surface.inkLayer!.width === pixelWidth
-      && surface.inkLayer!.height === pixelHeight;
-    if ((!surface.inkLayerValid || !surface.inkLayer) && !deferredRaster) {
-      this.renderPage(pageNumber);
-      return;
-    }
-    // Must restore CSS-pixel transform after the identity blit — same as blitInkLayerToCanvas.
-    const startedAt = performance.now();
-    this.blitInkLayerToCanvas(surface, pixelWidth, pixelHeight, backingScale);
-    const laserDraftPoints = surface.laserDraft ? surface.builder?.preview(true) ?? [] : [];
-    if (laserDraftPoints.length) {
-      const laser = this.options.settings.toolPreferences.laser;
-      this.paintLaserPoints(
-        surface,
-        laserDraftPoints,
-        laser.color,
-        laser.width,
-        laser.opacity,
-        laser.holdMs,
-        laser.fadeMs
-      );
-    } else if (surface.builder?.preview().length && !surface.laserDraft) {
-      this.renderPage(pageNumber);
-      return;
-    }
-    this.paintLaserTrails(surface, pageNumber);
-    const durationMs = performance.now() - startedAt;
-    if (durationMs >= SLOW_SPAN_SYNC_MS) {
-      this.logger.laserRepaintSlow(pageNumber, durationMs, laserDraftPoints.length, this.laserTrails.length);
-    }
+    this.laserOverlay.repaintOverlay(pageNumber);
   }
 
   private ensureLaserFadeLoop(): void {
-    if (this.destroyed || this.laserFadeFrame !== null) return;
-    const view = this.options.adapter.host.ownerDocument.defaultView;
-    if (!view) return;
-    const tick = (now: number): void => {
-      this.laserFadeFrame = null;
-      if (this.destroyed) return;
-
-      const dirtyPages = new Set<number>();
-      for (const trail of this.laserTrails) dirtyPages.add(trail.page);
-      let visibleDraft = false;
-      for (const surface of this.surfaces.values()) {
-        if (!surface.laserDraft) continue;
-        this.trimLaserDraft(surface, now);
-        const laser = this.options.settings.toolPreferences.laser;
-        const points = surface.builder?.preview(true) ?? [];
-        if (!laserTrailStillVisible(points, now, laser.holdMs, laser.fadeMs)) continue;
-        visibleDraft = true;
-        dirtyPages.add(surface.page.pageNumber);
-      }
-
-      this.laserTrails = this.laserTrails.filter((trail) => {
-        dirtyPages.add(trail.page);
-        return laserTrailStillVisible(trail.points, now, trail.holdMs, trail.fadeMs);
-      });
-
-      // Skip if pointermove just painted (avoids double full-canvas work while dragging).
-      const recentlyPainted = now - this.lastLaserPaintAt < ViewerInkSession.LASER_FADE_MIN_MS;
-      if (!recentlyPainted) {
-        for (const page of dirtyPages) this.repaintLaserOverlay(page);
-      }
-
-      const stillActive = this.laserTrails.length > 0 || visibleDraft;
-      if (stillActive) {
-        this.laserFadeFrame = view.requestAnimationFrame(tick);
-      }
-    };
-    this.laserFadeFrame = view.requestAnimationFrame(tick);
+    this.laserOverlay.ensureFadeLoop();
   }
 
   private lassoShape(surface: PageSurface): SelectionShape | null {
@@ -16369,178 +16009,27 @@ export class ViewerInkSession {
     };
   }
 
-  private prepareSelectionCanvas(surface: PageSurface): number {
-    const layout = this.pageLayout(surface);
-    const fallbackWidth = Math.max(1, Math.round(layout.contentWidth));
-    const fallbackHeight = Math.max(1, Math.round(layout.contentHeight));
-    const width = surface.canvas.width || fallbackWidth;
-    const height = surface.canvas.height || fallbackHeight;
-    if (surface.selectionCanvas.width !== width) surface.selectionCanvas.width = width;
-    if (surface.selectionCanvas.height !== height) surface.selectionCanvas.height = height;
-    return width / Math.max(1, layout.contentWidth);
-  }
-
   private clearSelectionChrome(surface: PageSurface): void {
-    const context = surface.selectionContext;
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, surface.selectionCanvas.width, surface.selectionCanvas.height);
-    surface.liveLassoChromeBounds = null;
-    surface.canvas.classList.remove("is-selection-chrome-raised");
-  }
-
-  private clearLiveLassoChromeRegion(surface: PageSurface, scale: number): void {
-    const previous = surface.liveLassoChromeBounds;
-    if (!previous) return;
-    const context = surface.selectionContext;
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    const padding = 10 * scale;
-    const left = Math.max(0, Math.floor(previous.minX * scale - padding));
-    const top = Math.max(0, Math.floor(previous.minY * scale - padding));
-    const right = Math.min(surface.selectionCanvas.width, Math.ceil(previous.maxX * scale + padding));
-    const bottom = Math.min(surface.selectionCanvas.height, Math.ceil(previous.maxY * scale + padding));
-    if (right > left && bottom > top) context.clearRect(left, top, right - left, bottom - top);
-    surface.liveLassoChromeBounds = null;
-  }
-
-  private drawStrokeSelectionChrome(surface: PageSurface, stroke: InkStroke, context: CanvasRenderingContext2D): void {
-    const mapper = this.mapper(surface);
-    const scale = this.displayScale(surface);
-    const segments = stroke.tool === "highlighter"
-      ? visibleStrokeSegments(stroke.points, stroke.eraseMasks)
-      : stroke.points.length ? [stroke.points] : [];
-    context.save();
-    context.globalAlpha = 0.9;
-    context.strokeStyle = "#2563eb";
-    context.lineWidth = Math.max(0.5, stroke.width * scale) + 4;
-    context.setLineDash([4, 3]);
-    context.lineCap = "round";
-    context.lineJoin = "round";
-    for (const segment of segments) {
-      if (!segment.length) continue;
-      const first = mapper.toViewport(segment[0]!);
-      context.beginPath();
-      if (segment.length === 1) {
-        context.arc(first.x, first.y, Math.max(2, context.lineWidth / 2), 0, Math.PI * 2);
-      } else {
-        context.moveTo(first.x, first.y);
-        for (const point of segment.slice(1)) {
-          const view = mapper.toViewport(point);
-          context.lineTo(view.x, view.y);
-        }
-        context.stroke();
-      }
-      if (segment.length === 1) context.stroke();
-    }
-    context.restore();
+    this.selectionChromeRenderer.clear(surface);
   }
 
   private renderSelectionChrome(surface: PageSurface): void {
-    this.clearSelectionChrome(surface);
-    const tool = this.activeTool();
-    if ((tool !== "lasso" && tool !== "text")
-      || this.selectionPage !== surface.page.pageNumber
-      || !this.selectionShape) return;
-    const shape = this.moveShapePreview ?? this.selectionShape;
-    if (tool === "text") {
-      // Keep the text transform marquee on the committed canvas for the
-      // text-layer interaction contract; lasso chrome uses the disposable
-      // canvas below so drawing-tool changes are cheap and clean.
-      this.drawSelectionShape(surface, shape, { closeFreeform: true });
-      surface.canvas.classList.add("is-selection-chrome-raised");
-      return;
-    }
-    const scale = this.prepareSelectionCanvas(surface);
-    const context = surface.selectionContext;
-    context.setTransform(scale, 0, 0, scale, 0, 0);
-    this.drawSelectionShape(surface, shape, { closeFreeform: true }, context);
-    for (const stroke of this.selected) {
-      if (stroke.page !== surface.page.pageNumber) continue;
-      const preview = this.movePreview?.find((item) => item.id === stroke.id) ?? stroke;
-      this.drawStrokeSelectionChrome(surface, preview, context);
-    }
-    surface.canvas.classList.add("is-selection-chrome-raised");
-  }
-
-  private drawLassoPreview(surface: PageSurface, context = surface.context): void {
-    const shape = this.lassoShape(surface);
-    if (shape) this.drawSelectionShape(surface, shape, { closeFreeform: false }, context);
+    this.selectionChromeRenderer.render(surface, {
+      activeTool: this.activeTool(),
+      selectionPage: this.selectionPage,
+      selectionShape: this.selectionShape,
+      moveShapePreview: this.moveShapePreview,
+      selected: this.selected,
+      movePreview: this.movePreview
+    });
   }
 
   private renderLiveLassoPreview(surface: PageSurface): void {
-    if (this.activeTool() !== "lasso") {
-      this.clearSelectionChrome(surface);
-      return;
-    }
-    const scale = this.prepareSelectionCanvas(surface);
-    this.clearLiveLassoChromeRegion(surface, scale);
-    const context = surface.selectionContext;
-    context.setTransform(scale, 0, 0, scale, 0, 0);
-    this.drawLassoPreview(surface, context);
-    const mapper = this.mapper(surface);
-    const viewPoints = surface.editPath.map((point) => mapper.toViewport(point));
-    if (viewPoints.length) {
-      const xs = viewPoints.map((point) => point.x);
-      const ys = viewPoints.map((point) => point.y);
-      surface.liveLassoChromeBounds = {
-        minX: Math.min(...xs), minY: Math.min(...ys),
-        maxX: Math.max(...xs), maxY: Math.max(...ys)
-      };
-    }
-    surface.canvas.classList.add("is-selection-chrome-raised");
-  }
-
-  private drawSelectionShape(
-    surface: PageSurface,
-    shape: SelectionShape,
-    options: { closeFreeform: boolean },
-    targetContext = surface.context
-  ): void {
-    const mapper = this.mapper(surface);
-    const context = targetContext;
-    context.save();
-    context.strokeStyle = "#2563eb";
-    context.fillStyle = "rgba(37, 99, 235, 0.12)";
-    context.lineWidth = 2;
-    context.setLineDash([6, 4]);
-    context.globalAlpha = 0.95;
-
-    if (shape.type === "freeform") {
-      const points = shape.points;
-      if (!points.length) {
-        context.restore();
-        return;
-      }
-      const first = mapper.toViewport(points[0]!);
-      context.beginPath();
-      if (points.length === 1) {
-        context.arc(first.x, first.y, 3, 0, Math.PI * 2);
-        context.fill();
-      } else {
-        context.moveTo(first.x, first.y);
-        for (const point of points.slice(1)) {
-          const view = mapper.toViewport(point);
-          context.lineTo(view.x, view.y);
-        }
-        if (options.closeFreeform && points.length >= 3) {
-          context.closePath();
-          context.fill();
-        }
-        context.stroke();
-      }
-      context.restore();
-      return;
-    }
-
-    const bounds = shape.bounds;
-    const topLeft = mapper.toViewport({ x: bounds.minX, y: bounds.maxY });
-    const bottomRight = mapper.toViewport({ x: bounds.maxX, y: bounds.minY });
-    const width = bottomRight.x - topLeft.x;
-    const height = bottomRight.y - topLeft.y;
-    context.beginPath();
-    context.rect(topLeft.x, topLeft.y, width, height);
-    context.fill();
-    context.stroke();
-    context.restore();
+    this.selectionChromeRenderer.renderLassoPreview(
+      surface,
+      this.activeTool(),
+      this.lassoShape(surface)
+    );
   }
 
   private renderImageAnnotations(target: ImageRasterRenderTarget, page: AnnotationPageInfo): void {
@@ -16780,11 +16269,10 @@ export class ViewerInkSession {
   ): PagePoint[] {
     const geometryStartedAt = surface.strokePerformance ? performance.now() : null;
     const overlayRect = surface.overlay.getBoundingClientRect();
-    const mapper = this.mapper(surface);
+    const coordinates = this.coordinates(surface);
     let previous = pressureConditioner ? surface.pressureLastPagePoint : undefined;
     const points = samples.map((sample) => {
-      const viewport = this.overlayViewportFromClient(surface, sample.clientX, sample.clientY, overlayRect);
-      const point = mapper.toPage(viewport);
+      const point = coordinates.clientToPage({ x: sample.clientX, y: sample.clientY }, overlayRect);
       // Pen zero on pointerdown is meaningful (conditioner floor). Move-path hover
       // (pressure ≤ PEN_HOVER_PRESSURE_EPSILON) is filtered in PointerRouter.
       // Non-pen keeps simulated-pressure fallback before profile choice.
@@ -16811,10 +16299,9 @@ export class ViewerInkSession {
 
   private projectInkScreenPoint(surface: PageSurface, clientX: number, clientY: number): { x: number; y: number } {
     const overlayRect = surface.overlay.getBoundingClientRect();
-    const viewport = this.overlayViewportFromClient(surface, clientX, clientY, overlayRect);
-    const mapper = this.mapper(surface);
-    const projected = mapper.toViewport(mapper.toPage(viewport));
-    return this.overlayClientFromViewport(surface, projected, overlayRect);
+    const coordinates = this.coordinates(surface);
+    const pagePoint = coordinates.clientToPage({ x: clientX, y: clientY }, overlayRect);
+    return coordinates.pageToClient(pagePoint, overlayRect);
   }
 
   private logPositionAlign(
@@ -16827,10 +16314,10 @@ export class ViewerInkSession {
     const overlayRect = surface.overlay.getBoundingClientRect();
     const layout = this.pageLayout(surface);
     const contentRect = pdfRenderCanvas(surface.page.element)?.getBoundingClientRect();
-    const viewport = this.overlayViewportFromClient(surface, sample.clientX, sample.clientY, overlayRect);
-    const mapper = this.mapper(surface);
-    const pdf = mapper.toPage(viewport);
-    const inkScreen = this.projectInkScreenPoint(surface, sample.clientX, sample.clientY);
+    const coordinates = this.coordinates(surface, layout);
+    const viewport = coordinates.clientToViewport({ x: sample.clientX, y: sample.clientY }, overlayRect);
+    const pdf = coordinates.viewportToPage(viewport);
+    const inkScreen = coordinates.pageToClient(pdf, overlayRect);
     this.logger.positionAlign({
       phase,
       page: surface.page.pageNumber,
@@ -16920,9 +16407,10 @@ export class ViewerInkSession {
       width: layout.contentWidth,
       height: layout.contentHeight
     };
-    const zoom = Math.max(0.1, this.handwritingViewport.getState().scale);
-    const overlayWidth = overlayRect.width >= 8 ? overlayRect.width / zoom : layout.contentWidth;
-    const overlayHeight = overlayRect.height >= 8 ? overlayRect.height / zoom : layout.contentHeight;
+    const renderedScale = Math.max(0.1, this.handwritingViewport.getRenderedScale());
+    const projectionScale = Math.max(0.1, this.handwritingViewport.getState().scale) / renderedScale;
+    const overlayWidth = overlayRect.width >= 8 ? overlayRect.width / projectionScale : layout.contentWidth;
+    const overlayHeight = overlayRect.height >= 8 ? overlayRect.height / projectionScale : layout.contentHeight;
     const firstStroke = this.ink.page(surface.page.pageNumber)[0];
     const anchorPoint = firstStroke?.points[0];
     const mapped = anchorPoint ? this.mapper(surface, layout).toViewport(anchorPoint) : null;
@@ -17005,6 +16493,14 @@ export class ViewerInkSession {
     }
   }
 
+  private coordinates(surface: PageSurface, layoutOverride?: PageCoordinateLayout): PageCoordinateSpace {
+    return new PageCoordinateSpace(
+      this.handwritingViewport,
+      surface.overlay,
+      this.mapper(surface, layoutOverride)
+    );
+  }
+
   private mapper(surface: PageSurface, layoutOverride?: PageCoordinateLayout): PageCoordinateMapper {
     const layout = layoutOverride ?? this.pageLayout(surface);
     const metrics = this.metricsFor(surface);
@@ -17031,8 +16527,24 @@ export class ViewerInkSession {
     cssHeight: number,
     tier: "full" | "neighbor" = "full"
   ): ReturnType<typeof inkBackingSize> {
-    const budget = inkBackingBudget(this.runtimePlatform().mobile);
-    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    const mobile = this.runtimePlatform().mobile;
+    const budget = this.options.adapter.surfaceType === "markdown"
+      ? markdownInkBackingBudget(mobile)
+      : inkBackingBudget(mobile);
+    const devicePixelRatio = this.options.adapter.host.ownerDocument.defaultView?.devicePixelRatio || 1;
+    const viewportScale = this.handwritingViewport?.getState().scale;
+    const renderedScale = this.handwritingViewport?.getRenderedScale();
+    const projectionScale = typeof viewportScale === "number"
+      && Number.isFinite(viewportScale)
+      && typeof renderedScale === "number"
+      && Number.isFinite(renderedScale)
+      && renderedScale > 0
+      ? viewportScale / renderedScale
+      : 1;
+    // The ink canvas is sized in the renderer's unprojected CSS space. Include
+    // the viewport's live CSS scale so transformed image and pinch views retain
+    // device-pixel density instead of stretching a low-resolution backing.
+    const dpr = devicePixelRatio * projectionScale;
     if (tier === "neighbor") {
       return inkBackingSize(
         cssWidth,
@@ -17063,19 +16575,27 @@ export class ViewerInkSession {
   }
 
   private unscalePageLayoutForViewportScale(layout: PageCoordinateLayout): PageCoordinateLayout {
-    const zoom = Math.max(0.1, this.handwritingViewport.getState().scale);
-    if (zoom === 1) return layout;
+    // Markdown page coordinates already use unscaled scroll-content metrics.
+    // Its scroll root is the CSS projection target, so the element-local
+    // transform removes zoom at pointer conversion; dividing this layout too
+    // would scale newly drawn points a second time.
+    if (this.options.adapter.surfaceType === "markdown") return layout;
+    // The DOM geometry already includes the scale applied by the PDF renderer.
+    // Only remove the temporary CSS projection layered over that geometry.
+    const renderedScale = Math.max(0.1, this.handwritingViewport.getRenderedScale());
+    const projectionScale = Math.max(0.1, this.handwritingViewport.getState().scale) / renderedScale;
+    if (Math.abs(projectionScale - 1) < 0.0001) return layout;
     return {
       ...layout,
-      offsetX: layout.offsetX / zoom,
-      offsetY: layout.offsetY / zoom,
-      contentWidth: layout.contentWidth / zoom,
-      contentHeight: layout.contentHeight / zoom,
-      scale: layout.scale / zoom,
-      scaleX: layout.scaleX / zoom,
-      scaleY: layout.scaleY / zoom,
-      hostWidth: layout.hostWidth / zoom,
-      hostHeight: layout.hostHeight / zoom
+      offsetX: layout.offsetX / projectionScale,
+      offsetY: layout.offsetY / projectionScale,
+      contentWidth: layout.contentWidth / projectionScale,
+      contentHeight: layout.contentHeight / projectionScale,
+      scale: layout.scale / projectionScale,
+      scaleX: layout.scaleX / projectionScale,
+      scaleY: layout.scaleY / projectionScale,
+      hostWidth: layout.hostWidth / projectionScale,
+      hostHeight: layout.hostHeight / projectionScale
     };
   }
 
@@ -17086,6 +16606,13 @@ export class ViewerInkSession {
   }
 
   private metricsFor(surface: PageSurface): { width: number; height: number } {
+    // Markdown is one scrollable note, not a fixed-size PDF page. Its live
+    // content bounds can grow as the user edits; keeping its initial height
+    // pinned would rescale retained ink vertically after a reflow.
+    if (this.options.adapter.surfaceType === "markdown") {
+      this.rememberPageMetrics(surface.page);
+      return { width: surface.page.width, height: surface.page.height };
+    }
     const pinned = this.pageMetrics.get(surface.page.pageNumber);
     if (pinned) return pinned;
     this.rememberPageMetrics(surface.page);
@@ -17096,8 +16623,13 @@ export class ViewerInkSession {
   }
 
   private rememberPageMetrics(page: AnnotationPageInfo): void {
+    if (page.geometrySafe === false) return;
     if (!(page.width > 1 && page.height > 1)) return;
     const existing = this.pageMetrics.get(page.pageNumber);
+    if (this.options.adapter.surfaceType === "markdown") {
+      this.pageMetrics.set(page.pageNumber, { width: page.width, height: page.height });
+      return;
+    }
     // Prefer first trusted sidecar/live size; only replace placeholder or clearly wrong CSS-pixel sizes.
     if (!existing || existing.width <= 1 || existing.height <= 1) {
       this.pageMetrics.set(page.pageNumber, { width: page.width, height: page.height });
@@ -17352,6 +16884,10 @@ export class ViewerInkSession {
     this.scheduleUiIntegrityCheck("settings");
   }
 
+  setFloatingToolbarPosition(position: FloatingToolbarPosition): void {
+    this.floatingToolbar.setPosition(position);
+  }
+
   /** False after PDF++ (or Obsidian) tears down the PDF DOM under this session. */
   isAttached(): boolean {
     if (this.destroyed || this.detachNotified) return false;
@@ -17363,9 +16899,9 @@ export class ViewerInkSession {
     return [...this.surfaces.values()].some((surface) => surface.overlay.isConnected);
   }
 
-  private currentToolbarPlacement(): ToolbarPlacement {
-    const configured = this.options.toolbarPlacement?.() ?? this.options.settings.toolbarPlacement;
-    return resolveToolbarPlacement(configured);
+  private currentToolbarOrientation(): ToolbarOrientation {
+    const configured = this.options.toolbarOrientation?.() ?? this.options.settings.toolbarOrientation;
+    return configured === "vertical" ? "vertical" : "horizontal";
   }
 
   private async handleMore(action: MoreAction): Promise<void> {
@@ -17401,6 +16937,47 @@ export class ViewerInkSession {
       this.commandController.fitWidth();
       return;
     }
+    if (action === "previous-page") {
+      this.commandController.previousPage();
+      return;
+    }
+    if (action === "next-page") {
+      this.commandController.nextPage();
+      return;
+    }
+    if (action === "go-to-page") {
+      const view = this.options.adapter.host.ownerDocument.defaultView;
+      const page = view?.prompt(
+        `Go to page (1–${this.commandController.getPageCount()})`,
+        String(this.commandController.getCurrentPage())
+      );
+      if (page !== null && page !== undefined) {
+        const pageNumber = Number(page.trim());
+        if (Number.isInteger(pageNumber) && pageNumber > 0) this.commandController.goToPage(pageNumber);
+      }
+      return;
+    }
+    if (action === "set-zoom") {
+      const view = this.options.adapter.host.ownerDocument.defaultView;
+      const zoom = view?.prompt("Set zoom percentage (10–1000)", String(Math.round(this.commandController.getZoom() * 100)));
+      if (zoom !== null && zoom !== undefined) {
+        const percent = Number(zoom.trim());
+        if (Number.isFinite(percent) && percent > 0) this.commandController.setZoom(percent / 100);
+      }
+      return;
+    }
+    if (
+      action === "fit-height"
+      || action === "fit-page"
+      || action === "show-thumbnails"
+      || action === "show-outline"
+      || action === "presentation"
+      || action === "print"
+      || action === "download"
+    ) {
+      pdfSurfaceExtensions(this.options.adapter)?.performToolbarAction?.(action);
+      return;
+    }
     if (action === "rotate-cw") {
       this.commandController.rotateClockwise();
       return;
@@ -17413,25 +16990,24 @@ export class ViewerInkSession {
       this.commandController.toggleSearch();
       return;
     }
-    if (action === "toolbar-main" || action === "toolbar-left" || action === "toolbar-right") {
-      const placement = action.replace("toolbar-", "") as ToolbarPlacement;
-      const previousPlacement = this.currentToolbarPlacement();
-      this.logger.toolbarPlacement("request", { previousPlacement, requestedPlacement: placement });
-      // Prefer savePluginSettings (assigns via saveSettings + remounts open leaves). Local mutate is fallback only.
+    if (action === "rotate-toolbar") {
+      const previousOrientation = this.currentToolbarOrientation();
+      const toolbarOrientation = previousOrientation === "horizontal" ? "vertical" : "horizontal";
+      this.logger.toolbarOrientation("request", { previousOrientation, requestedOrientation: toolbarOrientation });
       try {
-        if (this.options.savePluginSettings) await this.options.savePluginSettings({ toolbarPlacement: placement });
-        else this.options.settings.toolbarPlacement = placement;
+        if (this.options.savePluginSettings) await this.options.savePluginSettings({ toolbarOrientation });
+        else this.options.settings.toolbarOrientation = toolbarOrientation;
         this.remountToolbar();
-        this.logger.toolbarPlacement("applied", {
-          previousPlacement,
-          requestedPlacement: placement,
-          resolvedPlacement: this.currentToolbarPlacement(),
+        this.logger.toolbarOrientation("applied", {
+          previousOrientation,
+          requestedOrientation: toolbarOrientation,
+          resolvedOrientation: this.currentToolbarOrientation(),
           ...this.toolbarPresentationSnapshot()
         });
       } catch (error) {
-        this.logger.toolbarPlacement("error", {
-          previousPlacement,
-          requestedPlacement: placement,
+        this.logger.toolbarOrientation("error", {
+          previousOrientation,
+          requestedOrientation: toolbarOrientation,
           error: this.errorMessage(error)
         });
         throw error;

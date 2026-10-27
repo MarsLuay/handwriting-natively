@@ -67,12 +67,12 @@ describe("PDF adapters", () => {
     const annotationLayer = document.createElement("div");
     annotationLayer.className = "annotationLayer";
     const annotationLink = document.createElement("a");
-    annotationLink.href = "https://example.com/annotation";
+    annotationLink.href = "#annotation";
     const linkChild = document.createElement("span");
     annotationLink.append(linkChild);
     annotationLayer.append(annotationLink);
     const ordinaryLink = document.createElement("a");
-    ordinaryLink.href = "https://example.com/ordinary";
+    ordinaryLink.href = "#ordinary";
     page.append(annotationLayer, ordinaryLink);
 
     const debug = vi.fn();
@@ -153,7 +153,7 @@ describe("PDF adapters", () => {
     expect(toolbar.element.isConnected).toBe(true);
     expect(toolbar.element.hidden).toBe(false);
     expect(toolbar.element.style.display).not.toBe("none");
-    expect(toolbar.element.getAttribute("aria-label")).toBe("PDF annotation tools");
+    expect(toolbar.element.getAttribute("aria-label")).toBe("Annotation tools");
     expect(toolbar.element.querySelector("[data-control='eraser']")).not.toBeNull();
     expect(currentToolbarHost.contains(toolbar.element)).toBe(true);
     expect(staleToolbarHost.contains(toolbar.element)).toBe(false);
@@ -195,7 +195,7 @@ describe("PDF adapters", () => {
     vi.useRealTimers();
   });
 
-  it("captures and restores PDF.js scale mode across a view-state mutation", async () => {
+  it("restores native PDF numeric scale and viewport without reapplying fit presets", async () => {
     const host = compatibleHost();
     const privateViewer: {
       currentScale: number;
@@ -209,43 +209,38 @@ describe("PDF adapters", () => {
     const adapter = await NativePdfViewAdapter.attach(host, {}, { privateViewer });
 
     expect(adapter.getViewState()).toMatchObject({ scale: 2.1789, scaleMode: "page-width" });
+    const scrollRoot = adapter.scrollElement();
+    expect(scrollRoot.classList.contains("native-pdf-handwriting-stable-scroll-root")).toBe(true);
+    scrollRoot.scrollLeft = 180;
+    scrollRoot.scrollTop = 240;
+    expect(scrollRoot.scrollLeft).toBe(180);
+    expect(scrollRoot.scrollTop).toBe(240);
     adapter.restoreViewState({
       pageNumber: 1,
       scrollFraction: 0.4,
+      viewport: { scale: 1.25, x: 0, y: 0 },
       scale: 1.25,
       scaleMode: "page-fit",
       rotation: 0
     });
 
-    expect(privateViewer.currentScaleValue).toBe("page-fit");
-    expect(privateViewer.currentScale).toBe(2.1789);
+    expect(privateViewer.currentScale).toBe(1.25);
+    expect(privateViewer.currentScaleValue).toBe("page-width");
+    expect(scrollRoot.scrollLeft).toBe(0);
+    expect(scrollRoot.scrollTop).toBe(0);
+    adapter.restoreViewState({
+      pageNumber: 1,
+      scrollFraction: 0.4,
+      viewport: { scale: 1.5, x: 0, y: 0 },
+      scale: 1.25,
+      scaleMode: "fit-height",
+      rotation: 0
+    });
+
+    expect(privateViewer.currentScale).toBe(1.5);
+    expect(privateViewer.currentScaleValue).toBe("page-width");
     adapter.destroy();
-  });
-
-  it("commits an absolute custom scale through PDF.js and writable-scale fallbacks", async () => {
-    const host = compatibleHost();
-    const updateScale = vi.fn();
-    const privateViewer = { currentScale: 2, updateScale };
-    const adapter = await NativePdfViewAdapter.attach(host, {}, { privateViewer });
-    const handoff = adapter.createMobilePdfZoomHandoff();
-
-    expect(adapter.nativeScaleCommitAvailable?.()).toBe(true);
-    expect(handoff.begin({ pageNumber: 1, focalPoint: { x: 100, y: 100 } })).toBe(true);
-    expect(handoff.commit(3)).toMatchObject({ accepted: true });
-    expect(updateScale).toHaveBeenCalledWith({ scaleFactor: 1.5, origin: [100, 100] });
-    adapter.destroy();
-
-    const fallbackHost = compatibleHost();
-    const rejectingViewer = {
-      currentScale: 2,
-      updateScale: vi.fn(() => { throw new Error("native update rejected"); })
-    };
-    const fallbackAdapter = await NativePdfViewAdapter.attach(fallbackHost, {}, { privateViewer: rejectingViewer });
-    const fallbackHandoff = fallbackAdapter.createMobilePdfZoomHandoff();
-    expect(fallbackHandoff.begin({ pageNumber: 1, focalPoint: { x: 100, y: 100 } })).toBe(true);
-    expect(fallbackHandoff.commit(3)).toMatchObject({ accepted: true });
-    expect(rejectingViewer.currentScale).toBe(3);
-    fallbackAdapter.destroy();
+    expect(scrollRoot.classList.contains("native-pdf-handwriting-stable-scroll-root")).toBe(false);
   });
 
   it("replaces stale annotation toolbars when mounting again", async () => {
@@ -359,6 +354,36 @@ describe("PDF adapters", () => {
     expect(EmbeddedPdfAdapter.discover(note)).toHaveLength(1);
   });
 
+  it("reports bounded embedded PDF render and layout state without file content", () => {
+    const surfaceRoot = document.createElement("div");
+    surfaceRoot.className = "cm-scroller native-pdf-handwriting-markdown-surface";
+    const overlay = document.createElement("div");
+    overlay.className = "native-pdf-handwriting-page-overlay";
+    overlay.dataset.surfaceType = "markdown";
+    const embed = document.createElement("div");
+    embed.className = "internal-embed pdf-embed is-loaded";
+    embed.setAttribute("src", "private-note.pdf#page=4");
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer-container";
+    const page = document.createElement("div");
+    page.className = "page";
+    page.append(document.createElement("canvas"));
+    viewer.append(page);
+    embed.append(viewer);
+    surfaceRoot.append(embed, overlay);
+
+    const diagnostic = EmbeddedPdfAdapter.runtimeDiagnostic(embed, surfaceRoot);
+
+    expect(diagnostic).toMatchObject({
+      hostClass: ["internal-embed", "pdf-embed", "is-loaded"],
+      loaded: true,
+      viewerPresent: true,
+      pagePresent: true,
+      canvasPresent: true
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("private-note.pdf");
+  });
+
   it("ignores PDF++ DOM mutations when watching page changes", async () => {
     const host = compatibleHost();
     const pageChanges = vi.fn();
@@ -372,7 +397,7 @@ describe("PDF adapters", () => {
     adapter.destroy();
   });
 
-  it("mounts annotation toolbar after PDF++ color palette", async () => {
+  it("mounts the shared annotation toolbar in the embedded PDF toolbar after PDF++ color palette", async () => {
     const host = compatibleHost();
     const toolbarHost = host.querySelector(".pdf-toolbar") as HTMLElement;
     const palette = document.createElement("div");
@@ -515,6 +540,9 @@ describe("PDF adapters", () => {
 
   it("provides one-page image geometry through the generic surface contract", () => {
     const host = document.createElement("div");
+    host.style.overflow = "auto";
+    host.style.scrollBehavior = "smooth";
+    host.style.overscrollBehavior = "contain";
     const image = document.createElement("img");
     Object.defineProperty(image, "naturalWidth", { configurable: true, value: 1200 });
     Object.defineProperty(image, "naturalHeight", { configurable: true, value: 800 });
@@ -527,6 +555,9 @@ describe("PDF adapters", () => {
 
     const pagesChanged = vi.fn();
     const adapter = ImageViewAdapter.attach(host, { onPagesChanged: pagesChanged });
+    expect(host.classList.contains("native-pdf-handwriting-stable-scroll-root")).toBe(true);
+    expect(host.style.scrollBehavior).toBe("smooth");
+    expect(host.style.overscrollBehavior).toBe("contain");
     expect(adapter.pages()).toMatchObject([{
       pageNumber: 1,
       width: 1200,
@@ -535,6 +566,20 @@ describe("PDF adapters", () => {
       rotation: 0,
       coordinateOrigin: "top-left"
     }]);
+    host.scrollLeft = 180;
+    host.scrollTop = 240;
+    expect(host.scrollLeft).toBe(180);
+    expect(host.scrollTop).toBe(240);
+    adapter.restoreViewState({
+      viewport: { scale: 0.5, x: 0, y: 0 },
+      pageNumber: 1,
+      scale: 0.5,
+      scrollFraction: 0.5,
+      rotation: 0,
+      scaleMode: "custom"
+    });
+    expect(host.scrollLeft).toBe(0);
+    expect(host.scrollTop).toBe(0);
     expect(adapter.supportsImageExport).toBe(true);
     expect(adapter.imageElement()).toBe(image);
     const overlay = adapter.mountOverlay(1);
@@ -549,6 +594,9 @@ describe("PDF adapters", () => {
     expect(image.parentElement).toBe(host);
     expect(overlay.isConnected).toBe(false);
     expect(toolbar.isConnected).toBe(false);
+    expect(host.classList.contains("native-pdf-handwriting-stable-scroll-root")).toBe(false);
+    expect(host.style.scrollBehavior).toBe("smooth");
+    expect(host.style.overscrollBehavior).toBe("contain");
   });
 
   it("does not start sidebar tracking for PDF/text style churn when the rail is right", async () => {

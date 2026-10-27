@@ -579,8 +579,8 @@ export class PdfImportFilePicker extends FuzzySuggestModal<PdfImportItem> {
 
   private openExternalPicker(): void {
     if (this.externalInput) return;
-    const ownerDocument = this.contentEl.ownerDocument ?? document;
-    const input = ownerDocument.createElement("input");
+    const ownerDocument = this.contentEl.ownerDocument ?? activeDocument;
+    const input = ownerDocument.body.createEl("input");
     input.type = "file";
     input.accept = "application/pdf,.pdf";
     input.hidden = true;
@@ -588,7 +588,6 @@ export class PdfImportFilePicker extends FuzzySuggestModal<PdfImportItem> {
       void this.handleExternalFile(input.files?.[0] ?? null);
     });
     input.addEventListener("cancel", () => this.finishExternalCancel());
-    ownerDocument.body?.append(input);
     this.externalInput = input;
     input.click();
   }

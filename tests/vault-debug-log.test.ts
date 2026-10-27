@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Vault } from "obsidian";
 import { VaultDebugLog } from "../src/logging/VaultDebugLog";
+import { SessionLogger } from "../src/logging/SessionLogger";
 
 function createVault(): { vault: Vault; files: Map<string, string>; writes: string[]; appends: string[] } {
   const files = new Map<string, string>();
@@ -33,6 +34,82 @@ function createVault(): { vault: Vault; files: Map<string, string>; writes: stri
 }
 
 describe("VaultDebugLog", () => {
+  it("sends session records to Obsidian's developer console and the same vault log", async () => {
+    const { vault, files } = createVault();
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const log = new VaultDebugLog(
+      () => vault,
+      () => "debug.md",
+      () => true,
+      () => ({ pluginVersion: "0.1.16", obsidianVersion: "1.8.9" }),
+      () => new Date("2026-07-27T12:00:00.000Z")
+    );
+    const logger = new SessionLogger("Notes/example.pdf", log);
+
+    try {
+      logger.keyboardShortcut({ command: "undo" });
+      await log.flush();
+
+      expect(debug).toHaveBeenCalledOnce();
+      expect(debug).toHaveBeenCalledWith(
+        "[Handwriting Natively]",
+        "keyboard-shortcut",
+        expect.objectContaining({
+          ts: "2026-07-27T12:00:00.000Z",
+          level: "info",
+          event: "keyboard-shortcut",
+          pluginVersion: "0.1.16",
+          obsidianVersion: "1.8.9",
+          document: "Notes/example.pdf",
+          command: "undo"
+        })
+      );
+      expect(JSON.parse((files.get("debug.md") ?? "").trim())).toMatchObject({
+        event: "keyboard-shortcut",
+        pluginVersion: "0.1.16",
+        obsidianVersion: "1.8.9",
+        document: "Notes/example.pdf",
+        command: "undo"
+      });
+    } finally {
+      debug.mockRestore();
+      log.destroy();
+    }
+  });
+
+  it("keeps warnings and errors visible in DevTools when vault logging is disabled", async () => {
+    const { vault, files } = createVault();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const log = new VaultDebugLog(() => vault, () => "debug.md", () => false);
+
+    try {
+      log.write("info", "hidden-info");
+      log.write("warn", "visible-warning");
+      log.write("error", "visible-error");
+      await log.flush();
+
+      expect(debug).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        "[Handwriting Natively]",
+        "visible-warning",
+        expect.objectContaining({ level: "warn", event: "visible-warning" })
+      );
+      expect(error).toHaveBeenCalledWith(
+        "[Handwriting Natively]",
+        "visible-error",
+        expect.objectContaining({ level: "error", event: "visible-error" })
+      );
+      expect(files.has("debug.md")).toBe(false);
+    } finally {
+      debug.mockRestore();
+      warn.mockRestore();
+      error.mockRestore();
+      log.destroy();
+    }
+  });
+
   it("flushes all queued events in write order", async () => {
     const { vault, files } = createVault();
     const log = new VaultDebugLog(() => vault, () => "logs/debug.md", () => true);

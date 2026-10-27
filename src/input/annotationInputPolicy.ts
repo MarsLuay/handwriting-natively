@@ -1,58 +1,41 @@
-/**
- * Device-aware annotation input policy (pencil-first).
- * Pen annotates by active tool; touch stays native PDF navigation; mouse
- * annotation is an explicit left-button opt-in on PDF pages.
- */
-
-export interface MouseInputSettings {
-  mouseInkingEnabled?: boolean | null;
-}
-
-/** Stylus / Apple Pencil always may annotate (caller still checks UI occlusion). */
-export function stylusAnnotationEnabled(): boolean {
-  return true;
-}
-
+/** Device-aware annotation policy; host/page safety checks remain with the caller. */
 export interface AnnotatePointerContext {
-  mouseInkingEnabled: boolean;
-  /** Fixed desktop page gate. Omit to retain the enabled-only policy. */
+  /** True for an OS-remapped stylus that reports as a mouse. */
+  stylusRemapped?: boolean;
+  mouseInkingEnabled?: boolean;
+  /** False when this mouse event is not on an eligible desktop PDF page. */
   mouseOverPdfPage?: boolean;
-  /** Runtime capability has observed a valid Pointer Events pen contact. */
-  stylusConfirmed?: boolean;
-  /** Explicit fallback for touch-only or ambiguous input devices. */
+  /** Touch fallback is disabled after a confirmed stylus is observed. */
   touchDrawFallback?: boolean;
+  stylusConfirmed?: boolean;
 }
 
-/**
- * Whether this pointer may create annotation ink/edit/text routes.
- * Touch never inks by default. Pen always may (occlusion handled separately).
- * Desktop mouse annotates only when the single mouse-inking setting is enabled
- * and the caller confirms that the pointer started on a PDF page.
- */
 export function canAnnotatePointer(
   event: Pick<PointerEvent, "pointerType">,
-  ctx: AnnotatePointerContext
+  context: AnnotatePointerContext = {}
 ): boolean {
-  if (event.pointerType === "pen") return stylusAnnotationEnabled();
+  if (event.pointerType === "pen") return true;
   if (event.pointerType === "touch") {
-    return ctx.touchDrawFallback === true && ctx.stylusConfirmed !== true;
+    return context.touchDrawFallback === true && context.stylusConfirmed !== true;
   }
   if (event.pointerType === "mouse") {
-    if (!ctx.mouseInkingEnabled) return false;
-    if (ctx.mouseOverPdfPage !== undefined) return ctx.mouseOverPdfPage;
-    return true;
+    if (context.mouseOverPdfPage === false) return false;
+    return context.stylusRemapped === true || context.mouseInkingEnabled === true;
   }
   return false;
 }
 
-export function describeInputPolicies(settings: MouseInputSettings): {
+export function describeInputPolicies(settings: {
+  mouseInkingEnabled?: boolean;
+  touchDrawFallback?: boolean;
+} = {}): {
   stylusPolicy: "annotate";
-  touchPolicy: "native";
+  touchPolicy: "fallback" | "native";
   mousePolicy: "inking" | "native";
 } {
   return {
     stylusPolicy: "annotate",
-    touchPolicy: "native",
+    touchPolicy: settings.touchDrawFallback === true ? "fallback" : "native",
     mousePolicy: settings.mouseInkingEnabled === true ? "inking" : "native"
   };
 }

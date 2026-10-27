@@ -1,4 +1,4 @@
-export type IntegrationPlatform = "desktop" | "android" | "ipad" | "unknown";
+export type IntegrationPlatform = "desktop" | "android" | "ios" | "ipad" | "unknown";
 
 export type CapabilityState = "available" | "unavailable" | "unknown";
 
@@ -98,6 +98,7 @@ function versionViewerGraphEra(version: string | null): ViewerGraphEra {
 export function probePlatformCapabilities(input: PlatformCapabilityInput = {}): PlatformCapabilityReport {
   const platform = input.platform === "desktop"
     || input.platform === "android"
+    || input.platform === "ios"
     || input.platform === "ipad"
     ? input.platform
     : "unknown";

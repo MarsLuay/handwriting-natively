@@ -13,17 +13,17 @@ import {
 } from "obsidian";
 import type { SelectionShortcutAction } from "./input/SelectionShortcuts";
 import { isObsidianSidebarOpen, MobileSidebarSwipeBlocker } from "./input/MobileSidebarSwipeBlocker";
-import { getPhysicalContactCollectorSnapshot, type PhysicalContactCollectorSnapshot } from "./input/PhysicalContactCollector";
 import { EmbeddedPdfAdapter } from "./integration/EmbeddedPdfAdapter";
 import { ImageViewAdapter } from "./integration/ImageViewAdapter";
+import { findMarkdownSurfaceRoot, MarkdownViewAdapter } from "./integration/MarkdownViewAdapter";
 import { NativePdfViewAdapter } from "./integration/NativePdfViewAdapter";
 import { PLUGIN_PDF_VIEW_TYPE, PluginPdfView } from "./integration/PluginPdfView";
 import { PdfJsViewAdapter } from "./integration/PdfJsViewAdapter";
+import { nativePdfViewStateFromLegacyState } from "./integration/PdfViewStateMigration";
 import { isSupportedImageFile } from "./integration/ImageFileTypes";
 import type { AnnotationSurface, AnnotationSurfaceCallbacks } from "./runtime/AnnotationSurface";
 import { pdfSurfaceExtensions } from "./integration/ObsidianPdfAdapter";
 import { PdfViewerCompatibility } from "./integration/PdfViewerCompatibility";
-import { tryRegisterPdfExtension } from "./integration/PdfExtensionRegistration";
 import { probePlatformCapabilities } from "./integration/PlatformCapabilities";
 import { describePdfPageDom } from "./integration/pdfPageSelectors";
 import { getDebugNodeId } from "./dom/debugNodeId";
@@ -196,9 +196,16 @@ export function scheduleSessionRecoveryAfterDestroy(
 
 export default class NativePdfInkPlugin extends Plugin {
   inkSettings: PluginSettings = mergeSettings(undefined, "config");
+  private settingsSaveQueue: Promise<void> | null = null;
   private readonly sessions = new Map<WorkspaceLeaf, ViewerInkSession>();
+  private readonly markdownModeObservers = new Map<WorkspaceLeaf, {
+    view: MarkdownView;
+    host: HTMLElement;
+    observer: MutationObserver;
+  }>();
   private readonly attachingLeaves = new Set<WorkspaceLeaf>();
   private readonly embedChrome = new Map<HTMLElement, EmbedAnnotateChrome>();
+  private readonly pdfEmbedDiagnosticSignatures = new WeakMap<HTMLElement, string>();
   private readonly persistEpochByDoc = new Map<string, number>();
   /** Short-lived Add Page state survives the source-PDF viewer reload. */
   private readonly pendingAddPageRestore = new Map<string, AddPageMutationRestoreState>();
@@ -237,55 +244,30 @@ export default class NativePdfInkPlugin extends Plugin {
     configurePdfLibRuntime(this.app, pluginDir);
     configurePdfThumbnailRuntime(this.app, pluginDir, Menu);
     configurePostZoomInputRuntime(this.app, pluginDir);
-    this.inkSettings = mergeSettings(
-      await this.loadData() as Partial<PluginSettings> | null,
-      this.app.vault.configDir
-    );
+    const savedSettings = await this.loadData() as (Partial<PluginSettings> & { toolbarPlacement?: unknown }) | null;
+    this.inkSettings = mergeSettings(savedSettings, this.app.vault.configDir);
+    if (savedSettings && Object.prototype.hasOwnProperty.call(savedSettings, "toolbarPlacement")) {
+      await this.persistSettings(this.inkSettings);
+    }
+    await this.vaultDebugLog.clear();
     this.registerView(PLUGIN_PDF_VIEW_TYPE, (leaf) => new PluginPdfView(leaf, {
       pluginDir,
-      createAdapter: (file, host, callbacks) => PdfJsViewAdapter.create({
-        app: this.app,
-        file,
-        host,
-        callbacks,
-        pluginDir
-      }),
+      createAdapter: async (file, host, callbacks) => {
+        return PdfJsViewAdapter.create({
+          app: this.app,
+          file,
+          host,
+          callbacks,
+          pluginDir
+        });
+      },
       createSession: (file, adapter) => this.createInkSession(file, adapter),
       onSessionAttached: (view, session) => this.registerSession(view.leaf, session, "owned-pdf-view"),
       onSessionDetached: (view, session, reason) => {
         this.removeSessionFromRegistry(view.leaf, session, `owned-pdf-${reason}`);
       },
-      onFallbackToNative: (view, file, error) => {
-        void this.vaultDebugLog.writeUrgent("warn", "owned-pdf-fallback", {
-          document: file.path,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        void view.leaf.setViewState({ type: "pdf", state: { file: file.path }, active: true }).catch((fallbackError: unknown) => {
-          void this.vaultDebugLog.writeUrgent("error", "owned-pdf-native-fallback-failed", {
-            document: file.path,
-            error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
-          });
-        });
-      },
       onDiagnostic: (event, payload) => this.vaultDebugLog.write("info", event, payload)
     }));
-    // Prefer the plugin-owned PDF view when the host allows an extension
-    // override. Newer Obsidian desktop builds reject overriding their built-in
-    // PDF extension; that must not abort the entire plugin before native-view
-    // scanning can attach handwriting sessions.
-    const pdfExtensionRegistration = tryRegisterPdfExtension(
-      (extensions, viewType) => this.registerExtensions(extensions, viewType),
-      PLUGIN_PDF_VIEW_TYPE
-    );
-    await this.vaultDebugLog.clear();
-    if (!pdfExtensionRegistration.registered) {
-      await this.vaultDebugLog.writeUrgent("warn", "pdf extension registration skipped", {
-        reason: "host-extension-already-registered",
-        error: pdfExtensionRegistration.error instanceof Error
-          ? pdfExtensionRegistration.error.message
-          : String(pdfExtensionRegistration.error)
-      });
-    }
     this.sidebarSwipeBlocker = new MobileSidebarSwipeBlocker(activeDocument, (diagnostic) => {
       this.vaultDebugLog.write("info", "mobile-navigation-swipe-blocked", { ...diagnostic });
     });
@@ -364,21 +346,18 @@ export default class NativePdfInkPlugin extends Plugin {
         mobile: Platform.isMobile,
         phone: Platform.isPhone
       });
-      this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100);
+      if (file?.extension?.toLowerCase() === "pdf") {
+        this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100);
+      } else {
+        this.scheduleDebouncedScan(Platform.isMobile ? 400 : 100);
+      }
     }));
     this.app.workspace.onLayoutReady(() => {
       void this.vaultDebugLog.writeUrgent("info", "layout-ready", {
         mobile: Platform.isMobile,
         phone: Platform.isPhone
       });
-      if (pdfExtensionRegistration.registered) {
-        void this.adoptExistingNativePdfLeaves().finally(() => this.scheduleDebouncedScan());
-      } else {
-        // A previously restored workspace can still contain the plugin-owned
-        // view even though this host rejected the extension override. Restore
-        // those leaves before scanning so the native adapter can attach.
-        void this.restoreOwnedPdfLeavesToNative().finally(() => this.scheduleDebouncedScan());
-      }
+      this.scheduleDebouncedScan();
     });
     this.registerDomEvent(window, "beforeunload", () => {
       this.emergencyPersistAllSessions();
@@ -390,7 +369,7 @@ export default class NativePdfInkPlugin extends Plugin {
       mobile: Platform.isMobile,
       phone: Platform.isPhone,
       vaultDebugLog: this.inkSettings.vaultDebugLog,
-      toolbarPlacement: this.inkSettings.toolbarPlacement,
+      toolbarOrientation: this.inkSettings.toolbarOrientation,
       disableSwipeNavigation: this.inkSettings.disableSwipeNavigation,
       sidebarSwipeBlockerEnabled: Platform.isMobile && this.inkSettings.disableSwipeNavigation
     });
@@ -410,6 +389,13 @@ export default class NativePdfInkPlugin extends Plugin {
   /** Catch uncaught errors before the WebView dies so mobile crash logs still land on disk. */
   private registerCrashBreadcrumbs(): void {
     this.registerDomEvent(window, "error", (event) => {
+      const message = typeof event.message === "string" ? event.message : "";
+      if (
+        message.includes("ResizeObserver loop completed with undelivered notifications") ||
+        message.includes("ResizeObserver loop limit exceeded")
+      ) {
+        return;
+      }
       void this.vaultDebugLog.writeUrgent("error", "window-error", {
         message: event.message,
         filename: event.filename,
@@ -458,6 +444,8 @@ export default class NativePdfInkPlugin extends Plugin {
     this.sidebarSwipeBlocker = null;
     this.scanDebounce.clear();
     this.attachRetry.clearAll();
+    for (const { observer } of this.markdownModeObservers?.values() ?? []) observer.disconnect();
+    this.markdownModeObservers?.clear();
     this.attachingLeaves.clear();
     this.replacementAttachLeaves.clear();
     this.missingSessionRecoveryLeaves.clear();
@@ -614,19 +602,12 @@ export default class NativePdfInkPlugin extends Plugin {
       const root = this.containerForLeaf(leaf);
       if (root) roots.add(root);
     }
-    const documentInputOwners = [...new Set([...roots].map((root) => root.ownerDocument))]
+    const documentInputCollectors = [...new Set([...roots].map((root) => root.ownerDocument))]
       .map((document) => documentInputOwnershipSnapshot(document))
       .filter((owner) => owner.active);
+    const documentInputOwners = documentInputCollectors.flatMap(({ owners }) => owners);
     const count = (selector: string): number => [...roots]
       .reduce((total, root) => total + root.querySelectorAll(selector).length, 0);
-    const physicalContactCollectors = [...new Set([...roots].map((root) => root.ownerDocument))]
-      .map((document) => getPhysicalContactCollectorSnapshot(document))
-      .filter((snapshot): snapshot is PhysicalContactCollectorSnapshot => snapshot !== null);
-    const registeredSessionIds = new Set([...this.sessions.values()].map((session) => session.getDocumentId()));
-    const staleCollectorCount = physicalContactCollectors.reduce(
-      (count, collector) => count + collector.owners.filter(({ sessionId }) => !registeredSessionIds.has(sessionId)).length,
-      0
-    );
     return {
       pdfLeafCount: pdfLeaves.length,
       sessions: this.sessions.size,
@@ -637,8 +618,8 @@ export default class NativePdfInkPlugin extends Plugin {
       viewerShellCount: count(".pdf-viewer, .pdfViewer"),
       handwritingToolbarCount: count(".native-pdf-handwriting-toolbar"),
       handwritingRailCount: count(".native-pdf-handwriting-rail"),
-      documentInputCollectorCount: documentInputOwners.length,
-      documentInputCollectorIds: documentInputOwners.map((owner) => owner.collectorId).filter((id): id is string => id !== null),
+      documentInputCollectorCount: documentInputCollectors.length,
+      documentInputCollectorIds: documentInputOwners.map(({ collectorId }) => collectorId),
       documentInputOwners: documentInputOwners.map((owner) => ({ ...owner }))
     };
   }
@@ -853,20 +834,40 @@ export default class NativePdfInkPlugin extends Plugin {
     }
   }
 
+  private async detachDisabledMarkdownSessions(): Promise<void> {
+    for (const [leaf, session] of [...this.sessions]) {
+      const file = this.fileForLeaf(leaf);
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") continue;
+      if (!this.removeSessionFromRegistry(leaf, session, "markdown-disabled")) continue;
+      this.attachRetry.clear(file.path);
+      this.syncPersistSession(session, "markdown-disabled");
+      try {
+        await this.destroySessionWithTelemetry(leaf, session, "markdown-disabled", { silent: true, alreadyPersisted: true });
+      } catch (error) {
+        await this.vaultDebugLog.writeUrgent("warn", "markdown session disable failed", {
+          document: file.path,
+          markdownHandwritingEnabled: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
   async saveSettings(settings: PluginSettings): Promise<void> {
-    const previousPlacement = this.inkSettings.toolbarPlacement;
-    const previousCustomMobilePdfPinchZoom = this.inkSettings.customMobilePdfPinchZoom;
+    const previousToolbarOrientation = this.inkSettings.toolbarOrientation;
     const previousPdfEnabled = this.inkSettings.enabledSurfaces.pdf;
     const previousImageEnabled = this.inkSettings.enabledSurfaces.image;
+    const previousMarkdownEnabled = this.inkSettings.enabledSurfaces.markdown;
     const previousAutomaticAnnotationRecovery = this.inkSettings.automaticAnnotationRecovery;
     const previousAnnotationBackupPath = this.inkSettings.annotationBackupPath;
+    const previousCustomMobilePdfPinchZoom = this.inkSettings.customMobilePdfPinchZoom;
     const previousMouseInkingEnabled = this.inkSettings.mouseInkingEnabled;
     const previousTouchDrawFallback = this.inkSettings.touchDrawFallback;
     const previousTouchDoubleTapEraser = this.inkSettings.touchDoubleTapEraser;
     const previousDisableSwipeNavigation = this.inkSettings.disableSwipeNavigation;
     settings = mergeSettings(settings, this.app.vault.configDir);
     this.inkSettings = settings;
-    await this.saveData(settings);
+    await this.persistSettings(settings);
     this.updateSidebarSwipeBlocker();
     if (previousPdfEnabled !== settings.enabledSurfaces.pdf) {
       this.vaultDebugLog.write("info", "content-surface-setting-changed", {
@@ -888,9 +889,19 @@ export default class NativePdfInkPlugin extends Plugin {
       if (!settings.enabledSurfaces.image) await this.detachDisabledImageSessions();
       this.scheduleDebouncedScan(0);
     }
+    if (previousMarkdownEnabled !== settings.enabledSurfaces.markdown) {
+      this.vaultDebugLog.write("info", "content-surface-setting-changed", {
+        surface: "markdown",
+        previous: previousMarkdownEnabled,
+        current: settings.enabledSurfaces.markdown,
+        markdownHandwritingEnabled: settings.enabledSurfaces.markdown
+      });
+      if (!settings.enabledSurfaces.markdown) await this.detachDisabledMarkdownSessions();
+      this.scheduleDebouncedScan(0);
+    }
     this.vaultDebugLog.write("info", "plugin settings saved", {
       changedKeys: [
-        ...(previousPlacement !== settings.toolbarPlacement ? ["toolbarPlacement"] : []),
+        ...(previousToolbarOrientation !== settings.toolbarOrientation ? ["toolbarOrientation"] : []),
         ...(previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom ? ["customMobilePdfPinchZoom"] : []),
         ...(previousMouseInkingEnabled !== settings.mouseInkingEnabled ? ["mouseInkingEnabled"] : []),
         ...(previousTouchDrawFallback !== settings.touchDrawFallback ? ["touchDrawFallback"] : []),
@@ -901,16 +912,16 @@ export default class NativePdfInkPlugin extends Plugin {
       disableSwipeNavigation: settings.disableSwipeNavigation,
       sidebarSwipeBlockerEnabled: Platform.isMobile && settings.disableSwipeNavigation
     });
-    if (previousPlacement !== settings.toolbarPlacement) {
+    if (previousToolbarOrientation !== settings.toolbarOrientation) {
       for (const session of this.allSessions()) session.remountToolbar();
     }
     if (previousCustomMobilePdfPinchZoom !== settings.customMobilePdfPinchZoom) {
-      for (const session of this.allSessions()) session.setCustomMobilePdfPinchZoomEnabled(settings.customMobilePdfPinchZoom);
+      for (const session of this.allSessions()) {
+        session.setCustomMobilePdfPinchZoomEnabled(settings.customMobilePdfPinchZoom);
+      }
     }
-    if (
-      previousMouseInkingEnabled !== settings.mouseInkingEnabled ||
-      previousTouchDrawFallback !== settings.touchDrawFallback
-    ) {
+    if (previousMouseInkingEnabled !== settings.mouseInkingEnabled
+      || previousTouchDrawFallback !== settings.touchDrawFallback) {
       for (const session of this.allSessions()) session.updateMouseInputBindings();
     }
     if (
@@ -929,10 +940,37 @@ export default class NativePdfInkPlugin extends Plugin {
 
   async readAllLogs(): Promise<string | null> {
     await this.vaultDebugLog.flush();
-    const path = normalizePath(this.inkSettings.vaultDebugLogPath);
-    if (!path || !await this.app.vault.adapter.exists(path)) return null;
-    const logs = await this.app.vault.adapter.read(path);
-    return logs.trim() ? logs : null;
+    let persistedLog: string | null = null;
+    try {
+      const path = normalizePath(this.inkSettings.vaultDebugLogPath);
+      if (path && await this.app.vault.adapter.exists(path)) {
+        const contents = await this.app.vault.adapter.read(path);
+        persistedLog = contents.trim() ? contents.trimEnd() : null;
+      }
+    } catch (error) {
+      this.vaultDebugLog.write("error", "vault debug log read failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    const persistedEntries = persistedLog?.split(/\r?\n/).filter(Boolean) ?? [];
+    const persistedCounts = new Map<string, number>();
+    for (const entry of persistedEntries) {
+      persistedCounts.set(entry, (persistedCounts.get(entry) ?? 0) + 1);
+    }
+    const recentConsoleEntries = this.vaultDebugLog.recentConsoleLog().split(/\r?\n/).filter(Boolean);
+    const additionalConsoleEntries: string[] = [];
+    for (const entry of recentConsoleEntries) {
+      const persistedCount = persistedCounts.get(entry) ?? 0;
+      if (persistedCount > 0) {
+        persistedCounts.set(entry, persistedCount - 1);
+      } else {
+        additionalConsoleEntries.push(entry);
+      }
+    }
+
+    const combined = [...persistedEntries, ...additionalConsoleEntries].join("\n");
+    return combined || null;
   }
 
   /** Snapshot runtime metadata only when the user explicitly copies logs. */
@@ -940,15 +978,18 @@ export default class NativePdfInkPlugin extends Plugin {
     // The plugin-level snapshot is independent of the session map. A detached
     // session can leave stale listeners behind while making the map empty.
     this.writePluginCopiedLogUiSnapshot();
-    for (const session of this.sessions.values()) {
-      try {
-        session.writeCopiedLogUiSnapshot();
-      } catch (error) {
-        this.vaultDebugLog.write("warn", "handwriting-ui-snapshot-failed", {
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
+    const toolbarSnapshots = [...this.sessions.values()]
+      .slice(0, 8)
+      .flatMap((session) => {
+        try {
+          return [session.writeCopiedLogUiSnapshot()];
+        } catch (error) {
+          this.vaultDebugLog.write("warn", "handwriting-ui-snapshot-failed", {
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return [];
+        }
+      });
     const platform = Platform.isIosApp
       ? "iOS"
       : Platform.isAndroidApp
@@ -966,33 +1007,6 @@ export default class NativePdfInkPlugin extends Plugin {
       : Platform.isMobileApp
         ? "Capacitor mobile"
         : "Obsidian WebView";
-    const mobilePdfZoom = [...this.sessions.values()]
-      .slice(0, 8)
-      .flatMap((session, index) => {
-        try {
-          const status = session.getMobilePdfZoomDiagnostics();
-          const trace = status.trace;
-          return [{
-            sessionNumber: index + 1,
-            settingEnabled: status.settingEnabled,
-            gateMode: status.mode,
-            fallbackReason: status.fallbackReasons[0] ?? trace.fallbackReason ?? null,
-            active: status.active,
-            activePhase: status.activePhase,
-            traceMode: trace.mode,
-            tracePhase: trace.phase,
-            observedCustomGesture: trace.mode === "custom-mobile" && trace.gesture.beginCount > 0,
-            gestureBeginCount: trace.gesture.beginCount,
-            transformFrameCount: trace.transform.frameCount,
-            transformTotalMs: trace.transform.totalMs,
-            transformMaxMs: trace.transform.maxMs,
-            nativeCommitWaitMs: trace.nativeCommitWaitMs,
-            releaseReason: trace.releaseReason
-          }];
-        } catch {
-          return [];
-        }
-      });
     const devicePixelRatio = typeof window !== "undefined" ? window.devicePixelRatio : undefined;
     return {
       pluginVersion: this.manifest.version,
@@ -1001,7 +1015,8 @@ export default class NativePdfInkPlugin extends Plugin {
       appMode,
       runtime,
       profileSchemaVersion: PROFILE_SCHEMA_VERSION,
-      mobilePdfZoom,
+      toolbarSessionCount: this.sessions.size,
+      toolbarSnapshots,
       ...(typeof devicePixelRatio === "number" && Number.isFinite(devicePixelRatio) ? { devicePixelRatio } : {})
     };
   }
@@ -1037,32 +1052,37 @@ export default class NativePdfInkPlugin extends Plugin {
     });
   }
 
+  /** Adopt existing Obsidian PDF leaves into the plugin-owned viewer. */
   private async adoptExistingNativePdfLeaves(): Promise<void> {
     if (this.unloaded) return;
     for (const leaf of this.app.workspace.getLeavesOfType("pdf")) {
-      const file = this.fileForLeaf(leaf);
-      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
       const current = leaf.getViewState();
-      if (current.type === PLUGIN_PDF_VIEW_TYPE) continue;
-      await leaf.setViewState({
-        ...current,
-        type: PLUGIN_PDF_VIEW_TYPE,
-        state: { ...(current.state ?? {}), file: file.path }
-      });
-    }
-  }
-
-  private async restoreOwnedPdfLeavesToNative(): Promise<void> {
-    if (this.unloaded) return;
-    for (const leaf of this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE)) {
-      const file = this.fileForLeaf(leaf);
+      const state = current.state && typeof current.state === "object"
+        ? current.state
+        : {};
+      const stateFile = typeof state.file === "string"
+        ? this.app.vault.getAbstractFileByPath(state.file)
+        : null;
+      const file = this.fileForLeaf(leaf) ?? (stateFile instanceof TFile ? stateFile : null);
       if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") continue;
-      const current = leaf.getViewState();
-      await leaf.setViewState({
-        ...current,
-        type: "pdf",
-        state: { ...(current.state ?? {}), file: file.path }
-      });
+      const viewer = nativePdfViewStateFromLegacyState(state);
+      try {
+        await leaf.setViewState({
+          ...current,
+          type: PLUGIN_PDF_VIEW_TYPE,
+          state: { ...state, file: file.path, ...(viewer ? { viewer } : {}) }
+        });
+        this.vaultDebugLog.write("info", "native-pdf-leaf-adopted", {
+          document: file.path,
+          pageNumber: viewer?.pageNumber ?? null,
+          scaleMode: viewer?.scaleMode ?? null
+        });
+      } catch (error) {
+        await this.vaultDebugLog.writeUrgent("error", "native-pdf-leaf-adoption-failed", {
+          document: file.path,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
     }
   }
 
@@ -1075,7 +1095,9 @@ export default class NativePdfInkPlugin extends Plugin {
     this.scanInProgress = true;
     this.scanAgain = false;
     try {
+      await this.adoptExistingNativePdfLeaves();
       await this.scanPdfLeaves();
+      await this.scanMarkdownLeaves();
       this.scanPdfEmbeds();
     } finally {
       this.scanInProgress = false;
@@ -1104,8 +1126,13 @@ export default class NativePdfInkPlugin extends Plugin {
     });
     const live = new Set(leaves);
     const livePaths = new Set<string>();
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const file = this.fileForLeaf(leaf);
+      if (file instanceof TFile && file.extension.toLowerCase() === "md") livePaths.add(file.path);
+    }
     for (const [leaf, session] of [...this.sessions]) {
       const file = this.fileForLeaf(leaf);
+      if (file instanceof TFile && file.extension.toLowerCase() === "md") continue;
       const pdfDisabled = file instanceof TFile
         && file.extension.toLowerCase() === "pdf"
         && !this.inkSettings.enabledSurfaces.pdf;
@@ -1226,8 +1253,8 @@ export default class NativePdfInkPlugin extends Plugin {
           } = {
             pageWaitMs,
             platform: probePlatformCapabilities({
-              ...(Platform.isIosApp && !Platform.isPhone
-                ? { platform: "ipad" as const }
+              ...(Platform.isIosApp && typeof Platform.isPhone === "boolean"
+                ? { platform: Platform.isPhone ? "ios" as const : "ipad" as const }
                 : Platform.isAndroidApp
                   ? { platform: "android" as const }
                   : Platform.isDesktop
@@ -1460,11 +1487,239 @@ export default class NativePdfInkPlugin extends Plugin {
     this.reportMissingPdfSessionAfterSettle();
   }
 
+  private markdownSurfaceRoot(view: MarkdownView): HTMLElement | null {
+    const mode = view.getMode();
+    if (mode !== "preview" && mode !== "source") return null;
+    return findMarkdownSurfaceRoot(view.containerEl, mode);
+  }
+
+  private isMarkdownAnnotationLeaf(leaf: WorkspaceLeaf): boolean {
+    const view = leaf.view;
+    const file = this.fileForLeaf(leaf);
+    return this.inkSettings.enabledSurfaces.markdown
+      && view instanceof MarkdownView
+      && file instanceof TFile
+      && file.extension.toLowerCase() === "md"
+      && this.markdownSurfaceRoot(view) !== null;
+  }
+
+  private syncMarkdownModeObservers(leaves: readonly WorkspaceLeaf[]): void {
+    const hosts = new Map<WorkspaceLeaf, { view: MarkdownView; host: HTMLElement }>();
+    for (const leaf of leaves) {
+      if (leaf.view instanceof MarkdownView) hosts.set(leaf, { view: leaf.view, host: leaf.view.containerEl });
+    }
+
+    for (const [leaf, current] of this.markdownModeObservers) {
+      const next = hosts.get(leaf);
+      if (next?.view === current.view && next.host === current.host) continue;
+      current.observer.disconnect();
+      this.markdownModeObservers.delete(leaf);
+      this.replacementAttachLeaves.delete(leaf);
+    }
+    if (typeof MutationObserver === "undefined") return;
+
+    for (const [leaf, { view, host }] of hosts) {
+      if (this.markdownModeObservers.has(leaf)) continue;
+      let lastMode = view.getMode();
+      let lastRoot = this.markdownSurfaceRoot(view);
+      const observer = new MutationObserver(() => {
+        const mode = view.getMode();
+        const root = this.markdownSurfaceRoot(view);
+        if (mode === lastMode && root === lastRoot) return;
+        lastMode = mode;
+        lastRoot = root;
+        this.replacementAttachLeaves.add(leaf);
+        this.scheduleDebouncedScan(0);
+      });
+      observer.observe(host, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "style"]
+      });
+      this.markdownModeObservers.set(leaf, { view, host, observer });
+    }
+  }
+
+  private async scanMarkdownLeaves(): Promise<void> {
+    if (this.unloaded) return;
+    const leaves = [...new Set(this.app.workspace.getLeavesOfType("markdown"))];
+    this.syncMarkdownModeObservers(leaves);
+    const supportedLeaves = new Set(leaves.filter((leaf) => this.isMarkdownAnnotationLeaf(leaf)));
+    for (const leaf of leaves) {
+      const file = this.fileForLeaf(leaf);
+      if (file instanceof TFile && file.extension.toLowerCase() === "md" && !supportedLeaves.has(leaf)) {
+        this.attachRetry.clear(file.path);
+      }
+    }
+    await this.vaultDebugLog.writeUrgent("info", "scan-markdown-leaves", {
+      markdownLeafCount: leaves.length,
+      supportedLeafCount: supportedLeaves.size,
+      sessions: this.sessions.size,
+      attachingLeaves: this.attachingLeaves.size,
+      markdownHandwritingEnabled: this.inkSettings.enabledSurfaces.markdown,
+      mobile: Platform.isMobile,
+      phone: Platform.isPhone
+    });
+
+    for (const [leaf, session] of [...this.sessions]) {
+      const file = this.fileForLeaf(leaf);
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") continue;
+      if (!supportedLeaves.has(leaf)) {
+        const view = leaf.view;
+        const reason = !this.inkSettings.enabledSurfaces.markdown
+          ? "markdown-disabled"
+          : !leaves.includes(leaf)
+            ? "markdown-leaf-closed"
+            : view instanceof MarkdownView && view.getMode() !== "preview" && view.getMode() !== "source"
+              ? "markdown-mode-unsupported"
+              : "markdown-surface-unavailable";
+        if (!this.removeSessionFromRegistry(leaf, session, reason)) continue;
+        this.syncPersistSession(session, reason);
+        await this.destroySessionWithTelemetry(leaf, session, reason, { silent: true, alreadyPersisted: true })
+          .catch((error) => this.vaultDebugLog.writeUrgent("warn", "markdown session teardown failed", {
+            document: file.path,
+            reason,
+            error: error instanceof Error ? error.message : String(error)
+          }));
+        this.vaultDebugLog.write("info", "markdown session disabled", {
+          document: file.path,
+          markdownHandwritingEnabled: false,
+          reason
+        });
+        continue;
+      }
+      if (this.replacementAttachLeaves.has(leaf) || !session.isAttached()) {
+        const reason = this.replacementAttachLeaves.has(leaf)
+          ? "markdown-surface-replaced"
+          : "markdown-detach-rescan";
+        if (!this.removeSessionFromRegistry(leaf, session, reason)) continue;
+        this.replacementAttachLeaves.add(leaf);
+        this.syncPersistSession(session, reason);
+        await this.trackSessionDestroy(leaf, session, reason, { silent: true, alreadyPersisted: true })
+          .catch(() => undefined);
+      }
+    }
+
+    for (const leaf of supportedLeaves) {
+      if (this.sessions.has(leaf) || this.attachingLeaves.has(leaf)) continue;
+      const view = leaf.view;
+      const file = this.fileForLeaf(leaf);
+      if (!(view instanceof MarkdownView) || !(file instanceof TFile)) continue;
+      const mode = view.getMode();
+      if (mode !== "preview" && mode !== "source") continue;
+      if (!await this.waitForSessionDestroy(leaf)) {
+        this.attachRetry.recordFailure(file.path);
+        continue;
+      }
+      if (!this.attachRetry.canAttempt(file.path)) {
+        await this.vaultDebugLog.writeUrgent("info", "markdown session attach cooling", {
+          document: file.path,
+          mobile: Platform.isMobile
+        });
+        continue;
+      }
+
+      this.attachingLeaves.add(leaf);
+      const replacementAttach = this.replacementAttachLeaves.has(leaf);
+      let adapter: MarkdownViewAdapter | undefined;
+      let session: ViewerInkSession | undefined;
+      let detached = false;
+      let attachStage = "started";
+      await this.vaultDebugLog.writeUrgent("info", "markdown handwriting session attach", {
+        phase: "started",
+        document: file.path,
+        replacement: replacementAttach,
+        leafContainerDebugId: getDebugNodeId(this.containerForLeaf(leaf))
+      });
+      try {
+        attachStage = "adapter-attach";
+        adapter = MarkdownViewAdapter.attach(view.containerEl, this.sessionAdapterCallbacks(() => session), { mode });
+        attachStage = "session-create";
+        session = await this.createInkSession(file, adapter, {
+          onDetached: () => {
+            detached = true;
+            const current = this.sessions.get(leaf);
+            if (!current || current !== session) return;
+            this.replacementAttachLeaves.add(leaf);
+            if (!this.removeSessionFromRegistry(leaf, current, "markdown-detached")) return;
+            this.syncPersistSession(current, "markdown-detached");
+            scheduleSessionRecoveryAfterDestroy(
+              this.trackSessionDestroy(leaf, current, "markdown-detached", { silent: true, alreadyPersisted: true }),
+              () => this.scheduleDebouncedScan(0),
+              (reason, error) => {
+                void this.vaultDebugLog.writeUrgent("warn", "markdown session recovery", {
+                  phase: "blocked",
+                  reason,
+                  document: file.path,
+                  ...(error === undefined ? {} : {
+                    error: error instanceof Error ? error.message : JSON.stringify(error) ?? "Unknown error"
+                  })
+                }).catch(() => undefined);
+              }
+            );
+          }
+        });
+        attachStage = "session-created";
+        if (this.unloaded
+          || detached
+          || !this.isMarkdownAnnotationLeaf(leaf)
+          || this.markdownSurfaceRoot(view) !== adapter.root
+          || !adapter.root.isConnected
+          || !session.isAttached()) {
+          const reason = detached
+            ? "markdown-detached-during-attach"
+            : this.inkSettings.enabledSurfaces.markdown
+              ? "markdown-mode-changed-during-attach"
+              : "markdown-disabled-during-attach";
+          this.syncPersistSession(session, reason);
+          await this.trackSessionDestroy(leaf, session, reason, { silent: true, alreadyPersisted: true })
+            .catch(() => undefined);
+          continue;
+        }
+        this.registerSession(leaf, session, replacementAttach ? "markdown-replacement-attach" : "markdown-attach");
+        this.replacementAttachLeaves.delete(leaf);
+        this.attachRetry.clear(file.path);
+        await this.vaultDebugLog.writeUrgent("info", "markdown handwriting session attach", {
+          phase: "completed",
+          document: file.path,
+          replacement: replacementAttach,
+          ...session.getUiLifecycleSnapshot("markdown-attach-completed")
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!session && adapter) {
+          try {
+            adapter.destroy();
+          } catch {
+            // Keep the attach failure as the primary diagnostic.
+          }
+        } else if (session && this.sessions.get(leaf) !== session) {
+          this.syncPersistSession(session, "markdown-attach-failed");
+          await this.trackSessionDestroy(leaf, session, "markdown-attach-failed", { silent: true, alreadyPersisted: true })
+            .catch(() => undefined);
+        }
+        await this.vaultDebugLog.writeUrgent("warn", "markdown handwriting session attach", {
+          phase: "failed",
+          document: file.path,
+          stage: attachStage,
+          replacement: replacementAttach,
+          error: message
+        });
+        const delayMs = this.attachRetry.recordFailure(file.path);
+        this.scheduleAttachRetryScan(delayMs);
+      } finally {
+        this.attachingLeaves.delete(leaf);
+      }
+    }
+  }
+
   private scanPdfEmbeds(): void {
     if (!this.inkSettings.enabledSurfaces.pdf) {
       for (const [host, chrome] of [...this.embedChrome]) {
         chrome.destroy();
         this.embedChrome.delete(host);
+        this.pdfEmbedDiagnosticSignatures.delete(host);
       }
       return;
     }
@@ -1476,6 +1731,20 @@ export default class NativePdfInkPlugin extends Plugin {
       const root = view.contentEl ?? view.containerEl;
       for (const host of EmbeddedPdfAdapter.discover(root)) {
         liveHosts.add(host);
+        const mode = view.getMode();
+        const diagnostic: Record<string, unknown> = {
+          mode,
+          ...EmbeddedPdfAdapter.runtimeDiagnostic(host, this.markdownSurfaceRoot(view) ?? root)
+        };
+        const bounds = diagnostic.bounds as { width: number; height: number };
+        const signature = JSON.stringify({
+          ...diagnostic,
+          bounds: { width: bounds.width, height: bounds.height }
+        });
+        if (this.pdfEmbedDiagnosticSignatures.get(host) !== signature) {
+          this.pdfEmbedDiagnosticSignatures.set(host, signature);
+          void this.vaultDebugLog.write("info", "markdown PDF embed state", diagnostic);
+        }
         if (this.embedChrome.has(host) || findExistingEmbedChrome(host)) continue;
         const file = resolvePdfFileFromEmbed(this.app, host, sourcePath);
         if (!file) continue;
@@ -1489,6 +1758,7 @@ export default class NativePdfInkPlugin extends Plugin {
       if (!host.isConnected || !liveHosts.has(host)) {
         chrome.destroy();
         this.embedChrome.delete(host);
+        this.pdfEmbedDiagnosticSignatures.delete(host);
       }
     }
   }
@@ -1545,7 +1815,13 @@ export default class NativePdfInkPlugin extends Plugin {
       }),
       saveSettings: async (preferences) => this.saveToolPreferences(preferences),
       savePluginSettings: async (patch) => {
-        await this.saveSettings({ ...this.inkSettings, ...patch });
+        const save = this.saveSettings({ ...this.inkSettings, ...patch });
+        if (patch.floatingToolbarPosition) {
+          for (const session of this.allSessions()) {
+            session.setFloatingToolbarPosition(patch.floatingToolbarPosition);
+          }
+        }
+        await save;
       },
       readDocument: async () => new Uint8Array(await this.app.vault.readBinary(file)),
       // Flattened exports are shared by PDF and supported image surfaces; only
@@ -1567,13 +1843,14 @@ export default class NativePdfInkPlugin extends Plugin {
       } : {}),
       notice: suppressUserNotification,
       decideUnsaved: () => this.decideUnsaved(),
-      mouseInkingEnabled: () => this.inkSettings.mouseInkingEnabled,
-      touchDrawFallbackEnabled: () => this.inkSettings.touchDrawFallback,
-      touchDoubleTapEraserEnabled: () => this.inkSettings.touchDoubleTapEraser,
       pressureProfile: () => this.inkSettings.pressureProfile,
       pressureCalibration: () => this.inkSettings.pressureCalibration,
       simplifyStrokesEnabled: () => this.inkSettings.simplifyStrokes,
-      toolbarPlacement: () => this.inkSettings.toolbarPlacement,
+      mouseInkingEnabled: () => this.inkSettings.mouseInkingEnabled,
+      touchDrawFallbackEnabled: () => this.inkSettings.touchDrawFallback,
+      touchDoubleTapEraserEnabled: () => this.inkSettings.touchDoubleTapEraser,
+      customMobilePdfPinchZoomEnabled: () => this.inkSettings.customMobilePdfPinchZoom,
+      toolbarOrientation: () => this.inkSettings.toolbarOrientation,
       vaultLog: this.vaultDebugLog,
       debugEnabled: () => this.inkSettings.vaultDebugLog,
       writeSync: createVaultSyncWriter(this.app.vault),
@@ -1638,7 +1915,7 @@ export default class NativePdfInkPlugin extends Plugin {
     if (this.unloaded) return;
     try {
       const leaf = this.app.workspace.getLeaf("tab");
-      await leaf.openFile(file, { active: true });
+      await leaf.setViewState({ type: PLUGIN_PDF_VIEW_TYPE, state: { file: file.path } });
       this.app.workspace.setActiveLeaf(leaf, { focus: true });
       this.vaultDebugLog.write("info", "embed annotate open tab", { document: file.path });
     } catch (error) {
@@ -1716,11 +1993,10 @@ export default class NativePdfInkPlugin extends Plugin {
         }
       });
     };
-    const registerHistory = (id: string, name: string, action: "undo" | "redo", shift = false): void => {
+    const registerHistory = (id: string, name: string, action: "undo" | "redo"): void => {
       this.addCommand({
         id,
         name,
-        hotkeys: [{ modifiers: shift ? ["Mod", "Alt", "Shift"] : ["Mod", "Alt"], key: "z" }],
         checkCallback: (checking) => {
           const session = this.activeSession();
           if (!session || !(action === "undo" ? session.canUndo() : session.canRedo())) return false;
@@ -1740,7 +2016,7 @@ export default class NativePdfInkPlugin extends Plugin {
     registerTool("select-pdf-text", "Switch to text", "text");
     registerTool("select-pdf-drag", "Switch to drag tool", "drag");
     registerHistory("undo-pdf-annotation", "Undo ink", "undo");
-    registerHistory("redo-pdf-annotation", "Redo ink", "redo", true);
+    registerHistory("redo-pdf-annotation", "Redo ink", "redo");
   }
 
   private registerViewerCommands(): void {
@@ -1843,7 +2119,17 @@ export default class NativePdfInkPlugin extends Plugin {
       ...this.inkSettings,
       toolPreferences: structuredClone(preferences)
     };
-    await this.saveData(this.inkSettings);
+    await this.persistSettings(this.inkSettings);
+  }
+
+  /** Serialize settings snapshots so a slower earlier save cannot overwrite newer toolbar state. */
+  private persistSettings(settings: PluginSettings): Promise<void> {
+    const snapshot = structuredClone(settings);
+    const save = (this.settingsSaveQueue ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.saveData(snapshot));
+    this.settingsSaveQueue = save;
+    return save;
   }
 
   /** Read the configured vault PDF. Empty setting deliberately means blank Letter paper. */

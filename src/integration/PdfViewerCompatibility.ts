@@ -71,6 +71,7 @@ export interface PdfJsViewerLike {
 
 /** PDF.js find controller surface used by AnnotationFindBridge (private fields vary by build). */
 export interface PdfFindControllerLike {
+  executeCommand?: (command: string, options?: Record<string, unknown>) => void;
   eventBus?: PdfJsEventBus;
   /** Some Obsidian/PDF.js builds only expose the bus as `_eventBus`. */
   _eventBus?: PdfJsEventBus;

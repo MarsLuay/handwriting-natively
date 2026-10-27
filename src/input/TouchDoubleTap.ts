@@ -14,6 +14,7 @@ export interface TouchDoubleTapResult {
 
 export const TOUCH_DOUBLE_TAP_MAX_DELAY_MS = 350;
 export const TOUCH_DOUBLE_TAP_MAX_DISTANCE_PX = 32;
+export const TOUCH_TAP_MAX_MOVEMENT_PX = 8;
 
 export function consumeTouchDoubleTap(
   previous: TouchDoubleTapState | null,

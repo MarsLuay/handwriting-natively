@@ -1,4 +1,4 @@
-/** Bounded, local-only stage evidence for the complete native pinch pipeline. */
+/** Bounded, local-only stage evidence for native zoom and render handoff. */
 
 import type { MobilePdfZoomTraceMode } from "./MobilePdfZoomDiagnostics";
 
@@ -52,9 +52,6 @@ export interface ZoomPipelineFrame {
   nativeMutationCount: number;
   inputPending: boolean;
   activeAnnotationGesture: boolean;
-  activePinchPointers: number;
-  activePinchTouches: number;
-  activeTouchPointerCount: number;
   visiblePages: number;
   overlaysTouched: number;
   totalPluginWorkMs: number;
@@ -93,9 +90,6 @@ interface FrameInput {
   nativeMutationCount: number;
   inputPending?: boolean;
   activeAnnotationGesture?: boolean;
-  activePinchPointers?: number;
-  activePinchTouches?: number;
-  activeTouchPointerCount?: number;
   visiblePages: number;
   overlaysTouched: number;
   totalPluginWorkMs: number;
@@ -254,9 +248,6 @@ export class ZoomPipelineTrace {
       nativeMutationCount: Math.max(0, Math.floor(input.nativeMutationCount)),
       inputPending: input.inputPending === true,
       activeAnnotationGesture: input.activeAnnotationGesture === true,
-      activePinchPointers: Math.max(0, Math.floor(input.activePinchPointers ?? 0)),
-      activePinchTouches: Math.max(0, Math.floor(input.activePinchTouches ?? 0)),
-      activeTouchPointerCount: Math.max(0, Math.floor(input.activeTouchPointerCount ?? 0)),
       visiblePages: Math.max(0, Math.floor(input.visiblePages)),
       overlaysTouched: Math.max(0, Math.floor(input.overlaysTouched)),
       totalPluginWorkMs: roundMs(input.totalPluginWorkMs),

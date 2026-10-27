@@ -25,7 +25,7 @@ Record this metadata before each clean run and keep it with the result:
 | Hardware | iPad model, Pencil generation, and whether a keyboard/palm rest is present |
 | Display | orientation, DPR, viewport, and observed refresh rate |
 | View | direct PDF or embedded PDF, with the fixture identity |
-| Input settings | active tool, stylus policy, touch policy, mouse policy, Scribble state |
+| Input state | active tool, confirmed stylus state, companion-touch state, Scribble state |
 | Evidence | bounded Copy Logs, pointer/touch trace, visual/routing result |
 
 Use a fresh PDF session for each row. Open both a direct PDF and an embedded
@@ -91,7 +91,7 @@ they are not permission to infer hardware support.
 | Capability or failure | Required fallback | Release implication |
 | --- | --- | --- |
 | Pointer Events with pen identity | Pen may claim annotation on a validated page; touch stays native | qualify P1–P4 and P7–P9 with a physical Pencil |
-| Pointer Events absent or stylus identity unknown | Preserve native touch/navigation; explicit touch drawing fallback remains opt-in | do not claim Pencil support from touch evidence |
+| Pointer Events absent or stylus identity unknown | Preserve native touch/navigation; only confirmed stylus input may annotate | do not claim Pencil support from touch evidence |
 | Missing private viewer/EventBus signal | Use the documented DOM/geometry fallback and record `degraded` | optional host capability alone does not fail a safe page |
 | Missing page identity or trustworthy geometry | Reject annotation on that page and emit the bounded unsafe reason | fail the affected row; never write unsafe coordinates |
 | Pointer/touch cancellation, blur, pagehide, or unload | Clear plugin captures, routes, IDs, and pending drafts before native behavior resumes | L1/L2 must pass with no stale owner |

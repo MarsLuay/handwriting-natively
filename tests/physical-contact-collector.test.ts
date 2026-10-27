@@ -35,8 +35,9 @@ function createOwner(document: Document, target: HTMLElement, ownerId: string, v
     ownerId,
     sessionId: `session-${ownerId}`,
     viewerGeneration,
+    host: target,
     isEnabled: () => true,
-    withinTarget: (eventTarget) => eventTarget instanceof Element && target.contains(eventTarget),
+    withinTarget: (eventTarget) => Boolean(eventTarget && typeof (eventTarget as Node).nodeType === "number" && target.contains(eventTarget as Node)),
     onPhysicalContactEvent: (event) => events.push(event),
     onPhysicalContactDuplicate: (details) => duplicates.push(details)
   });
@@ -86,6 +87,7 @@ interface TestTouch {
   radiusX: number;
   radiusY: number;
   force: number;
+  target?: HTMLElement;
 }
 
 function touchEvent(
@@ -130,6 +132,7 @@ describe("PhysicalContactCollector", () => {
       ownerId: "viewer-session-disabled",
       sessionId: "session-disabled",
       viewerGeneration: 1,
+      host: target,
       isEnabled: () => enabled,
       withinTarget,
       onPhysicalContactEvent,
@@ -260,6 +263,52 @@ describe("PhysicalContactCollector", () => {
 
     expect(first.events.filter((event) => event.shouldLog && event.records.length > 0)).toHaveLength(2);
     expect(second.events.filter((event) => event.shouldLog && event.records.length > 0)).toHaveLength(2);
+    first.release();
+    second.release();
+  });
+
+  it("partitions mixed-host touch events and deduplicates each owner independently", () => {
+    const { document, target: firstPage } = createDocument();
+    const secondPage = document.createElement("div");
+    secondPage.className = "page";
+    document.body.append(secondPage);
+    const first = createOwner(document, firstPage, "touch-owner-a", 1);
+    const second = createOwner(document, secondPage, "touch-owner-b", 2);
+    const firstPoint: TestTouch = {
+      identifier: 31,
+      clientX: 10,
+      clientY: 20,
+      screenX: 10,
+      screenY: 20,
+      pageX: 10,
+      pageY: 20,
+      radiusX: 3,
+      radiusY: 4,
+      force: 0.5,
+      target: firstPage
+    };
+    const secondPoint: TestTouch = { ...firstPoint, identifier: 32, target: secondPage };
+    const start = new Event("touchstart", { bubbles: true, cancelable: true });
+    defineEventProperties(start, { touches: [firstPoint, secondPoint], changedTouches: [firstPoint, secondPoint], timeStamp: 400 });
+    dispatch(firstPage, start);
+    dispatch(firstPage, start);
+
+    expect(first.events.filter((event) => event.eventType === "touchstart" && event.records.some(({ phase }) => phase === "start")))
+      .toHaveLength(1);
+    expect(second.events.filter((event) => event.eventType === "touchstart" && event.records.some(({ phase }) => phase === "start")))
+      .toHaveLength(1);
+    expect(first.events.filter((event) => event.eventType === "touchstart" && event.alreadySeen)).toHaveLength(1);
+    expect(second.events.filter((event) => event.eventType === "touchstart" && event.alreadySeen)).toHaveLength(1);
+    expect(first.events.find((event) => event.eventType === "touchstart")?.records[0]?.contact.touchIdentifiers).toEqual([31]);
+    expect(second.events.find((event) => event.eventType === "touchstart")?.records[0]?.contact.touchIdentifiers).toEqual([32]);
+
+    const end = new Event("touchend", { bubbles: true, cancelable: true });
+    defineEventProperties(end, { touches: [], changedTouches: [firstPoint, secondPoint], timeStamp: 401 });
+    dispatch(firstPage, end);
+    expect(first.events.filter((event) => event.eventType === "touchend" && event.records.some(({ phase }) => phase === "terminal")))
+      .toHaveLength(1);
+    expect(second.events.filter((event) => event.eventType === "touchend" && event.records.some(({ phase }) => phase === "terminal")))
+      .toHaveLength(1);
     first.release();
     second.release();
   });

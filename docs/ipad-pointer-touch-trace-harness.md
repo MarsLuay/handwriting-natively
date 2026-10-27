@@ -8,11 +8,17 @@ change `touch-action`, route gestures, store coordinates, or store annotation
 content. Multiple HN viewer sessions share one document observer.
 
 The trace is enabled only when the host reports an iPadOS Obsidian runtime and
-vault debug logging is enabled. It records pointer/touch IDs, pointer capture
+vault debug logging is enabled. Ordered pointer boundary events are retained
+alongside contact events. Each retained event includes the browser's
+`eventTimeStamp` and the observer's `at` time, plus pointer/touch IDs, capture
 observations, target class, `touch-action`, event phase, cancellation state,
-Scribble/IME event metadata, lifecycle transitions, and the active pointer and
-touch identifier sets. `beforeinput` and composition data are recorded as
-event type, `inputType`, and composing state only; text is never persisted.
+pressure, contact width/height, tilt, and twist. Passive Pencil hover moves
+stay out of the event buffer; the first and last bounded hover samples retain
+their timestamp and sensor metadata so hover-to-contact transitions can be
+checked without logging every move. `beforeinput` and composition data are
+recorded as event type, `inputType`, and composing state only; text is never
+persisted. The extended trace uses `schemaVersion: 5`; a missing numeric
+sensor value is `null`, while an observed zero remains `0`.
 
 ## Physical run
 
@@ -46,7 +52,7 @@ zoom, or cancel a gesture; it is an observer only.
 | P4 | Pencil leaves page bounds | `pointerleave` and capture/lost-capture ordering; terminal cleanup and page-boundary target classes |
 | T1 | One-finger native drag | Touch identifiers, pointer/touch ordering, `touch-action`, native pass-through, and no duplicate ink/pan action |
 | T2 | Two-finger pinch | Both touch IDs, pointer pairing/order, gesture/scale events if present, and terminal cleanup for both contacts |
-| T3 | Pencil plus finger | Pen and companion touch relationship, capture, `touch-action`, and no touch transfer of pen ownership |
+| T3 | Pencil plus finger | Pen and companion touch relationship, capture, `touch-action`, and companion touch blocked from scrolling beneath the active stroke |
 | T4 | Palm before and during Pencil | Pointer/touch ordering and cancellation/cleanup without a stale pen or touch ID |
 | U1 | Toolbar/sidebar/page-boundary contact | Target classes and page/UI classification for native UI, thumbnail/sidebar, page, and empty viewer space |
 | U2 | Scribble/text-field interaction | `beforeinput`/composition event order, `inputType`, composing state, target class, and no text content in the trace |

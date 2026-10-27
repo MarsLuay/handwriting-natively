@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { InkStroke, PdfTextAnnotation } from "../src/model";
 import {
+  duplicatePageInSidecar,
   insertPageIntoSidecar,
   insertPagesIntoSidecar,
   removePageFromSidecar,
@@ -125,5 +126,30 @@ describe("sidecar page removal", () => {
     expect(result.pages[1]?.texts?.[0]?.page).toBe(6);
     expect(() => insertPagesIntoSidecar(sidecar, 2, 0)).toThrow("positive integer");
     expect(insertPageIntoSidecar(sidecar, 2).pages[1]?.page).toBe(4);
+  });
+
+  it("duplicates an annotated page and clones its strokes and texts onto the new page", () => {
+    const sidecar: SidecarSchemaV1 = {
+      schemaVersion: 1,
+      document: { id: "pdf-a", vaultPath: "note.pdf" },
+      pages: [
+        { page: 1, width: 400, height: 600, rotation: 0, strokes: [stroke("one", 1)] },
+        { page: 2, width: 500, height: 700, rotation: 90, strokes: [stroke("two", 2)], texts: [text("two-text", 2)] }
+      ],
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01"
+    };
+
+    const result = duplicatePageInSidecar(sidecar, 1, "2026-02-01");
+    expect(result.updatedAt).toBe("2026-02-01");
+    expect(result.pages.map((p) => p.page)).toEqual([1, 2, 3]);
+    expect(result.pages[0]?.strokes[0]?.id).toBe("one");
+    expect(result.pages[0]?.strokes[0]?.page).toBe(1);
+    expect(result.pages[1]?.page).toBe(2);
+    expect(result.pages[1]?.strokes[0]?.page).toBe(2);
+    expect(result.pages[1]?.strokes[0]?.id).toContain("one-copy-");
+    expect(result.pages[2]?.page).toBe(3);
+    expect(result.pages[2]?.strokes[0]?.page).toBe(3);
+    expect(result.pages[2]?.texts?.[0]?.page).toBe(3);
   });
 });

@@ -27,7 +27,7 @@ describe("handwriting session registry diagnostics", () => {
         activeContactCount: 0,
         activeOwnerCount: 1,
         ownerIds: ["viewer-session-1"],
-        owners: [{ ownerId: "viewer-session-1", sessionId: "Notes/example.pdf", viewerGeneration: 1 }]
+        owners: [{ ownerId: "viewer-session-1", sessionId: "Notes/example.pdf", viewerGeneration: 1, hostDebugId: null }]
       }],
       staleCollectorCount: 1
     };

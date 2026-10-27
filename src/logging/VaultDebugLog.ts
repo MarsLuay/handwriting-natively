@@ -1,11 +1,14 @@
 import type { Vault } from "obsidian";
-import type { VaultLogSink, VaultLogLevel } from "./VaultLogSink";
+import type { VaultLogSink, VaultLogLevel, VaultLogWriteOptions } from "./VaultLogSink";
 import { normalizeVaultRelativePath } from "../storage/VaultFs";
 
 const LOG_RETENTION_MS = 60 * 60 * 1000;
 const LOG_MAX_BYTES = 8 * 1024 * 1024;
 const LOG_COMPACTION_INTERVAL_MS = 5 * 60 * 1000;
 const LOG_COMPACTION_BYTES = 512 * 1024;
+const COPY_CONSOLE_LOG_MAX_ENTRIES = 120;
+const COPY_CONSOLE_LOG_MAX_CHARACTERS = 64 * 1024;
+const COPY_CONSOLE_LOG_MAX_ENTRY_CHARACTERS = 12 * 1024;
 
 async function ensureParentFolder(vault: Vault, filePath: string): Promise<void> {
   const parent = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
@@ -46,6 +49,8 @@ function retainRecentEntries(contents: string, now: Date): string {
 
 export class VaultDebugLog implements VaultLogSink {
   private readonly buffer: string[] = [];
+  private readonly recentConsoleEntries: string[] = [];
+  private recentConsoleCharacters = 0;
   private flushTimer: number | null = null;
   private retentionTimer: number | null = null;
   private flushQueue: Promise<void> = Promise.resolve();
@@ -65,9 +70,15 @@ export class VaultDebugLog implements VaultLogSink {
     this.scheduleRetentionPrune();
   }
 
-  write(level: VaultLogLevel, event: string, payload: Record<string, unknown> = {}): void {
-    if (!this.enabled()) return;
-    this.buffer.push(this.serialize(level, event, payload));
+  write(
+    level: VaultLogLevel,
+    event: string,
+    payload: Record<string, unknown> = {},
+    options: VaultLogWriteOptions = {}
+  ): void {
+    const line = this.capture(level, event, payload, options);
+    if (line === null) return;
+    this.buffer.push(line);
     this.scheduleFlush();
   }
 
@@ -75,10 +86,21 @@ export class VaultDebugLog implements VaultLogSink {
    * Write and flush immediately so breadcrumbs survive Obsidian Mobile crashes
    * that kill the WebView before the 200ms debounce flush runs.
    */
-  async writeUrgent(level: VaultLogLevel, event: string, payload: Record<string, unknown> = {}): Promise<void> {
-    if (!this.enabled()) return;
-    this.buffer.push(this.serialize(level, event, payload));
+  async writeUrgent(
+    level: VaultLogLevel,
+    event: string,
+    payload: Record<string, unknown> = {},
+    options: VaultLogWriteOptions = {}
+  ): Promise<void> {
+    const line = this.capture(level, event, payload, options);
+    if (line === null) return;
+    this.buffer.push(line);
     await this.flush();
+  }
+
+  /** Recent plugin records actually emitted through the DevTools console sink. */
+  recentConsoleLog(): string {
+    return this.recentConsoleEntries.join("\n");
   }
 
   /** Start a newly loaded plugin with a clean debug log. */
@@ -88,6 +110,8 @@ export class VaultDebugLog implements VaultLogSink {
       this.flushTimer = null;
     }
     this.buffer.splice(0);
+    this.recentConsoleEntries.splice(0);
+    this.recentConsoleCharacters = 0;
     this.flushQueue = this.flushQueue.then(async () => {
       try {
         const vault = this.vault();
@@ -97,7 +121,7 @@ export class VaultDebugLog implements VaultLogSink {
         this.lastCompactionAtMs = this.now().getTime();
         this.uncompactedBytes = 0;
       } catch (error) {
-        console.error("[Handwriting Natively] vault debug log clear failed", error);
+        this.reportConsoleFailure("vault debug log clear failed", error);
       }
     });
     return this.flushQueue;
@@ -116,14 +140,83 @@ export class VaultDebugLog implements VaultLogSink {
     void this.flush();
   }
 
-  private serialize(level: VaultLogLevel, event: string, payload: Record<string, unknown>): string {
-    return JSON.stringify({
+  private capture(
+    level: VaultLogLevel,
+    event: string,
+    payload: Record<string, unknown>,
+    options: VaultLogWriteOptions
+  ): string | null {
+    const enabled = this.enabled();
+    const record = {
       ts: this.now().toISOString(),
       level,
       event,
       ...this.context(),
       ...payload
-    });
+    };
+    // Errors and warnings stay visible in DevTools even when file diagnostics
+    // are off. Informational diagnostics follow the existing opt-in setting.
+    const emitToConsole = enabled || level !== "info" || options.forceConsole;
+    let line: string | null = null;
+    if (enabled || emitToConsole) {
+      try {
+        line = JSON.stringify(record);
+      } catch {
+        line = JSON.stringify({
+          ts: record.ts,
+          level,
+          event,
+          logRecordSerialization: "failed",
+          payload: "[omitted from copied diagnostics]"
+        });
+      }
+    }
+    if (emitToConsole) {
+      const prefix = "[Handwriting Natively]";
+      if (level === "info") console.debug(prefix, event, record);
+      else if (level === "warn") console.warn(prefix, event, record);
+      else console.error(prefix, event, record);
+      if (line !== null) this.retainRecentConsoleEntry(line, record);
+    }
+    return enabled ? line : null;
+  }
+
+  private retainRecentConsoleEntry(line: string, record: Record<string, unknown>): void {
+    let entry = line;
+    if (entry.length > COPY_CONSOLE_LOG_MAX_ENTRY_CHARACTERS) {
+      entry = JSON.stringify({
+        ts: record.ts,
+        level: record.level,
+        event: record.event,
+        truncatedForCopy: true,
+        originalCharacters: line.length,
+        preview: line.slice(0, 1024)
+      });
+    }
+    this.recentConsoleEntries.push(entry);
+    this.recentConsoleCharacters += entry.length;
+    while (
+      this.recentConsoleEntries.length > COPY_CONSOLE_LOG_MAX_ENTRIES
+      || this.recentConsoleCharacters > COPY_CONSOLE_LOG_MAX_CHARACTERS
+    ) {
+      const removed = this.recentConsoleEntries.shift();
+      if (removed === undefined) break;
+      this.recentConsoleCharacters -= removed.length;
+    }
+  }
+
+  private reportConsoleFailure(event: string, error: unknown): void {
+    const errorRecord = error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack?.slice(0, 4096) }
+      : { message: String(error) };
+    const record = {
+      ts: this.now().toISOString(),
+      level: "error",
+      event,
+      error: errorRecord
+    };
+    console.error("[Handwriting Natively]", event, error);
+    this.retainRecentConsoleEntry(JSON.stringify(record), record);
   }
 
   private scheduleFlush(): void {
@@ -167,7 +260,7 @@ export class VaultDebugLog implements VaultLogSink {
           this.uncompactedBytes = 0;
         }
       } catch (error) {
-        console.error("[Handwriting Natively] vault debug log write failed", error);
+        this.reportConsoleFailure("vault debug log write failed", error);
       }
     });
     return this.flushQueue;
@@ -187,7 +280,7 @@ export class VaultDebugLog implements VaultLogSink {
           this.uncompactedBytes = 0;
         }
       } catch (error) {
-        console.error("[Handwriting Natively] vault debug log retention failed", error);
+        this.reportConsoleFailure("vault debug log retention failed", error);
       }
     });
     return this.flushQueue;

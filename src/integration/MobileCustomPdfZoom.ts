@@ -2,10 +2,6 @@ import type { AnnotationPageInfo, AnnotationSurfaceType } from "../runtime/Annot
 import type { PdfIntegrationProfile } from "./PdfViewerCompatibility";
 import type { PlatformCapabilityReport } from "./PlatformCapabilities";
 
-/** The only two outcomes of the mobile custom-zoom gate. */
-export type MobileCustomPdfZoomMode = "custom-mobile" | "native-fallback";
-
-/** Bounded reasons why the native host must retain zoom ownership. */
 export type MobileCustomPdfZoomFallbackReason =
   | "setting-disabled"
   | "non-pdf-surface"
@@ -24,15 +20,7 @@ export type MobileCustomPdfZoomFallbackReason =
   | "private-viewer-unavailable"
   | "scale-unavailable";
 
-export type MobileCustomPdfZoomSignalSource = "event-bus" | "dom-geometry";
-
-/**
- * The explicit evidence needed before a session may own mobile PDF pinch.
- *
- * The custom path owns only the visual container zoom. PDF.js remains the
- * renderer, but a writable native scale operation is intentionally not needed.
- */
-export interface MobileCustomPdfZoomGateInput {
+export interface MobileCustomPdfZoomInput {
   enabled: boolean;
   surfaceType: AnnotationSurfaceType;
   platform: PlatformCapabilityReport;
@@ -41,14 +29,11 @@ export interface MobileCustomPdfZoomGateInput {
 }
 
 export interface MobileCustomPdfZoomPlan {
-  mode: MobileCustomPdfZoomMode;
-  adapter: "direct" | "embedded";
+  mode: "custom-mobile" | "native-fallback";
   fallbackReasons: readonly MobileCustomPdfZoomFallbackReason[];
-  /** Optional private EventBus is preferred but never a gate by itself. */
-  zoomSignalSource: MobileCustomPdfZoomSignalSource;
-  /** Page replacement/render observation uses the same safe fallback rule. */
-  pageLifecycleSignalSource: MobileCustomPdfZoomSignalSource;
 }
+
+export type MobileCustomPdfZoomMode = MobileCustomPdfZoomPlan["mode"];
 
 const requiredProfileCapabilities = [
   ["viewerRoot", "viewer-root-unavailable"],
@@ -59,106 +44,42 @@ const requiredProfileCapabilities = [
   ["pageReplacementObservable", "page-lifecycle-unavailable"],
   ["privateViewer", "private-viewer-unavailable"],
   ["scaleReadable", "scale-unavailable"]
-] as const;
+] as const satisfies readonly (readonly [keyof PdfIntegrationProfile["capabilities"], MobileCustomPdfZoomFallbackReason])[];
 
-function isMobilePlatform(platform: PlatformCapabilityReport): boolean | null {
+function mobilePlatform(platform: PlatformCapabilityReport): boolean | null {
   if (platform.platform === "desktop") return false;
+  if (platform.platform === "ios") {
+    if (platform.isPhone !== true) return null;
+    return platform.isMobile === true ? true : platform.isMobile === false ? false : null;
+  }
   if (platform.platform !== "android" && platform.platform !== "ipad") return null;
   if (platform.platform === "ipad" && platform.isPhone === true) return null;
   if (platform.isMobile === false) return false;
-  if (platform.isMobile !== true) return null;
-  return true;
+  return platform.isMobile === true ? true : null;
 }
 
-/**
- * Resolve the feature gate without inspecting user-agent, viewport, or DOM
- * shape. The native fallback is the safe result for every unknown condition.
- * A writable PDF.js scale is not part of this gate because custom mobile zoom
- * remains CSS/container-owned through the entire gesture.
- */
-export function planMobileCustomPdfZoom(input: MobileCustomPdfZoomGateInput): MobileCustomPdfZoomPlan {
-  const fallbackReasons: MobileCustomPdfZoomFallbackReason[] = [];
-  if (!input.enabled) fallbackReasons.push("setting-disabled");
-  if (input.surfaceType !== "pdf") fallbackReasons.push("non-pdf-surface");
-
-  const mobile = isMobilePlatform(input.platform);
-  if (mobile === false) fallbackReasons.push("platform-not-mobile");
-  else if (mobile === null) fallbackReasons.push("platform-unknown");
-
-  if (input.platform.runtime.pointerEvents !== "available") {
-    fallbackReasons.push("pointer-events-unavailable");
-  }
-  if (input.platform.runtime.touchEvents !== "available") {
-    fallbackReasons.push("touch-events-unavailable");
-  }
-
+/** Custom PDF navigation owns a page only when host, platform, and page evidence are all current. */
+export function planMobileCustomPdfZoom(input: MobileCustomPdfZoomInput): MobileCustomPdfZoomPlan {
+  const reasons: MobileCustomPdfZoomFallbackReason[] = [];
+  if (!input.enabled) reasons.push("setting-disabled");
+  if (input.surfaceType !== "pdf") reasons.push("non-pdf-surface");
+  const mobile = mobilePlatform(input.platform);
+  if (mobile === false) reasons.push("platform-not-mobile");
+  else if (mobile === null) reasons.push("platform-unknown");
+  if (input.platform.runtime.pointerEvents !== "available") reasons.push("pointer-events-unavailable");
+  if (input.platform.runtime.touchEvents !== "available") reasons.push("touch-events-unavailable");
   for (const [capability, reason] of requiredProfileCapabilities) {
-    if (input.profile.capabilities[capability] !== true) fallbackReasons.push(reason);
+    if (input.profile.capabilities[capability] !== true) reasons.push(reason);
   }
   if (input.page === null) {
-    fallbackReasons.push("page-elements-unavailable");
+    reasons.push("page-elements-unavailable");
   } else {
-    if (input.page.geometrySafe === false) fallbackReasons.push("page-geometry-unsafe");
-    if (input.page.identitySafe === false) fallbackReasons.push("page-identity-unsafe");
+    if (input.page.geometrySafe === false) reasons.push("page-geometry-unsafe");
+    if (input.page.identitySafe === false) reasons.push("page-identity-unsafe");
   }
-  const uniqueReasons = [...new Set(fallbackReasons)];
-  const hasEventBus = input.profile.capabilities.eventBus === true;
-  const hasPageRenderEvent = input.profile.capabilities.pageRenderEvent === true;
+  const fallbackReasons = [...new Set(reasons)];
   return {
-    mode: uniqueReasons.length === 0 ? "custom-mobile" : "native-fallback",
-    adapter: input.profile.adapter,
-    fallbackReasons: uniqueReasons,
-    zoomSignalSource: hasEventBus ? "event-bus" : "dom-geometry",
-    pageLifecycleSignalSource: hasPageRenderEvent ? "event-bus" : "dom-geometry"
+    mode: fallbackReasons.length === 0 ? "custom-mobile" : "native-fallback",
+    fallbackReasons
   };
-}
-
-export type MobileCustomPdfZoomCancellationReason =
-  | "pointer-cancel"
-  | "touch-cancel"
-  | "lost-pointer-capture"
-  | "visibility-hidden"
-  | "page-replaced"
-  | "capability-lost"
-  | "native-scroll-observed"
-  | "handoff-failed";
-
-/** A cancellation signal always releases the temporary compositor state. */
-export function cancellationReason(
-  signal: MobileCustomPdfZoomCancellationReason | null | undefined
-): MobileCustomPdfZoomCancellationReason | null {
-  return signal ?? null;
-}
-
-export interface MobileCustomPdfZoomGenerationInput {
-  expectedViewerGeneration: number;
-  observedViewerGeneration: number;
-  pageIdentityMatches: boolean;
-  pageGeometrySafe: boolean;
-}
-
-export interface MobileCustomPdfZoomGenerationDecision {
-  action: "continue" | "cancel-native";
-  reason: "same-generation" | "viewer-replaced" | "page-identity-changed" | "page-geometry-unsafe";
-}
-
-/**
- * A temporary transform never crosses a viewer generation boundary. The
- * later handoff implementation can reconcile the new page before retrying.
- */
-export function decideGenerationReplacement(
-  input: MobileCustomPdfZoomGenerationInput
-): MobileCustomPdfZoomGenerationDecision {
-  if (!Number.isFinite(input.expectedViewerGeneration)
-    || !Number.isFinite(input.observedViewerGeneration)
-    || input.expectedViewerGeneration !== input.observedViewerGeneration) {
-    return { action: "cancel-native", reason: "viewer-replaced" };
-  }
-  if (!input.pageIdentityMatches) {
-    return { action: "cancel-native", reason: "page-identity-changed" };
-  }
-  if (!input.pageGeometrySafe) {
-    return { action: "cancel-native", reason: "page-geometry-unsafe" };
-  }
-  return { action: "continue", reason: "same-generation" };
 }

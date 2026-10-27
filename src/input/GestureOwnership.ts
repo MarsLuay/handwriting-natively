@@ -1,7 +1,4 @@
-export type InputOwner =
-  | "idle"
-  | "pen-ink"
-  | "mouse-ink";
+export type InputOwner = "idle" | "pen-ink" | "mouse-ink";
 
 export interface ActiveInputState {
   owner: InputOwner;
@@ -23,10 +20,6 @@ export interface GestureContact {
   predicted?: readonly string[];
 }
 
-export interface GestureOwnershipOptions {
-  customPinchEnabled?: boolean;
-}
-
 export interface GestureDecision {
   state: ActiveInputState;
   action: "claim-ink" | "append-ink" | "finalize-ink" | "observe" | "ignore" | "preview";
@@ -45,25 +38,14 @@ function mouseButtonMask(contact: Pick<GestureContact, "button" | "buttons">): n
   return button >= 0 && button < 5 ? 1 << button : 0;
 }
 
-/**
- * Owns annotation pointer contacts. GestureNavigationController owns touch
- * navigation and stylus exclusion for navigation gestures.
- *
- * Routers and sessions may retain stroke/rendering state, but they must not
- * independently decide whether a pen or mouse owns an annotation gesture.
- */
+/** Owns stylus and opted-in mouse annotation contacts; touch navigation has a separate owner. */
 export class GestureOwnership {
   private owner: InputOwner = "idle";
   private activePenId: number | null = null;
   private activeMousePointerId: number | null = null;
   private activeMouseButtons = 0;
+  private readonly ignoredPenIds = new Set<number>();
   private generation = 1;
-
-  constructor(options: GestureOwnershipOptions = {}) {}
-
-  observeTouchEvent(): GestureDecision {
-    return this.observe("observe");
-  }
 
   snapshot(): ActiveInputState {
     return cloneState({
@@ -87,28 +69,45 @@ export class GestureOwnership {
     return this.snapshot();
   }
 
+  ignoredPenContactIds(): number[] {
+    return [...this.ignoredPenIds];
+  }
+
+  adoptIgnoredPenContacts(pointerIds: readonly number[]): void {
+    for (const pointerId of pointerIds) {
+      if (pointerId !== this.activePenId) this.ignoredPenIds.add(pointerId);
+    }
+  }
+
   pointerDown(contact: GestureContact): GestureDecision {
+    if (contact.pointerType === "pen" && this.ignoredPenIds.has(contact.pointerId)) {
+      return this.decision("ignore", true);
+    }
     if (contact.target === "ui") return this.observe("ignore");
-
     if (contact.pointerType === "touch") return this.observe("observe");
-
     if (contact.pointerType === "pen") {
       if (contact.target !== "page" || !contact.inkToolSelected) return this.observe("observe");
+      if (this.activePenId !== null && this.activePenId !== contact.pointerId) {
+        this.ignoredPenIds.add(contact.pointerId);
+        return this.decision("ignore", true);
+      }
       this.owner = "pen-ink";
       this.activePenId = contact.pointerId;
-      return this.claim("claim-ink");
+      return this.claim();
     }
-
     if (contact.target !== "page" || !contact.inkToolSelected || contact.inkIntent !== true) {
       return this.observe("observe");
     }
-    this.owner = "mouse-ink";
     this.activeMousePointerId = contact.pointerId;
     this.activeMouseButtons = mouseButtonMask(contact);
-    return this.claim("claim-ink");
+    if (this.activePenId === null) this.owner = "mouse-ink";
+    return this.owner === "mouse-ink" ? this.claim() : this.observe("observe");
   }
 
   pointerMove(contact: GestureContact): GestureDecision {
+    if (contact.pointerType === "pen" && this.ignoredPenIds.has(contact.pointerId)) {
+      return this.decision("ignore", true);
+    }
     if (contact.pointerType === "pen"
       && this.owner === "pen-ink"
       && this.activePenId === contact.pointerId) {
@@ -132,21 +131,27 @@ export class GestureOwnership {
   }
 
   lostCapture(contact: GestureContact): GestureDecision {
+    if (contact.pointerType === "pen" && this.ignoredPenIds.has(contact.pointerId)) {
+      return this.decision("ignore", true);
+    }
     return this.release(contact, "ignore");
   }
 
   private release(contact: GestureContact, inkAction: "finalize-ink" | "ignore"): GestureDecision {
+    if (contact.pointerType === "pen" && this.ignoredPenIds.delete(contact.pointerId)) {
+      return this.decision("ignore", true);
+    }
     if (contact.pointerType === "pen") {
       if (this.activePenId !== contact.pointerId) return this.observe("observe");
       const wasInk = this.owner === "pen-ink";
       this.activePenId = null;
-      this.owner = "idle";
+      this.restoreOwnerAfterRelease();
       return this.decision(inkAction, wasInk);
     }
-
     if (contact.pointerType === "touch") return this.observe("observe");
-
-    if (this.activeMousePointerId !== contact.pointerId) return this.observe("observe");
+    if (this.activeMousePointerId !== contact.pointerId) {
+      return this.observe("observe");
+    }
     this.activeMouseButtons &= ~mouseButtonMask(contact);
     if (contact.buttons === undefined || contact.buttons === 0) this.activeMouseButtons = 0;
     if (this.activeMouseButtons === 0) {
@@ -163,7 +168,10 @@ export class GestureOwnership {
       this.owner = "pen-ink";
       return;
     }
-    if (this.activeMousePointerId !== null && this.activeMouseButtons !== 0) return;
+    if (this.activeMousePointerId !== null && this.activeMouseButtons !== 0) {
+      this.owner = "mouse-ink";
+      return;
+    }
     this.owner = "idle";
   }
 
@@ -172,17 +180,15 @@ export class GestureOwnership {
     this.activePenId = null;
     this.activeMousePointerId = null;
     this.activeMouseButtons = 0;
+    this.ignoredPenIds.clear();
   }
 
   private append(contact: GestureContact): GestureDecision {
     return this.decision("append-ink", true, contact.samples, contact.predicted);
   }
 
-  private claim(action: GestureDecision["action"]): GestureDecision {
-    return this.decision(
-      action,
-      this.owner === "pen-ink" || this.owner === "mouse-ink"
-    );
+  private claim(): GestureDecision {
+    return this.decision("claim-ink", this.owner === "pen-ink" || this.owner === "mouse-ink");
   }
 
   private decision(

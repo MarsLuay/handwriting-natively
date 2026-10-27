@@ -14,12 +14,14 @@
  */
 
 import type { ToolId } from "../model";
-import type { ViewerState } from "./ViewerState";
+import { VIEWER_ZOOM_STEP, type ViewerState } from "./ViewerState";
 
 export interface ViewerCommandHost {
   // Canonical state
   getViewerState?(): ViewerState;
   setViewerState?(patch: Partial<ViewerState>): void;
+  /** Optional surface-owned zoom path that preserves its viewport anchor. */
+  setZoomAtViewportCenter?(scale: number): boolean;
 
   // Zoom
   getScale(): number;
@@ -63,7 +65,9 @@ export class ViewerCommandController {
       if (active && active !== "drag") {
         this.previousTool = active;
       }
-    } catch {}
+    } catch {
+      // The optional active-tool query can fail before an adapter is mounted.
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -118,7 +122,10 @@ export class ViewerCommandController {
   setZoom(scale: number): boolean {
     if (!Number.isFinite(scale) || scale <= 0) return false;
     const clamped = Math.max(0.1, Math.min(10, scale));
-    if (typeof this.host.setViewerState === "function") {
+    if (this.host.setZoomAtViewportCenter?.(clamped) === true) {
+      // The owning surface applies its anchor correction and publishes the
+      // resulting canonical state through the normal adapter callback.
+    } else if (typeof this.host.setViewerState === "function") {
       const current = this.getViewerState();
       this.host.setViewerState({
         viewport: { ...current.viewport, scale: clamped },
@@ -132,14 +139,14 @@ export class ViewerCommandController {
     return true;
   }
 
-  zoomIn(factor = 1.25): boolean {
+  zoomIn(factor = VIEWER_ZOOM_STEP): boolean {
     const current = this.getZoom();
     const next = current * factor;
     this.host.logCommand?.("zoom-in", { from: current, to: next });
     return this.setZoom(next);
   }
 
-  zoomOut(factor = 1.25): boolean {
+  zoomOut(factor = VIEWER_ZOOM_STEP): boolean {
     const current = this.getZoom();
     const next = current / factor;
     this.host.logCommand?.("zoom-out", { from: current, to: next });
@@ -187,7 +194,6 @@ export class ViewerCommandController {
     if (containerWidth <= 0 || pageWidth <= 0) return false;
     const targetScale = Math.max(0.1, Math.min(10, (containerWidth - 32) / pageWidth));
     if (typeof this.host.setViewerState === "function") {
-      const current = this.getViewerState();
       this.host.setViewerState({
         viewport: { scale: targetScale, x: 0, y: 0 },
         scale: targetScale,

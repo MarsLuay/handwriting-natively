@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PdfJsViewAdapter } from "../src/integration/PdfJsViewAdapter";
+import type { PdfViewerCommandBridge } from "../src/integration/ObsidianPdfAdapter";
 import type { InkStroke } from "../src/model";
 import { createPdfJsAssetResolver, loadPdfJsRuntime, pdfJsDocumentOptions, type PdfJsRuntime } from "../src/integration/PdfJsRuntime";
+
+function testApp(readBinary: () => Promise<ArrayBuffer> = async () => new ArrayBuffer(4)) {
+  return { vault: { readBinary }, loadLocalStorage: () => null } as never;
+}
 
 describe("plugin-owned PDF.js runtime boundary", () => {
   const originalDevicePixelRatio = window.devicePixelRatio;
@@ -22,6 +27,48 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(getResourcePath).toHaveBeenCalledWith(".obsidian/plugins/handwriting-natively/pdfjs/pdf.worker.mjs");
   });
 
+  it("does not replace Obsidian's PDF.js worker global during module loading", async () => {
+    const globals = window as unknown as { pdfjsWorker?: unknown };
+    const previousWorker = globals.pdfjsWorker;
+    const hostWorker = { WorkerMessageHandler: { host: true } };
+    globals.pdfjsWorker = hostWorker;
+    try {
+      vi.resetModules();
+      await import("../src/integration/PdfJsRuntime");
+      expect(globals.pdfjsWorker).toBe(hostWorker);
+    } finally {
+      if (previousWorker === undefined) delete globals.pdfjsWorker;
+      else globals.pdfjsWorker = previousWorker;
+    }
+  });
+
+  it("uses its own fake worker while preserving Obsidian's worker global", async () => {
+    const globals = window as unknown as { pdfjsWorker?: unknown };
+    const previousWorker = globals.pdfjsWorker;
+    const hostWorkerHandler = { host: true };
+    globals.pdfjsWorker = { WorkerMessageHandler: hostWorkerHandler };
+    try {
+      const runtime = await loadPdfJsRuntime({} as never, ".obsidian/plugins/handwriting-natively");
+      const pluginWorkerHandler = await runtime.module.PDFWorker?._setupFakeWorkerGlobal;
+      expect(pluginWorkerHandler).not.toBe(hostWorkerHandler);
+      expect(typeof (pluginWorkerHandler as { setup?: unknown } | undefined)?.setup).toBe("function");
+      expect(globals.pdfjsWorker).toEqual({ WorkerMessageHandler: hostWorkerHandler });
+    } finally {
+      if (previousWorker === undefined) delete globals.pdfjsWorker;
+      else globals.pdfjsWorker = previousWorker;
+    }
+  });
+
+  it("uses the bundled fake worker directly without requiring a workerSrc", async () => {
+    const runtime = await loadPdfJsRuntime({} as never, ".obsidian/plugins/handwriting-natively");
+    const initialize = runtime.module.PDFWorker?.prototype._initialize;
+    const setupFakeWorker = vi.fn();
+
+    initialize?.call({ _setupFakeWorker: setupFakeWorker });
+
+    expect(setupFakeWorker).toHaveBeenCalledOnce();
+  });
+
   it("loads a self-contained runtime for BRAT installs", async () => {
     const runtime = await loadPdfJsRuntime({} as never, ".obsidian/plugins/handwriting-natively");
     expect(runtime.assets.embedded).toBe(true);
@@ -32,6 +79,36 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(options.useWorkerFetch).toBe(false);
     expect(options.cMapUrl).toBeUndefined();
     expect(options.standardFontDataUrl).toBeUndefined();
+
+    const samplePdf = new Uint8Array([
+      0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3,
+      0x0a, 0x31, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c, 0x2f, 0x54, 0x79,
+      0x70, 0x65, 0x2f, 0x43, 0x61, 0x74, 0x61, 0x6c, 0x6f, 0x67, 0x2f, 0x50, 0x61, 0x67,
+      0x65, 0x73, 0x20, 0x32, 0x20, 0x30, 0x20, 0x52, 0x3e, 0x3e, 0x0a, 0x65, 0x6e, 0x64,
+      0x6f, 0x62, 0x6a, 0x0a, 0x32, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c,
+      0x2f, 0x54, 0x79, 0x70, 0x65, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x73, 0x2f, 0x4b, 0x69,
+      0x64, 0x73, 0x5b, 0x33, 0x20, 0x30, 0x20, 0x52, 0x5d, 0x2f, 0x43, 0x6f, 0x75, 0x6e,
+      0x74, 0x20, 0x31, 0x3e, 0x3e, 0x0a, 0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a, 0x33,
+      0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c, 0x2f, 0x54, 0x79, 0x70, 0x65,
+      0x2f, 0x50, 0x61, 0x67, 0x65, 0x2f, 0x50, 0x61, 0x72, 0x65, 0x6e, 0x74, 0x20, 0x32,
+      0x20, 0x30, 0x20, 0x52, 0x2f, 0x4d, 0x65, 0x64, 0x69, 0x61, 0x42, 0x6f, 0x78, 0x5b,
+      0x30, 0x20, 0x30, 0x20, 0x31, 0x30, 0x30, 0x20, 0x31, 0x30, 0x30, 0x5d, 0x3e, 0x3e,
+      0x0a, 0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a, 0x78, 0x72, 0x65, 0x66, 0x0a, 0x30,
+      0x20, 0x34, 0x0a, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20,
+      0x36, 0x35, 0x35, 0x33, 0x35, 0x20, 0x66, 0x20, 0x0a, 0x30, 0x30, 0x30, 0x30, 0x30,
+      0x30, 0x30, 0x30, 0x31, 0x35, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20,
+      0x0a, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x36, 0x38, 0x20, 0x30, 0x30,
+      0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+      0x31, 0x32, 0x35, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a, 0x74,
+      0x72, 0x61, 0x69, 0x6c, 0x65, 0x72, 0x0a, 0x3c, 0x3c, 0x2f, 0x53, 0x69, 0x7a, 0x65,
+      0x20, 0x34, 0x2f, 0x52, 0x6f, 0x6f, 0x74, 0x20, 0x31, 0x20, 0x30, 0x20, 0x52, 0x3e,
+      0x3e, 0x0a, 0x73, 0x74, 0x61, 0x72, 0x74, 0x78, 0x72, 0x65, 0x66, 0x0a, 0x31, 0x39,
+      0x33, 0x0a, 0x25, 0x25, 0x45, 0x4f, 0x46, 0x0a
+    ]);
+    const task = runtime.module.getDocument(pdfJsDocumentOptions(runtime.assets, samplePdf));
+    const doc = await task.promise;
+    expect(doc.numPages).toBe(1);
+    await doc.destroy?.();
   });
 
   it("keeps parsing data and auxiliary font/map assets local", () => {
@@ -50,7 +127,7 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(options.isEvalSupported).toBe(false);
   });
 
-  it("exposes stock navigation, zoom, rotation, and document search controls", async () => {
+  it("mounts the shared toolbar, keeps PDF actions, and preserves the viewport across resize", async () => {
     const context = {
       beginPath: vi.fn(),
       clearRect: vi.fn(),
@@ -92,20 +169,46 @@ describe("plugin-owned PDF.js runtime boundary", () => {
       module: { getDocument: () => ({ promise: Promise.resolve(pdfDocument) }) },
       assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
     };
-    const app = { vault: { readBinary: async () => new ArrayBuffer(4) } } as never;
+    const app = testApp();
     const file = { name: "toolbar.pdf" } as never;
     const host = document.createElement("div");
     document.body.append(host);
 
     const adapter = await PdfJsViewAdapter.create({ app, file, pluginDir: "pdfjs", host, runtime });
     expect(getPage.mock.calls.filter(([pageNumber]) => pageNumber === 1)).toHaveLength(1);
-    expect(host.querySelector('button[aria-label="Print PDF"]')).not.toBeNull();
-    expect(host.querySelector('button[aria-label="Download PDF"]')).not.toBeNull();
-    expect(host.querySelector('button[aria-label="Presentation mode"]')).not.toBeNull();
-    expect(host.querySelector('button[aria-label="Toggle thumbnails"]')).not.toBeNull();
-    expect(host.querySelector('select[aria-label="Zoom"]')).not.toBeNull();
+    expect(host.querySelector(".pdf-toolbar")).toBeNull();
+    const scroll = host.querySelector<HTMLElement>(".hn-owned-pdf-scroll");
+    expect(scroll).not.toBeNull();
+    if (!scroll) throw new Error("PDF scroll container was not mounted");
+    Object.defineProperties(scroll, {
+      clientWidth: { configurable: true, value: 600 },
+      clientHeight: { configurable: true, value: 800 },
+      scrollWidth: { configurable: true, value: 1800 },
+      scrollHeight: { configurable: true, value: 3000 }
+    });
+    adapter.onResize();
+    const initialFitScale = adapter.getViewState().scale;
+    expect(adapter.getViewState().scaleMode).toBe("custom");
+    scroll.scrollLeft = 180;
+    scroll.scrollTop = 540;
+    scroll.dispatchEvent(new Event("scroll"));
+    expect(adapter.getViewState().scaleMode).toBe("custom");
+    Object.defineProperty(scroll, "clientWidth", { configurable: true, value: 800 });
+    adapter.onResize();
+    expect(adapter.getViewState().scale).toBe(initialFitScale);
+    expect(scroll.scrollLeft).toBe(180);
+    expect(scroll.scrollTop).toBe(540);
 
-    host.querySelector('button[aria-label="Toggle thumbnails"]')?.dispatchEvent(new Event("click"));
+    const toolbar = document.createElement("div");
+    toolbar.className = "native-pdf-handwriting-toolbar";
+    adapter.mountToolbar(toolbar, "right");
+    expect(host.querySelector(".hn-owned-pdf-toolbar-host > .native-pdf-handwriting-toolbar")).toBe(toolbar);
+    expect(host.querySelector(".native-pdf-handwriting-rail")).toBeNull();
+    expect(toolbar.classList.contains("is-main")).toBe(true);
+    expect(host.querySelector('[aria-label="Print PDF"]')).toBeNull();
+
+    expect(adapter.performToolbarAction("show-thumbnails")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(host.querySelectorAll(".hn-owned-pdf-thumbnail")).toHaveLength(2);
     const previewStroke: InkStroke = {
       id: "preview-stroke",
@@ -125,7 +228,7 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     }));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect((host.querySelector(".hn-owned-pdf-thumbnail-ink") as HTMLCanvasElement | null)?.hidden).toBe(false);
-    host.querySelector('button[aria-label="Toggle outline"]')?.dispatchEvent(new Event("click"));
+    expect(adapter.performToolbarAction("show-outline")).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 20));
     const outlinePreviews = [...host.querySelectorAll<HTMLCanvasElement>(".hn-owned-pdf-outline-ink")];
     expect(outlinePreviews).toHaveLength(2);
@@ -133,30 +236,195 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     expect(outlinePreviews[1]?.hidden).toBe(true);
     expect(getPageIndex).toHaveBeenCalledTimes(2);
 
-    const pageInput = host.querySelector('input[aria-label="Page number"]') as HTMLInputElement;
-    pageInput.value = "2";
-    pageInput.dispatchEvent(new Event("change"));
+    expect(adapter.focusPage(2)).toBe(true);
     expect(adapter.getViewState().pageNumber).toBe(2);
 
-    const zoom = host.querySelector('select[aria-label="Zoom"]') as HTMLSelectElement;
-    zoom.value = "2";
-    zoom.dispatchEvent(new Event("change"));
+    const currentViewState = adapter.getViewState();
+    adapter.restoreViewState({
+      ...currentViewState,
+      viewport: { ...currentViewState.viewport, scale: 2 },
+      scale: 2,
+      scaleMode: "custom"
+    });
     expect(adapter.getViewState().scale).toBe(2);
-
-    host.querySelector('button[aria-label="Rotate clockwise"]')?.dispatchEvent(new Event("click"));
+    adapter.restoreViewState({ ...adapter.getViewState(), rotation: 90 });
     expect(adapter.getViewState().rotation).toBe(90);
 
-    host.querySelector('button[aria-label="Find in document"]')?.dispatchEvent(new Event("click"));
-    const find = host.querySelector('input[aria-label="Find in document"]') as HTMLInputElement;
-    find.value = "hello toolbar";
-    find.dispatchEvent(new Event("input"));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(host.querySelector(".hn-owned-pdf-find-status")?.textContent).toContain("match");
-    expect(host.querySelectorAll(".is-find-match")).toHaveLength(4);
+    scroll.scrollLeft = 250;
+    scroll.scrollTop = 360;
+    adapter.restoreViewState({
+      ...adapter.getViewState(),
+      viewport: { scale: 1.75, x: 0, y: 0 },
+      scale: 1.75,
+      scaleMode: "fit-width"
+    });
+    expect(adapter.getViewState().scale).toBe(1.75);
+    expect(adapter.getViewState().scaleMode).toBe("custom");
+    expect(scroll.scrollLeft).toBe(0);
+    expect(scroll.scrollTop).toBe(0);
+
+    const commands: PdfViewerCommandBridge = {
+      zoomIn: vi.fn(() => true),
+      zoomOut: vi.fn(() => true),
+      setZoom: vi.fn(() => true),
+      fitWidth: vi.fn(() => true),
+      nextPage: vi.fn(() => true),
+      previousPage: vi.fn(() => true),
+      goToPage: vi.fn(() => true),
+      rotateClockwise: vi.fn(() => true),
+      rotateCounterclockwise: vi.fn(() => true),
+      toggleHandMode: vi.fn(() => true),
+      isHandMode: vi.fn(() => false),
+      toggleSearch: vi.fn(() => true),
+      closeSearch: vi.fn(() => true),
+      handleKeyDown: vi.fn(() => false)
+    };
+    adapter.setViewerCommandBridge(commands);
+    adapter.root.dispatchEvent(new KeyboardEvent("keydown", { key: "=", bubbles: true, cancelable: true }));
+    adapter.root.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true, cancelable: true }));
+
+    expect(commands.handleKeyDown).toHaveBeenCalledTimes(2);
 
     adapter.destroy();
     host.remove();
     getContext.mockRestore();
+  });
+
+  it("reloads page shells from vault bytes after a source-PDF mutation", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const page = {
+      getViewport: ({ scale, rotation }: { scale: number; rotation?: number }) => ({
+        width: 600 * scale,
+        height: 800 * scale,
+        scale,
+        rotation: rotation ?? 0,
+        viewBox: [0, 0, 600, 800],
+        transform: [1, 0, 0, -1, 0, 800],
+        convertToViewportPoint: (x: number, y: number) => [x * scale, (800 - y) * scale] as [number, number]
+      }),
+      render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+      getTextContent: async () => ({ items: [] }),
+      getAnnotations: async () => []
+    };
+    const documentFor = (numPages: number) => ({
+      numPages,
+      getPage: async () => page,
+      getOutline: async () => [],
+      cleanup: vi.fn(),
+      destroy: vi.fn()
+    });
+    let loads = 0;
+    const runtime: PdfJsRuntime = {
+      module: {
+        getDocument: () => {
+          loads += 1;
+          return { promise: Promise.resolve(documentFor(loads === 1 ? 1 : 2)), destroy: vi.fn() };
+        }
+      },
+      assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const adapter = await PdfJsViewAdapter.create({
+      app: testApp(),
+      file: { name: "mutate.pdf" } as never,
+      pluginDir: "pdfjs",
+      host,
+      runtime
+    });
+    expect(adapter.pages()).toHaveLength(1);
+    await adapter.reloadFromVault();
+    expect(adapter.pages()).toHaveLength(2);
+    expect(host.querySelectorAll(".hn-owned-pdf-page")).toHaveLength(2);
+    adapter.destroy();
+    host.remove();
+  });
+
+  it("clamps the focused page when reloadFromVault shrinks the document", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const page = {
+      getViewport: ({ scale, rotation }: { scale: number; rotation?: number }) => ({
+        width: 600 * scale,
+        height: 800 * scale,
+        scale,
+        rotation: rotation ?? 0,
+        viewBox: [0, 0, 600, 800],
+        transform: [1, 0, 0, -1, 0, 800],
+        convertToViewportPoint: (x: number, y: number) => [x * scale, (800 - y) * scale] as [number, number]
+      }),
+      render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+      getTextContent: async () => ({ items: [] }),
+      getAnnotations: async () => []
+    };
+    const documentFor = (numPages: number) => ({
+      numPages,
+      getPage: async () => page,
+      getOutline: async () => [],
+      cleanup: vi.fn(),
+      destroy: vi.fn()
+    });
+    let loads = 0;
+    const runtime: PdfJsRuntime = {
+      module: {
+        getDocument: () => {
+          loads += 1;
+          return { promise: Promise.resolve(documentFor(loads === 1 ? 2 : 1)), destroy: vi.fn() };
+        }
+      },
+      assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const adapter = await PdfJsViewAdapter.create({
+      app: testApp(),
+      file: { name: "shrink.pdf" } as never,
+      pluginDir: "pdfjs",
+      host,
+      runtime
+    });
+    expect(adapter.pages()).toHaveLength(2);
+    expect(adapter.focusPage(2)).toBe(true);
+    expect(adapter.getViewState().pageNumber).toBe(2);
+    await adapter.reloadFromVault();
+    expect(adapter.pages()).toHaveLength(1);
+    expect(adapter.getViewState().pageNumber).toBe(1);
+    adapter.destroy();
+    host.remove();
+  });
+
+  it("finishes adapter create when the first page raster never settles", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const page = {
+      getViewport: ({ scale, rotation }: { scale: number; rotation?: number }) => ({
+        width: 600 * scale,
+        height: 800 * scale,
+        scale,
+        rotation: rotation ?? 0,
+        viewBox: [0, 0, 600, 800],
+        transform: [1, 0, 0, -1, 0, 800],
+        convertToViewportPoint: (x: number, y: number) => [x * scale, (800 - y) * scale] as [number, number]
+      }),
+      render: () => ({ promise: new Promise<void>(() => undefined), cancel: vi.fn() }),
+      getTextContent: async () => ({ items: [] }),
+      getAnnotations: async () => []
+    };
+    const runtime: PdfJsRuntime = {
+      module: { getDocument: () => ({ promise: Promise.resolve({ numPages: 1, getPage: async () => page, getOutline: async () => [] }) }) },
+      assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const adapter = await PdfJsViewAdapter.create({
+      app: testApp(),
+      file: { name: "stuck.pdf" } as never,
+      pluginDir: "pdfjs",
+      host,
+      runtime
+    });
+    expect(host.querySelector(".hn-owned-pdf-page")).not.toBeNull();
+    expect(adapter.pages()).toHaveLength(1);
+    adapter.destroy();
+    host.remove();
   });
 
   it("destroys the loading task when document initialization fails", async () => {
@@ -165,7 +433,7 @@ describe("plugin-owned PDF.js runtime boundary", () => {
       module: { getDocument: () => ({ promise: Promise.reject(new Error("invalid PDF")), destroy }) },
       assets: { root: "pdfjs", resolve: (asset) => `app://local/pdfjs/${asset}` }
     };
-    const app = { vault: { readBinary: async () => new ArrayBuffer(4) } } as never;
+    const app = testApp();
     const host = document.createElement("div");
     document.body.append(host);
 
@@ -210,12 +478,12 @@ describe("plugin-owned PDF.js runtime boundary", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const creating = PdfJsViewAdapter.create({
-      app: { vault: { readBinary: async () => new ArrayBuffer(4) } } as never,
+      app: testApp(),
       file: { name: "zoom.pdf" } as never, pluginDir: "pdfjs", host, runtime
     });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    host.querySelector('button[aria-label="Zoom in"]')?.dispatchEvent(new Event("click"));
+    host.querySelector(".hn-owned-pdf-viewer")?.dispatchEvent(new KeyboardEvent("keydown", { key: "=", bubbles: true, cancelable: true }));
     resolveFirstRender();
     const adapter = await creating;
     await new Promise((resolve) => setTimeout(resolve, 0));

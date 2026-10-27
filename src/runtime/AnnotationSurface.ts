@@ -1,6 +1,6 @@
+import type { ToolbarPlacement } from "../model";
 import type { VaultLogLevel } from "../logging/VaultLogSink";
 import type { ViewStateSource } from "../logging/SessionLogger";
-import type { ToolbarPlacement } from "../model";
 import type { ViewerState, ViewerViewportState, ViewerScaleMode } from "./ViewerState";
 
 export type { ViewerState, ViewerViewportState, ViewerScaleMode };
@@ -22,6 +22,8 @@ export interface AnnotationPageInfo {
   rotation: number;
   /** Coordinate origin for page-local geometry. PDF defaults to bottom-left. */
   coordinateOrigin?: "top-left" | "bottom-left";
+  /** Use the element's complete scrollable content box as page geometry. */
+  scrollContentGeometry?: boolean;
   /** Live host element for this page; the DOM node is an ephemeral mount. */
   element: HTMLElement;
   /** Changes when the logical page is backed by a different DOM shell. */
@@ -44,7 +46,7 @@ export interface AnnotationViewState {
   scale: number;
   rotation: number;
   /** PDF.js scale mode (`auto`, `page-fit`, etc.) when the host exposes it. */
-  scaleMode?: ViewerScaleMode | string | number;
+  scaleMode?: string | number;
   /** Canonical visual interaction viewport (scale, x, y). */
   viewport?: ViewerViewportState;
 }
@@ -125,6 +127,8 @@ export interface AnnotationSurface {
    * Optional so existing test and third-party surfaces remain compatible.
    */
   readonly surfaceType?: AnnotationSurfaceType;
+  /** True when a target belongs to content whose host viewer owns its input. */
+  isHostOwnedInputTarget?(target: EventTarget | null): boolean;
   readonly host: HTMLElement;
   readonly root: HTMLElement;
 

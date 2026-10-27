@@ -22,24 +22,23 @@ describe("SlowSpanTrace", () => {
     expect(summary.maxByStage["zoom-settle"]).toBe(SLOW_SPAN_SYNC_MS);
   });
 
-  it("aggregates settle churn once and separates wait from active work", () => {
+  it("aggregates settle-timer lateness once and separates wait from active work", () => {
     const trace = new SlowSpanTrace();
     expect(trace.recordSettleChurn({
       settleDelayMs: SLOW_SPAN_ASYNC_MS - 1,
       settleTimerResetCount: 2,
       resetReasons: {},
-      lastDeferralReason: "pinch-cleanup"
+      lastDeferralReason: "native-content"
     })).toBeNull();
     const churn = trace.recordSettleChurn({
       settleDelayMs: 1260,
       settleTimerResetCount: 46,
-      resetReasons: { "pages-page-render": 40, "pinch-cleanup": 6 },
-      lastDeferralReason: "pinch-cleanup",
+      resetReasons: { "pages-page-render": 46 },
+      lastDeferralReason: "native-content",
       zoomBurstId: "zoom-7",
       phaseDurations: {
-        "settle-timer-wait": 1260,
-        "gesture-cleanup": 800,
-        "unattributed-post-gesture": 1260
+        "settle-timer-lateness": 1260,
+        "last-scale-change-to-settle": 800
       }
     });
     expect(churn).toMatchObject({
@@ -48,12 +47,11 @@ describe("SlowSpanTrace", () => {
       activeWorkMs: null,
       settleTimerResetCount: 46,
       phaseDurations: {
-        "settle-timer-wait": 1260,
-        "gesture-cleanup": 800,
-        "unattributed-post-gesture": 1260
+        "settle-timer-lateness": 1260,
+        "last-scale-change-to-settle": 800
       },
       slowPhases: expect.arrayContaining([
-        expect.objectContaining({ phase: "gesture-cleanup", durationMs: 800, thresholdMs: SLOW_SPAN_ASYNC_MS })
+        expect.objectContaining({ phase: "settle-timer-lateness", durationMs: 1260, thresholdMs: SLOW_SPAN_ASYNC_MS })
       ])
     });
     expect(trace.recordSettleChurn({
@@ -63,16 +61,6 @@ describe("SlowSpanTrace", () => {
       lastDeferralReason: null,
       zoomBurstId: "zoom-7"
     })).toBeNull();
-    const wait = trace.record({
-      kind: "async",
-      category: "zoom",
-      stage: "gesture-cleanup-wait",
-      durationMs: 1260,
-      activeWorkMs: 0,
-      waitMs: 1260,
-      reason: "pinch-cleanup"
-    });
-    expect(wait?.thresholdMs).toBe(SLOW_SPAN_ASYNC_MS);
   });
 
   it("interpolates p95 so two samples do not report the smaller one", () => {

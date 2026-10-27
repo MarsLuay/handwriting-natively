@@ -1,4 +1,4 @@
-import type { DrawingTool, SaveStatus, TextStyle, ToolId, ToolPreferences } from "../model";
+import type { DrawingTool, SaveStatus, TextStyle, ToolId, ToolPreferences, ToolbarOrientation } from "../model";
 import { resolveDrawingTool } from "../model";
 import { colorOptions } from "./ColorPicker";
 import { DropdownController, type DropdownOpenOptions, type DropdownOption } from "./DropdownController";
@@ -23,12 +23,21 @@ export type MoreAction =
   | "export-image"
   | "import-page"
   | "scan-document"
-  | "toolbar-main"
-  | "toolbar-left"
-  | "toolbar-right"
+  | "rotate-toolbar"
   | "zoom-in"
   | "zoom-out"
   | "fit-width"
+  | "previous-page"
+  | "next-page"
+  | "go-to-page"
+  | "set-zoom"
+  | "fit-height"
+  | "fit-page"
+  | "show-thumbnails"
+  | "show-outline"
+  | "presentation"
+  | "print"
+  | "download"
   | "rotate-cw"
   | "rotate-ccw"
   | "search";
@@ -49,9 +58,9 @@ export interface AnnotationToolbarCallbacks {
   onHandMode?(): void;
   onSave?(): void | Promise<void>;
   onMore?(action: MoreAction): void;
-  /** True selects native PDF mouse interaction; false returns mouse to the active ink tool. */
+  /** Temporarily returns the mouse to native viewer selection/navigation. */
   onMouseModeChange?(nativeSelection: boolean): void;
-  toolbarPlacement?(): "main" | "left" | "right";
+  toolbarOrientation?(): ToolbarOrientation;
 }
 
 export interface AnnotationToolbarOptions {
@@ -59,7 +68,7 @@ export interface AnnotationToolbarOptions {
   autosave: boolean;
   callbacks: AnnotationToolbarCallbacks;
   supportedMoreActions?: MoreAction[];
-  /** Show the mouse/native-selection control while mouse annotation is configured. */
+  /** Show the mouse/native-selection control when mouse annotation is enabled. */
   mouseInkingEnabled?: boolean;
   mouseNavigationActive?: boolean;
   ownerDocument?: Document;
@@ -92,11 +101,11 @@ export class AnnotationToolbar {
     this.element.className = "native-pdf-handwriting-toolbar";
     this.element.dataset.focusOverlayInternal = "true";
     this.element.setAttribute("role", "toolbar");
-    this.element.setAttribute("aria-label", "PDF annotation tools");
+    this.element.setAttribute("aria-label", "Annotation tools");
     this.controls = createDetachedDiv(this.ownerDocument);
     this.controls.className = "native-pdf-handwriting-toolbar-controls";
 
-    const mouse = this.actionButton("mouse", "Use mouse for PDF selection", () => {
+    const mouse = this.actionButton("mouse", "Use mouse for native interaction", () => {
       this.setMouseNavigationActive(!this.mouseNavigationActive);
     });
     if (this.mouseModeAvailable) this.controls.append(mouse);
@@ -135,18 +144,6 @@ export class AnnotationToolbar {
     }
   }
 
-  /** Show/hide and synchronize the session-local mouse navigation mode. */
-  setMouseModeState(available: boolean, nativeSelection: boolean): void {
-    this.mouseModeAvailable = available;
-    this.mouseNavigationActive = available && nativeSelection;
-    const mouse = this.buttons.get("mouse");
-    if (mouse) {
-      if (available && mouse.parentElement !== this.controls) this.controls.prepend(mouse);
-      if (!available) mouse.remove();
-    }
-    this.updateButtons();
-  }
-
   /**
    * Select a tool without opening its options menu. Used by palette commands
    * and hotkeys so they follow the exact same preference/change path as the
@@ -155,6 +152,16 @@ export class AnnotationToolbar {
   selectTool(tool: ToolId): void {
     this.dropdown.close(false);
     this.activate(tool);
+  }
+
+  setMouseModeState(available: boolean, nativeSelection: boolean): void {
+    this.mouseModeAvailable = available;
+    this.mouseNavigationActive = available && nativeSelection;
+    const mouse = this.buttons.get("mouse");
+    if (!mouse) return;
+    if (available && mouse.parentElement !== this.controls) this.controls.prepend(mouse);
+    if (!available) mouse.remove();
+    this.updateButtons();
   }
 
   setSaveStatus(status: SaveStatus, lastSavedAt?: Date): void {
@@ -319,7 +326,7 @@ export class AnnotationToolbar {
       this.preferences.activeTool = "lasso";
       this.preferences.lasso.type = type;
       this.changed("tool");
-    }, this.callbacks.onLassoCopyAll);
+    }, () => this.callbacks.onLassoCopyAll?.());
   }
 
   private colorButton(): HTMLButtonElement {
@@ -394,20 +401,31 @@ export class AnnotationToolbar {
       "export-image": "Export annotated image",
       "import-page": "Import page",
       "scan-document": "Scan document",
-      "toolbar-main": "Toolbar: PDF bar",
-      "toolbar-left": "Toolbar: Left sidebar",
-      "toolbar-right": "Toolbar: Right sidebar",
+      "rotate-toolbar": "Rotate toolbar",
       "zoom-in": "Zoom in",
       "zoom-out": "Zoom out",
       "fit-width": "Fit to width",
+      "previous-page": "Previous page",
+      "next-page": "Next page",
+      "go-to-page": "Go to page…",
+      "set-zoom": "Set zoom…",
+      "fit-height": "Fit to height",
+      "fit-page": "Fit page",
+      "show-thumbnails": "Show page thumbnails",
+      "show-outline": "Show document outline",
+      presentation: "Presentation mode",
+      print: "Print PDF",
+      download: "Download PDF",
       "rotate-cw": "Rotate clockwise",
       "rotate-ccw": "Rotate counterclockwise",
       search: "Find in document"
     };
+    const orientation = this.callbacks.toolbarOrientation?.() ?? "horizontal";
     return supported.map((id) => ({
       id,
-      label: labels[id],
-      active: id === `toolbar-${this.callbacks.toolbarPlacement?.() ?? "main"}`,
+      label: id === "rotate-toolbar"
+        ? `Rotate toolbar to ${orientation === "horizontal" ? "vertical" : "horizontal"}`
+        : labels[id],
       onSelect: () => this.callbacks.onMore?.(id)
     }));
   }
@@ -456,16 +474,16 @@ export class AnnotationToolbar {
 
   private updateButtons(): void {
     const active = this.preferences.activeTool;
-    const inkModeActive = !this.mouseNavigationActive;
     const mouse = this.buttons.get("mouse");
     if (mouse) {
       this.presentButton(
         mouse,
-        this.mouseNavigationActive ? "Switch mouse to inking" : "Use mouse for PDF selection",
+        this.mouseNavigationActive ? "Switch mouse to inking" : "Use mouse for native interaction",
         "mouse"
       );
       mouse.setAttribute("aria-pressed", String(this.mouseNavigationActive));
     }
+    const inkModeActive = !this.mouseNavigationActive;
     for (const tool of ["pen", "pencil", "highlighter"] as const) {
       const button = this.buttons.get(tool)!;
       this.presentButton(button, DRAWING_LABELS[tool], tool);
@@ -478,7 +496,7 @@ export class AnnotationToolbar {
     const dragButton = this.buttons.get("drag");
     if (dragButton) {
       this.presentButton(dragButton, "Drag", "drag");
-      dragButton.setAttribute("aria-pressed", String(active === "drag"));
+    dragButton.setAttribute("aria-pressed", String(inkModeActive && active === "drag"));
     }
     this.buttons.get("eraser")!.setAttribute("aria-pressed", String(inkModeActive && active === "eraser"));
     this.buttons.get("laser")!.setAttribute("aria-pressed", String(inkModeActive && active === "laser"));

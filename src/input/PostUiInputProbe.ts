@@ -68,7 +68,6 @@ export interface PostUiProbeArmContext {
   uiCloseAt?: number | null;
   lastSuccessfulStrokeAt?: number | null;
   lastZoomSettleAt?: number | null;
-  lastTouchPanAt?: number | null;
   lastRouterBindAt?: number | null;
   lastPageReplacementAt?: number | null;
 }
@@ -625,7 +624,7 @@ export class PostUiInputProbe {
       return "post-ui-pen-missed-page-router";
     }
     if (contact.panAccepted) return "post-ui-pen-entered-pan";
-    if (contact.route === "native" || contact.route === "touch-pan" || contact.route === "touch-zoom-pan" || contact.route === "touch-custom-pinch") {
+    if (contact.route === "native") {
       return "post-ui-pen-routed-native";
     }
     if (contact.details.claimFailed === true || (contact.route && !contact.stages.includes("claim"))) {
@@ -722,7 +721,6 @@ export class PostUiInputProbe {
       ...(active.context.uiCloseAt !== undefined ? { uiCloseAt: active.context.uiCloseAt } : {}),
       ...(active.context.lastSuccessfulStrokeAt !== undefined ? { lastSuccessfulStrokeAt: active.context.lastSuccessfulStrokeAt } : {}),
       ...(active.context.lastZoomSettleAt !== undefined ? { lastZoomSettleAt: active.context.lastZoomSettleAt } : {}),
-      ...(active.context.lastTouchPanAt !== undefined ? { lastTouchPanAt: active.context.lastTouchPanAt } : {}),
       ...(active.context.lastRouterBindAt !== undefined ? { lastRouterBindAt: active.context.lastRouterBindAt } : {}),
       ...(active.context.lastPageReplacementAt !== undefined ? { lastPageReplacementAt: active.context.lastPageReplacementAt } : {})
     };

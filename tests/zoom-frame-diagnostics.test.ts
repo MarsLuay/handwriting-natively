@@ -46,7 +46,7 @@ describe("ZoomFrameDiagnostics", () => {
     expect(emitted).toMatchObject({
       event: "perf-unattributed-frame-gap",
       zoomBurstId: "zoom-1",
-      phase: "active-pinch",
+      phase: "active-zoom",
       frameDeltaMs: 33,
       rafRequestToCallbackMs: 33,
       attribution: "raf/compositor-delay",

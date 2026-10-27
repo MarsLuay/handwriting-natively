@@ -1,7 +1,13 @@
 export type DrawingTool = "pen" | "pencil" | "highlighter";
-/** Annotation tools. Mouse inking is a separate input setting, not a tool. */
+/** Annotation tools. Only confirmed stylus input can activate their pointer routes. */
 export type ToolId = DrawingTool | "text" | "eraser" | "lasso" | "laser" | "drag";
 export type LassoType = "freeform" | "rectangle";
+export type ToolbarOrientation = "horizontal" | "vertical";
+export interface FloatingToolbarPosition {
+  left: number;
+  top: number;
+}
+/** Internal PDF adapter mount sites; user placement is always the floating toolbar. */
 export type ToolbarPlacement = "main" | "left" | "right";
 /** Which input source supplies pressure for new ink strokes. */
 export type PressureProfile = "auto" | "pen" | "mouse";
@@ -60,6 +66,8 @@ export type PdfPoint = PagePoint;
 export interface InkStroke {
   id: string;
   page: number;
+  /** Stable page identifier (UUID) surviving page reordering. */
+  pageId?: string;
   tool: DrawingTool;
   color: string;
   width: number;
@@ -85,6 +93,8 @@ export interface InkEraseMask {
 export interface TextAnnotation {
   id: string;
   page: number;
+  /** Stable page identifier (UUID) surviving page reordering. */
+  pageId?: string;
   text: string;
   x: number;
   y: number;
@@ -162,6 +172,8 @@ export interface ShapePreferences {
 
 export interface ToolPreferences {
   activeTool: ToolId;
+  /** Restore native mouse interaction while mouse annotation is configured. */
+  mouseNavigationActive: boolean;
   pen: DrawingToolPreferences;
   pencil: DrawingToolPreferences;
   highlighter: DrawingToolPreferences;
@@ -199,18 +211,20 @@ export interface PluginSettings {
   touchDrawFallback: boolean;
   /** Allow a finger double-tap on the page to switch to the eraser. */
   touchDoubleTapEraser: boolean;
-  /** Auto uses stylus pressure when available; Pen/Mouse force that input model. */
+  /** Auto honors reported stylus pressure; Pen/Mouse select a pressure response. */
   pressureProfile: PressureProfile;
   /** Device-pressure tuning; captured when each stroke starts. */
   pressureCalibration: PressureCalibration;
   simplifyStrokes: boolean;
-  /** Experimental mobile-only replacement for the native two-finger PDF pinch; enabled by default with an explicit opt-out. */
+  /** Experimental mobile-only replacement for native two-finger PDF pinch. */
   customMobilePdfPinchZoom: boolean;
   /** Advanced accessibility opt-out; the page label remains visible by default. */
   hideStylusAnnotationLabel: boolean;
   /** Mobile-only opt-in to suppress swipe gestures that open sidebars or the command palette. */
   disableSwipeNavigation: boolean;
-  toolbarPlacement: ToolbarPlacement;
+  toolbarOrientation: ToolbarOrientation;
+  /** Shared viewport position for the movable toolbar; null places it at the viewer's top-left. */
+  floatingToolbarPosition: FloatingToolbarPosition | null;
   vaultDebugLog: boolean;
   vaultDebugLogPath: string;
   /** Restore a validated annotation backup after a corrupt store is quarantined. */
@@ -259,6 +273,7 @@ export function createDefaultToolPreferences(): ToolPreferences {
   };
   return {
     activeTool: "pen",
+    mouseNavigationActive: false,
     pen,
     pencil,
     highlighter,
@@ -307,7 +322,8 @@ export function createDefaultSettings(configDir: string): PluginSettings {
   customMobilePdfPinchZoom: true,
   hideStylusAnnotationLabel: false,
   disableSwipeNavigation: false,
-  toolbarPlacement: "main",
+  toolbarOrientation: "horizontal",
+  floatingToolbarPosition: null,
   vaultDebugLog: false,
   vaultDebugLogPath,
   automaticAnnotationRecovery: true,
@@ -320,7 +336,7 @@ export function createDefaultSettings(configDir: string): PluginSettings {
 export const DEFAULT_SETTINGS: PluginSettings = createDefaultSettings("config");
 
 const LEGACY_SETTING_KEYS = [
-  // Draw mode is mouse/stylus ink; fingers keep native scroll (legacy fingerDraw removed).
+  // Very old finger drawing settings are discarded; the explicit fallback below stays opt-in.
   "fingerDraw",
   "yoloMode",
   "yoloConfirmed",
@@ -330,8 +346,20 @@ const LEGACY_SETTING_KEYS = [
   "retainSidecarAfterDirectModification",
   "showZoomMenu",
   // The removed 25× PDF zoom option must not be written back from old settings.
-  "boostedPdfZoom"
+  "boostedPdfZoom",
+  // Direct PDFs now use Obsidian's native viewer and toolbar by default.
+  "preferPluginPdfView"
 ] as const;
+
+function normalizeFloatingToolbarPosition(value: unknown): FloatingToolbarPosition | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { left, top } = value as Partial<FloatingToolbarPosition>;
+  if (
+    typeof left !== "number" || !Number.isFinite(left) || left < 0 ||
+    typeof top !== "number" || !Number.isFinite(top) || top < 0
+  ) return null;
+  return { left, top };
+}
 
 export function mergeSettings(
   saved: Partial<PluginSettings> | null | undefined,
@@ -339,6 +367,8 @@ export function mergeSettings(
 ): PluginSettings {
   const defaults = createDefaultSettings(configDir);
   const raw = { ...(saved ?? {}) } as Record<string, unknown>;
+  const legacyToolbarPlacement = raw.toolbarPlacement;
+  delete raw.toolbarPlacement;
   const legacyDisableSearchBarSwipe = raw.disableSearchBarSwipe === true;
   const savedDisableSwipeNavigation = raw.disableSwipeNavigation;
   const legacyDisableSidebarSwipe = raw.disableSidebarSwipe === true;
@@ -372,7 +402,8 @@ export function mergeSettings(
   const lasso = {
     type: lassoRaw.type === "freeform" || lassoRaw.type === "rectangle" ? lassoRaw.type : "freeform" as const
   };
-  const toolbarPlacement = cleaned.toolbarPlacement;
+  const savedToolbarOrientation = cleaned.toolbarOrientation;
+  const floatingToolbarPosition = normalizeFloatingToolbarPosition(cleaned.floatingToolbarPosition);
   const pdfTemplatePath = typeof cleaned.pdfTemplatePath === "string"
     ? cleaned.pdfTemplatePath.trim()
     : defaults.pdfTemplatePath;
@@ -407,13 +438,15 @@ export function mergeSettings(
       image: savedEnabledSurfaces?.image !== false,
       markdown: savedEnabledSurfaces?.markdown !== false
     },
-    toolbarPlacement: toolbarPlacement === "left" || toolbarPlacement === "right" || toolbarPlacement === "main"
-      ? toolbarPlacement
-      : defaults.toolbarPlacement,
+    toolbarOrientation: savedToolbarOrientation === "horizontal" || savedToolbarOrientation === "vertical"
+      ? savedToolbarOrientation
+      : legacyToolbarPlacement === "left" || legacyToolbarPlacement === "right"
+        ? "vertical"
+        : defaults.toolbarOrientation,
+    floatingToolbarPosition,
     pdfTemplatePath,
     mouseInkingEnabled,
-    // Legacy `fingerDraw` is removed above; only the new explicit setting may
-    // opt into touch ink, and only with the literal boolean value true.
+    // Legacy `fingerDraw` is removed above; only the explicit option may opt into touch ink.
     touchDrawFallback: cleaned.touchDrawFallback === true,
     touchDoubleTapEraser: cleaned.touchDoubleTapEraser !== false,
     textEscapeAction: "save" as const,
@@ -430,6 +463,7 @@ export function mergeSettings(
       ...defaults.toolPreferences,
       ...savedToolPreferences,
       activeTool,
+      mouseNavigationActive: savedToolPreferences.mouseNavigationActive === true,
       pen: {
         ...migratedDrawingPreferences.pen,
         penType: isPenType(migratedDrawingPreferences.pen.penType)
@@ -577,7 +611,7 @@ function readLegacyDrawingPresets(value: unknown): LegacyDrawingPreset[] {
     if (typeof id !== "string" || !id || typeof tool !== "string" || !isDrawingTool(tool) || seen.has(id)) continue;
     if (!isRecord(candidate.settings)) continue;
     seen.add(id);
-    result.push({ id, tool, settings: candidate.settings as Partial<DrawingToolPreferences> });
+    result.push({ id, tool, settings: candidate.settings });
     if (result.length === 8) break;
   }
   return result;

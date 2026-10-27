@@ -229,6 +229,9 @@ export function densifyLaserPath(
       push(point);
     }
   }
+  if (out.length < 2 && points.length >= 2) {
+    out.push({ ...points[points.length - 1]! });
+  }
   return out;
 }
 
@@ -277,6 +280,12 @@ function paintLaserTrail(
   if (points.length < 2 || alpha <= 0.001) return;
   const taperLen = laserTipTaperLength(width);
   const path = densifyLaserPath(points, Math.min(3.5, Math.max(1.75, width * 0.65)));
+  if (path.length < 2) {
+    if (path.length === 1) {
+      paintLaserDot(context, path[0]!, width, color, alpha);
+    }
+    return;
+  }
   const cum = pathDistances(path);
   const n = path.length;
   const halfW = width * 0.5;

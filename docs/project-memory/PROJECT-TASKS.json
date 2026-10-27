@@ -6,14 +6,17 @@
     {
       "id": "runtime-compatibility",
       "status": "pending",
-      "title": "Validate the PDF adapter against current Obsidian desktop, Android, and iPad builds.",
+      "title": "Validate the plugin-owned PDF viewer and shared movable toolbar against current Obsidian desktop, Android, and iPad builds.",
       "paths": [
         "src/integration/",
         "docs/current-limitations.md"
       ],
       "checks": [
         "npm test",
+        "npm run lint",
         "npm run build",
+        "Verify direct PDF startup without a native PDFToolbar dependency",
+        "Confirm Markdown ![[PDF#page=27]] embeds render with Obsidian's core PDF mapping",
         "Manual PDF checks on current desktop, Android, and iPad builds"
       ]
     },
@@ -47,18 +50,81 @@
     {
       "id": "unified-gesture-navigation",
       "status": "pending",
-      "title": "Centralize touch, pinch, hand-tool, and modifier-wheel navigation and provide a movable toolbar fallback when a sidebar rail is unavailable.",
+      "title": "Physically qualify opt-in mouse/touch annotation, confirmed-stylus ownership, stylus hand-pan, and capability-gated iOS/iPadOS/Android PDF pan/pinch.",
       "paths": [
         "src/input/GestureNavigationController.ts",
+        "src/integration/PlatformCapabilities.ts",
+        "src/integration/MobileCustomPdfZoom.ts",
+        "src/integration/HandwritingViewport.ts",
+        "src/integration/ImageViewAdapter.ts",
+        "src/integration/PdfJsViewAdapter.ts",
         "src/input/PointerRouter.ts",
         "src/runtime/ViewerInkSession.ts",
-        "docs/input-gesture-architecture.md"
+        "styles.css",
+        "tests/",
+        "docs/input-gesture-architecture.md",
+        "docs/mobile-pdf-zoom-contract.md"
       ],
       "checks": [
-        "Focused gesture, sidebar, settings, and toolbar fallback tests",
+        "Run the physical iOS, iPadOS, and Android input matrix for stylus, companion touch, opt-in mouse/touch annotation, native fallback, qualified PDF pan/pinch/wheel zoom, and image zoom",
+    "Confirm stylus hand-pan and first post-zoom contacts",
+    "Keep status pending until named-device traces are captured",
+    "npm test",
+    "npm run lint",
+    "npm run build"
+      ]
+    },
+    {
+      "id": "unified-developer-logs",
+      "status": "done",
+      "title": "Route plugin diagnostic events through Obsidian's developer console and the vault log used by Copy logs.",
+      "paths": [
+        "src/logging/SessionLogger.ts",
+        "src/logging/VaultDebugLog.ts",
+        "src/logging/VaultLogSink.ts",
+        "src/settings.ts",
+        "src/runtime/ViewerInkSession.ts"
+      ],
+      "checks": [
+        "Focused logger tests",
+        "npm test"
+      ]
+    },
+    {
+      "id": "markdown-surface-preference",
+      "status": "done",
+      "title": "Expose and persist the Markdown enabled-surface preference used by runtime attachment.",
+      "paths": [
+        "src/settings.ts",
+        "tests/settings.test.ts"
+      ],
+      "checks": [
+        "tests/settings.test.ts",
+        "npm run lint"
+      ]
+    },
+    {
+      "id": "markdown-reading-annotations",
+      "status": "complete",
+      "title": "Extend shared Markdown annotation from Reading view to Source and Live Preview editing.",
+      "paths": [
+        "src/main.ts",
+        "src/integration/MarkdownViewAdapter.ts",
+        "src/runtime/AnnotationSurface.ts",
+        "src/runtime/ViewerInkSession.ts",
+        "src/input/PointerRouter.ts",
+        "src/pdf/PageCoordinateLayout.ts",
+        "src/settings.ts",
+        "tests/",
+        "README.md",
+        "docs/architecture.md",
+        "docs/current-limitations.md"
+      ],
+      "checks": [
+        "Focused Markdown mode, adapter, session, pointer-routing, and geometry tests",
         "npm test",
-        "npm run lint",
-        "npm run build when the shared generated main.js is no longer being edited"
+        "npm run lint (one pre-existing sentence-case warning at src/settings.ts:582)",
+        "npx tsc --noEmit"
       ]
     }
   ]

@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  cancellationReason,
-  decideGenerationReplacement,
   planMobileCustomPdfZoom,
-  type MobileCustomPdfZoomGateInput
+  type MobileCustomPdfZoomInput
 } from "../src/integration/MobileCustomPdfZoom";
 import { GestureNavigationController } from "../src/input/GestureNavigationController";
 import type { PdfIntegrationProfile } from "../src/integration/PdfViewerCompatibility";
@@ -53,7 +51,7 @@ function profile(adapter: "direct" | "embedded" = "direct"): PdfIntegrationProfi
   };
 }
 
-function gateInput(overrides: Partial<MobileCustomPdfZoomGateInput> = {}): MobileCustomPdfZoomGateInput {
+function gateInput(overrides: Partial<MobileCustomPdfZoomInput> = {}): MobileCustomPdfZoomInput {
   return {
     enabled: true,
     surfaceType: "pdf",
@@ -70,29 +68,21 @@ function gateInput(overrides: Partial<MobileCustomPdfZoomGateInput> = {}): Mobil
 }
 
 describe("mobile custom PDF zoom contract", () => {
-  it("enables direct mobile pinch only with explicit host and viewer evidence", () => {
-    const plan = planMobileCustomPdfZoom(gateInput());
-
-    expect(plan).toEqual({
+  it("enables mobile pinch only with explicit host and viewer evidence", () => {
+    expect(planMobileCustomPdfZoom(gateInput())).toEqual({
       mode: "custom-mobile",
-      adapter: "direct",
-      fallbackReasons: [],
-      zoomSignalSource: "event-bus",
-      pageLifecycleSignalSource: "event-bus"
+      fallbackReasons: []
     });
   });
 
-  it("keeps embedded PDFs separate while allowing the DOM fallback for optional signals", () => {
+  it("does not require optional event-bus signals when host and viewer evidence is safe", () => {
     const embedded = profile("embedded");
     embedded.capabilities.eventBus = false;
     embedded.capabilities.pageRenderEvent = false;
 
     const plan = planMobileCustomPdfZoom(gateInput({ profile: embedded }));
 
-    expect(plan.mode).toBe("custom-mobile");
-    expect(plan.adapter).toBe("embedded");
-    expect(plan.zoomSignalSource).toBe("dom-geometry");
-    expect(plan.pageLifecycleSignalSource).toBe("dom-geometry");
+    expect(plan).toEqual({ mode: "custom-mobile", fallbackReasons: [] });
   });
 
   it.each([
@@ -147,71 +137,32 @@ describe("mobile custom PDF zoom contract", () => {
     ]));
   });
 
-  it("keeps an active pen from turning a companion finger into navigation", () => {
+  it("keeps a companion touch pointer native during stylus contact", () => {
     const surface = document.createElement("div");
     const controller = new GestureNavigationController({
-      minScale: 0.1,
-      maxScale: 10,
       getScale: () => 1,
-      onStart: () => ({ accepted: true, scale: 1 }),
-      onPreview: () => undefined,
-      onEnd: () => undefined,
-      onCancel: () => undefined
+      onPinchStart: () => ({ accepted: true, scale: 1 }),
+      onPinchPreview: () => undefined,
+      onPinchEnd: () => undefined
     });
-    const event = (pointerType: "pen" | "touch", pointerId: number): PointerEvent => {
+    const event = (pointerType: "touch", pointerId: number): PointerEvent => {
       const pointer = new Event("pointerdown", { bubbles: true, cancelable: true }) as PointerEvent;
-      Object.assign(pointer, { pointerType, pointerId, button: 0, isPrimary: pointerType === "pen", clientX: 20, clientY: 30 });
+      Object.assign(pointer, { pointerType, pointerId, button: 0, isPrimary: true, clientX: 20, clientY: 30 });
       return pointer;
     };
 
-    controller.handlePointerDown(event("pen", 3), {
-      surface,
-      route: "draw",
-      customNavigationEnabled: true
-    });
+    controller.reconcilePenContacts([3]);
     const companion = event("touch", 4);
     const result = controller.handlePointerDown(companion, {
       surface,
       route: "touch-pan",
+      pointerType: "touch",
       customNavigationEnabled: true
     });
 
-    expect(result).toMatchObject({ handled: true, route: "ignored", reason: "stylus-active" });
-    expect(companion.defaultPrevented).toBe(true);
-    expect(controller.activeTouchIds()).toEqual([]);
+    expect(result).toMatchObject({ handled: true, route: "native", reason: "stylus-active" });
+    expect(companion.defaultPrevented).toBe(false);
+    expect(controller.activePointerIds()).toEqual([]);
     controller.destroy();
-  });
-
-  it("maps cancellation signals to a native handoff reason", () => {
-    expect(cancellationReason("pointer-cancel")).toBe("pointer-cancel");
-    expect(cancellationReason("visibility-hidden")).toBe("visibility-hidden");
-    expect(cancellationReason(null)).toBeNull();
-  });
-
-  it("never carries a temporary transform across a viewer generation replacement", () => {
-    expect(decideGenerationReplacement({
-      expectedViewerGeneration: 4,
-      observedViewerGeneration: 4,
-      pageIdentityMatches: true,
-      pageGeometrySafe: true
-    })).toEqual({ action: "continue", reason: "same-generation" });
-    expect(decideGenerationReplacement({
-      expectedViewerGeneration: 4,
-      observedViewerGeneration: 5,
-      pageIdentityMatches: true,
-      pageGeometrySafe: true
-    })).toEqual({ action: "cancel-native", reason: "viewer-replaced" });
-    expect(decideGenerationReplacement({
-      expectedViewerGeneration: 4,
-      observedViewerGeneration: 4,
-      pageIdentityMatches: false,
-      pageGeometrySafe: true
-    })).toEqual({ action: "cancel-native", reason: "page-identity-changed" });
-    expect(decideGenerationReplacement({
-      expectedViewerGeneration: 4,
-      observedViewerGeneration: 4,
-      pageIdentityMatches: true,
-      pageGeometrySafe: false
-    })).toEqual({ action: "cancel-native", reason: "page-geometry-unsafe" });
   });
 });

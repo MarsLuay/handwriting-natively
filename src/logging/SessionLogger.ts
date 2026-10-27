@@ -604,30 +604,6 @@ export class SessionLogger {
   }
 
   /** One self-contained failure for the first Pencil contact after a zoom settle. */
-  pinchTouchExcludedAsStylus(details: Record<string, unknown> = {}): void {
-    this.emit("info", "pinch-touch-excluded-as-stylus", {
-      document: this.documentPath,
-      event: "pinch-touch-excluded-as-stylus",
-      ...details
-    }, true);
-  }
-
-  stalePinchPointerReconciled(details: Record<string, unknown> = {}): void {
-    this.emit("info", "stale-pinch-pointer-reconciled", {
-      document: this.documentPath,
-      event: "stale-pinch-pointer-reconciled",
-      ...details
-    }, true);
-  }
-
-  stalePinchContact(details: Record<string, unknown> = {}): void {
-    this.emit("info", "stale-pinch-contact-pruned", {
-      document: this.documentPath,
-      event: "stale-pinch-contact-pruned",
-      ...details
-    }, true);
-  }
-
   postZoomRecoveryRegressed(details: Record<string, unknown> = {}): void {
     this.emit("warn", "post-zoom-recovery-regressed", {
       document: this.documentPath,
@@ -870,21 +846,10 @@ export class SessionLogger {
 
   /** A finger route must either finish or leave a terminal breadcrumb. */
   touchInput(
-    phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block" | "pen-state" | "touchend" | "touchcancel" | "axis-lock",
+    phase: "policy" | "primary-reset" | "pointerup" | "pointercancel" | "lostpointercapture" | "scroll-block" | "pen-state" | "touchend" | "touchcancel",
     details: Record<string, unknown> = {}
   ): void {
     this.emit("info", "touch input", {
-      document: this.documentPath,
-      phase,
-      ...details
-    });
-  }
-
-  touchPan(
-    phase: "probe" | "activate" | "move" | "skip" | "abort" | "end" | "lostpointercapture" | "pointercancel" | "pointerup" | "touchcancel" | "touchend" | "start",
-    details: Record<string, unknown> = {}
-  ): void {
-    this.emit("info", "touch pan", {
       document: this.documentPath,
       phase,
       ...details
@@ -996,9 +961,9 @@ export class SessionLogger {
     });
   }
 
-  /** Placement transitions make stale More-menu state and failed remounts diagnosable. */
-  toolbarPlacement(phase: "request" | "applied" | "error", details: Record<string, unknown> = {}): void {
-    this.emit(phase === "error" ? "warn" : "info", "toolbar placement", {
+  /** Orientation transitions make failed toolbar updates diagnosable. */
+  toolbarOrientation(phase: "request" | "applied" | "error", details: Record<string, unknown> = {}): void {
+    this.emit(phase === "error" ? "warn" : "info", "toolbar orientation", {
       document: this.documentPath,
       phase,
       ...details
@@ -1072,7 +1037,7 @@ export class SessionLogger {
     mousePolicy?: string;
     activeTool?: string;
     runtimePlatform?: string;
-    toolbarPlacement?: string;
+    toolbarOrientation?: string;
     loadedStrokes?: number;
     loadedTexts?: number;
     sidecarStrokes?: number;
@@ -1219,7 +1184,7 @@ export class SessionLogger {
     });
   }
 
-  /** One bounded summary for a completed native pinch/zoom burst. */
+  /** One bounded summary for a completed zoom burst. */
   zoomProfile(details: Record<string, unknown> = {}): void {
     this.emit("info", "ink zoom profile", {
       document: this.documentPath,
@@ -1286,9 +1251,12 @@ export class SessionLogger {
 
   private emit(level: "info" | "warn", event: string, payload: Record<string, unknown>, force = false): void {
     if (!this.isEnabled() && !force) return;
-    if (level === "info") console.debug(PREFIX, event, payload);
+    if (this.vaultLog) {
+      // VaultDebugLog is the shared Obsidian console + file sink for real
+      // sessions. It enriches both outputs with the same version/timestamp.
+      this.vaultLog.write(level, event, payload, { forceConsole: force });
+    } else if (level === "info") console.debug(PREFIX, event, payload);
     else console.warn(PREFIX, event, payload);
-    this.vaultLog?.write(level, event, payload);
   }
 }
 

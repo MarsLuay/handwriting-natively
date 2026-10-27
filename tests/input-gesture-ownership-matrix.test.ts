@@ -89,7 +89,7 @@ describe("deterministic gesture ownership matrix", () => {
     element.remove();
   });
 
-  it("keeps native fingers and tracks two-touch navigation while blocking a companion palm", () => {
+  it("keeps touch pointer events native while blocking companion TouchEvents during stylus contact", () => {
     const element = document.createElement("div");
     document.body.append(element);
     const routes: string[] = [];
@@ -104,9 +104,15 @@ describe("deterministic gesture ownership matrix", () => {
     element.dispatchEvent(pointer("pointerdown", "pen", 20));
     const companion = pointer("pointerdown", "touch", 21, { width: 64, height: 64 });
     element.dispatchEvent(companion);
-    expect(routes.at(-1)).toBe("ignored");
-    expect(companion.defaultPrevented).toBe(true);
+    expect(routes.at(-1)).toBe("native");
+    expect(companion.defaultPrevented).toBe(false);
     expect(starts).toHaveBeenCalledTimes(1);
+
+    const companionTouch = new Event("touchstart", { bubbles: true, cancelable: true }) as TouchEvent;
+    Object.defineProperty(companionTouch, "touches", { value: [{ identifier: 21 }] });
+    Object.defineProperty(companionTouch, "changedTouches", { value: [{ identifier: 21 }] });
+    element.dispatchEvent(companionTouch);
+    expect(companionTouch.defaultPrevented).toBe(true);
 
     element.dispatchEvent(pointer("pointerup", "touch", 21));
     element.dispatchEvent(pointer("pointerup", "pen", 20));
@@ -114,56 +120,45 @@ describe("deterministic gesture ownership matrix", () => {
     const secondFinger = pointer("pointerdown", "touch", 31, { isPrimary: false });
     element.dispatchEvent(firstFinger);
     element.dispatchEvent(secondFinger);
-    expect(routes.slice(-2)).toEqual(["touch-pan", "touch-pan"]);
-    expect(router.activeTouchPointerIds()).toEqual([30, 31]);
+    expect(routes.slice(-2)).toEqual(["native", "native"]);
     expect(firstFinger.defaultPrevented).toBe(false);
     expect(secondFinger.defaultPrevented).toBe(false);
 
     element.dispatchEvent(pointer("pointerup", "touch", 30));
     element.dispatchEvent(pointer("pointerup", "touch", 31, { isPrimary: false }));
-    expect(router.activeTouchPointerIds()).toEqual([]);
     router.destroy();
     element.remove();
   });
 
-  it("gates touch fallback until explicitly enabled and never after stylus promotion", () => {
-    expect(canAnnotatePointer({ pointerType: "touch" }, {
-      mouseInkingEnabled: false,
-      touchDrawFallback: false,
-      stylusConfirmed: false
-    })).toBe(false);
-    expect(canAnnotatePointer({ pointerType: "touch" }, {
-      mouseInkingEnabled: false,
-      touchDrawFallback: true,
-      stylusConfirmed: false
-    })).toBe(true);
-    expect(canAnnotatePointer({ pointerType: "touch" }, {
-      mouseInkingEnabled: false,
-      touchDrawFallback: true,
-      stylusConfirmed: true
-    })).toBe(false);
+  it("keeps ordinary mouse and touch native while confirmed stylus can annotate", () => {
+    expect(canAnnotatePointer({ pointerType: "touch" })).toBe(false);
+    expect(canAnnotatePointer({ pointerType: "mouse" })).toBe(false);
+    expect(canAnnotatePointer({ pointerType: "mouse" }, { stylusRemapped: true })).toBe(true);
 
     const element = document.createElement("div");
     document.body.append(element);
-    let fallback = false;
     const routes: string[] = [];
     const starts = vi.fn();
     const router = new PointerRouter(element, {
       activeTool: () => "pen",
-      canAnnotatePointer: (event) => event.pointerType === "pen" || (event.pointerType === "touch" && fallback),
-      touchAnnotationEnabled: () => fallback,
+      canAnnotatePointer,
       onRoute: (route) => routes.push(route),
       onStart: starts
     });
 
-    element.dispatchEvent(pointer("pointerdown", "touch", 40));
-    expect(routes.at(-1)).toBe("touch-pan");
-    fallback = true;
-    element.dispatchEvent(pointer("pointerup", "touch", 40));
-    element.dispatchEvent(pointer("pointerdown", "touch", 41));
+    const mouseDown = pointer("pointerdown", "mouse", 40);
+    const touchDown = pointer("pointerdown", "touch", 41);
+    element.dispatchEvent(mouseDown);
+    element.dispatchEvent(touchDown);
+    expect(routes.slice(-2)).toEqual(["native", "native"]);
+    expect(mouseDown.defaultPrevented).toBe(false);
+    expect(touchDown.defaultPrevented).toBe(false);
+    expect(starts).not.toHaveBeenCalled();
+
+    element.dispatchEvent(pointer("pointerdown", "pen", 42));
     expect(routes.at(-1)).toBe("draw");
     expect(starts).toHaveBeenCalledTimes(1);
-    element.dispatchEvent(pointer("pointerup", "touch", 41));
+    element.dispatchEvent(pointer("pointerup", "pen", 42));
     router.destroy();
     element.remove();
   });
@@ -191,14 +186,15 @@ describe("deterministic gesture ownership matrix", () => {
     window.dispatchEvent(new Event("blur"));
     expect(cancels).toHaveBeenCalledTimes(1);
     expect(router.activePenIds()).toEqual([]);
-    expect(router.gesturePolicy().touchNoneClassPresent).toBe(false);
+    expect(element.classList.contains("native-pdf-handwriting-touch-none")).toBe(false);
+    expect(router.gesturePolicy()).toMatchObject({ stylusActive: false, companionTouchBlocked: false });
     router.destroy();
     element.remove();
   });
 
   it("rejects UI targets, leaves non-inking mouse input native, and switches drawing tools without a Draw toggle", () => {
     const ownership = new GestureOwnership();
-    const nativeMouse = ownership.pointerDown({ pointerId: 60, pointerType: "mouse", target: "page", buttons: 1 });
+    const nativeMouse = ownership.pointerDown({ pointerId: 60, pointerType: "mouse", target: "page" });
     expect(nativeMouse.state.owner).toBe("idle");
     expect(nativeMouse.preventDefault).toBe(false);
 
@@ -211,7 +207,7 @@ describe("deterministic gesture ownership matrix", () => {
     const starts = vi.fn();
     const router = new PointerRouter(element, {
       activeTool: () => tool,
-      canAnnotatePointer: (event) => event.pointerType === "pen" || event.pointerType === "mouse",
+      canAnnotatePointer,
       onRoute: (route) => routes.push(route),
       onStart: starts
     });
@@ -229,6 +225,36 @@ describe("deterministic gesture ownership matrix", () => {
     element.dispatchEvent(pointer("pointerdown", "pen", 63, { button: 0 }));
     expect(routes.at(-1)).toBe("edit");
     expect(starts).toHaveBeenCalledTimes(2);
+
+    router.destroy();
+    element.remove();
+  });
+
+  it("keeps mouse and touch native with every selected tool", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const tools: ToolId[] = ["pen", "pencil", "highlighter", "text", "eraser", "lasso", "laser", "drag"];
+    let tool: ToolId = "pen";
+    const starts = vi.fn();
+    const routes: string[] = [];
+    const router = new PointerRouter(element, {
+      activeTool: () => tool,
+      canAnnotatePointer,
+      onRoute: (route) => routes.push(route),
+      onStart: starts
+    });
+
+    let pointerId = 100;
+    for (const selectedTool of tools) {
+      tool = selectedTool;
+      for (const pointerType of ["mouse", "touch"] as const) {
+        const down = pointer("pointerdown", pointerType, pointerId++);
+        element.dispatchEvent(down);
+        expect(routes.at(-1)).toBe("native");
+        expect(down.defaultPrevented).toBe(false);
+        expect(starts).not.toHaveBeenCalled();
+      }
+    }
 
     router.destroy();
     element.remove();

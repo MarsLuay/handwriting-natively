@@ -13,7 +13,7 @@ export type NativeHandoffSignalName =
   | "resizeObserver"
   | "mutationObserver";
 
-export type NativeHandoffPhase = "active-pinch" | "post-pinch-live-ink" | "handoff" | "settled";
+export type NativeHandoffPhase = "active-zoom" | "post-zoom-live-ink" | "handoff" | "settled";
 
 export interface ZoomNativeHandoffSignalSummary {
   count: number;
@@ -229,7 +229,7 @@ export class ZoomNativeHandoffTrace {
     this.phases.clear();
     this.signals.clear();
     this.lastSummary = null;
-    updatePhase(this.phases, "active-pinch", at);
+    updatePhase(this.phases, "active-zoom", at);
   }
 
   noteSignal(input: SignalInput): void {

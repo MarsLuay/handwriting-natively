@@ -2,7 +2,15 @@
 
 ## Boundary
 
-Every undocumented PDF object lookup and selector is confined to `src/integration/`. Annotation, tools, input, storage, and UI consume only `ObsidianPdfAdapter`. No private Obsidian type escapes that boundary.
+Every undocumented PDF object lookup and selector is confined to `src/integration/`. Annotation, tools, input, storage, and UI consume the page surface and viewer commands; they do not own Obsidian's private PDF objects.
+
+## Direct viewer and shared toolbar
+
+Direct `.pdf` leaves use the plugin-owned `PluginPdfView`. `PdfJsViewAdapter` loads vault bytes with the pinned PDF.js 4.10.38 `getDocument` API and renders `PDFPageProxy` pages into plugin page shells. It is the only document renderer and the only navigation/page-state owner for that direct leaf. `ViewerInkSession` mounts the same draggable floating `AnnotationToolbar` used by image surfaces. The More menu keeps PDF page navigation, zoom, thumbnails, outline, search, print, and download actions available, and rotates the toolbar between persisted horizontal and vertical layouts. Old main/left/right placement values migrate to horizontal/vertical orientation and are removed from saved settings. Direct PDF startup does not capture or instantiate Obsidian's private `PDFToolbar` and does not depend on a host `.pdf-toolbar` element.
+
+Keep Obsidian's global `pdf` extension mapping unchanged. Markdown PDF embeds use that host mapping to create their native viewer; replacing it leaves a loaded embed shell without rendered pages. Direct PDF leaves remain plugin-owned: plugin-created tabs select `PluginPdfView` explicitly, and scans migrate any native direct PDF leaves with their page, position, zoom, and rotation state preserved by `PdfViewStateMigration`.
+
+The plugin's pinned PDF.js runtime routes its own `PDFWorker` initializer directly to the bundled in-process `WorkerMessageHandler`. The one-file BRAT bundle has no addressable `workerSrc`, and PDF.js's browser runtime reads that setting while initializing before it can use the in-process handler; this route keeps direct PDFs self-contained. Never assign the handler to `globalThis.pdfjsWorker`: Obsidian's native Markdown embed renderer reads the same global for its separate PDF.js build, and replacing that handler prevents embeds from creating PDF pages on startup.
 
 ## Versioned per-viewer contract
 
@@ -18,18 +26,18 @@ The adapter verifies observable DOM before attaching:
 
 - viewer root: `.pdf-viewer` or PDF.js `.pdfViewer`;
 - rendered page: `.page[data-page-number]` or `.pdf-page-view[data-page-number]`;
-- optional toolbar: `.pdf-toolbar` or `.pdf-toolbar-container`;
+- optional embedded-view toolbar: `.pdf-toolbar` or `.pdf-toolbar-container`;
 - embedded host: `.internal-embed[src$='.pdf']`, `.internal-embed[data-type='pdf']`, or `.pdf-embed`.
 
-The page element and its canvas provide a safe fallback for page bounds. A missing viewer root or page is a hard `PdfAdapterCompatibilityError` with every selector attempted. A missing native toolbar is a warning; the shared toolbar mounts beside the viewer. `PdfPageLocator` reports logical page number separately from the current DOM mount, including mount generation, geometry confidence, candidate count, and identity safety. If duplicate shells cannot be distinguished by connectivity, native canvas, hit testing, or existing overlay evidence, the selected page is marked `identitySafe: false` rather than silently trusted. Sequential page-number stamping is tracked as heuristic evidence and is not safe identity by itself.
+The page element and its canvas provide a safe fallback for page bounds. A missing viewer root or page is a hard `PdfAdapterCompatibilityError` with every selector attempted. In embedded views, a missing host toolbar is a warning; the shared toolbar can mount beside the viewer. Direct PDF toolbar mounting is plugin-owned and independent of host toolbar availability. `PdfPageLocator` reports logical page number separately from the current DOM mount, including mount generation, geometry confidence, candidate count, and identity safety. If duplicate shells cannot be distinguished by connectivity, native canvas, hit testing, or existing overlay evidence, the selected page is marked `identitySafe: false` rather than silently trusted. Sequential page-number stamping is tracked as heuristic evidence and is not safe identity by itself.
 
 ## Page observation and cleanup
 
 Page-shell mutation records are filtered to page structure; PDF.js text/annotation-layer churn and plugin-owned nodes do not trigger page remounts. Scroll only emits view-state updates, while bounded resize/mutation fallback is coalesced through the adapter. Viewer-generation guards ignore callbacks from detached roots, and destroy cancels observers, EventBus subscriptions, and pending zoom-settle work.
 
-## Optional sidebar and toolbar layout
+## Shared floating toolbar
 
-Sidebar rail tracking is an optional layout capability, not a prerequisite for page discovery or ink. The adapter prefers normal in-flow layout and geometry/`ResizeObserver` signals; bounded animation follow is used only for known open/close transitions. If neither a native toolbar nor a sidebar event is observable, the profile reports `degraded` with `sidebarObservable: false`, while safe page annotation remains available through the shared-toolbar/geometry fallback. During zoom bursts, nonessential rail follow is suppressed and resumes once geometry settles; it never triggers page remounts.
+Every plugin annotation session mounts the shared toolbar as a movable floating overlay. Main/left/right placement choices are not exposed; the drag handle controls position, and the More menu rotates horizontal/vertical orientation. Embedded PDF viewer ownership and its native sidebar remain with Obsidian; the annotation toolbar does not use that sidebar as a mount target. PDF-specific navigation and sidebar actions remain available through the shared toolbar.
 
 ## Assumed/private object graph
 
@@ -53,13 +61,13 @@ When present, the object may provide `currentPageNumber`, `currentScale`, `pages
 | `host.pdfViewer`, `currentScale`, `pagesRotation`, page/render signals, EventBus, find controller | private Obsidian/PDF.js graph | feature-detect behind `PdfViewerCompatibility`; never required for basic ink |
 | `PdfPageLocator` sequential page-number stamping and canvas/rect inference | heuristic evidence | report low confidence; reject ambiguous identity |
 | `PdfScrollRoot` candidates and private viewer container | fallback layout capability | return element, strategy, and confidence; host fallback is degraded |
-| sidebar/toolbar rail, CSS width, and thumbnail menu | optional/invasive integration | isolate from core annotation; bounded cleanup and independent degradation |
+| host PDF sidebar, CSS width, and thumbnail menu | optional/invasive integration | isolate host controls from core annotation; keep the plugin toolbar floating; bounded cleanup and independent degradation |
 
 Page discovery prefers a validated private/page-render signal, then EventBus plus DOM validation, numbered DOM shells, and finally bounded initial-attach retries. Scroll resolves once and is revalidated only after viewer replacement. Mutation observers target the smallest validated page owner and filter plugin-owned nodes, text-layer churn, annotation-layer churn, and paint-only changes. Resize/geometry work is coalesced. Every retry, observer, EventBus subscription, and rAF is generation-cancelled on replacement or destroy.
 
 ## Lifecycle and cleanup
 
-Adapters register scroll handlers, mutation observers, and PDF.js event-bus callbacks at construction. `destroy()` removes them in reverse order, removes every mounted overlay/toolbar, and is idempotent. No prototype or method is patched. If a future release requires a monkey patch, the adapter must register restoration in the same cleanup stack before enabling it.
+Adapters register scroll handlers, mutation observers, and PDF.js event-bus callbacks at construction. `destroy()` removes them in reverse order, removes every mounted overlay/toolbar, and is idempotent. No Obsidian host prototype or method is patched. The pinned PDF.js worker initializer is patched only inside the plugin-owned runtime; if an upgrade changes that hook, update the runtime boundary tests and compatibility notes.
 
 Page overlays mount transparent with `pointer-events: none`. Annotation mode explicitly adds `.is-editing`; leaving annotation mode removes it. This prevents the adapter from stealing text selection, links, search, mouse, touch, or trackpad behavior by default.
 

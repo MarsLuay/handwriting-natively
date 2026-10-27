@@ -27,6 +27,16 @@ describe("main PDF page actions", () => {
     expect(mainSource).toContain("ImageViewAdapter.attach");
   });
 
+  it("attaches enabled Markdown Reading and editing views through the shared session factory", () => {
+    expect(mainSource).toContain("MarkdownViewAdapter.attach");
+    expect(mainSource).toContain("findMarkdownSurfaceRoot");
+    expect(mainSource).toContain('mode !== "preview" && mode !== "source"');
+    expect(mainSource).toContain("{ mode }");
+    expect(mainSource).toContain("this.scanMarkdownLeaves()");
+    expect(mainSource).toContain("detachDisabledMarkdownSessions");
+    expect(mainSource).toContain('surface: "markdown"');
+  });
+
   it("starts an attach scan even when layout-ready was published before plugin load", () => {
     const onload = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("  /** Catch uncaught errors"));
     expect(onload).toContain('"session attach scan requested"');
@@ -34,11 +44,23 @@ describe("main PDF page actions", () => {
     expect(onload).toContain("this.scheduleDebouncedScan(0);");
   });
 
-  it("keeps native PDF scanning when the host rejects the extension override", () => {
-    expect(mainSource).toContain("tryRegisterPdfExtension");
-    expect(mainSource).toContain("pdfExtensionRegistration.registered");
-    expect(mainSource).toContain("restoreOwnedPdfLeavesToNative");
-    expect(mainSource).toContain('type: "pdf"');
+  it("keeps Obsidian's PDF extension mapping for embeds and migrates direct leaves", () => {
+    const onload = mainSource.slice(mainSource.indexOf("async onload()"), mainSource.indexOf("  /** Catch uncaught errors"));
+    expect(onload).not.toContain("captureObsidianPdfToolbarConstructor");
+    expect(onload).toContain("PdfJsViewAdapter.create");
+    expect(onload).not.toContain("replaceDefaultPdfViewRegistration");
+    expect(onload).not.toContain("viewRegistry");
+    expect(mainSource).not.toContain("PdfExtensionRegistration");
+    const scan = mainSource.slice(mainSource.indexOf("private async scanPdfViews()"), mainSource.indexOf("private async scanPdfLeaves()"));
+    expect(scan.indexOf("await this.adoptExistingNativePdfLeaves();")).toBeGreaterThanOrEqual(0);
+    expect(scan.indexOf("await this.adoptExistingNativePdfLeaves();")).toBeLessThan(scan.indexOf("await this.scanPdfLeaves();"));
+    expect(mainSource).toContain('getLeavesOfType("pdf")');
+    expect(mainSource).toContain('type: PLUGIN_PDF_VIEW_TYPE');
+    const openPdf = mainSource.slice(mainSource.indexOf("private async openPdfInNewTab("), mainSource.indexOf("  private activeSession()"));
+    expect(openPdf).toContain("leaf.setViewState({ type: PLUGIN_PDF_VIEW_TYPE, state: { file: file.path } })");
+    expect(mainSource).not.toContain("restoreOwnedPdfLeavesToNative");
+    expect(mainSource).not.toContain("onFallbackToNative");
+    expect(mainSource).toContain("nativePdfViewStateFromLegacyState");
   });
 
   it("cleans a partially attached adapter when session creation fails", () => {

@@ -100,7 +100,7 @@ async function pathExists(
 function errorFields(error: unknown): Pick<VaultFsOperationRecord, "errorName" | "errorCode" | "errorMessage"> {
   const errorName = error instanceof Error ? error.name : undefined;
   const code = error && typeof error === "object" && "code" in error
-    ? String((error as { code: unknown }).code)
+    ? String(error.code)
     : undefined;
   return {
     errorMessage: safeErrorMessage(error),
@@ -114,7 +114,7 @@ async function ensureVaultFolder(vault: Vault, path: string, probe?: VaultFsProb
   let current = "";
   for (const part of normalizeVaultRelativePath(path).split("/")) {
     current = current ? `${current}/${part}` : part;
-    if (await pathExists(vault.adapter as MutableAdapter, current, probe)) continue;
+    if (await pathExists(vault.adapter, current, probe)) continue;
     try {
       await vault.adapter.mkdir(current);
     } catch (error) {

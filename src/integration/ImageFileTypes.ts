@@ -4,7 +4,8 @@ import type { TFile } from "obsidian";
 export const HANDWRITING_IMAGE_EXTENSIONS = new Set([
   "jpeg",
   "jpg",
-  "png"
+  "png",
+  "webp"
 ]);
 
 export function isSupportedImageExtension(extension: string): boolean {

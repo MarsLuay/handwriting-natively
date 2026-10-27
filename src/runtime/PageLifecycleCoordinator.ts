@@ -43,7 +43,15 @@ export interface PageLifecycleChangeEvent {
   record: Readonly<ManagedPageRecord>;
 }
 
+export interface PageVisibilityChangeEvent {
+  pageNumber: number;
+  previousVisibility: PageVisibility;
+  currentVisibility: PageVisibility;
+  record: Readonly<ManagedPageRecord>;
+}
+
 export type PageLifecycleListener = (event: PageLifecycleChangeEvent) => void;
+export type PageVisibilityListener = (event: PageVisibilityChangeEvent) => void;
 
 export interface PageLifecycleCoordinatorOptions {
   neighborRadius?: number;
@@ -52,6 +60,7 @@ export interface PageLifecycleCoordinatorOptions {
   onRenderRequested?: ((pageNumber: number, priority: PagePriority) => void) | undefined;
   onEvictPage?: ((record: ManagedPageRecord) => void) | undefined;
   onStageChange?: ((event: PageLifecycleChangeEvent) => void) | undefined;
+  onVisibilityChange?: ((event: PageVisibilityChangeEvent) => void) | undefined;
 }
 
 export function derivePagePriority(visibility: PageVisibility): PagePriority {
@@ -85,6 +94,7 @@ export class PageLifecycleCoordinator {
   private readonly visiblePages = new Set<number>();
   private readonly renderQueuedPages = new Set<number>();
   private readonly listeners = new Set<PageLifecycleListener>();
+  private readonly visibilityListeners = new Set<PageVisibilityListener>();
   private intersectionObserver: IntersectionObserver | null = null;
   private readonly onRenderRequested?: ((pageNumber: number, priority: PagePriority) => void) | undefined;
   private readonly onEvictPage?: ((record: ManagedPageRecord) => void) | undefined;
@@ -98,6 +108,9 @@ export class PageLifecycleCoordinator {
     this.onEvictPage = options?.onEvictPage;
     if (options?.onStageChange) {
       this.listeners.add(options.onStageChange);
+    }
+    if (options?.onVisibilityChange) {
+      this.visibilityListeners.add(options.onVisibilityChange);
     }
   }
 
@@ -243,6 +256,19 @@ export class PageLifecycleCoordinator {
       .filter((rec) => rec.visibility !== "cold")
       .map((rec) => rec.pageNumber)
       .sort((a, b) => a - b);
+  }
+
+  /**
+   * Canonical ink-overlay residency decision. Ink follows the same active /
+   * visible / nearby working set as PDF rendering; cold pages own no overlay.
+   */
+  getInkMountPages(): number[] {
+    return this.getWorkingSet();
+  }
+
+  shouldMountInkOverlay(pageNumber: number): boolean {
+    const record = this.records.get(pageNumber);
+    return Boolean(record && record.visibility !== "cold");
   }
 
   isPageVisible(pageNumber: number): boolean {
@@ -431,6 +457,13 @@ export class PageLifecycleCoordinator {
     };
   }
 
+  onVisibilityChange(listener: PageVisibilityListener): () => void {
+    this.visibilityListeners.add(listener);
+    return () => {
+      this.visibilityListeners.delete(listener);
+    };
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -439,6 +472,7 @@ export class PageLifecycleCoordinator {
     this.visiblePages.clear();
     this.renderQueuedPages.clear();
     this.listeners.clear();
+    this.visibilityListeners.clear();
   }
 
   private computeVisibility(pageNumber: number): PageVisibility {
@@ -458,10 +492,14 @@ export class PageLifecycleCoordinator {
     for (const record of this.records.values()) {
       const visibility = this.computeVisibility(record.pageNumber);
       const priority = derivePagePriority(visibility);
+      const previousVisibility = record.visibility;
       const previousStage = record.stage;
       record.visibility = visibility;
       record.priority = priority;
       record.stage = derivePageStage(visibility, record.pdfRaster);
+      if (record.visibility !== previousVisibility) {
+        this.notifyVisibilityChange(record, previousVisibility);
+      }
       if (record.stage !== previousStage) {
         this.notifyStageChange(record, previousStage);
       }
@@ -483,6 +521,22 @@ export class PageLifecycleCoordinator {
     record.stage = derivePageStage(record.visibility, record.pdfRaster);
     if (record.stage !== previousStage) {
       this.notifyStageChange(record, previousStage);
+    }
+  }
+
+  private notifyVisibilityChange(record: ManagedPageRecord, previousVisibility: PageVisibility): void {
+    const event: PageVisibilityChangeEvent = {
+      pageNumber: record.pageNumber,
+      previousVisibility,
+      currentVisibility: record.visibility,
+      record
+    };
+    for (const listener of this.visibilityListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Observers must not break coordinator loop
+      }
     }
   }
 

@@ -37,34 +37,6 @@ const diagnostics = {
 };
 
 describe("safe defaults", () => {
-  it("appends the current mobile PDF pinch gate and observed mode", () => {
-    const copied = buildCopiedLogDiagnostics({
-      ...diagnostics,
-      mobilePdfZoom: [{
-        sessionNumber: 1,
-        settingEnabled: true,
-        gateMode: "custom-mobile",
-        fallbackReason: null,
-        active: false,
-        activePhase: null,
-        traceMode: "custom-mobile",
-        tracePhase: "settled",
-        observedCustomGesture: true,
-        gestureBeginCount: 1,
-        transformFrameCount: 12,
-        transformTotalMs: 4.8,
-        transformMaxMs: 0.9,
-        nativeCommitWaitMs: 38.2,
-        releaseReason: "stable"
-      }]
-    });
-
-    expect(copied).toContain("Mobile PDF pinch zoom:");
-    expect(copied).toContain("setting=on gate=custom-mobile active=no phase=none observed=yes");
-    expect(copied).toContain("trace=custom-mobile/settled begins=1 transformFrames=12");
-    expect(copied).toContain("nativeCommitWaitMs=38.2 release=stable fallback=none");
-  });
-
   it("appends copy-time diagnostics while retaining the full short log", () => {
     const copied = getCopiedLogText("short log", diagnostics);
 
@@ -135,11 +107,60 @@ describe("safe defaults", () => {
     });
   });
 
-  it("enables finger double-tap eraser switching by default and preserves an explicit opt-out", () => {
-    expect(DEFAULT_SETTINGS.touchDoubleTapEraser).toBe(true);
-    expect(mergeSettings(undefined).touchDoubleTapEraser).toBe(true);
-    expect(mergeSettings({ touchDoubleTapEraser: false }).touchDoubleTapEraser).toBe(false);
-    expect(mergeSettings({ touchDoubleTapEraser: "false" } as never).touchDoubleTapEraser).toBe(true);
+  it("exposes a Markdown surface toggle and persists its value", async () => {
+    const tab = Object.create(NativePdfInkSettingTab.prototype) as InstanceType<typeof NativePdfInkSettingTab>;
+    const host = {
+      inkSettings: { ...DEFAULT_SETTINGS, enabledSurfaces: { pdf: true, image: true, markdown: true } },
+      saveSettings: vi.fn(async (settings) => {
+        host.inkSettings = settings;
+      })
+    };
+    Object.assign(tab, { host });
+
+    const definition = tab.getSettingDefinitions().find((item) =>
+      "name" in item && item.name === "Enable on Markdown"
+    );
+    expect(definition).toBeDefined();
+    if (!definition || !("render" in definition) || typeof definition.render !== "function") return;
+
+    let onChange: ((value: boolean) => Promise<void>) | undefined;
+    const toggle = {
+      setValue: vi.fn().mockReturnThis(),
+      onChange: vi.fn((handler: (value: boolean) => Promise<void>) => {
+        onChange = handler;
+        return toggle;
+      })
+    };
+    const setting = {
+      addToggle: (render: (control: typeof toggle) => unknown) => {
+        render(toggle);
+        return setting;
+      }
+    };
+    definition.render(setting as never);
+
+    expect(toggle.setValue).toHaveBeenCalledWith(true);
+    await onChange?.(false);
+    expect(host.saveSettings).toHaveBeenCalledWith(expect.objectContaining({
+      enabledSurfaces: { pdf: true, image: true, markdown: false }
+    }));
+  });
+
+  it("migrates the retired plugin-owned PDF viewer preference to the native viewer", () => {
+    expect(DEFAULT_SETTINGS).not.toHaveProperty("preferPluginPdfView");
+    expect(mergeSettings(undefined)).not.toHaveProperty("preferPluginPdfView");
+    expect(mergeSettings({ preferPluginPdfView: true } as never)).not.toHaveProperty("preferPluginPdfView");
+  });
+
+  it("preserves explicit touch gesture settings while keeping drawing opt-in", () => {
+    const merged = mergeSettings({
+      touchDoubleTapEraser: true,
+      customMobilePdfPinchZoom: true,
+      touchDrawFallback: true
+    });
+    expect(merged.touchDoubleTapEraser).toBe(true);
+    expect(merged.customMobilePdfPinchZoom).toBe(true);
+    expect(merged.touchDrawFallback).toBe(true);
   });
 
   it("keeps swipe navigation blocking opt-in and migrates legacy settings", () => {
@@ -195,15 +216,10 @@ describe("safe defaults", () => {
     }
   });
 
-  it("enables custom mobile PDF pinch zoom by default while preserving an explicit opt-out", () => {
-    expect(DEFAULT_SETTINGS.customMobilePdfPinchZoom).toBe(true);
-    const retiredZoomSetting = mergeSettings({ boostedPdfZoom: true } as never);
-    expect("boostedPdfZoom" in retiredZoomSetting).toBe(false);
-    expect(mergeSettings(undefined).customMobilePdfPinchZoom).toBe(true);
-    expect(retiredZoomSetting.customMobilePdfPinchZoom).toBe(true);
-    expect(mergeSettings({ customMobilePdfPinchZoom: true }).customMobilePdfPinchZoom).toBe(true);
-    expect(mergeSettings({ customMobilePdfPinchZoom: false }).customMobilePdfPinchZoom).toBe(false);
-    expect(mergeSettings({ customMobilePdfPinchZoom: "true" } as never).customMobilePdfPinchZoom).toBe(true);
+  it("drops retired boosted PDF zoom while preserving the mobile pinch setting", () => {
+    const merged = mergeSettings({ boostedPdfZoom: true } as never);
+    expect(merged).not.toHaveProperty("boostedPdfZoom");
+    expect(merged.customMobilePdfPinchZoom).toBe(DEFAULT_SETTINGS.customMobilePdfPinchZoom);
   });
 
   it("enables autosave", () => {
@@ -296,13 +312,17 @@ describe("safe defaults", () => {
     expect(mergeSettings({ toolPreferences: { activeTool: "shape" } as never }).toolPreferences.activeTool).toBe("pen");
   });
 
-  it("defaults mouse inking off and migrates the legacy annotate mode", () => {
-    expect(DEFAULT_SETTINGS.mouseInkingEnabled).toBe(false);
-    expect(mergeSettings({ mouseInkingEnabled: true }).mouseInkingEnabled).toBe(true);
-    expect(mergeSettings({ mouseInputMode: "annotate" } as never).mouseInkingEnabled).toBe(true);
-    expect(mergeSettings({ mouseInputMode: "annotate", mouseLeftDragDraw: false } as never).mouseInkingEnabled).toBe(false);
-    expect(mergeSettings({ mouseInputMode: "pan", mouseLeftDragDraw: true } as never).mouseInkingEnabled).toBe(false);
-    expect(mergeSettings({ mouseLeftDragDraw: true } as never).mouseInkingEnabled).toBe(true);
+  it("preserves explicit mouse inking and navigation mode while dropping legacy input keys", () => {
+    const merged = mergeSettings({
+      mouseInkingEnabled: true,
+      mouseInputMode: "annotate",
+      mouseLeftDragDraw: true,
+      toolPreferences: { mouseNavigationActive: true }
+    } as never);
+    expect(merged.mouseInkingEnabled).toBe(true);
+    expect(merged).not.toHaveProperty("mouseInputMode");
+    expect(merged).not.toHaveProperty("mouseLeftDragDraw");
+    expect(merged.toolPreferences.mouseNavigationActive).toBe(true);
   });
 
   it("drops retired mouse pan and right-button eraser settings", () => {
@@ -371,10 +391,16 @@ describe("safe defaults", () => {
     expect(merged.vaultDebugLogPath).toBe(".obsidian/plugins/native-pdf-handwriting/debug.md");
   });
 
-  it("defaults toolbar placement to the PDF bar", () => {
-    expect(DEFAULT_SETTINGS.toolbarPlacement).toBe("main");
-    expect(mergeSettings({ toolbarPlacement: "right" }).toolbarPlacement).toBe("right");
-    expect(mergeSettings({ toolbarPlacement: "nope" as "main" }).toolbarPlacement).toBe("main");
+  it("migrates old toolbar placement to persistent floating orientation", () => {
+    expect(DEFAULT_SETTINGS.toolbarOrientation).toBe("horizontal");
+    expect(mergeSettings({ toolbarOrientation: "vertical" }).toolbarOrientation).toBe("vertical");
+    const migratedRight = mergeSettings(JSON.parse('{"toolbarPlacement":"right"}'));
+    const migratedLeft = mergeSettings(JSON.parse('{"toolbarPlacement":"left"}'));
+    expect(migratedRight.toolbarOrientation).toBe("vertical");
+    expect(migratedLeft.toolbarOrientation).toBe("vertical");
+    expect(mergeSettings(JSON.parse('{"toolbarPlacement":"main"}')).toolbarOrientation).toBe("horizontal");
+    expect(mergeSettings({ toolbarOrientation: "invalid" as "horizontal" }).toolbarOrientation).toBe("horizontal");
+    expect("toolbarPlacement" in migratedRight).toBe(false);
   });
 
   it("uses blank Letter paper unless a PDF template path is configured", () => {

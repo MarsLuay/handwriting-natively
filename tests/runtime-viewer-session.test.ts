@@ -7,8 +7,10 @@ vi.mock("obsidian", async () => {
 import NativePdfInkPlugin, { scheduleSessionRecoveryAfterDestroy } from "../src/main";
 import { MobileSidebarSwipeBlocker } from "../src/input/MobileSidebarSwipeBlocker";
 import type { AnnotationPageInfo, AnnotationSurface, AnnotationViewState } from "../src/runtime/AnnotationSurface";
+import { ImageViewAdapter } from "../src/integration/ImageViewAdapter";
 import type { PdfPageInfo } from "../src/integration/PdfPageLocator";
-import { DEFAULT_SETTINGS, type InkStroke, type PdfPoint, type PdfTextAnnotation, type ToolbarPlacement } from "../src/model";
+import type { PdfViewerCommandBridge } from "../src/integration/ObsidianPdfAdapter";
+import { DEFAULT_SETTINGS, mergeSettings, type InkStroke, type PdfPoint, type PdfTextAnnotation, type PluginSettings, type ToolPreferences } from "../src/model";
 import { AttachRetryPolicy } from "../src/runtime/AttachRetryPolicy";
 import { ScanDebounce } from "../src/runtime/ScanDebounce";
 import { needsMissingHandwritingSessionRecovery, type HandwritingSessionRegistrySnapshot } from "../src/runtime/HandwritingSessionRegistry";
@@ -95,43 +97,28 @@ class FakeAdapter implements AnnotationSurface {
   destroy(): void { this.destroyed = true; this.root.remove(); }
 }
 
-class OwnedRailAdapter extends FakeAdapter {
-  override mountToolbar(toolbar: HTMLElement, placement: ToolbarPlacement = "main"): void {
-    for (const node of this.root.querySelectorAll<HTMLElement>(".native-pdf-handwriting-toolbar, .hn-owned-pdf-ink-rail")) {
-      if (node !== toolbar) node.remove();
-    }
-    toolbar.remove();
-    toolbar.classList.toggle("is-sidebar-left", placement === "left");
-    toolbar.classList.toggle("is-sidebar-right", placement === "right");
-    if (placement === "main") {
-      this.toolbarHost.append(toolbar);
-      return;
-    }
-    const rail = document.createElement("div");
-    rail.className = `hn-owned-pdf-ink-rail is-${placement}`;
-    rail.append(toolbar);
-    this.root.append(rail);
+class FakeMarkdownAdapter extends FakeAdapter {
+  readonly surfaceType = "markdown" as const;
+
+  isHostOwnedInputTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    const embed = target.closest(".pdf-embed");
+    return Boolean(embed && this.root.contains(embed));
   }
 }
 
-class RecoveringRailAdapter extends FakeAdapter {
-  sidebarAvailable = false;
+class CommandBridgeAdapter extends FakeAdapter {
+  readonly supportsPdfExport = true as const;
+  commandBridge: PdfViewerCommandBridge | null = null;
+  handToolActive = false;
 
-  override mountToolbar(toolbar: HTMLElement, placement: ToolbarPlacement = "main"): void {
-    toolbar.remove();
-    toolbar.classList.toggle("is-sidebar-left", placement === "left");
-    toolbar.classList.toggle("is-sidebar-right", placement === "right");
-    if (placement === "main" || !this.sidebarAvailable) {
-      this.toolbarHost.append(toolbar);
-      return;
-    }
-    let rail = this.host.querySelector<HTMLElement>(`.native-pdf-handwriting-rail.is-${placement}`);
-    if (!rail) {
-      rail = document.createElement("div");
-      rail.className = `native-pdf-handwriting-rail is-${placement}`;
-      this.root.append(rail);
-    }
-    rail.append(toolbar);
+  setViewerCommandBridge(commands: PdfViewerCommandBridge | null): void {
+    this.commandBridge = commands;
+    this.setHandToolActive(commands?.isHandMode() ?? false);
+  }
+
+  setHandToolActive(active: boolean): void {
+    this.handToolActive = active;
   }
 }
 
@@ -219,6 +206,45 @@ describe("mobile swipe blocker lifecycle", () => {
   });
 });
 
+describe("plugin settings persistence", () => {
+  it("keeps the most recently selected toolbar tool after overlapping saves and reload", async () => {
+    let finishFirstSave!: () => void;
+    let firstSaveStarted!: () => void;
+    const firstSaveStartedPromise = new Promise<void>((resolve) => { firstSaveStarted = resolve; });
+    const firstSaveGate = new Promise<void>((resolve) => { finishFirstSave = resolve; });
+    const persisted: { settings: PluginSettings | null } = { settings: null };
+    const plugin = Object.create(NativePdfInkPlugin.prototype) as unknown as {
+      inkSettings: PluginSettings;
+      settingsSaveQueue: Promise<void>;
+      saveData(settings: PluginSettings): Promise<void>;
+      saveToolPreferences(preferences: ToolPreferences): Promise<void>;
+    };
+    plugin.inkSettings = structuredClone(DEFAULT_SETTINGS);
+    plugin.settingsSaveQueue = Promise.resolve();
+    plugin.saveData = async (settings) => {
+      if (settings.toolPreferences.activeTool === "pencil") {
+        firstSaveStarted();
+        await firstSaveGate;
+      }
+      persisted.settings = structuredClone(settings);
+    };
+
+    const firstPreferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    firstPreferences.activeTool = "pencil";
+    const latestPreferences = structuredClone(DEFAULT_SETTINGS.toolPreferences);
+    latestPreferences.activeTool = "eraser";
+    const firstSave = plugin.saveToolPreferences(firstPreferences);
+    await firstSaveStartedPromise;
+    const latestSave = plugin.saveToolPreferences(latestPreferences);
+
+    finishFirstSave();
+    await Promise.all([firstSave, latestSave]);
+
+    expect(persisted.settings?.toolPreferences.activeTool).toBe("eraser");
+    expect(mergeSettings(persisted.settings).toolPreferences.activeTool).toBe("eraser");
+  });
+});
+
 function pointer(
   type: string,
   x: number,
@@ -287,12 +313,68 @@ describe("viewer runtime tracer", () => {
     expect(blocked[1]?.error).toEqual(new Error("destroy failed"));
   });
 
-  it("can switch from a sidebar to the PDF toolbar on mobile", async () => {
+  it("owns a cloned canonical viewer snapshot and restores through the adapter once", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/viewer-state.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+
+    try {
+      const snapshot = session.getViewerState();
+      snapshot.viewport.scale = 8;
+      expect(session.getViewerState().viewport.scale).toBe(1);
+
+      const restoreCount = adapter.restoredViewStates.length;
+      session.restoreViewerState({
+        viewport: { scale: 2, x: 40, y: 60 },
+        pageNumber: 1,
+        rotation: 90,
+        scaleMode: "custom"
+      });
+      expect(adapter.restoredViewStates).toHaveLength(restoreCount + 1);
+      expect(session.getViewerState()).toMatchObject({
+        viewport: { scale: 2, x: 40, y: 60 },
+        pageNumber: 1,
+        rotation: 90,
+        scaleMode: "custom"
+      });
+
+      adapter.viewState = {
+        ...adapter.viewState,
+        viewport: { scale: 2.5, x: 40, y: 60 },
+        pageNumber: 1,
+        rotation: 180,
+        scale: 2.5
+      };
+      session.onViewStateChange(adapter.getViewState(), "scalechanging");
+      expect(session.getViewerState()).toMatchObject({
+        viewport: { scale: 2.5 },
+        rotation: 180
+      });
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it("portals the canonical toolbar outside transformed views and rotates its orientation", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeAdapter();
+    adapter.host.style.transform = "translateX(400px)";
+    adapter.host.style.overflow = "hidden";
     const mountToolbar = vi.spyOn(adapter, "mountToolbar");
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.toolbarPlacement = "left";
+    const savePluginSettings = vi.fn(async (patch: Partial<typeof settings>) => {
+      Object.assign(settings, patch);
+    });
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/example.pdf",
@@ -300,27 +382,82 @@ describe("viewer runtime tracer", () => {
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
       saveSettings: async () => undefined,
+      savePluginSettings,
       readSourcePdf: async () => new Uint8Array(),
       writeExport: async () => undefined,
       notice: () => undefined,
       runtimePlatform: () => ({ mobile: true, phone: false })
     });
 
-    expect(mountToolbar).toHaveBeenCalledWith(expect.any(HTMLElement), "left");
-    const more = adapter.host.querySelector<HTMLButtonElement>("[data-control='more']");
+    expect(mountToolbar).toHaveBeenCalledWith(expect.any(HTMLElement));
+    const toolbar = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    const portal = toolbar?.parentElement;
+    expect(portal?.classList.contains("native-pdf-handwriting-toolbar-portal")).toBe(true);
+    expect(portal?.parentElement).toBe(document.body);
+    expect(adapter.host.contains(toolbar)).toBe(false);
+    expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(true);
+    expect(toolbar?.classList.contains("is-horizontal")).toBe(true);
+    const more = toolbar?.querySelector<HTMLButtonElement>("[data-control='more']");
     more?.click();
-    const pdfToolbarOption = document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']");
-    expect(pdfToolbarOption?.textContent).toBe("Toolbar: PDF bar");
-    pdfToolbarOption?.click();
-    expect(settings.toolbarPlacement).toBe("main");
+    expect(document.querySelector("[data-option-id='toolbar-main'], [data-option-id='toolbar-left'], [data-option-id='toolbar-right']")).toBeNull();
+    document.querySelector<HTMLButtonElement>("[data-option-id='rotate-toolbar']")?.click();
+    await Promise.resolve();
+    expect(savePluginSettings).toHaveBeenCalledWith({ toolbarOrientation: "vertical" });
+    expect(settings.toolbarOrientation).toBe("vertical");
+    expect(toolbar?.classList.contains("is-vertical")).toBe(true);
     await session.destroy();
   });
+
+  it.each(["Notes/image.png", "Notes/image.jpg", "Notes/image.jpeg"])(
+    "mounts the shared toolbar outside the image view for %s",
+    async (documentPath) => {
+      const host = document.createElement("div");
+      const image = document.createElement("img");
+      Object.defineProperties(image, {
+        naturalWidth: { configurable: true, value: 600 },
+        naturalHeight: { configurable: true, value: 800 }
+      });
+      image.getBoundingClientRect = () => ({
+        left: 0,
+        top: 0,
+        right: 600,
+        bottom: 800,
+        width: 600,
+        height: 800,
+        x: 0,
+        y: 0,
+        toJSON: () => ({})
+      });
+      host.append(image);
+      document.body.append(host);
+      const adapter = ImageViewAdapter.attach(host);
+      const session = await ViewerInkSession.create({
+        adapter,
+        documentPath,
+        settings: structuredClone(DEFAULT_SETTINGS),
+        sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+        recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+        saveSettings: async () => undefined,
+        readSourcePdf: async () => new Uint8Array(),
+        writeExport: async () => undefined,
+        notice: () => undefined
+      });
+
+      const toolbar = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+      expect(toolbar?.parentElement?.classList.contains("native-pdf-handwriting-toolbar-portal")).toBe(true);
+      expect(host.contains(toolbar)).toBe(false);
+
+      await session.destroy();
+      adapter.destroy();
+      host.remove();
+    }
+  );
 
   it("provides a draggable floating toolbar when the sidebar rail is missing and removes drag listeners on teardown", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.toolbarPlacement = "left";
+    settings.toolbarOrientation = "vertical";
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/floating-toolbar.pdf",
@@ -334,7 +471,7 @@ describe("viewer runtime tracer", () => {
       runtimePlatform: () => ({ mobile: true, phone: false })
     });
 
-    const toolbar = adapter.host.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    const toolbar = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
     const handle = toolbar?.querySelector<HTMLButtonElement>(".native-pdf-handwriting-toolbar-drag-handle");
     expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(true);
     expect(handle).not.toBeNull();
@@ -349,17 +486,18 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
     const positionAfterDestroy = toolbar?.style.cssText;
     expect(handle?.isConnected).toBe(false);
+    expect(document.body.querySelector(".native-pdf-handwriting-toolbar-portal")).toBeNull();
     expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(false);
     handle?.dispatchEvent(pointer("pointerdown", 20, 30, { pointerType: "mouse", pointerId: 702 }));
     handle?.dispatchEvent(pointer("pointermove", 80, 90, { pointerType: "mouse", pointerId: 702 }));
     expect(toolbar?.style.cssText).toBe(positionAfterDestroy);
   });
 
-  it("moves the fallback toolbar back into a sidebar rail when that rail appears", async () => {
+  it("keeps the floating toolbar canonical when a legacy rail appears", async () => {
     const files = new MemoryFiles();
-    const adapter = new RecoveringRailAdapter();
+    const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.toolbarPlacement = "left";
+    settings.toolbarOrientation = "vertical";
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/recovering-toolbar.pdf",
@@ -372,28 +510,25 @@ describe("viewer runtime tracer", () => {
       notice: () => undefined,
       runtimePlatform: () => ({ mobile: true, phone: false })
     });
-    const toolbar = adapter.host.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    const toolbar = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
     expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(true);
     expect(toolbar?.querySelector(".native-pdf-handwriting-toolbar-drag-handle")).not.toBeNull();
 
-    adapter.sidebarAvailable = true;
     const rail = document.createElement("div");
     rail.className = "native-pdf-handwriting-rail is-left";
     adapter.root.append(rail);
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
-    expect(rail.contains(toolbar)).toBe(true);
-    expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(false);
-    expect(toolbar?.querySelector(".native-pdf-handwriting-toolbar-drag-handle")).toBeNull();
-    expect(toolbar?.style.left).toBe("");
+    expect(rail.contains(toolbar)).toBe(false);
+    expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(true);
+    expect(toolbar?.querySelector(".native-pdf-handwriting-toolbar-drag-handle")).not.toBeNull();
     await session.destroy();
   });
 
-  it("remounts the PDF toolbar from a plugin-owned desktop rail", async () => {
+  it("keeps the shared toolbar floating on desktop", async () => {
     const files = new MemoryFiles();
-    const adapter = new OwnedRailAdapter();
+    const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.toolbarPlacement = "left";
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/desktop-toolbar.pdf",
@@ -407,12 +542,50 @@ describe("viewer runtime tracer", () => {
       runtimePlatform: () => ({ mobile: false, phone: false })
     });
 
-    expect(adapter.root.querySelector(".hn-owned-pdf-ink-rail.is-left")).not.toBeNull();
-    adapter.root.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
-    document.querySelector<HTMLButtonElement>("[data-option-id='toolbar-main']")?.click();
-    expect(adapter.toolbarHost.querySelector(".native-pdf-handwriting-toolbar")).not.toBeNull();
-    expect(adapter.root.querySelector(".hn-owned-pdf-ink-rail")).toBeNull();
+    const toolbar = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(true);
+    expect(toolbar?.querySelector(".native-pdf-handwriting-toolbar-drag-handle")).not.toBeNull();
+    expect(adapter.root.querySelector(".native-pdf-handwriting-rail")).toBeNull();
     await session.destroy();
+  });
+
+  it("keeps direct-PDF page entry and custom zoom in the movable shared toolbar", async () => {
+    const files = new MemoryFiles();
+    const adapter = new CommandBridgeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.toolbarOrientation = "vertical";
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/shared-toolbar.pdf",
+      settings,
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const toolbar = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    const prompt = vi.spyOn(window, "prompt")
+      .mockReturnValueOnce("1")
+      .mockReturnValueOnce("175");
+    try {
+      expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(true);
+      expect(toolbar?.classList.contains("is-vertical")).toBe(true);
+      expect(toolbar?.querySelector(".native-pdf-handwriting-toolbar-drag-handle")).not.toBeNull();
+
+      toolbar?.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
+      document.querySelector<HTMLButtonElement>("[data-option-id='go-to-page']")?.click();
+      expect(adapter.focusedPages).toContain(1);
+
+      toolbar?.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
+      document.querySelector<HTMLButtonElement>("[data-option-id='set-zoom']")?.click();
+      expect(adapter.viewState.scale).toBe(1.75);
+      expect(prompt).toHaveBeenCalledTimes(2);
+    } finally {
+      prompt.mockRestore();
+      await session.destroy();
+    }
   });
 
   it("destroys a constructed session when sidecar load fails before registration", async () => {
@@ -469,7 +642,7 @@ describe("viewer runtime tracer", () => {
     expect(getPhysicalContactCollectorSnapshot(document)?.activeOwnerCount ?? 0).toBe(0);
   });
 
-  it("switches to the eraser from native mobile touchstart double taps", async () => {
+  it("keeps native mobile touchstart from switching annotation tools", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
@@ -494,8 +667,50 @@ describe("viewer runtime tracer", () => {
 
     expect(first.defaultPrevented).toBe(false);
     expect(second.defaultPrevented).toBe(false);
-    expect(settings.toolPreferences.activeTool).toBe("eraser");
+    expect(settings.toolPreferences.activeTool).toBe("pen");
     await session.destroy();
+  });
+
+  it("repaints the edited page immediately on Ctrl+Z and redo", async () => {
+    const adapter = new FakeAdapter();
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/undo.pdf",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(new MemoryFiles(), "annotations"),
+      recovery: new RecoveryRepository(new MemoryFiles(), "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined
+    });
+    const internal = session as unknown as {
+      ink: { page(page: number): InkStroke[]; pageRevision(page: number): number };
+      surfaces: Map<number, { inkLayerRevision: number | null }>;
+    };
+    try {
+      adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
+      adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 140));
+      adapter.pageElement.dispatchEvent(pointer("pointerup", 140, 160));
+
+      const surface = internal.surfaces.get(1)!;
+      expect(internal.ink.page(1)).toHaveLength(1);
+      expect(surface.inkLayerRevision).toBe(internal.ink.pageRevision(1));
+      const revisionBeforeUndo = internal.ink.pageRevision(1);
+      const undo = new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true });
+
+      expect(session.handleKeyDown(undo, "window")).toBe(true);
+      expect(undo.defaultPrevented).toBe(true);
+      expect(internal.ink.page(1)).toHaveLength(0);
+      expect(internal.ink.pageRevision(1)).toBeGreaterThan(revisionBeforeUndo);
+      expect(surface.inkLayerRevision).toBe(internal.ink.pageRevision(1));
+
+      expect(session.redo()).toBe(true);
+      expect(internal.ink.page(1)).toHaveLength(1);
+      expect(surface.inkLayerRevision).toBe(internal.ink.pageRevision(1));
+    } finally {
+      await session.destroy();
+    }
   });
 
   it("draws a stylus stroke, saves sidecar, exports copy, and cleans up", async () => {
@@ -533,36 +748,14 @@ describe("viewer runtime tracer", () => {
     const nativePointer = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 2 });
     adapter.pageElement.dispatchEvent(nativePointer);
     adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 120, { pointerType: "mouse", pointerId: 2 }));
-    // Primary mouse input is native until the single mouse-inking toggle is enabled.
+    // Ordinary mouse input stays native even when an annotation tool is selected.
     expect(nativePointer.defaultPrevented).toBe(false);
-    expect(adapter.toolbarHost.querySelector("[data-control='mouse']")).toBeNull();
-
-    settings.mouseInkingEnabled = true;
-    session.updateMouseInputBindings();
-    const mouseMode = adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='mouse']");
-    expect(mouseMode).not.toBeNull();
-
-    const inkSelectAll = new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true, cancelable: true });
-    expect(session.handleKeyDown(inkSelectAll, "window")).toBe(true);
-    expect(inkSelectAll.defaultPrevented).toBe(true);
-
-    mouseMode?.click();
-    expect(mouseMode?.getAttribute("aria-pressed")).toBe("true");
-    const nativeSelectAll = new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true, cancelable: true });
-    expect(session.handleKeyDown(nativeSelectAll, "window")).toBe(false);
-    expect(nativeSelectAll.defaultPrevented).toBe(false);
-    const nativeModePointer = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 23 });
-    adapter.pageElement.dispatchEvent(nativeModePointer);
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 120, { pointerType: "mouse", pointerId: 23 }));
-    expect(nativeModePointer.defaultPrevented).toBe(false);
-
-    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='pen']")?.click();
-    expect(mouseMode?.getAttribute("aria-pressed")).toBe("false");
-    const dragDown = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 3 });
-    const dragMove = pointer("pointermove", 100, 160, { pointerType: "mouse", pointerId: 3 });
+    expect(document.body.querySelector("[data-control='mouse']")).toBeNull();
+    const dragDown = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 3 });
+    const dragMove = pointer("pointermove", 100, 160, { pointerType: "pen", pointerId: 3 });
     adapter.pageElement.dispatchEvent(dragDown);
     adapter.pageElement.dispatchEvent(dragMove);
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 160, { pointerType: "mouse", pointerId: 3 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 160, { pointerType: "pen", pointerId: 3 }));
     expect(dragDown.defaultPrevented).toBe(true);
     expect(dragMove.defaultPrevented).toBe(true);
     const appendProfile = debug.mock.calls.find((call) => call[1] === "ink render profile" && (call[2] as { operation?: string }).operation === "stroke-append");
@@ -574,20 +767,12 @@ describe("viewer runtime tracer", () => {
     });
     expect((appendProfile?.[2] as { blitPixels?: number }).blitPixels).toBeLessThan(600 * 800);
 
-    expect(adapter.toolbarHost.querySelector("[data-control='draw']")).toBeNull();
-    expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
-    settings.mouseInkingEnabled = false;
-    session.updateMouseInputBindings();
-    expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(false);
-    expect(adapter.toolbarHost.querySelector("[data-control='mouse']")).toBeNull();
-    settings.mouseInkingEnabled = true;
-    session.updateMouseInputBindings();
-    expect(adapter.root.classList.contains("native-pdf-handwriting-hide-native-cursor")).toBe(true);
-    expect(adapter.toolbarHost.querySelector("[data-control='mouse']")).not.toBeNull();
+    expect(document.body.querySelector("[data-control='draw']")).toBeNull();
+    expect(document.body.querySelector("[data-control='mouse']")).toBeNull();
 
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 4 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 4 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 4 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 4 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "pen", pointerId: 4 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "pen", pointerId: 4 }));
     const diagnostics: HnDevProbeDiagnostic[] = [];
     const listener = (event: Event) => diagnostics.push((event as CustomEvent<HnDevProbeDiagnostic>).detail);
     window.addEventListener(HN_DEV_PROBE_EVENT, listener);
@@ -624,7 +809,7 @@ describe("viewer runtime tracer", () => {
     const erasedSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(JSON.parse(erasedSidecar![1]).pages[0].strokes).toHaveLength(3);
 
-    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='undo']")?.click();
+    document.body.querySelector<HTMLButtonElement>("[data-control='undo']")?.click();
     await session.manualSave();
     const restoredSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(JSON.parse(restoredSidecar![1]).pages[0].strokes).toHaveLength(2);
@@ -636,7 +821,7 @@ describe("viewer runtime tracer", () => {
     const cancelledSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(JSON.parse(cancelledSidecar![1]).pages[0].strokes).toHaveLength(2);
 
-    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='redo']")?.click();
+    document.body.querySelector<HTMLButtonElement>("[data-control='redo']")?.click();
     await session.manualSave();
     const redoneSidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(JSON.parse(redoneSidecar![1]).pages[0].strokes).toHaveLength(3);
@@ -656,12 +841,11 @@ describe("viewer runtime tracer", () => {
     expect(adapter.destroyed).toBe(true);
   });
 
-  it("correlates stroke creation and model insertion while preserving missing pen identity", async () => {
+  it("correlates stroke creation and model insertion with pen identity", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/example.png",
@@ -675,9 +859,9 @@ describe("viewer runtime tracer", () => {
       vaultLog: { write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} }) }
     });
 
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 17 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 17 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 17 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 17 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "pen", pointerId: 17 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "pen", pointerId: 17 }));
 
     const lifecycle = writes.filter((entry) => entry.event === "stroke lifecycle");
     const phases = lifecycle.map((entry) => entry.payload.phase);
@@ -693,9 +877,9 @@ describe("viewer runtime tracer", () => {
     const strokeIds = new Set(lifecycle.map((entry) => entry.payload.strokeId));
     expect(strokeIds.size).toBe(1);
     expect(lifecycle).toEqual(expect.arrayContaining([
-      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-create", penContactId: null }) }),
-      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-model-insert", modelPresent: true, penContactId: null }) }),
-      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-commit", modelPresent: true, penContactId: null }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-create", penContactId: expect.any(String) }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-model-insert", modelPresent: true, penContactId: expect.any(String) }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-commit", modelPresent: true, penContactId: expect.any(String) }) }),
       expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-first-render", renderExecuted: true, expectedVisible: true }) }),
       expect.objectContaining({ payload: expect.objectContaining({ phase: "stroke-render-ack", renderExecuted: true }) })
     ]));
@@ -772,7 +956,6 @@ describe("viewer runtime tracer", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const createSession = (adapter: FakeAdapter) => {
       const settings = structuredClone(DEFAULT_SETTINGS);
-      settings.mouseInkingEnabled = true;
       return ViewerInkSession.create({
         adapter,
         documentPath: "Notes/example.png",
@@ -789,9 +972,9 @@ describe("viewer runtime tracer", () => {
 
     const adapter = new FakeAdapter();
     const session = await createSession(adapter);
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 401 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 401 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 401 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 401 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "pen", pointerId: 401 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "pen", pointerId: 401 }));
     await session.manualSave();
 
     const savedLifecycle = writes.filter((entry) => entry.event === "stroke lifecycle");
@@ -865,7 +1048,6 @@ describe("viewer runtime tracer", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/pixels.png",
@@ -878,9 +1060,9 @@ describe("viewer runtime tracer", () => {
       debugEnabled: () => true,
       vaultLog: { write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} }) }
     });
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 501 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 501 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 501 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 501 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "pen", pointerId: 501 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "pen", pointerId: 501 }));
     expect(context.getImageData).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(220);
     expect(reads).toBe(1);
@@ -912,7 +1094,6 @@ describe("viewer runtime tracer", () => {
     const writes: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/pixels-unavailable.png",
@@ -925,9 +1106,9 @@ describe("viewer runtime tracer", () => {
       debugEnabled: () => true,
       vaultLog: { write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} }) }
     });
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 601 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 601 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 601 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 601 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "pen", pointerId: 601 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "pen", pointerId: 601 }));
     expect(context.getImageData).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(220);
     expect(context.getImageData).toHaveBeenCalledTimes(1);
@@ -987,7 +1168,7 @@ describe("viewer runtime tracer", () => {
       writeExport: async () => undefined,
       notice: () => undefined
     });
-    expect(adapter.toolbarHost.querySelector("[data-control='draw']")).toBeNull();
+    expect(document.body.querySelector("[data-control='draw']")).toBeNull();
 
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150));
@@ -1007,7 +1188,7 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
-  it("gates page-positioned mouse drawing with the single inking toggle", async () => {
+  it("keeps ordinary mouse input native by default", async () => {
     const source = await PDFDocument.create();
     source.addPage([600, 800]);
     const sourceBytes = await source.save();
@@ -1015,7 +1196,7 @@ describe("viewer runtime tracer", () => {
     Object.assign(adapter.pageElement, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => true });
     const files = new MemoryFiles();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInkingEnabled = false;
+    expect(settings.mouseInkingEnabled).toBe(false);
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/mouse-policy.pdf",
@@ -1028,31 +1209,30 @@ describe("viewer runtime tracer", () => {
       notice: () => undefined
     });
 
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 1 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 1 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 1 }));
+    const down = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 1 });
+    const move = pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 1 });
+    const up = pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 1 });
+    adapter.pageElement.dispatchEvent(down);
+    adapter.pageElement.dispatchEvent(move);
+    adapter.pageElement.dispatchEvent(up);
+    expect(down.defaultPrevented).toBe(false);
+    expect(move.defaultPrevented).toBe(false);
+    expect(up.defaultPrevented).toBe(false);
     await session.manualSave();
-    let sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
+    const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(sidecar ? JSON.parse(sidecar[1]).pages?.[0]?.strokes ?? [] : []).toHaveLength(0);
-
-    settings.mouseInkingEnabled = true;
-    session.updateMouseInputBindings();
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 2 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 2 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 2 }));
-    await session.manualSave();
-    sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
-    expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
     await session.destroy();
   });
 
   it("keeps hand-mode page drags on the native PDF scroll root", async () => {
     const files = new MemoryFiles();
-    const adapter = new FakeAdapter();
+    const adapter = new CommandBridgeAdapter();
+    const settings = structuredClone(DEFAULT_SETTINGS);
     let scrollTop = 100;
     Object.defineProperties(adapter.root, {
       scrollHeight: { value: 2_000, configurable: true },
       clientHeight: { value: 800, configurable: true },
+      clientWidth: { value: 832, configurable: true },
       scrollTop: {
         get: () => scrollTop,
         set: (value: number) => { scrollTop = value; },
@@ -1067,7 +1247,7 @@ describe("viewer runtime tracer", () => {
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/hand-mode.pdf",
-      settings: structuredClone(DEFAULT_SETTINGS),
+      settings,
       sidecars: new SidecarRepository(files, "annotations"),
       recovery: new RecoveryRepository(files, "recovery"),
       saveSettings: async () => undefined,
@@ -1076,17 +1256,30 @@ describe("viewer runtime tracer", () => {
       notice: () => undefined
     });
 
-    expect(session.commandController.setHandMode(true)).toBe(true);
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerId: 41 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 100, 140, { pointerId: 41 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 140, { pointerId: 41, pressure: 0 }));
+    expect(adapter.commandBridge).toBe(session.commandController);
+    expect(adapter.commandBridge?.toggleHandMode()).toBe(true);
+    expect(settings.toolPreferences.activeTool).toBe("drag");
+    const mouse = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 40 });
+    adapter.pageElement.dispatchEvent(mouse);
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 100, 140, { pointerType: "mouse", pointerId: 40 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 140, { pointerType: "mouse", pointerId: 40, pressure: 0 }));
+    expect(mouse.defaultPrevented).toBe(false);
+    expect(scrollTop).toBe(100);
+
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 41 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 100, 140, { pointerType: "pen", pointerId: 41 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 140, { pointerType: "pen", pointerId: 41, pressure: 0 }));
 
     expect(scrollTop).toBe(80);
     expect(adapter.root.style.transform).toBe("");
+    expect(session.commandController.setRotation(90)).toBe(true);
+    expect(session.commandController.fitWidth()).toBe(true);
+    expect(session.getViewerState().viewport.scale).toBe(1);
     await session.destroy();
+    expect(adapter.commandBridge).toBeNull();
   });
 
-  it("routes an in-view MockTab wheel pan to its PDF when another HN session claimed the document event", async () => {
+  it("observes native PDF wheel scrolling without taking ownership", async () => {
     const files = new MemoryFiles();
     const inactiveAdapter = new FakeAdapter();
     const inactiveSession = await ViewerInkSession.create({
@@ -1106,11 +1299,17 @@ describe("viewer runtime tracer", () => {
     Object.defineProperties(adapter.root, {
       scrollHeight: { value: 2_000, configurable: true },
       clientHeight: { value: 800, configurable: true },
+      scrollWidth: { value: 600, configurable: true },
+      clientWidth: { value: 600, configurable: true },
       scrollTop: {
         get: () => scrollTop,
         set: (value: number) => { scrollTop = value; },
         configurable: true
       }
+    });
+    adapter.root.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 800,
+      width: 600, height: 800, toJSON: () => ({})
     });
     const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
     const session = await ViewerInkSession.create({
@@ -1138,15 +1337,115 @@ describe("viewer runtime tracer", () => {
       clientY: 120
     });
     adapter.pageElement.dispatchEvent(wheel);
-    expect(wheel.defaultPrevented).toBe(true);
-    expect(scrollTop).toBe(24);
+    expect(wheel.defaultPrevented).toBe(false);
+    expect(scrollTop).toBe(0);
     expect(logs).toContainEqual({
       event: "pointer seen",
-      payload: expect.objectContaining({ source: "wheel-pan", phase: "in-view", deltaY: 24, changed: true })
+      payload: expect.objectContaining({
+        source: "wheel-pan", phase: "in-view", deltaY: 24,
+        navigation: "native-viewer-scroll", preventDefault: false
+      })
     });
+
+    scrollTop = 1_200;
+    const viewport = (session as unknown as {
+      handwritingViewport: { syncFromScroll(left: number, top: number, force: boolean): boolean };
+    }).handwritingViewport;
+    viewport.syncFromScroll(0, 1_200, true);
+    const atEdge = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      deltaY: 24,
+      clientX: 100,
+      clientY: 120
+    });
+    adapter.pageElement.dispatchEvent(atEdge);
+    expect(atEdge.defaultPrevented).toBe(false);
+    expect(scrollTop).toBe(1_200);
 
     await session.destroy();
     await inactiveSession.destroy();
+  });
+
+  it("preserves native wheel, pinch, and pointer input inside an embedded PDF in Markdown", async () => {
+    const files = new MemoryFiles();
+    const adapter = new FakeMarkdownAdapter();
+    const embed = document.createElement("div");
+    embed.className = "internal-embed pdf-embed";
+    const viewer = document.createElement("div");
+    viewer.className = "pdf-viewer-container";
+    const toolbar = document.createElement("button");
+    toolbar.className = "pdf-toolbar-right";
+    viewer.append(toolbar);
+    embed.append(viewer);
+    adapter.pageElement.append(embed);
+    const logs: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const session = await ViewerInkSession.create({
+      adapter,
+      documentPath: "Notes/example.md",
+      settings: structuredClone(DEFAULT_SETTINGS),
+      sidecars: new SidecarRepository(files, "annotations"),
+      recovery: new RecoveryRepository(files, "recovery"),
+      saveSettings: async () => undefined,
+      readSourcePdf: async () => new Uint8Array(),
+      writeExport: async () => undefined,
+      notice: () => undefined,
+      debugEnabled: () => true,
+      vaultLog: {
+        write: (_level, event, payload = {}) => logs.push({ event, payload })
+      }
+    });
+    const viewportBefore = session.getViewerState().viewport;
+
+    for (const ctrlKey of [false, true]) {
+      const wheel = new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+        deltaY: 24,
+        clientX: 100,
+        clientY: 120,
+        ctrlKey
+      });
+      viewer.dispatchEvent(wheel);
+      expect(wheel.defaultPrevented).toBe(false);
+    }
+
+    const pointerDown = pointer("pointerdown", 100, 120, { pointerId: 91 });
+    const pointerMove = pointer("pointermove", 110, 130, { pointerId: 91 });
+    const pointerUp = pointer("pointerup", 110, 130, { pointerId: 91 });
+    toolbar.dispatchEvent(pointerDown);
+    toolbar.dispatchEvent(pointerMove);
+    toolbar.dispatchEvent(pointerUp);
+    expect([pointerDown.defaultPrevented, pointerMove.defaultPrevented, pointerUp.defaultPrevented])
+      .toEqual([false, false, false]);
+
+    const nativePointerLogs = logs.filter(({ event, payload }) =>
+      event === "pointer seen" && payload.source === "native-embedded-pdf-input" && payload.pointerId === 91
+    );
+    expect(nativePointerLogs.map(({ payload }) => payload.phase)).toEqual([
+      "pointerdown", "pointermove", "pointerup"
+    ]);
+    expect(nativePointerLogs[0]?.payload).toMatchObject({
+      owner: "obsidian",
+      target: "button.pdf-toolbar-right",
+      defaultPrevented: false
+    });
+    expect((session as unknown as { ink: { all(): InkStroke[] } }).ink.all()).toEqual([]);
+
+    expect(session.getViewerState().viewport).toEqual(viewportBefore);
+    expect(logs).toContainEqual({
+      event: "pointer seen",
+      payload: expect.objectContaining({
+        source: "native-embedded-pdf-input",
+        phase: "preserved",
+        preventDefault: false,
+        target: "div.pdf-viewer-container"
+      })
+    });
+
+    await session.destroy();
   });
 
   it("leaves a native PDF sidebar wheel event for the sidebar", async () => {
@@ -2207,11 +2506,10 @@ describe("viewer runtime tracer", () => {
   });
 
 
-  it("lets enabled mouse inking draw while fingers keep native scroll policy", async () => {
+  it("keeps mouse and finger input native while stylus still draws", async () => {
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/example.pdf",
@@ -2228,20 +2526,22 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(finger);
     adapter.pageElement.dispatchEvent(pointer("pointerup", 130, 150, { pointerType: "touch", pointerId: 22 }));
     expect(finger.defaultPrevented).toBe(false);
-    // Pencil-first: draw-hit-page is transient for active pen only — not permanent.
-    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-draw-hit-page")).toBe(false);
-    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-touch-draw-page")).toBe(false);
 
     const mouse = pointer("pointerdown", 100, 120, { pointerType: "mouse", pointerId: 7 });
     adapter.pageElement.dispatchEvent(mouse);
     adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "mouse", pointerId: 7 }));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "mouse", pointerId: 7 }));
-    expect(mouse.defaultPrevented).toBe(true);
+    expect(mouse.defaultPrevented).toBe(false);
+
+    const stylus = pointer("pointerdown", 100, 120, { pointerType: "pen", pointerId: 8 });
+    adapter.pageElement.dispatchEvent(stylus);
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 130, 150, { pointerType: "pen", pointerId: 8 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180, { pointerType: "pen", pointerId: 8 }));
+    expect(stylus.defaultPrevented).toBe(true);
 
     await session.manualSave();
     const sidecar = [...files.values.entries()].find(([path]) => path.startsWith("annotations/"));
     expect(JSON.parse(sidecar![1]).pages[0].strokes).toHaveLength(1);
-    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-draw-hit-page")).toBe(false);
     await session.destroy();
   });
 
@@ -2301,7 +2601,6 @@ describe("viewer runtime tracer", () => {
     const adapter = new FakeAdapter();
     let profile: "auto" | "pen" | "mouse" = "auto";
     const settings = structuredClone(DEFAULT_SETTINGS);
-    settings.mouseInkingEnabled = true;
     const session = await ViewerInkSession.create({
       adapter,
       documentPath: "Notes/example.pdf",
@@ -2319,17 +2618,18 @@ describe("viewer runtime tracer", () => {
     adapter.pageElement.dispatchEvent(pointer("pointermove", 120, 150, { pressure: 0.8 }));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 140, 180, { pressure: 0.2 }));
 
+    profile = "pen";
+    adapter.pageElement.dispatchEvent(pointer("pointerdown", 200, 220, { pointerType: "pen", pointerId: 8, pressure: 1 }));
     profile = "mouse";
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 200, 220, { pointerType: "mouse", pointerId: 8, pressure: 1 }));
-    adapter.pageElement.dispatchEvent(pointer("pointermove", 230, 250, { pointerType: "mouse", pointerId: 8, pressure: 0 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 260, 280, { pointerType: "mouse", pointerId: 8, pressure: 1 }));
+    adapter.pageElement.dispatchEvent(pointer("pointermove", 230, 250, { pointerType: "pen", pointerId: 8, pressure: 0 }));
+    adapter.pageElement.dispatchEvent(pointer("pointerup", 260, 280, { pointerType: "pen", pointerId: 8, pressure: 1 }));
 
     const strokes = (session as unknown as { ink: { all(): InkStroke[] } }).ink.all();
     expect(strokes).toHaveLength(2);
     expect(strokes[0]!.points[0]!.pressure).toBeCloseTo(0.15, 8);
     expect(strokes[0]!.points[1]!.pressure).toBeGreaterThan(strokes[0]!.points[0]!.pressure);
-    expect(strokes[1]!.inputType).toBe("mouse");
-    expect(strokes[1]!.points.every((point) => point.pressure === 0.5)).toBe(true);
+    expect(strokes[1]!.inputType).toBe("pen");
+    expect(strokes[1]!.points.some((point) => point.pressure !== 0.5)).toBe(true);
     await session.destroy();
   });
 
@@ -2375,8 +2675,7 @@ describe("viewer runtime tracer", () => {
     const uiSnapshot = session.writeCopiedLogUiSnapshot();
     expect(uiSnapshot).toMatchObject({
       nativeSidebarOpen: { left: false, right: false },
-      toolbarPresentation: { connected: true, hasLayoutBox: false },
-      sidebarRailPresentation: null
+      toolbarPresentation: { connected: true, hasLayoutBox: false }
     });
     const copiedTrace = logs.find(({ event }) => event === "last-zoom-trace");
     expect(copiedTrace?.payload.slowInkStrokeSummary).toMatchObject({
@@ -2647,7 +2946,7 @@ describe("viewer runtime tracer", () => {
       expect(down.defaultPrevented).toBe(false);
       expect(internal.activeTool()).toBe("pen");
     }
-    expect(adapter.toolbarHost.querySelector(".native-pdf-handwriting-toolbar")?.classList.contains("native-pdf-handwriting-temporary-eraser")).toBe(false);
+    expect(document.body.querySelector(".native-pdf-handwriting-toolbar")?.classList.contains("native-pdf-handwriting-temporary-eraser")).toBe(false);
     expect(settings.toolPreferences.activeTool).toBe("pen");
     await session.destroy();
   });
@@ -2982,7 +3281,7 @@ describe("viewer runtime tracer", () => {
       expect(editor).not.toBeNull();
 
       const refresh = vi.spyOn(session, "refresh");
-      adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='text']")?.click();
+      document.body.querySelector<HTMLButtonElement>("[data-control='text']")?.click();
       const size = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-text-menu input[type='number']");
       expect(size).not.toBeNull();
       size!.value = "36";
@@ -3097,7 +3396,7 @@ describe("viewer runtime tracer", () => {
     internal.activeTextEditor!.element.textContent = "After";
     internal.activeTextEditor!.element.dispatchEvent(new Event("input", { bubbles: true }));
 
-    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='eraser']")?.click();
+    document.body.querySelector<HTMLButtonElement>("[data-control='eraser']")?.click();
 
     expect(internal.activeTextEditor).toBeNull();
     expect(internal.texts.all()).toMatchObject([{ id: "switch-tools", text: "After" }]);
@@ -3305,7 +3604,7 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
-  it("opens a committed text box from one touch without claiming native touch navigation", async () => {
+  it("allows narrow touch editing of committed text boxes without enabling touch drawing", async () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.toolPreferences.activeTool = "text";
     const adapter = new FakeAdapter();
@@ -3346,8 +3645,7 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
-  it("reopens a selected text box when a follow-up touch is retargeted to the page", async () => {
-    vi.useFakeTimers();
+  it("keeps one text editor when a touch is retargeted through the page", async () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.toolPreferences.activeTool = "text";
     const adapter = new FakeAdapter();
@@ -3380,20 +3678,19 @@ describe("viewer runtime tracer", () => {
     internal.renderTextAnnotations(surface);
     const rendered = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box")!;
     rendered.dispatchEvent(pointer("pointerdown", 250, 150, { pointerType: "touch", pointerId: 61 }));
-    vi.advanceTimersByTime(500);
-    await Promise.resolve();
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 61 }));
-    expect(internal.activeTextEditor).toBeNull();
+    rendered.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 61 }));
+    expect(internal.activeTextEditor?.draft.id).toBe(text.id);
 
-    // The replacement text box is not the event target after native touch
-    // retargeting; the hit must still resolve from page geometry.
+    // The replacement editor is not the event target after native touch
+    // retargeting; the hit must still resolve without opening a second editor.
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 250, 150, { pointerType: "touch", pointerId: 62 }));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 62 }));
     expect(internal.activeTextEditor?.draft.id).toBe(text.id);
+    expect(adapter.pageElement.querySelectorAll(".native-pdf-handwriting-text-input")).toHaveLength(1);
     await session.destroy();
   });
 
-  it("supports targeted text long-press actions, size changes, movement cancellation, and native-menu suppression", async () => {
+  it("leaves long presses and text-box context menus native for touch", async () => {
     vi.useFakeTimers();
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.toolPreferences.activeTool = "text";
@@ -3409,80 +3706,34 @@ describe("viewer runtime tracer", () => {
       writeExport: async () => undefined,
       notice: () => undefined
     });
-    const first: PdfTextAnnotation = {
-      id: "touch-context-first", page: 1, text: "First", x: 220, y: 650, width: 140, height: 28,
+    const text: PdfTextAnnotation = {
+      id: "touch-context", page: 1, text: "Touch me", x: 220, y: 650, width: 140, height: 28,
       color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false,
-      runs: [{ text: "First", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
-      sourceRuns: [{ text: "First", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      runs: [{ text: "Touch me", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
+      sourceRuns: [{ text: "Touch me", color: "#111827", fontSize: 18, fontFamily: "sans-serif", bold: false, italic: false, strikethrough: false }],
       createdAt: "now", updatedAt: "now"
     };
-    const second: PdfTextAnnotation = { ...first, id: "touch-context-second", text: "Second", x: 220, y: 600 };
     const internal = session as unknown as {
-      texts: { add(annotation: PdfTextAnnotation): void; all(): PdfTextAnnotation[] };
+      texts: { add(annotation: PdfTextAnnotation): void };
       surfaces: Map<number, unknown>;
       renderTextAnnotations(surface: unknown): void;
       selectedTexts: PdfTextAnnotation[];
     };
-    internal.texts.add(first);
-    internal.texts.add(second);
+    internal.texts.add(text);
     internal.renderTextAnnotations(internal.surfaces.get(1));
+    const box = adapter.pageElement.querySelector<HTMLElement>(".native-pdf-handwriting-text-box")!;
 
-    const longPress = async (id: string): Promise<HTMLElement> => {
-      const box = [...adapter.pageElement.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")]
-        .find((candidate) => candidate.dataset.annotationId === id)!;
-      const y = id === second.id ? 200 : 150;
-      box.dispatchEvent(pointer("pointerdown", 250, y, { pointerType: "touch", pointerId: id === first.id ? 51 : 52 }));
-      vi.advanceTimersByTime(500);
-      await Promise.resolve();
-      return box;
-    };
-
-    const firstBox = await longPress(first.id);
-    expect(internal.selectedTexts.map((text) => text.id)).toEqual([first.id]);
-    expect(document.querySelectorAll(".native-pdf-handwriting-dropdown")).toHaveLength(1);
-    const contextMenuEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
-    firstBox.dispatchEvent(contextMenuEvent);
-    expect(contextMenuEvent.defaultPrevented).toBe(true);
-    expect(document.querySelectorAll(".native-pdf-handwriting-dropdown")).toHaveLength(1);
-
-    const size = document.querySelector<HTMLInputElement>(".native-pdf-handwriting-dropdown input[type='number']")!;
-    size.value = "36";
-    size.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(internal.texts.all().find((text) => text.id === first.id)?.fontSize).toBe(36);
-
-    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-dropdown-option[data-option-id='copy']")?.click();
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 51 }));
-    session.applySelectionShortcut("paste");
-    expect(internal.texts.all()).toHaveLength(3);
-
-    const firstAfterPaste = await longPress(first.id);
-    expect(firstAfterPaste).toBeDefined();
-    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-dropdown-option[data-option-id='cut']")?.click();
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 150, { pointerType: "touch", pointerId: 51 }));
-    expect(internal.texts.all().some((text) => text.id === first.id)).toBe(false);
-
-    const canceled = [...adapter.pageElement.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")]
-      .find((candidate) => candidate.dataset.annotationId !== "touch-context-second")!;
-    canceled.dispatchEvent(pointer("pointerdown", 250, 160, { pointerType: "touch", pointerId: 53 }));
-    const move = pointer("pointermove", 400, 300, { pointerType: "touch", pointerId: 53 });
-    adapter.pageElement.dispatchEvent(move);
-    expect(move.defaultPrevented).toBe(false);
-    vi.advanceTimersByTime(500);
-    expect(document.querySelector(".native-pdf-handwriting-dropdown")).toBeNull();
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 400, 300, { pointerType: "touch", pointerId: 53 }));
-
-    const remaining = internal.texts.all().find((text) => text.id === "touch-context-second")!;
-    const remainingBox = [...adapter.pageElement.querySelectorAll<HTMLElement>(".native-pdf-handwriting-text-box")]
-      .find((candidate) => candidate.dataset.annotationId === remaining.id)!;
-    remainingBox.dispatchEvent(pointer("pointerdown", 250, 200, { pointerType: "touch", pointerId: 54 }));
+    const down = pointer("pointerdown", 250, 150, { pointerType: "touch", pointerId: 51 });
+    box.dispatchEvent(down);
     vi.advanceTimersByTime(500);
     await Promise.resolve();
-    document.querySelector<HTMLButtonElement>(".native-pdf-handwriting-dropdown-option[data-option-id='delete']")?.click();
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 250, 200, { pointerType: "touch", pointerId: 54 }));
-    expect(internal.texts.all().some((text) => text.id === remaining.id)).toBe(false);
-    expect(session.undo()).toBe(true);
-    expect(internal.texts.all().some((text) => text.id === remaining.id)).toBe(true);
+    const contextMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    box.dispatchEvent(contextMenu);
 
+    expect(down.defaultPrevented).toBe(false);
+    expect(contextMenu.defaultPrevented).toBe(false);
+    expect(internal.selectedTexts).toEqual([]);
+    expect(document.querySelector(".native-pdf-handwriting-dropdown")).toBeNull();
     await session.destroy();
   });
 
@@ -3679,7 +3930,7 @@ describe("viewer runtime tracer", () => {
     const layerValidBefore = surface.inkLayerValid;
     const invalidate = vi.spyOn(internal, "invalidateInkLayers");
 
-    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='text']")?.click();
+    document.body.querySelector<HTMLButtonElement>("[data-control='text']")?.click();
     expect(settings.toolPreferences.activeTool).toBe("text");
     // Tool-chrome refresh must not invalidate committed ink (zoom-blit snap).
     expect(invalidate).not.toHaveBeenCalled();
@@ -4174,7 +4425,7 @@ describe("viewer runtime tracer", () => {
       internal.ink.add(stroke);
       settings.toolPreferences.activeTool = "lasso";
       session.selectTool("lasso");
-      adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='lasso']")?.click();
+      document.body.querySelector<HTMLButtonElement>("[data-control='lasso']")?.click();
       const copyAll = document.querySelector<HTMLButtonElement>("[data-option-id='copy-all']");
       expect(copyAll?.textContent).toBe("Copy All");
       copyAll?.click();
@@ -4280,7 +4531,7 @@ describe("viewer runtime tracer", () => {
       writeExport: async () => undefined,
       notice: () => undefined
     });
-    expect(adapter.toolbarHost.querySelector("[data-control='draw']")).toBeNull();
+    expect(document.body.querySelector("[data-control='draw']")).toBeNull();
     adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 120));
     adapter.pageElement.dispatchEvent(pointer("pointermove", 160, 180));
     adapter.pageElement.dispatchEvent(pointer("pointerup", 160, 180));
@@ -4634,7 +4885,7 @@ describe("viewer runtime tracer", () => {
       readSourcePdf: async () => new Uint8Array(),
       notice: () => undefined
     });
-    const toolbar = adapter.toolbarHost.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    const toolbar = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
     expect(toolbar).not.toBeNull();
     expect(toolbar?.hidden).toBe(false);
     expect(toolbar?.style.display).not.toBe("none");
@@ -4645,11 +4896,11 @@ describe("viewer runtime tracer", () => {
 
     expect(toolbar?.isConnected).toBe(true);
     expect(toolbar?.querySelector("[data-control='eraser']")).not.toBeNull();
-    expect(adapter.toolbarHost.querySelectorAll(".native-pdf-handwriting-toolbar")).toHaveLength(1);
+    expect(document.body.querySelectorAll(".native-pdf-handwriting-toolbar")).toHaveLength(1);
     await session.destroy();
   });
 
-  it("reports missing handwriting UI ownership after a settled lifecycle when remount cannot connect", async () => {
+  it("reattaches the canonical floating toolbar when adapter remount cannot connect", async () => {
     vi.useFakeTimers();
     const files = new MemoryFiles();
     const adapter = new FakeAdapter();
@@ -4666,26 +4917,16 @@ describe("viewer runtime tracer", () => {
       debugEnabled: () => true,
       vaultLog: { write: (_level, event, payload) => writes.push({ event, payload: payload ?? {} }) }
     });
-    adapter.toolbarHost.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar")?.remove();
+    document.body.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar")?.remove();
     vi.spyOn(adapter, "mountToolbar").mockImplementation(() => undefined);
 
     (session as unknown as { onPagesChanged(reason: string): void }).onPagesChanged("pages-settled");
     await vi.runAllTimersAsync();
 
-    expect(writes).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        event: "handwriting-ui-missing",
-        payload: expect.objectContaining({
-          viewerConnected: true,
-          toolbarExpected: true,
-          toolbarConnected: false,
-          pageCount: 1,
-          currentPage: 1,
-          mountReason: "pages-settled",
-          unmountReason: "pages-settled"
-        })
-      })
-    ]));
+    const toolbar = document.body.querySelector<HTMLElement>(".native-pdf-handwriting-toolbar");
+    expect(toolbar?.classList.contains("native-pdf-handwriting-toolbar-floating-fallback")).toBe(true);
+    expect(toolbar?.querySelector(".native-pdf-handwriting-toolbar-drag-handle")).not.toBeNull();
+    expect(writes.some(({ event }) => event === "handwriting-ui-missing")).toBe(false);
     await session.destroy();
   });
 
@@ -4767,7 +5008,7 @@ describe("viewer runtime tracer", () => {
     await session.addPageAt(2);
 
     expect(adapter.restoredViewStates).toHaveLength(1);
-    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.1789, scaleMode: 2.1789, scrollFraction: 0.82 });
+    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.1789, scaleMode: "custom", scrollFraction: 0.82 });
     const lifecycle = logs
       .filter((entry) => entry.event === "add-page lifecycle")
       .map((entry) => entry.payload);
@@ -4829,7 +5070,7 @@ describe("viewer runtime tracer", () => {
     (session as unknown as { onPagesChanged(reason: string): void }).onPagesChanged("pages-dom");
 
     expect(adapter.restoredViewStates).toHaveLength(1);
-    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.4, scaleMode: 2.4, scrollFraction: 0.74 });
+    expect(adapter.restoredViewStates[0]).toMatchObject({ scale: 2.4, scaleMode: "custom", scrollFraction: 0.74 });
     expect(resolved).toHaveBeenCalledTimes(1);
     await session.destroy();
   });
@@ -4970,7 +5211,7 @@ describe("viewer runtime tracer", () => {
       runtimePlatform: () => ({ mobile: true, phone: false })
     });
 
-    const more = adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='more']");
+    const more = document.body.querySelector<HTMLButtonElement>("[data-control='more']");
     more?.click();
     expect(document.querySelector<HTMLButtonElement>("[data-option-id='scan-document']")?.textContent).toBe("Scan document");
     expect(document.querySelector<HTMLButtonElement>("[data-option-id='import-page']")?.textContent).toBe("Import page");
@@ -5003,7 +5244,7 @@ describe("viewer runtime tracer", () => {
       runtimePlatform: () => ({ mobile: false, phone: false })
     });
 
-    adapter.toolbarHost.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
+    document.body.querySelector<HTMLButtonElement>("[data-control='more']")?.click();
     expect(document.querySelector("[data-option-id='scan-document']")).toBeNull();
     expect(document.querySelector("[data-option-id='import-page']")?.textContent).toBe("Import page");
     await (session as unknown as { scanDocument(): Promise<void> }).scanDocument();
@@ -5137,35 +5378,4 @@ describe("viewer runtime tracer", () => {
     await session.destroy();
   });
 
-  it("applies draw-hit-page to newly mounted pages when draw mode is active", async () => {
-    const files = new MemoryFiles();
-    const adapter = new FakeAdapter();
-    const session = await ViewerInkSession.create({
-      adapter,
-      documentPath: "Notes/example.pdf",
-      settings: structuredClone(DEFAULT_SETTINGS),
-      sidecars: new SidecarRepository(files, "annotations"),
-      recovery: new RecoveryRepository(files, "recovery"),
-      saveSettings: async () => undefined,
-      readSourcePdf: async () => new Uint8Array(),
-      writeExport: async () => undefined,
-      notice: () => undefined,
-      runtimePlatform: () => ({ mobile: true, phone: false })
-    });
-
-    // Enter active draw mode (e.g. by observing a pen contact)
-    adapter.pageElement.dispatchEvent(pointer("pointerdown", 100, 100, { pointerType: "pen", pointerId: 1 }));
-    adapter.pageElement.dispatchEvent(pointer("pointerup", 100, 100, { pointerType: "pen", pointerId: 1 }));
-
-    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-draw-hit-page")).toBe(true);
-
-    // Simulate replacing the page elements without remounting the entire session
-    adapter.replacePageElementKeepingOldPageConnected();
-    (session as unknown as { onPagesChanged(reason: string): void }).onPagesChanged("pages-dom");
-
-    // After the event bus signals DOM replacement, the new page should inherit the active draw hit policy
-    expect(adapter.pageElement.classList.contains("native-pdf-handwriting-draw-hit-page")).toBe(true);
-
-    await session.destroy();
-  });
 });
