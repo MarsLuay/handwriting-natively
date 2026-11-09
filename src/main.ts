@@ -1113,15 +1113,18 @@ export default class NativePdfInkPlugin extends Plugin {
   }
 
   private async scanPdfLeaves(): Promise<void> {
+    const pdfLeaves = this.app.workspace.getLeavesOfType("pdf");
+    const pluginPdfLeaves = this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE);
+    const imageLeaves = this.app.workspace.getLeavesOfType("image");
+
     const leaves = [...new Set([
-      ...this.app.workspace.getLeavesOfType("pdf"),
-      ...this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE),
-      ...this.app.workspace.getLeavesOfType("image")
+      ...pdfLeaves,
+      ...pluginPdfLeaves,
+      ...imageLeaves
     ])];
     await this.vaultDebugLog.writeUrgent("info", "scan-pdf-leaves", {
-      pdfLeafCount: this.app.workspace.getLeavesOfType("pdf").length
-        + this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE).length,
-      imageLeafCount: this.app.workspace.getLeavesOfType("image").length,
+      pdfLeafCount: pdfLeaves.length + pluginPdfLeaves.length,
+      imageLeafCount: imageLeaves.length,
       sessions: this.sessions.size,
       attachingLeaves: this.attachingLeaves.size,
       pdfHandwritingEnabled: this.inkSettings.enabledSurfaces.pdf,
