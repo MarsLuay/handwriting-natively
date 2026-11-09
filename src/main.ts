@@ -735,8 +735,13 @@ export default class NativePdfInkPlugin extends Plugin {
         winners.set(id, session);
       }
     }
-    const openPdfLeaves = this.app.workspace.getLeavesOfType("pdf").length
-      + this.app.workspace.getLeavesOfType(PLUGIN_PDF_VIEW_TYPE).length;
+    let openPdfLeaves = 0;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const type = leaf.view.getViewType();
+      if (type === "pdf" || type === PLUGIN_PDF_VIEW_TYPE) {
+        openPdfLeaves++;
+      }
+    });
     this.vaultDebugLog.write("info", "emergency persist begin", {
       sessions: sessions.length,
       documents: winners.size,
