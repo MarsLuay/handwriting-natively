@@ -57,7 +57,8 @@ describe("scanPdfLeaves Optimization Benchmark", () => {
     let originalTime = 0;
     let optimizedTime = 0;
 
-    let res1, res2;
+    let res1: ReturnType<typeof originalRun> | undefined;
+    let res2: ReturnType<typeof optimizedRun> | undefined;
     const t0 = performance.now();
     for (let i = 0; i < iter; i++) {
         res1 = originalRun();
@@ -71,6 +72,10 @@ describe("scanPdfLeaves Optimization Benchmark", () => {
     }
     const t3 = performance.now();
     optimizedTime = t3 - t2;
+
+    if (!res1 || !res2) {
+      throw new Error("Benchmark iterations did not produce results");
+    }
 
     console.log(`Original Time: ${originalTime.toFixed(2)} ms`);
     console.log(`Optimized Time: ${optimizedTime.toFixed(2)} ms`);
